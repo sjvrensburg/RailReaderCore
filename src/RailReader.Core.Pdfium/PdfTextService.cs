@@ -11,7 +11,7 @@ namespace RailReader.Core.Services;
 /// </summary>
 public sealed class PdfTextService : IPdfTextService
 {
-    internal static ILogger Logger { get; set; } = NullLogger.Instance;
+    private static ILogger Logger => RailReaderLogging.Logger;
 
     private static readonly PageText s_empty = new("", []);
 

@@ -8,6 +8,9 @@
     <!-- PDFtoImage marks APIs as platform-specific; we only target desktop (Win/Linux/macOS) -->
     <NoWarn>CA1416</NoWarn>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsPackable>true</IsPackable>
+    <PackageId>RailReader.Renderer.Skia</PackageId>
+    <Description>SkiaSharp rasterisation and IPdfServiceFactory implementation for desktop PDF rendering via PDFium.</Description>
   </PropertyGroup>
 
   <ItemGroup>

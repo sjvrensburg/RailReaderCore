@@ -17,7 +17,7 @@ namespace RailReader.Core.Services;
 ///      rasterized page. Used for scanned PDFs and any block where char
 ///      clustering produced nothing.
 /// </summary>
-public static class LineDetector
+internal static class LineDetector
 {
     /// <summary>
     /// Block classes treated as a single atomic line in rail mode. Only purely
@@ -27,7 +27,7 @@ public static class LineDetector
     /// because stepwise derivations and algorithm pseudocode read line-by-line;
     /// char-box clustering handles those without fragmenting sub/superscripts.
     /// </summary>
-    public static readonly HashSet<int> AtomicLineClasses =
+    internal static readonly HashSet<int> AtomicLineClasses =
     [
         LayoutConstants.ClassChart,
         LayoutConstants.ClassFooterImage,

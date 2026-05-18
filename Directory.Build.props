@@ -1,0 +1,20 @@
+<Project>
+  <PropertyGroup>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <Authors>sjvrensburg</Authors>
+    <Copyright>Copyright © 2024-2026 Stefan van Rensburg</Copyright>
+    <PackageProjectUrl>https://github.com/sjvrensburg/RailReaderCore</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/sjvrensburg/RailReaderCore.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>pdf;rail-reader;layout-analysis</PackageTags>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(IsPackable)' != 'false'">
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.*" PrivateAssets="All" />
+  </ItemGroup>
+</Project>

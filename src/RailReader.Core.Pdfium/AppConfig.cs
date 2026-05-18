@@ -7,7 +7,7 @@ namespace RailReader.Core.Services;
 
 public sealed class AppConfig : IRecentFilesStore
 {
-    internal static ILogger Logger { get; set; } = NullLogger.Instance;
+    private static ILogger Logger => RailReaderLogging.Logger;
 
     /// <summary>
     /// Schema version. Increment when introducing a field change that needs

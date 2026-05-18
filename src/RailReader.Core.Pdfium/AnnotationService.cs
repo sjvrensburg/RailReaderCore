@@ -20,7 +20,7 @@ public sealed class AnnotationService : IAnnotationStore
     /// </summary>
     public static readonly AnnotationService Default = new();
 
-    internal static ILogger Logger { get; set; } = NullLogger.Instance;
+    private static ILogger Logger => RailReaderLogging.Logger;
 
     private static string? _annotationDir;
 

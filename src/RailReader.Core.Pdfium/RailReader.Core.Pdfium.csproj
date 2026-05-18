@@ -6,6 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <IsAotCompatible>true</IsAotCompatible>
     <NoWarn>CA1416</NoWarn>
+    <IsPackable>true</IsPackable>
+    <PackageId>RailReader.Core.Pdfium</PackageId>
+    <Description>Desktop PDFium implementations of Core interfaces plus filesystem-backed AppConfig, AnnotationService, ConsoleLogger, and LayoutModelLocator.</Description>
   </PropertyGroup>
 
   <ItemGroup>

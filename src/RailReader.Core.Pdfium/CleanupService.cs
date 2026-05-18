@@ -4,7 +4,7 @@ namespace RailReader.Core.Services;
 
 public static class CleanupService
 {
-    internal static ILogger Logger { get; set; } = NullLogger.Instance;
+    private static ILogger Logger => RailReaderLogging.Logger;
 
     public static (int FilesRemoved, long BytesFreed) RunCleanup()
     {

@@ -6,6 +6,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <IsAotCompatible>true</IsAotCompatible>
     <NoWarn>CA1416</NoWarn>
+    <IsPackable>true</IsPackable>
+    <PackageId>RailReader.Core</PackageId>
+    <Description>Portable abstractions, models, controllers, rail-navigation, line detection, search, and annotation logic for RailReader.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,6 +21,10 @@
 
   <ItemGroup>
     <PackageReference Include="OpenAI" Version="2.10.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>

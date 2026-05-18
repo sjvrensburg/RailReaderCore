@@ -8,7 +8,7 @@ namespace RailReader.Core.Services;
 
 public sealed class LayoutAnalyzer : ILayoutAnalyzer
 {
-    internal static ILogger Logger { get; set; } = NullLogger.Instance;
+    private static ILogger Logger => RailReaderLogging.Logger;
 
     private readonly InferenceSession _session;
 #if DEBUG

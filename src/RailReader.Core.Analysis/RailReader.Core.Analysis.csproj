@@ -6,6 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <IsAotCompatible>true</IsAotCompatible>
     <NoWarn>CA1416</NoWarn>
+    <IsPackable>true</IsPackable>
+    <PackageId>RailReader.Core.Analysis</PackageId>
+    <Description>ONNX-backed ILayoutAnalyzer implementation using PP-DocLayoutV3 for document layout detection.</Description>
   </PropertyGroup>
 
   <ItemGroup>

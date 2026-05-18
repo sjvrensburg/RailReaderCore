@@ -11,7 +11,7 @@ namespace RailReader.Renderer.Skia;
 /// </summary>
 public sealed class SkiaPdfService : IPdfService
 {
-    internal static ILogger Logger { get; set; } = NullLogger.Instance;
+    private static ILogger Logger => RailReaderLogging.Logger;
 
     public byte[] PdfBytes { get; }
     public int PageCount { get; }

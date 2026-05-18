@@ -21,7 +21,7 @@ public readonly record struct ContentFraction(double X, double Y, double W, doub
     }
 }
 
-public static class PageCropUtil
+internal static class PageCropUtil
 {
     /// <summary>
     /// Computes the bounding fraction of the union of all layout blocks on a page.

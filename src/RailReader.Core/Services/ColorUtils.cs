@@ -3,7 +3,7 @@ using RailReader.Core.Models;
 
 namespace RailReader.Core.Services;
 
-public static class ColorUtils
+internal static class ColorUtils
 {
     /// <summary>
     /// Parses a #RRGGBB or #AARRGGBB hex string to a ColorRGBA.
