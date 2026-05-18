@@ -32,6 +32,27 @@ dotnet test tests/RailReader.Core.Tests --filter "FullyQualifiedName~TestMethodN
 
 **Always use `-c Release`** — debug builds are significantly slower for the inference paths.
 
+```bash
+# Produce NuGet packages (output in dist/)
+dotnet pack RailReaderCore.slnx -c Release -o dist/
+```
+
+## NuGet Publishing
+
+All four projects produce NuGet packages sharing a single version set in `Directory.Build.props` (`VersionPrefix`). Package metadata (license, source link, deterministic builds) is centralized there.
+
+**Publishing workflow:** tag-triggered via `.github/workflows/build.yml` using NuGet Trusted Publishing (OIDC — no stored API keys).
+
+```bash
+# Bump version in Directory.Build.props, then:
+git tag v0.1.0
+git push origin main --tags
+```
+
+**One-time setup:** on nuget.org → Account → Trusted Publishing, add policy: owner=`sjvrensburg`, repo=`RailReaderCore`, workflow=`build.yml`, environment=`production`.
+
+Before publishing, test against the desktop app (`railreader2`) since public API changes will break it until matching updates land there.
+
 ## Architecture
 
 ```
@@ -70,6 +91,7 @@ UI-free, rendering-free, IO-free. Key files:
 - `Services/VlmService.cs` — OpenAI-compatible vision-API client. Currently the only non-system NuGet dep of `Core` (the `OpenAI` package).
 - `Services/AnnotationFileManager.cs` — reference-counted shared `AnnotationFile` instances per PDF path. Takes `IAnnotationStore` for IO.
 - `ILogger.cs` — logging abstraction (`ILogger`, `NullLogger`). The concrete `ConsoleLogger` lives in `Core.Pdfium` because it writes to disk.
+- `RailReaderLogging.cs` — static gateway for log injection. All libraries delegate to `RailReaderLogging.Logger`. Set once at startup; defaults to `NullLogger.Instance`.
 
 ### RailReader.Core.Pdfium (desktop PDFium + filesystem impls)
 
@@ -102,9 +124,9 @@ Everything that touches the local filesystem or the PDFium native binary. Move t
 
 ### Cross-Project Internals
 
-Each project's `.csproj` declares `InternalsVisibleTo` for the projects that need to access its internals (mostly for `internal static ILogger Logger { get; set; }` properties that the entry-point sets at startup). When wiring a new consumer of these libraries:
+Each project's `.csproj` declares `InternalsVisibleTo` for the projects that need to access its internals. When wiring a new consumer of these libraries:
 
-- Set `PdfTextService.Logger`, `PdfLinkService.Logger`, `PdfOutlineService.Logger`, `AnnotationService.Logger`, `AppConfig.Logger`, `CleanupService.Logger`, `LayoutAnalyzer.Logger`, `SkiaPdfService.Logger` at startup (or accept the `NullLogger` default).
+- Set `RailReaderLogging.Logger` once at startup (or accept the `NullLogger` default).
 
 ## Key Concepts
 
