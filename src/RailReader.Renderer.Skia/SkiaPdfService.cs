@@ -11,7 +11,6 @@ namespace RailReader.Renderer.Skia;
 /// </summary>
 public sealed class SkiaPdfService : IPdfService
 {
-    private static ILogger Logger => RailReaderLogging.Logger;
 
     public byte[] PdfBytes { get; }
     public int PageCount { get; }
@@ -26,7 +25,7 @@ public sealed class SkiaPdfService : IPdfService
             Outline = new PdfOutlineService().Extract(PdfBytes);
         }
         if (Outline.Count > 0)
-            Logger.Debug($"[PDF] Extracted {Outline.Count} outline entries");
+            RailReaderLogging.Logger.Debug($"[PDF] Extracted {Outline.Count} outline entries");
     }
 
     public (double Width, double Height) GetPageSize(int pageIndex)

@@ -11,7 +11,6 @@ namespace RailReader.Core.Services;
 /// </summary>
 public sealed class PdfOutlineService : IPdfOutlineService
 {
-    private static ILogger Logger => RailReaderLogging.Logger;
 
     public List<OutlineEntry> Extract(byte[] pdfBytes)
     {
@@ -33,7 +32,7 @@ public sealed class PdfOutlineService : IPdfOutlineService
         }
         catch (Exception ex)
         {
-            Logger.Error("[Outline] Failed to extract", ex);
+            RailReaderLogging.Logger.Error("[Outline] Failed to extract", ex);
         }
         finally
         {

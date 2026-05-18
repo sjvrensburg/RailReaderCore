@@ -4,7 +4,6 @@ namespace RailReader.Core.Services;
 
 public static class CleanupService
 {
-    private static ILogger Logger => RailReaderLogging.Logger;
 
     public static (int FilesRemoved, long BytesFreed) RunCleanup()
     {
@@ -30,7 +29,7 @@ public static class CleanupService
         bytesFreed += orphanBytes;
 
         if (filesRemoved > 0)
-            Logger.Debug($"Cleanup: removed {filesRemoved} files, freed {bytesFreed} bytes");
+            RailReaderLogging.Logger.Debug($"Cleanup: removed {filesRemoved} files, freed {bytesFreed} bytes");
 
         return (filesRemoved, bytesFreed);
     }
@@ -69,10 +68,10 @@ public static class CleanupService
                         filesRemoved++;
                     }
                 }
-                catch (Exception ex) { Logger.Debug($"[Cleanup] Skip: {ex.Message}"); }
+                catch (Exception ex) { RailReaderLogging.Logger.Debug($"[Cleanup] Skip: {ex.Message}"); }
             }
         }
-        catch (Exception ex) { Logger.Debug($"[Cleanup] Skip: {ex.Message}"); }
+        catch (Exception ex) { RailReaderLogging.Logger.Debug($"[Cleanup] Skip: {ex.Message}"); }
     }
 
     private static void RemoveMatchingFiles(
@@ -94,9 +93,9 @@ public static class CleanupService
                     info.Delete();
                     filesRemoved++;
                 }
-                catch (Exception ex) { Logger.Debug($"[Cleanup] Skip: {ex.Message}"); }
+                catch (Exception ex) { RailReaderLogging.Logger.Debug($"[Cleanup] Skip: {ex.Message}"); }
             }
         }
-        catch (Exception ex) { Logger.Debug($"[Cleanup] Skip: {ex.Message}"); }
+        catch (Exception ex) { RailReaderLogging.Logger.Debug($"[Cleanup] Skip: {ex.Message}"); }
     }
 }

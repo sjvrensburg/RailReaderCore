@@ -8,7 +8,6 @@ namespace RailReader.Core.Services;
 
 public sealed class LayoutAnalyzer : ILayoutAnalyzer
 {
-    private static ILogger Logger => RailReaderLogging.Logger;
 
     private readonly InferenceSession _session;
 #if DEBUG
@@ -63,8 +62,8 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
         opts.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
         _session = new InferenceSession(modelPath, opts);
 
-        Logger.Debug($"[ONNX] Input names: {string.Join(", ", _session.InputNames)}");
-        Logger.Debug($"[ONNX] Output names: {string.Join(", ", _session.OutputNames)}");
+        RailReaderLogging.Logger.Debug($"[ONNX] Input names: {string.Join(", ", _session.InputNames)}");
+        RailReaderLogging.Logger.Debug($"[ONNX] Output names: {string.Join(", ", _session.OutputNames)}");
     }
 
     public PageAnalysis RunAnalysis(byte[] rgbBytes, int pxW, int pxH, double pageW, double pageH,
@@ -135,11 +134,11 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
 #if DEBUG
             if (!_loggedOutputShapes)
             {
-                Logger.Debug($"[ONNX] Output '{r.Name}': dims=[{string.Join(",", t.Dimensions.ToArray())}]");
+                RailReaderLogging.Logger.Debug($"[ONNX] Output '{r.Name}': dims=[{string.Join(",", t.Dimensions.ToArray())}]");
                 // Reuse detectionData if already copied, otherwise take a snapshot for preview
                 var flat = isDetection ? detectionData! : t.ToArray();
                 var preview = string.Join(", ", flat.Take(Math.Min(14, flat.Length)).Select(v => v.ToString("F2")));
-                Logger.Debug($"[ONNX]   First values: [{preview}]");
+                RailReaderLogging.Logger.Debug($"[ONNX]   First values: [{preview}]");
             }
 #endif
         }

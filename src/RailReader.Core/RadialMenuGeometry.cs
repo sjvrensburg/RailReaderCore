@@ -5,7 +5,7 @@ namespace RailReader.Core;
 /// so the wedge/ring hit-test math can be unit-tested without spinning up an
 /// Avalonia visual tree.
 /// </summary>
-internal static class RadialMenuGeometry
+public static class RadialMenuGeometry
 {
     /// <summary>
     /// Given a point (dx, dy) relative to the menu centre and a segment count,

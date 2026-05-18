@@ -11,7 +11,6 @@ namespace RailReader.Core.Services;
 /// </summary>
 public sealed class PdfTextService : IPdfTextService
 {
-    private static ILogger Logger => RailReaderLogging.Logger;
 
     private static readonly PageText s_empty = new("", []);
 
@@ -138,7 +137,7 @@ public sealed class PdfTextService : IPdfTextService
         }
         catch (Exception ex)
         {
-            Logger.Error($"[PdfText] Failed to {operationName} for page {pageIndex}", ex);
+            RailReaderLogging.Logger.Error($"[PdfText] Failed to {operationName} for page {pageIndex}", ex);
             return defaultValue;
         }
         finally

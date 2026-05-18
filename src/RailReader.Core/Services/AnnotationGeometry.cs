@@ -6,7 +6,7 @@ namespace RailReader.Core.Services;
 /// Pure-geometry annotation operations (hit testing, bounds computation).
 /// No rendering-library dependency — used by AnnotationInteractionHandler in Core.
 /// </summary>
-internal static class AnnotationGeometry
+public static class AnnotationGeometry
 {
     public const float NoteIconSize = 16f;
 

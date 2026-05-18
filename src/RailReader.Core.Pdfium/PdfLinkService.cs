@@ -10,7 +10,6 @@ namespace RailReader.Core.Services;
 /// </summary>
 public sealed class PdfLinkService : IPdfLinkService
 {
-    private static ILogger Logger => RailReaderLogging.Logger;
 
     private static readonly List<PdfLink> s_empty = [];
 
@@ -52,7 +51,7 @@ public sealed class PdfLinkService : IPdfLinkService
         }
         catch (Exception ex)
         {
-            Logger.Error($"[PdfLink] Failed to extract links for page {pageIndex}", ex);
+            RailReaderLogging.Logger.Error($"[PdfLink] Failed to extract links for page {pageIndex}", ex);
             return s_empty;
         }
         finally

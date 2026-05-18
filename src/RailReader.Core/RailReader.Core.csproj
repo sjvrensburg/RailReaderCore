@@ -17,6 +17,10 @@
     <InternalsVisibleTo Include="RailReader.Core.Pdfium" />
     <InternalsVisibleTo Include="RailReader.Core.Analysis" />
     <InternalsVisibleTo Include="RailReader.Renderer.Skia" />
+    <InternalsVisibleTo Include="RailReader2" />
+    <InternalsVisibleTo Include="RailReader2.Cli" />
+    <InternalsVisibleTo Include="RailReader.Export" />
+    <InternalsVisibleTo Include="RailReader.Export.Tests" />
   </ItemGroup>
 
   <ItemGroup>

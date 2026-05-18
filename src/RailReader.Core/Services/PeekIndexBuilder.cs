@@ -6,9 +6,9 @@ namespace RailReader.Core.Services;
 /// Scans the analysis cache and builds an index of all detected
 /// figures, tables, and equations, sorted by page then reading order.
 /// </summary>
-internal static class PeekIndexBuilder
+public static class PeekIndexBuilder
 {
-    internal static readonly HashSet<int> EquationClasses = [LayoutConstants.ClassDisplayFormula];
+    public static readonly HashSet<int> EquationClasses = [LayoutConstants.ClassDisplayFormula];
 
     public static PeekIndex Build(IReadOnlyDictionary<int, PageAnalysis> cache, int pageCount)
     {

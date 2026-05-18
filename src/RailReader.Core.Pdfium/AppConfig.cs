@@ -7,7 +7,6 @@ namespace RailReader.Core.Services;
 
 public sealed class AppConfig : IRecentFilesStore
 {
-    private static ILogger Logger => RailReaderLogging.Logger;
 
     /// <summary>
     /// Schema version. Increment when introducing a field change that needs
@@ -153,7 +152,7 @@ public sealed class AppConfig : IRecentFilesStore
         }
         catch (Exception ex)
         {
-            Logger.Error("Failed to load config", ex);
+            RailReaderLogging.Logger.Error("Failed to load config", ex);
         }
 
         var config = new AppConfig();
@@ -228,7 +227,7 @@ public sealed class AppConfig : IRecentFilesStore
         }
         catch (Exception ex)
         {
-            Logger.Error("Failed to save config", ex);
+            RailReaderLogging.Logger.Error("Failed to save config", ex);
         }
     }
 }

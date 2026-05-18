@@ -20,7 +20,6 @@ public sealed class AnnotationService : IAnnotationStore
     /// </summary>
     public static readonly AnnotationService Default = new();
 
-    private static ILogger Logger => RailReaderLogging.Logger;
 
     private static string? _annotationDir;
 
@@ -71,7 +70,7 @@ public sealed class AnnotationService : IAnnotationStore
                 annotations.SourcePdfPath = Path.GetFullPath(pdfPath);
                 // Migrate to internal storage
                 SaveToFile(GetInternalPath(pdfPath), annotations);
-                Logger.Debug($"[Annotations] Migrated sidecar to internal storage: {Path.GetFileName(pdfPath)}");
+                RailReaderLogging.Logger.Debug($"[Annotations] Migrated sidecar to internal storage: {Path.GetFileName(pdfPath)}");
             }
             return annotations;
         }
@@ -137,7 +136,7 @@ public sealed class AnnotationService : IAnnotationStore
         var path = GetInternalPath(pdfPath);
         if (!File.Exists(path)) return false;
         try { File.Delete(path); return true; }
-        catch (Exception ex) { Logger.Debug($"[Annotations] Failed to delete {path}: {ex.Message}"); return false; }
+        catch (Exception ex) { RailReaderLogging.Logger.Debug($"[Annotations] Failed to delete {path}: {ex.Message}"); return false; }
     }
 
     /// <summary>List all internally stored annotation files with metadata.</summary>
@@ -161,7 +160,7 @@ public sealed class AnnotationService : IAnnotationStore
                     af.Pages.Values.Sum(p => p.Count), af.Bookmarks.Count,
                     !string.IsNullOrEmpty(af.SourcePdfPath) && File.Exists(af.SourcePdfPath)));
             }
-            catch (Exception ex) { Logger.Debug($"[Annotations] Skip corrupt file {file}: {ex.Message}"); }
+            catch (Exception ex) { RailReaderLogging.Logger.Debug($"[Annotations] Skip corrupt file {file}: {ex.Message}"); }
         }
         return result;
     }
@@ -183,7 +182,7 @@ public sealed class AnnotationService : IAnnotationStore
                 File.Delete(info.InternalPath);
                 removed++;
             }
-            catch (Exception ex) { Logger.Debug($"[Annotations] Failed to clean orphan: {ex.Message}"); }
+            catch (Exception ex) { RailReaderLogging.Logger.Debug($"[Annotations] Failed to clean orphan: {ex.Message}"); }
         }
 
         return (removed, bytesFreed);
@@ -198,7 +197,7 @@ public sealed class AnnotationService : IAnnotationStore
         }
         catch (Exception ex)
         {
-            Logger.Error($"[Annotations] Failed to load {path}", ex);
+            RailReaderLogging.Logger.Error($"[Annotations] Failed to load {path}", ex);
             return null;
         }
     }
@@ -213,7 +212,7 @@ public sealed class AnnotationService : IAnnotationStore
         }
         catch (Exception ex)
         {
-            Logger.Error($"[Annotations] Failed to save {path}", ex);
+            RailReaderLogging.Logger.Error($"[Annotations] Failed to save {path}", ex);
             return false;
         }
     }

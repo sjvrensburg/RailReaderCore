@@ -7,7 +7,7 @@ namespace RailReader.Core;
 /// Walks the tree top-down, picking at each level the entry with the largest
 /// Page value not exceeding currentPage, then descending into its children.
 /// </summary>
-internal static class OutlineBreadcrumb
+public static class OutlineBreadcrumb
 {
     /// <summary>
     /// Returns the breadcrumb path (root → leaf) for the given page. Empty if

@@ -33,17 +33,17 @@ public static class OverlayRenderer
     [ThreadStatic] private static SKPaint? s_highlightPaint;
     [ThreadStatic] private static SKPaint? s_activePaint;
 
-    internal static SKPaint GetDimPaint() => s_dimPaint ??= new SKPaint();
-    internal static SKPaint GetRevealPaint() => s_revealPaint ??= new SKPaint();
-    internal static SKPaint GetOutlinePaint() => s_outlinePaint ??= new SKPaint { Style = SKPaintStyle.Stroke, IsAntialias = true };
-    internal static SKPaint GetLinePaint() => s_linePaint ??= new SKPaint();
-    internal static SKPaint GetDebugFillPaint() => s_debugFillPaint ??= new SKPaint();
-    internal static SKPaint GetDebugStrokePaint() => s_debugStrokePaint ??= new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
-    internal static SKPaint GetDebugBgPaint() => s_debugBgPaint ??= new SKPaint { Color = new SKColor(0, 0, 0, 200) };
-    internal static SKPaint GetDebugTextPaint() => s_debugTextPaint ??= new SKPaint { IsAntialias = true };
-    internal static SKFont GetDebugFont() => s_debugFont ??= new SKFont(SKTypeface.Default, 8);
-    internal static SKPaint GetHighlightPaint() => s_highlightPaint ??= new SKPaint { Color = new SKColor(255, 255, 0, 100), IsAntialias = true };
-    internal static SKPaint GetActivePaint() => s_activePaint ??= new SKPaint { Color = new SKColor(255, 165, 0, 160), IsAntialias = true };
+    public static SKPaint GetDimPaint() => s_dimPaint ??= new SKPaint();
+    public static SKPaint GetRevealPaint() => s_revealPaint ??= new SKPaint();
+    public static SKPaint GetOutlinePaint() => s_outlinePaint ??= new SKPaint { Style = SKPaintStyle.Stroke, IsAntialias = true };
+    public static SKPaint GetLinePaint() => s_linePaint ??= new SKPaint();
+    public static SKPaint GetDebugFillPaint() => s_debugFillPaint ??= new SKPaint();
+    public static SKPaint GetDebugStrokePaint() => s_debugStrokePaint ??= new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
+    public static SKPaint GetDebugBgPaint() => s_debugBgPaint ??= new SKPaint { Color = new SKColor(0, 0, 0, 200) };
+    public static SKPaint GetDebugTextPaint() => s_debugTextPaint ??= new SKPaint { IsAntialias = true };
+    public static SKFont GetDebugFont() => s_debugFont ??= new SKFont(SKTypeface.Default, 8);
+    public static SKPaint GetHighlightPaint() => s_highlightPaint ??= new SKPaint { Color = new SKColor(255, 255, 0, 100), IsAntialias = true };
+    public static SKPaint GetActivePaint() => s_activePaint ??= new SKPaint { Color = new SKColor(255, 165, 0, 160), IsAntialias = true };
 
     /// <summary>
     /// Draws rail mode overlays: page dim, block reveal, block outline, and line highlight.
