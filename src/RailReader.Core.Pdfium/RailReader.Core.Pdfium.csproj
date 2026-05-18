@@ -9,6 +9,7 @@
     <IsPackable>true</IsPackable>
     <PackageId>RailReader.Core.Pdfium</PackageId>
     <Description>Desktop PDFium implementations of Core interfaces plus filesystem-backed AppConfig, AnnotationService, ConsoleLogger, and LayoutModelLocator.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -18,6 +19,10 @@
 
   <ItemGroup>
     <ProjectReference Include="../RailReader.Core/RailReader.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>

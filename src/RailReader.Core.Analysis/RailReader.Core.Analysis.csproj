@@ -9,6 +9,7 @@
     <IsPackable>true</IsPackable>
     <PackageId>RailReader.Core.Analysis</PackageId>
     <Description>ONNX-backed ILayoutAnalyzer implementation using PP-DocLayoutV3 for document layout detection.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,6 +22,10 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>

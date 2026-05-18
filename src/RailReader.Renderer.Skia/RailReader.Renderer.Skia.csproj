@@ -11,6 +11,7 @@
     <IsPackable>true</IsPackable>
     <PackageId>RailReader.Renderer.Skia</PackageId>
     <Description>SkiaSharp rasterisation and IPdfServiceFactory implementation for desktop PDF rendering via PDFium.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -28,6 +29,10 @@
     <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="3.119.*" />
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="3.119.*" />
     <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="3.119.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>
