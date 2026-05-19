@@ -215,10 +215,15 @@ internal static class LineDetector
     internal static List<(int Start, int Height)> FindLineRuns(float[] densities)
     {
         // Primary pass: density-fraction threshold — works well for dense text
-        var nonZero = densities.Where(v => v > 0.005f).ToArray();
-        float threshold = nonZero.Length == 0
+        float nonZeroSum = 0;
+        int nonZeroCount = 0;
+        foreach (var v in densities)
+        {
+            if (v > 0.005f) { nonZeroSum += v; nonZeroCount++; }
+        }
+        float threshold = nonZeroCount == 0
             ? 0.005f
-            : Math.Max(nonZero.Average() * LayoutConstants.DensityThresholdFraction, 0.005f);
+            : Math.Max(nonZeroSum / nonZeroCount * LayoutConstants.DensityThresholdFraction, 0.005f);
 
         var runs = FindRunsAboveThreshold(densities, threshold);
 
