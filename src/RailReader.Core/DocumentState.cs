@@ -256,6 +256,8 @@ public sealed class DocumentState : IDisposable
 
         Task.Run(() =>
         {
+            PrefetchedPageData? prepared = null;
+            Exception? error = null;
             try
             {
                 ct.ThrowIfCancellationRequested();
@@ -263,33 +265,27 @@ public sealed class DocumentState : IDisposable
                 var (w, h) = _pdf.GetPageSize(pageIndex);
                 var page = _pdf.RenderPage(pageIndex, dpi);
                 var minimap = _pdf.RenderThumbnail(pageIndex);
-
-                _marshaller.Post(() =>
-                {
-                    if (IsDisposed)
-                    {
-                        page.Dispose();
-                        minimap.Dispose();
-                        _prefetchPending = false;
-                        return;
-                    }
-
-                    _prefetched?.Dispose();
-                    _prefetched = new(pageIndex, dpi, page, minimap, w, h);
-                    _prefetchPending = false;
-                });
+                prepared = new(pageIndex, dpi, page, minimap, w, h);
             }
             catch (OperationCanceledException) { }
-            catch (Exception ex)
+            catch (Exception ex) { error = ex; }
+
+            _marshaller.Post(() =>
             {
-                _logger.Error($"Failed to prefetch page {pageIndex + 1}: {ex.Message}", ex);
-                try { _marshaller.Post(() => _prefetchPending = false); }
-                catch (Exception postEx)
+                try
                 {
-                    _logger.Warn($"Marshaller post failed resetting prefetch flag: {postEx.Message}");
-                    _prefetchPending = false;
+                    if (error is not null)
+                        _logger.Error($"Failed to prefetch page {pageIndex + 1}: {error.Message}", error);
+                    if (IsDisposed || prepared is null)
+                    {
+                        prepared?.Dispose();
+                        return;
+                    }
+                    _prefetched?.Dispose();
+                    _prefetched = prepared;
                 }
-            }
+                finally { _prefetchPending = false; }
+            });
         }, ct);
     }
 
@@ -343,17 +339,26 @@ public sealed class DocumentState : IDisposable
             var ct = _cts.Token;
             Task.Run(() =>
             {
+                IRenderedPage? newPage = null;
+                Exception? error = null;
                 try
                 {
                     ct.ThrowIfCancellationRequested();
                     _logger.Debug($"[PDFium] dpi-rerender pg {page} @ {neededDpi}dpi tid={Environment.CurrentManagedThreadId} file={Path.GetFileName(FilePath)}");
-                    var newPage = _pdf.RenderPage(page, neededDpi);
-                    _marshaller.Post(() =>
+                    newPage = _pdf.RenderPage(page, neededDpi);
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex) { error = ex; }
+
+                _marshaller.Post(() =>
+                {
+                    try
                     {
-                        if (IsDisposed || CurrentPage != page)
+                        if (error is not null)
+                            _logger.Error($"Failed to re-render page at {neededDpi} DPI: {error.Message}", error);
+                        if (IsDisposed || CurrentPage != page || newPage is null)
                         {
-                            newPage.Dispose();
-                            _dpiRenderPending = false;
+                            newPage?.Dispose();
                             return;
                         }
                         var oldPage = CachedPage;
@@ -362,20 +367,9 @@ public sealed class DocumentState : IDisposable
                         DpiRenderReady = true;
                         oldPage?.Dispose();
                         OnDpiRenderComplete?.Invoke();
-                        _dpiRenderPending = false;
-                    });
-                }
-                catch (OperationCanceledException) { }
-                catch (Exception ex)
-                {
-                    _logger.Error($"Failed to re-render page at {neededDpi} DPI: {ex.Message}", ex);
-                    try { _marshaller.Post(() => _dpiRenderPending = false); }
-                    catch (Exception postEx)
-                    {
-                        _logger.Warn($"Marshaller post failed resetting DPI render flag: {postEx.Message}");
-                        _dpiRenderPending = false;
                     }
-                }
+                    finally { _dpiRenderPending = false; }
+                });
             }, ct);
             return true;
         }
