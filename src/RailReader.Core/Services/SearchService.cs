@@ -171,14 +171,11 @@ public sealed class SearchService
         int end = Math.Min(text.Length, match.CharStart + match.CharLength + contextChars);
         int matchEnd = Math.Min(match.CharStart + match.CharLength, text.Length);
 
-        string pre = (start > 0 ? "\u2026" : "") + text[start..match.CharStart];
-        string matchStr = text[match.CharStart..matchEnd];
-        string post = text[matchEnd..end] + (end < text.Length ? "\u2026" : "");
+        static string Flatten(string s) => s.Replace('\n', ' ').Replace('\r', ' ');
 
-        // Clean up whitespace for display
-        pre = pre.Replace('\n', ' ').Replace('\r', ' ');
-        matchStr = matchStr.Replace('\n', ' ').Replace('\r', ' ');
-        post = post.Replace('\n', ' ').Replace('\r', ' ');
+        string pre = Flatten((start > 0 ? "\u2026" : "") + text[start..match.CharStart]);
+        string matchStr = Flatten(text[match.CharStart..matchEnd]);
+        string post = Flatten(text[matchEnd..end] + (end < text.Length ? "\u2026" : ""));
 
         return (pre, matchStr, post);
     }
