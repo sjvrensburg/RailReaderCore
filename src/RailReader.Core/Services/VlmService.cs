@@ -6,10 +6,6 @@ using RailReader.Core.Models;
 
 namespace RailReader.Core.Services;
 
-/// <summary>
-/// Sends block crops to an OpenAI-compatible vision API and returns
-/// LaTeX, Markdown, or a description depending on the block type.
-/// </summary>
 /// <summary>Minimal config needed to call a VLM endpoint.</summary>
 public record VlmEndpointConfig(string? Endpoint, string? Model, string? ApiKey)
 {
@@ -17,6 +13,10 @@ public record VlmEndpointConfig(string? Endpoint, string? Model, string? ApiKey)
         new(settings.VlmEndpoint, settings.VlmModel, settings.VlmApiKey);
 }
 
+/// <summary>
+/// Sends block crops to an OpenAI-compatible vision API and returns
+/// LaTeX, Markdown, or a description depending on the block type.
+/// </summary>
 public static class VlmService
 {
     public enum BlockAction { LaTeX, Markdown, Description }
