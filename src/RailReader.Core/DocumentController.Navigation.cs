@@ -263,7 +263,6 @@ public sealed partial class DocumentController
                 PushHistory();
                 GoToPage(pageDest.PageIndex);
                 ScrollToDestination(pageDest);
-                return (true, link.Destination);
             }
             return (true, link.Destination);
         }

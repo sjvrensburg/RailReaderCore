@@ -25,60 +25,60 @@ public static class AnnotationExportService
         var pdfBytes = pdf.PdfBytes;
         lock (PdfiumGate.Lock)
         {
-        var pinnedSrc = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
-        try
-        {
-            var srcDoc = FPDF_LoadMemDocument(pinnedSrc.AddrOfPinnedObject(), pdfBytes.Length, null);
-            if (srcDoc == IntPtr.Zero)
-                throw new InvalidOperationException("Failed to load source PDF via PDFium");
-
-            var destDoc = FPDF_CreateNewDocument();
-            if (destDoc == IntPtr.Zero)
-            {
-                FPDF_CloseDocument(srcDoc);
-                throw new InvalidOperationException("Failed to create new PDF document");
-            }
-
+            var pinnedSrc = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
             try
             {
-                if (!FPDF_ImportPages(destDoc, srcDoc, null, 0))
-                    throw new InvalidOperationException("Failed to import pages from source PDF");
+                var srcDoc = FPDF_LoadMemDocument(pinnedSrc.AddrOfPinnedObject(), pdfBytes.Length, null);
+                if (srcDoc == IntPtr.Zero)
+                    throw new InvalidOperationException("Failed to load source PDF via PDFium");
 
-                for (int pageIdx = 0; pageIdx < pdf.PageCount; pageIdx++)
+                var destDoc = FPDF_CreateNewDocument();
+                if (destDoc == IntPtr.Zero)
                 {
-                    onProgress?.Invoke(pageIdx, pdf.PageCount);
-
-                    if (!annotations.Pages.TryGetValue(pageIdx, out var pageAnns) || pageAnns.Count == 0)
-                        continue;
-
-                    var page = FPDF_LoadPage(destDoc, pageIdx);
-                    if (page == IntPtr.Zero) continue;
-
-                    try
-                    {
-                        var (cropLeft, cropBottom, visibleHeight) = GetCropBoxTransform(page);
-
-                        foreach (var ann in pageAnns)
-                            WriteAnnotation(page, ann, cropLeft, cropBottom, visibleHeight);
-                    }
-                    finally
-                    {
-                        FPDF_ClosePage(page);
-                    }
+                    FPDF_CloseDocument(srcDoc);
+                    throw new InvalidOperationException("Failed to create new PDF document");
                 }
 
-                SaveDocument(destDoc, outputPath);
+                try
+                {
+                    if (!FPDF_ImportPages(destDoc, srcDoc, null, 0))
+                        throw new InvalidOperationException("Failed to import pages from source PDF");
+
+                    for (int pageIdx = 0; pageIdx < pdf.PageCount; pageIdx++)
+                    {
+                        onProgress?.Invoke(pageIdx, pdf.PageCount);
+
+                        if (!annotations.Pages.TryGetValue(pageIdx, out var pageAnns) || pageAnns.Count == 0)
+                            continue;
+
+                        var page = FPDF_LoadPage(destDoc, pageIdx);
+                        if (page == IntPtr.Zero) continue;
+
+                        try
+                        {
+                            var (cropLeft, cropBottom, visibleHeight) = GetCropBoxTransform(page);
+
+                            foreach (var ann in pageAnns)
+                                WriteAnnotation(page, ann, cropLeft, cropBottom, visibleHeight);
+                        }
+                        finally
+                        {
+                            FPDF_ClosePage(page);
+                        }
+                    }
+
+                    SaveDocument(destDoc, outputPath);
+                }
+                finally
+                {
+                    FPDF_CloseDocument(destDoc);
+                    FPDF_CloseDocument(srcDoc);
+                }
             }
             finally
             {
-                FPDF_CloseDocument(destDoc);
-                FPDF_CloseDocument(srcDoc);
+                pinnedSrc.Free();
             }
-        }
-        finally
-        {
-            pinnedSrc.Free();
-        }
         }
     }
 
