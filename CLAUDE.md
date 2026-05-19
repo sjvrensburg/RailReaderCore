@@ -41,17 +41,21 @@ dotnet pack RailReaderCore.slnx -c Release -o dist/
 
 All four projects produce NuGet packages sharing a single version set in `Directory.Build.props` (`VersionPrefix`). Package metadata (license, source link, deterministic builds) is centralized there.
 
-**Publishing workflow:** tag-triggered via `.github/workflows/build.yml` using NuGet Trusted Publishing (OIDC — no stored API keys).
+**Publishing workflow:** tag-triggered via `.github/workflows/build.yml` using NuGet Trusted Publishing (OIDC — no stored API keys). Pushing any `v*` tag publishes real packages to nuget.org.
 
 ```bash
-# Bump version in Directory.Build.props, then:
-git tag v0.1.0
+# 1. Bump VersionPrefix in Directory.Build.props
+# 2. Add a section to CHANGELOG.md describing the changes
+# 3. Commit, then:
+git tag vX.Y.Z
 git push origin main --tags
 ```
 
 **One-time setup:** on nuget.org → Account → Trusted Publishing, add policy: owner=`sjvrensburg`, repo=`RailReaderCore`, workflow=`build.yml`, environment=`production`.
 
 Before publishing, test against the desktop app (`railreader2`) since public API changes will break it until matching updates land there.
+
+> ⚠ **Release actions require explicit user instruction.** Do not open PRs, merge, tag, or push tags on your own initiative — a tag push triggers a live NuGet publish. `CHANGELOG.md` is the source of truth for breaking changes and public-API promotions; consult it when reasoning about compatibility.
 
 ## Architecture
 
@@ -77,56 +81,31 @@ The deliberate split: `Core` is the only project a non-desktop consumer (Lite / 
 
 ### RailReader.Core (the portable layer)
 
-UI-free, rendering-free, IO-free. Key files:
+UI-free, rendering-free, IO-free. Holds the orchestration surface (`DocumentController`, `DocumentState`), the data models, and the platform-boundary interfaces in `Services/I*.cs` (`IPdfService`, `IPdfTextService`, `IPdfLinkService`, `IPdfOutlineService`, `IPdfServiceFactory`, `IAnnotationStore`, `IRecentFilesStore`, `ILayoutAnalyzer`, `IMarkdownExportService`). The only non-system NuGet dep is `OpenAI`, used by `Services/VlmService.cs`. Logging is injected once via `RailReaderLogging.Logger`; defaults to `NullLogger.Instance`.
 
-- `DocumentController.cs` — headless controller facade (orchestration, animation tick loop, viewport). Takes `CoreSettings`, `IRecentFilesStore`, `IAnnotationStore`, `IPdfServiceFactory`. Delegates zoom animation to `ZoomAnimationController.cs`, auto-scroll to `AutoScrollController.cs`, annotation interaction to `AnnotationInteractionHandler.cs`, search to `Services/SearchService.cs`.
-- `DocumentState.cs` — per-document state (PDF via `IPdfService`, camera, rail nav, analysis cache, annotations, bookmarks). Takes `CoreSettings`.
-- `Models/CoreSettings.cs` — **immutable record** of runtime tuning values consumed by Core. The platform builds it from its own config persistence (e.g. `AppConfig.ToCoreSettings()`). When settings change, the platform constructs a new `CoreSettings` and pushes it via `controller.OnConfigChanged(newSettings)`.
-- `Models/` — data models (`Annotations`, `BookmarkEntry`, `Camera`, `LayoutBlock`, `LineInfo`, `RectF`, `ColorRGBA`, `PdfLink`, `OutlineEntry`, `PageAnalysis`, `PageText`, `SearchMatch`, etc.).
-- `Services/I*.cs` — every platform boundary: `IPdfService` (rasterisation), `IPdfTextService`, `IPdfLinkService`, `IPdfOutlineService`, `IPdfServiceFactory`, `IAnnotationStore`, `IRecentFilesStore`, `ILayoutAnalyzer`, `IMarkdownExportService`.
-- `Services/RailNav.cs` (+ `.AutoScroll.cs` + `.Snap.cs`) — rail-mode state machine: snap, scroll, clamp, auto-scroll, jump mode.
-- `Services/LineDetector.cs` — three-strategy line detection: atomic-class collapse for figures/tables/images → PDFium char-box clustering → pixel-projection fallback. Stepwise equations like `γ₁ = Cov(…)` keep per-line structure because `display_formula` is deliberately not atomic.
-- `Services/AnalysisWorker.cs` — background inference thread (`Channel<T>` queue). Takes a `Func<ILayoutAnalyzer>` factory; the platform supplies the concrete analyzer.
-- `Services/SearchService.cs` — full-text search with regex/case sensitivity, result grouping by page.
-- `Services/VlmService.cs` — OpenAI-compatible vision-API client. Currently the only non-system NuGet dep of `Core` (the `OpenAI` package).
-- `Services/AnnotationFileManager.cs` — reference-counted shared `AnnotationFile` instances per PDF path. Takes `IAnnotationStore` for IO.
-- `ILogger.cs` — logging abstraction (`ILogger`, `NullLogger`). The concrete `ConsoleLogger` lives in `Core.Pdfium` because it writes to disk.
-- `RailReaderLogging.cs` — static gateway for log injection. All libraries delegate to `RailReaderLogging.Logger`. Set once at startup; defaults to `NullLogger.Instance`.
+Settings flow through `CoreSettings` (an immutable record): the platform builds one from its own mutable config and pushes updates via `controller.OnConfigChanged(newSettings)`. Core never sees a mutable settings type and never writes anything.
 
 ### RailReader.Core.Pdfium (desktop PDFium + filesystem impls)
 
-Everything that touches the local filesystem or the PDFium native binary. Move this aside for web/mobile consumers and swap in alternative implementations of the same interfaces.
+Everything that touches the local filesystem or the PDFium native binary lives here, behind the `Core` interfaces. Swap this project aside to retarget Core to a different runtime (web/mobile).
 
-- `PdfTextService.cs` / `PdfLinkService.cs` / `PdfOutlineService.cs` — PDFium P/Invoke implementations of the Core interfaces.
-- `PdfiumNative.cs` / `PdfiumGate.cs` / `PdfiumResolver.cs` — P/Invoke decls, serialization lock, native-library resolver. Every PDFium call must happen inside `lock (PdfiumGate.Lock)`.
-- `AppConfig.cs` — file-backed mutable config (`~/.config/railreader2/config.json`), implements `IRecentFilesStore`, exposes `ToCoreSettings()`. Has its own mutation+save surface for UI binding; Core only ever sees the immutable `CoreSettings` snapshot.
-- `AnnotationService.cs` — file IO for annotations, implements `IAnnotationStore`. Also retains static helpers (`MergeInto`, `ExportJson`, `ImportJson`, path utilities) that are stateless / pure.
-- `CleanupService.cs` — removes stale logs, cache files, orphaned annotation files.
-- `ConsoleLogger.cs` — file-backed `ILogger` writing to `session.log` under `AppConfig.ConfigDir`.
-- `LayoutModelLocator.cs` — probes well-known disk paths for `PP-DocLayoutV3.onnx`.
-- `RailReaderJsonContext.cs` — source-generated `JsonSerializerContext` for `AppConfig` + `AnnotationFile` (the only types Core.Pdfium serializes).
+**Invariant:** every PDFium call must happen inside `lock (PdfiumGate.Lock)`. The P/Invoke surface (`PdfiumNative` / `PdfiumGate` / `PdfiumResolver`) enforces serialization across threads — there is no other way to get safe concurrent rendering.
+
+`AppConfig` is the file-backed mutable config (`~/.config/railreader2/config.json`) and exposes `ToCoreSettings()` to bridge into Core. `RailReaderJsonContext` is the source-generated `JsonSerializerContext` for the only two types Core.Pdfium serialises (`AppConfig`, `AnnotationFile`).
 
 ### RailReader.Core.Analysis (ONNX-backed inference)
 
-- `LayoutAnalyzer.cs` — implements `ILayoutAnalyzer` via `Microsoft.ML.OnnxRuntime` + PP-DocLayoutV3. Letterboxes the rasterized page to 800×800 → CHW float tensor → ONNX → `[N,7]` detections `[classId, confidence, xmin, ymin, xmax, ymax, readingOrder]` → confidence filter → NMS → reading-order sort.
+Single class: `LayoutAnalyzer` implements `ILayoutAnalyzer` against PP-DocLayoutV3 via `Microsoft.ML.OnnxRuntime`. Pipeline: letterbox the rasterized page to 800×800 → CHW float tensor → ONNX → `[N,7]` detections `[classId, confidence, xmin, ymin, xmax, ymax, readingOrder]` → confidence filter → NMS → reading-order sort. Never touches PDFium.
 
 ### RailReader.Renderer.Skia (SkiaSharp rasterisation)
 
-- `SkiaPdfService.cs` / `SkiaPdfServiceFactory.cs` — PDFium-backed rasterisation. The factory hands out Core.Pdfium implementations of the text/link/outline interfaces.
-- `SkiaRenderedPage.cs` — `IRenderedPage` wrapping `SKBitmap`.
-- `AnnotationRenderer.cs` — Skia annotation drawing (highlight, freehand, text note, rectangle) with z-order sorting.
-- `OverlayRenderer.cs` — rail overlay drawing (dim, block outline, line highlight).
-- `ScreenshotCompositor.cs` — multi-layer composition to `SKBitmap`.
-- `ColourEffectShaders.cs` — SkSL shader compilation (HighContrast, HighVisibility, Amber, Invert).
-- `AnnotationExportService.cs` — annotation export to PDF via `SKDocument`.
-- `BlockCropRenderer.cs` — renders block regions as PNG at 300 DPI for VLM transcription.
-- `SkiaConversions.cs` — `ColorRGBA`↔`SKColor`, `RectF`↔`SKRect` helpers.
+The only project that imports both `Core` and `Core.Pdfium`. `SkiaPdfServiceFactory` is what desktop consumers wire into Core: it hands out a `SkiaPdfService` for rasterisation alongside the Core.Pdfium text/link/outline services. Also owns the Skia-side renderers (annotation, overlay, screenshot compositor, SkSL colour-effect shaders) and the 300-DPI block crop renderer used for VLM transcription.
 
-### Cross-Project Internals
-
-Each project's `.csproj` declares `InternalsVisibleTo` for the projects that need to access its internals. When wiring a new consumer of these libraries:
+### Wiring a consumer
 
 - Set `RailReaderLogging.Logger` once at startup (or accept the `NullLogger` default).
+- Construct `CoreSettings` from your config layer and pass it into `DocumentController`; on change, build a new `CoreSettings` and call `OnConfigChanged`.
+- Supply `IPdfServiceFactory`, `IAnnotationStore`, `IRecentFilesStore`. Desktop wires `SkiaPdfServiceFactory` + `AnnotationService` + `AppConfig`; a Lite/mobile consumer would substitute its own.
 
 ## Key Concepts
 
@@ -168,8 +147,6 @@ Activates above `CoreSettings.RailZoomThreshold` when analysis is available. Loc
 ## Testing
 
 Tests in `tests/RailReader.Core.Tests/` are xUnit. `TestFixtures.cs` generates synthetic PDFs at runtime via SkiaSharp's `SKDocument.CreatePdf` — that's why the test project references `Renderer.Skia` even though the tests themselves exercise Core, Core.Pdfium, and Core.Analysis surfaces.
-
-Test categories: `DocumentControllerTests`, `CameraTests`, `RailNavTests`, `SearchServiceTests`, `AnnotationTests`, `AnnotationFileManagerTests`, `AnnotationInteractionHandlerTests`, `LineDetectionTests`, `LineDetectorTests`, `AutoScrollControllerTests`, `ZoomAnimationControllerTests`, `MarginCroppingTests`, `PdfLinkTests`.
 
 ## Relationship to RailReader2 (the desktop app)
 
