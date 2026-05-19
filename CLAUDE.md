@@ -61,27 +61,31 @@ Before publishing, test against the desktop app (`railreader2`) since public API
 
 ```
 RailReaderCore.slnx
-├── src/RailReader.Core/          ← Portable abstractions: models, controllers, interfaces. No PDFium, no ONNX, no filesystem. (Future NuGet)
-├── src/RailReader.Core.Pdfium/   ← Desktop PDFium impls of IPdfTextService/IPdfLinkService/IPdfOutlineService + filesystem-backed AppConfig/AnnotationService/ConsoleLogger/LayoutModelLocator
-├── src/RailReader.Core.Analysis/ ← ONNX-backed ILayoutAnalyzer (PP-DocLayoutV3)
-├── src/RailReader.Renderer.Skia/ ← SkiaSharp rasterisation + IPdfServiceFactory (PDFium-backed)
-└── tests/RailReader.Core.Tests/  ← xUnit headless tests
+├── src/RailReader.Core/             ← Portable abstractions: models, controllers, interfaces. No PDFium, no ONNX, no filesystem, no non-system NuGet deps.
+├── src/RailReader.Core.Pdfium/      ← Desktop PDFium impls of IPdfTextService/IPdfLinkService/IPdfOutlineService + filesystem-backed AppConfig/AnnotationService/ConsoleLogger/LayoutModelLocator
+├── src/RailReader.Core.Analysis/    ← ONNX-backed ILayoutAnalyzer (PP-DocLayoutV3)
+├── src/RailReader.Core.Vlm.OpenAI/  ← IVlmService impl for OpenAI-compatible chat-completions endpoints
+├── src/RailReader.Renderer.Skia/    ← SkiaSharp rasterisation + IPdfServiceFactory (PDFium-backed)
+└── tests/RailReader.Core.Tests/     ← xUnit headless tests
 ```
 
 Reference graph (all arrows point downward):
 
 ```
-Renderer.Skia ──→ Core + Core.Pdfium
-Core.Analysis ──→ Core
-Core.Pdfium  ──→ Core
-Core          ←── (root; no project refs)
+Renderer.Skia    ──→ Core + Core.Pdfium
+Core.Analysis    ──→ Core
+Core.Pdfium      ──→ Core
+Core.Vlm.OpenAI  ──→ Core
+Core             ←── (root; no project refs, no non-system NuGet deps)
 ```
 
-The deliberate split: `Core` is the only project a non-desktop consumer (Lite / mobile) needs to take. It pulls in only the OpenAI SDK NuGet (for `VlmService`). All native binaries (PDFium, ONNX) and filesystem code live in sibling projects, behind interfaces.
+The deliberate split: `Core` is the only project a non-desktop consumer (Lite / mobile) needs to take. It has zero non-system NuGet deps. All native binaries (PDFium, ONNX) and provider SDKs (OpenAI) live in sibling projects, behind interfaces — additional VLM providers (Anthropic, Gemini, …) would slot in as further `Core.Vlm.*` packages.
 
 ### RailReader.Core (the portable layer)
 
-UI-free, rendering-free, IO-free. Holds the orchestration surface (`DocumentController`, `DocumentState`), the data models, and the platform-boundary interfaces in `Services/I*.cs` (`IPdfService`, `IPdfTextService`, `IPdfLinkService`, `IPdfOutlineService`, `IPdfServiceFactory`, `IAnnotationStore`, `IRecentFilesStore`, `ILayoutAnalyzer`, `IMarkdownExportService`). The only non-system NuGet dep is `OpenAI`, used by `Services/VlmService.cs`. Logging is injected once via `RailReaderLogging.Logger`; defaults to `NullLogger.Instance`.
+UI-free, rendering-free, IO-free. Holds the orchestration surface (`DocumentController`, `DocumentState`), the data models, and the platform-boundary interfaces in `Services/I*.cs` (`IPdfService`, `IPdfTextService`, `IPdfLinkService`, `IPdfOutlineService`, `IPdfServiceFactory`, `IAnnotationStore`, `IRecentFilesStore`, `ILayoutAnalyzer`, `IVlmService`, `IMarkdownExportService`). Logging is injected once via `RailReaderLogging.Logger`; defaults to `NullLogger.Instance`.
+
+`VlmService` (static, in Core) is the pure half of the VLM surface: prompt assembly, structured-output JSON schemas, layout-class → action routing, and the `BlockAction`/`PromptStyle` enums. The actual chat-completions call lives behind `IVlmService` in a provider-specific sibling package.
 
 Settings flow through `CoreSettings` (an immutable record): the platform builds one from its own mutable config and pushes updates via `controller.OnConfigChanged(newSettings)`. Core never sees a mutable settings type and never writes anything.
 
@@ -96,6 +100,10 @@ Everything that touches the local filesystem or the PDFium native binary lives h
 ### RailReader.Core.Analysis (ONNX-backed inference)
 
 Single class: `LayoutAnalyzer` implements `ILayoutAnalyzer` against PP-DocLayoutV3 via `Microsoft.ML.OnnxRuntime`. Pipeline: letterbox the rasterized page to 800×800 → CHW float tensor → ONNX → `[N,7]` detections `[classId, confidence, xmin, ymin, xmax, ymax, readingOrder]` → confidence filter → NMS → reading-order sort. Never touches PDFium.
+
+### RailReader.Core.Vlm.OpenAI (OpenAI-compatible VLM client)
+
+Single class: `OpenAIVlmClient` implements `IVlmService` against any endpoint that speaks the OpenAI chat-completions protocol (OpenAI proper, Ollama, vLLM, LightOnOCR, …). Stateless — endpoint config is passed per call via `VlmEndpointConfig`. Prompts, schemas, and routing are pulled from the static `VlmService` helper in Core, so this package is purely a transport layer.
 
 ### RailReader.Renderer.Skia (SkiaSharp rasterisation)
 

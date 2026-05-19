@@ -7,17 +7,21 @@
     <IsAotCompatible>true</IsAotCompatible>
     <NoWarn>CA1416</NoWarn>
     <IsPackable>true</IsPackable>
-    <PackageId>RailReader.Core</PackageId>
-    <Description>Portable abstractions, models, controllers, rail-navigation, line detection, search, and annotation logic for RailReader.</Description>
+    <PackageId>RailReader.Core.Vlm.OpenAI</PackageId>
+    <Description>OpenAI-compatible IVlmService implementation for RailReader. Works against any endpoint that speaks the OpenAI chat-completions protocol (OpenAI, Ollama, vLLM, etc.).</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="RailReader.Core.Tests" />
-    <InternalsVisibleTo Include="RailReader.Core.Pdfium" />
-    <InternalsVisibleTo Include="RailReader.Core.Analysis" />
-    <InternalsVisibleTo Include="RailReader.Core.Vlm.OpenAI" />
-    <InternalsVisibleTo Include="RailReader.Renderer.Skia" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../RailReader.Core/RailReader.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="OpenAI" Version="2.10.0" />
   </ItemGroup>
 
   <ItemGroup>

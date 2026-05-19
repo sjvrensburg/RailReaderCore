@@ -3,6 +3,7 @@
     <Project Path="src/RailReader.Core/RailReader.Core.csproj" />
     <Project Path="src/RailReader.Core.Pdfium/RailReader.Core.Pdfium.csproj" />
     <Project Path="src/RailReader.Core.Analysis/RailReader.Core.Analysis.csproj" />
+    <Project Path="src/RailReader.Core.Vlm.OpenAI/RailReader.Core.Vlm.OpenAI.csproj" />
     <Project Path="src/RailReader.Renderer.Skia/RailReader.Renderer.Skia.csproj" />
   </Folder>
   <Folder Name="/tests/">
