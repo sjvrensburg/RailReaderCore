@@ -111,42 +111,42 @@ public sealed class PdfTextService : IPdfTextService
     {
         lock (PdfiumGate.Lock)
         {
-        IntPtr doc = IntPtr.Zero;
-        IntPtr page = IntPtr.Zero;
-        IntPtr textPage = IntPtr.Zero;
-        GCHandle pinned = default;
+            IntPtr doc = IntPtr.Zero;
+            IntPtr page = IntPtr.Zero;
+            IntPtr textPage = IntPtr.Zero;
+            GCHandle pinned = default;
 
-        try
-        {
-            pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
-            doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, null);
-            if (doc == IntPtr.Zero)
+            try
+            {
+                pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
+                doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, null);
+                if (doc == IntPtr.Zero)
+                    return defaultValue;
+
+                page = FPDF_LoadPage(doc, pageIndex);
+                if (page == IntPtr.Zero)
+                    return defaultValue;
+
+                var (offsetX, offsetY, visibleHeight) = GetCropBoxTransform(page);
+
+                textPage = FPDFText_LoadPage(page);
+                if (textPage == IntPtr.Zero)
+                    return defaultValue;
+
+                return action(textPage, offsetX, offsetY, visibleHeight);
+            }
+            catch (Exception ex)
+            {
+                RailReaderLogging.Logger.Error($"[PdfText] Failed to {operationName} for page {pageIndex}", ex);
                 return defaultValue;
-
-            page = FPDF_LoadPage(doc, pageIndex);
-            if (page == IntPtr.Zero)
-                return defaultValue;
-
-            var (offsetX, offsetY, visibleHeight) = GetCropBoxTransform(page);
-
-            textPage = FPDFText_LoadPage(page);
-            if (textPage == IntPtr.Zero)
-                return defaultValue;
-
-            return action(textPage, offsetX, offsetY, visibleHeight);
-        }
-        catch (Exception ex)
-        {
-            RailReaderLogging.Logger.Error($"[PdfText] Failed to {operationName} for page {pageIndex}", ex);
-            return defaultValue;
-        }
-        finally
-        {
-            if (textPage != IntPtr.Zero) FPDFText_ClosePage(textPage);
-            if (page != IntPtr.Zero) FPDF_ClosePage(page);
-            if (doc != IntPtr.Zero) FPDF_CloseDocument(doc);
-            if (pinned.IsAllocated) pinned.Free();
-        }
+            }
+            finally
+            {
+                if (textPage != IntPtr.Zero) FPDFText_ClosePage(textPage);
+                if (page != IntPtr.Zero) FPDF_ClosePage(page);
+                if (doc != IntPtr.Zero) FPDF_CloseDocument(doc);
+                if (pinned.IsAllocated) pinned.Free();
+            }
         }
     }
 }

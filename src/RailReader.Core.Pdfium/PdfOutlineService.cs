@@ -18,27 +18,27 @@ public sealed class PdfOutlineService : IPdfOutlineService
 
         lock (PdfiumGate.Lock)
         {
-        IntPtr doc = IntPtr.Zero;
-        GCHandle pinned = default;
-        try
-        {
-            pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
-            doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, null);
-            if (doc == IntPtr.Zero)
-                return result;
+            IntPtr doc = IntPtr.Zero;
+            GCHandle pinned = default;
+            try
+            {
+                pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
+                doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, null);
+                if (doc == IntPtr.Zero)
+                    return result;
 
-            var root = FPDFBookmark_GetFirstChild(doc, IntPtr.Zero);
-            ReadBookmarks(doc, root, result);
-        }
-        catch (Exception ex)
-        {
-            RailReaderLogging.Logger.Error("[Outline] Failed to extract", ex);
-        }
-        finally
-        {
-            if (doc != IntPtr.Zero) FPDF_CloseDocument(doc);
-            if (pinned.IsAllocated) pinned.Free();
-        }
+                var root = FPDFBookmark_GetFirstChild(doc, IntPtr.Zero);
+                ReadBookmarks(doc, root, result);
+            }
+            catch (Exception ex)
+            {
+                RailReaderLogging.Logger.Error("[Outline] Failed to extract", ex);
+            }
+            finally
+            {
+                if (doc != IntPtr.Zero) FPDF_CloseDocument(doc);
+                if (pinned.IsAllocated) pinned.Free();
+            }
         }
 
         return result;

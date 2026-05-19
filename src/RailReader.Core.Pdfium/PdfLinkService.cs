@@ -17,49 +17,49 @@ public sealed class PdfLinkService : IPdfLinkService
     {
         lock (PdfiumGate.Lock)
         {
-        IntPtr doc = IntPtr.Zero;
-        IntPtr page = IntPtr.Zero;
-        GCHandle pinned = default;
+            IntPtr doc = IntPtr.Zero;
+            IntPtr page = IntPtr.Zero;
+            GCHandle pinned = default;
 
-        try
-        {
-            pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
-            doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, null);
-            if (doc == IntPtr.Zero) return s_empty;
-
-            page = FPDF_LoadPage(doc, pageIndex);
-            if (page == IntPtr.Zero) return s_empty;
-
-            var (offsetX, offsetY, visibleHeight) = GetCropBoxTransform(page);
-            var links = new List<PdfLink>();
-
-            int startPos = 0;
-            while (FPDFLink_Enumerate(page, ref startPos, out IntPtr linkAnnot))
+            try
             {
-                if (!FPDFLink_GetAnnotRect(linkAnnot, out FsRectF fsRect))
-                    continue;
+                pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
+                doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, null);
+                if (doc == IntPtr.Zero) return s_empty;
 
-                var rect = ToPageRect(fsRect, offsetX, offsetY, visibleHeight);
+                page = FPDF_LoadPage(doc, pageIndex);
+                if (page == IntPtr.Zero) return s_empty;
 
-                var dest = ResolveDestination(doc, linkAnnot);
-                if (dest is null) continue;
+                var (offsetX, offsetY, visibleHeight) = GetCropBoxTransform(page);
+                var links = new List<PdfLink>();
 
-                links.Add(new PdfLink { Rect = rect, Destination = dest });
+                int startPos = 0;
+                while (FPDFLink_Enumerate(page, ref startPos, out IntPtr linkAnnot))
+                {
+                    if (!FPDFLink_GetAnnotRect(linkAnnot, out FsRectF fsRect))
+                        continue;
+
+                    var rect = ToPageRect(fsRect, offsetX, offsetY, visibleHeight);
+
+                    var dest = ResolveDestination(doc, linkAnnot);
+                    if (dest is null) continue;
+
+                    links.Add(new PdfLink { Rect = rect, Destination = dest });
+                }
+
+                return links;
             }
-
-            return links;
-        }
-        catch (Exception ex)
-        {
-            RailReaderLogging.Logger.Error($"[PdfLink] Failed to extract links for page {pageIndex}", ex);
-            return s_empty;
-        }
-        finally
-        {
-            if (page != IntPtr.Zero) FPDF_ClosePage(page);
-            if (doc != IntPtr.Zero) FPDF_CloseDocument(doc);
-            if (pinned.IsAllocated) pinned.Free();
-        }
+            catch (Exception ex)
+            {
+                RailReaderLogging.Logger.Error($"[PdfLink] Failed to extract links for page {pageIndex}", ex);
+                return s_empty;
+            }
+            finally
+            {
+                if (page != IntPtr.Zero) FPDF_ClosePage(page);
+                if (doc != IntPtr.Zero) FPDF_CloseDocument(doc);
+                if (pinned.IsAllocated) pinned.Free();
+            }
         }
     }
 
