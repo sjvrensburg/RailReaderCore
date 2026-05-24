@@ -11,12 +11,13 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
 {
 
     private readonly InferenceSession _session;
+    private readonly LayoutModelCapabilities _capabilities;
 #if DEBUG
     private bool _loggedOutputShapes;
 #endif
     private float[]? _chwBuffer;
 
-    public LayoutModelCapabilities Capabilities => PPDocLayoutV3Roles.Capabilities;
+    public LayoutModelCapabilities Capabilities => _capabilities;
 
     static LayoutAnalyzer()
     {
@@ -57,8 +58,21 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
         }
     }
 
-    public LayoutAnalyzer(string modelPath)
+    /// <summary>
+    /// Loads PP-DocLayoutV3 (or any model conforming to the same input/output
+    /// contract: <c>im_shape</c>/<c>image</c>/<c>scale_factor</c> inputs,
+    /// <c>[N, 6+]</c> detection tensor output, optional reading-order column).
+    /// </summary>
+    /// <param name="modelPath">Path to the ONNX file.</param>
+    /// <param name="capabilities">
+    /// Optional capability override — input size, class table, role mapping,
+    /// reading-order availability. Use this to load a custom model trained
+    /// with a different label space. Defaults to <see cref="PPDocLayoutV3Roles.Capabilities"/>.
+    /// </param>
+    public LayoutAnalyzer(string modelPath, LayoutModelCapabilities? capabilities = null)
     {
+        _capabilities = capabilities ?? PPDocLayoutV3Roles.Capabilities;
+
         var opts = new SessionOptions();
         opts.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
         // Suppress noisy NCHWc Conv kernel warnings while preserving genuine errors
