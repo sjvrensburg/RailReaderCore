@@ -85,19 +85,16 @@ public static class VlmService
     };
 
     /// <summary>
-    /// Returns the VLM action for a layout block class, or null if the class
-    /// is not a VLM-eligible type (equation, table, or figure).
+    /// Returns the VLM action for a layout block role, or null if the role
+    /// is not a VLM-eligible type (equation/algorithm, table, or figure/chart).
     /// </summary>
-    public static BlockAction? GetBlockAction(int classId)
+    public static BlockAction? GetBlockAction(BlockRole role) => role switch
     {
-        if (LayoutConstants.EquationClasses.Contains(classId))
-            return BlockAction.LaTeX;
-        if (LayoutConstants.TableClasses.Contains(classId))
-            return BlockAction.Markdown;
-        if (LayoutConstants.FigureClasses.Contains(classId))
-            return BlockAction.Description;
-        return null;
-    }
+        BlockRole.DisplayMath or BlockRole.InlineMath or BlockRole.Algorithm => BlockAction.LaTeX,
+        BlockRole.Table => BlockAction.Markdown,
+        BlockRole.Figure or BlockRole.Chart => BlockAction.Description,
+        _ => null,
+    };
 
     /// <summary>
     /// Extracts a string field from a structured-output JSON response. Returns

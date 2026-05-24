@@ -34,8 +34,8 @@ public sealed record CoreSettings
 
     // Analysis
     public int AnalysisLookaheadPages { get; init; } = 2;
-    public IReadOnlySet<int> NavigableClasses { get; init; } = Services.LayoutConstants.DefaultNavigableClasses();
-    public IReadOnlySet<int> CenteringClasses { get; init; } = Services.LayoutConstants.DefaultCenteringClasses();
+    public IReadOnlySet<BlockRole> NavigableRoles { get; init; } = Services.DefaultRoleSets.Navigable;
+    public IReadOnlySet<BlockRole> CenteringRoles { get; init; } = Services.DefaultRoleSets.Centering;
 
     // Visual effects (per-document defaults — UI may override per doc)
     public ColourEffect ColourEffect { get; init; } = ColourEffect.None;

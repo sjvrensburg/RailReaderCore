@@ -148,7 +148,7 @@ public static class OverlayRenderer
     {
         foreach (var block in analysis.Blocks)
         {
-            var color = DebugColors[block.ClassId % DebugColors.Length];
+            var color = DebugColors[(int)block.Role % DebugColors.Length];
             var rect = SKRect.Create(block.BBox.X, block.BBox.Y, block.BBox.W, block.BBox.H);
 
             fillPaint.Color = color.WithAlpha(50);
@@ -157,9 +157,7 @@ public static class OverlayRenderer
             strokePaint.Color = color.WithAlpha(180);
             canvas.DrawRect(rect, strokePaint);
 
-            string className = block.ClassId < LayoutConstants.LayoutClasses.Length
-                ? LayoutConstants.LayoutClasses[block.ClassId] : "unknown";
-            string label = $"#{block.Order} {className} ({block.Confidence * 100:F0}%)";
+            string label = $"#{block.Order} {block.Role} ({block.Confidence * 100:F0}%)";
 
             canvas.DrawRect(SKRect.Create(block.BBox.X, block.BBox.Y - 10, label.Length * 5f, 11), bgPaint);
 

@@ -8,8 +8,6 @@ namespace RailReader.Core.Services;
 /// </summary>
 public static class PeekIndexBuilder
 {
-    public static readonly HashSet<int> EquationClasses = [LayoutConstants.ClassDisplayFormula];
-
     public static PeekIndex Build(IReadOnlyDictionary<int, PageAnalysis> cache, int pageCount)
     {
         var figures = new List<PeekEntry>();
@@ -23,22 +21,18 @@ public static class PeekIndexBuilder
             for (int b = 0; b < analysis.Blocks.Count; b++)
             {
                 var block = analysis.Blocks[b];
-                PeekEntry? entry = null;
-
-                if (LayoutConstants.FigureClasses.Contains(block.ClassId))
+                switch (block.Role)
                 {
-                    entry = MakeEntry(page, b, block);
-                    figures.Add(entry);
-                }
-                else if (LayoutConstants.TableClasses.Contains(block.ClassId))
-                {
-                    entry = MakeEntry(page, b, block);
-                    tables.Add(entry);
-                }
-                else if (EquationClasses.Contains(block.ClassId))
-                {
-                    entry = MakeEntry(page, b, block);
-                    equations.Add(entry);
+                    case BlockRole.Figure:
+                    case BlockRole.Chart:
+                        figures.Add(MakeEntry(page, b, block));
+                        break;
+                    case BlockRole.Table:
+                        tables.Add(MakeEntry(page, b, block));
+                        break;
+                    case BlockRole.DisplayMath:
+                        equations.Add(MakeEntry(page, b, block));
+                        break;
                 }
             }
         }
@@ -51,7 +45,7 @@ public static class PeekIndexBuilder
         {
             PageIndex = page,
             BlockIndex = blockIndex,
-            ClassId = block.ClassId,
+            Role = block.Role,
             BBox = block.BBox,
         };
 }

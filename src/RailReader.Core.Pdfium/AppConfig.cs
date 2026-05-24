@@ -15,7 +15,7 @@ public sealed class AppConfig : IRecentFilesStore
     /// </summary>
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
-    internal const int CurrentSchemaVersion = 1;
+    internal const int CurrentSchemaVersion = 2;
 
     public double RailZoomThreshold { get; set; } = 3.0;
     public double SnapDurationMs { get; set; } = 300.0;
@@ -52,11 +52,11 @@ public sealed class AppConfig : IRecentFilesStore
     [JsonConverter(typeof(RecentFilesConverter))]
     public List<RecentFileEntry> RecentFiles { get; set; } = [];
 
-    [JsonConverter(typeof(NavigableClassesConverter))]
-    public HashSet<int> NavigableClasses { get; set; } = LayoutConstants.DefaultNavigableClasses();
+    [JsonConverter(typeof(BlockRoleSetConverter))]
+    public HashSet<BlockRole> NavigableRoles { get; set; } = new(DefaultRoleSets.Navigable);
 
-    [JsonConverter(typeof(NavigableClassesConverter))]
-    public HashSet<int> CenteringClasses { get; set; } = LayoutConstants.DefaultCenteringClasses();
+    [JsonConverter(typeof(BlockRoleSetConverter))]
+    public HashSet<BlockRole> CenteringRoles { get; set; } = new(DefaultRoleSets.Centering);
 
     // VLM (Vision Language Model) settings for Copy as LaTeX / Markdown / Description
     public string? VlmEndpoint { get; set; }
@@ -96,8 +96,8 @@ public sealed class AppConfig : IRecentFilesStore
         LineHighlightTint = LineHighlightTint,
         LineHighlightOpacity = LineHighlightOpacity,
         MarginCropping = MarginCropping,
-        NavigableClasses = NavigableClasses,
-        CenteringClasses = CenteringClasses,
+        NavigableRoles = NavigableRoles,
+        CenteringRoles = CenteringRoles,
         VlmEndpoint = VlmEndpoint,
         VlmModel = VlmModel,
         VlmApiKey = VlmApiKey,
@@ -145,7 +145,7 @@ public sealed class AppConfig : IRecentFilesStore
             {
                 var json = File.ReadAllText(ConfigPath);
                 var loaded = JsonSerializer.Deserialize(json, RailReaderJsonContext.Default.AppConfig) ?? new AppConfig();
-                if (Migrate(loaded))
+                if (Migrate(loaded, json))
                     loaded.Save();
                 return loaded;
             }
@@ -166,15 +166,93 @@ public sealed class AppConfig : IRecentFilesStore
     /// a new schema version, append a block here that reads old fields and
     /// writes new ones, then bumps <see cref="SchemaVersion"/>.
     /// </summary>
-    private static bool Migrate(AppConfig config)
+    internal static bool Migrate(AppConfig config, string rawJson)
     {
         if (config.SchemaVersion >= CurrentSchemaVersion) return false;
 
-        // Pre-versioning configs (SchemaVersion deserializes to 0). No field
-        // migrations needed at v1 — just stamp the current version.
+        // v0/v1 → v2: navigable_classes / centering_classes (PP-DocLayoutV3 string
+        // names like "text", "display_formula") are replaced by navigable_roles /
+        // centering_roles (BlockRole enum names like "Text", "DisplayMath"). When
+        // upgrading, translate the legacy fields via PP-DocLayoutV3's role mapping.
+        if (config.SchemaVersion < 2)
+        {
+            MigrateLegacyClasses(config, rawJson);
+        }
+
         config.SchemaVersion = CurrentSchemaVersion;
         return true;
     }
+
+    private static void MigrateLegacyClasses(AppConfig config, string rawJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(rawJson);
+            var root = doc.RootElement;
+            if (TryReadLegacyClassNames(root, "navigable_classes") is { } nav)
+                config.NavigableRoles = nav;
+            if (TryReadLegacyClassNames(root, "centering_classes") is { } cen)
+                config.CenteringRoles = cen;
+        }
+        catch (JsonException)
+        {
+            // Malformed legacy data — fall back to defaults already on the config.
+        }
+    }
+
+    private static HashSet<BlockRole>? TryReadLegacyClassNames(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var arr) || arr.ValueKind != JsonValueKind.Array)
+            return null;
+
+        var result = new HashSet<BlockRole>();
+        foreach (var item in arr.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String) continue;
+            var name = item.GetString();
+            if (name is null) continue;
+            if (LegacyPPDocLayoutV3NameToRole.TryGetValue(name, out var role))
+                result.Add(role);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Pre-role-based configs persisted PP-DocLayoutV3 class names. This table
+    /// translates them to <see cref="BlockRole"/> values for the v1 → v2
+    /// migration. The same mapping lives canonically on
+    /// <c>PPDocLayoutV3Roles</c> in <c>RailReader.Core.Analysis</c>; duplicated
+    /// here because Core.Pdfium deliberately does not reference Core.Analysis
+    /// (which would pull ONNX Runtime into the lightweight package).
+    /// </summary>
+    private static readonly Dictionary<string, BlockRole> LegacyPPDocLayoutV3NameToRole = new()
+    {
+        ["abstract"] = BlockRole.Text,
+        ["algorithm"] = BlockRole.Algorithm,
+        ["aside_text"] = BlockRole.Aside,
+        ["chart"] = BlockRole.Chart,
+        ["content"] = BlockRole.Text,
+        ["display_formula"] = BlockRole.DisplayMath,
+        ["doc_title"] = BlockRole.Title,
+        ["figure_title"] = BlockRole.Caption,
+        ["footer"] = BlockRole.Footer,
+        ["footer_image"] = BlockRole.Figure,
+        ["footnote"] = BlockRole.Footnote,
+        ["formula_number"] = BlockRole.Decoration,
+        ["header"] = BlockRole.Header,
+        ["header_image"] = BlockRole.Figure,
+        ["image"] = BlockRole.Figure,
+        ["inline_formula"] = BlockRole.InlineMath,
+        ["number"] = BlockRole.PageNumber,
+        ["paragraph_title"] = BlockRole.Heading,
+        ["reference"] = BlockRole.Reference,
+        ["reference_content"] = BlockRole.Reference,
+        ["seal"] = BlockRole.Decoration,
+        ["table"] = BlockRole.Table,
+        ["text"] = BlockRole.Text,
+        ["vertical_text"] = BlockRole.Text,
+        ["vision_footnote"] = BlockRole.Footnote,
+    };
 
     public void AddRecentFile(string filePath)
     {
@@ -274,11 +352,18 @@ internal sealed class RecentFilesConverter : JsonConverter<List<RecentFileEntry>
     }
 }
 
-internal sealed class NavigableClassesConverter : JsonConverter<HashSet<int>>
+/// <summary>
+/// Reads / writes <see cref="HashSet{BlockRole}"/> as a JSON array of enum name
+/// strings (e.g. <c>["Text", "DisplayMath"]</c>). Unknown names are silently
+/// dropped so future enum additions in older app builds don't crash. Legacy
+/// PP-DocLayoutV3 class names (from configs written before role-based settings)
+/// are translated in the schema-version migration in <see cref="AppConfig.Migrate"/>.
+/// </summary>
+internal sealed class BlockRoleSetConverter : JsonConverter<HashSet<BlockRole>>
 {
-    public override HashSet<int>? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    public override HashSet<BlockRole>? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
-        var result = new HashSet<int>();
+        var result = new HashSet<BlockRole>();
         if (reader.TokenType != JsonTokenType.StartArray) return result;
 
         while (reader.Read())
@@ -287,19 +372,16 @@ internal sealed class NavigableClassesConverter : JsonConverter<HashSet<int>>
             if (reader.TokenType == JsonTokenType.String)
             {
                 var name = reader.GetString();
-                if (name is not null && LayoutConstants.ClassNameToIndex(name) is { } idx)
-                    result.Add(idx);
+                if (name is not null && Enum.TryParse<BlockRole>(name, ignoreCase: false, out var role))
+                    result.Add(role);
             }
         }
         return result;
     }
 
-    public override void Write(Utf8JsonWriter writer, HashSet<int> value, JsonSerializerOptions options)
+    public override void Write(Utf8JsonWriter writer, HashSet<BlockRole> value, JsonSerializerOptions options)
     {
-        var names = value
-            .Where(id => id >= 0 && id < LayoutConstants.LayoutClasses.Length)
-            .Select(id => LayoutConstants.LayoutClasses[id])
-            .OrderBy(n => n);
+        var names = value.Select(r => r.ToString()).OrderBy(n => n);
         writer.WriteStartArray();
         foreach (var name in names)
             writer.WriteStringValue(name);

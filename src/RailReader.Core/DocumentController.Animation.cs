@@ -203,10 +203,10 @@ public sealed partial class DocumentController
     /// based on its class (equation, header, or default).
     /// </summary>
     private double GetBlockEntryPause(DocumentState doc) =>
-        doc.Rail.CurrentNavigableBlock.ClassId switch
+        doc.Rail.CurrentNavigableBlock.Role switch
         {
-            LayoutConstants.ClassDisplayFormula => _config.AutoScrollEquationPauseMs,
-            LayoutConstants.ClassDocTitle or LayoutConstants.ClassParagraphTitle => _config.AutoScrollHeaderPauseMs,
+            BlockRole.DisplayMath or BlockRole.Algorithm => _config.AutoScrollEquationPauseMs,
+            BlockRole.Title or BlockRole.Heading => _config.AutoScrollHeaderPauseMs,
             _ => _config.AutoScrollLinePauseMs,
         };
 
@@ -235,7 +235,7 @@ public sealed partial class DocumentController
 
                 if (doc.PendingRailSetup)
                 {
-                    doc.Rail.SetAnalysis(result.Analysis, _config.NavigableClasses);
+                    doc.Rail.SetAnalysis(result.Analysis, _config.NavigableRoles);
                     doc.PendingRailSetup = false;
                     doc.UpdateRailZoom(ww, wh);
                     _logger.Debug($"[Analysis] Rail has {doc.Rail.NavigableCount} navigable blocks, Active={doc.Rail.Active}");

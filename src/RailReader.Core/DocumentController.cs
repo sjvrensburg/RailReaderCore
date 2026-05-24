@@ -97,13 +97,19 @@ public sealed partial class DocumentController : IDisposable
     }
 
     /// <summary>
-    /// Initialize the analysis worker with a factory for the platform's layout
-    /// analyzer (e.g. ONNX Runtime on desktop). Must be called before opening
-    /// documents.
+    /// Initialize the analysis worker with the platform's layout analyzer.
+    /// Capabilities are passed eagerly so consumers can read InputSize without
+    /// waiting for the model to load. An optional reading-order resolver may
+    /// be supplied; otherwise a sensible default is chosen from the
+    /// capabilities (model order if available, top-down otherwise).
+    /// Must be called before opening documents.
     /// </summary>
-    public void InitializeWorker(Func<ILayoutAnalyzer> analyzerFactory)
+    public void InitializeWorker(
+        LayoutModelCapabilities capabilities,
+        Func<ILayoutAnalyzer> analyzerFactory,
+        IReadingOrderResolver? readingOrderResolver = null)
     {
-        _worker = new AnalysisWorker(analyzerFactory, _marshaller, _logger);
+        _worker = new AnalysisWorker(capabilities, analyzerFactory, _marshaller, readingOrderResolver, _logger);
         _logger.Debug("[Analysis] Worker started (analyzer loading in background)");
     }
 
@@ -135,7 +141,7 @@ public sealed partial class DocumentController : IDisposable
         var saved = _recentFiles.GetReadingPosition(state.FilePath);
         bool restoredPage = saved is not null && saved.Page > 0;
         if (restoredPage)
-            state.GoToPage(Math.Clamp(saved!.Page, 0, state.PageCount - 1), _worker, _config.NavigableClasses, ww, wh);
+            state.GoToPage(Math.Clamp(saved!.Page, 0, state.PageCount - 1), _worker, _config.NavigableRoles, ww, wh);
         if (saved?.ColourEffect is { } savedEffect)
             state.ColourEffect = savedEffect;
 
@@ -149,7 +155,7 @@ public sealed partial class DocumentController : IDisposable
         // GoToPage already submitted analysis for the restored page;
         // only submit here for new documents starting at page 0.
         if (!restoredPage)
-            state.SubmitAnalysis(_worker, _config.NavigableClasses);
+            state.SubmitAnalysis(_worker, _config.NavigableRoles);
         state.QueueLookahead(_config.AnalysisLookaheadPages);
     }
 
@@ -318,7 +324,7 @@ public sealed partial class DocumentController : IDisposable
         _zoom.Cancel();
         if (ActiveDocument is not { } doc) return;
         var (ww, wh) = GetViewportSize();
-        if (!doc.GoToPage(page, _worker, _config.NavigableClasses, ww, wh))
+        if (!doc.GoToPage(page, _worker, _config.NavigableRoles, ww, wh))
         {
             NotifyRenderFailed(page);
             return;
@@ -481,7 +487,7 @@ public sealed partial class DocumentController : IDisposable
         foreach (var doc in Documents)
         {
             doc.Rail.UpdateConfig(_config);
-            doc.ReapplyNavigableClasses(_config.NavigableClasses);
+            doc.ReapplyNavigableRoles(_config.NavigableRoles);
         }
     }
 
