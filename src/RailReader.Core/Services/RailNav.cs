@@ -49,10 +49,10 @@ public sealed partial class RailNav : ICameraClamp
 
 
     /// <summary>
-    /// Whether the current navigable block's type is in the centering class set.
+    /// Whether the current navigable block's role is in the centering role set.
     /// </summary>
     private bool ShouldCenterBlock() =>
-        _config.CenteringClasses.Contains(CurrentNavigableBlock.ClassId);
+        _config.CenteringRoles.Contains(CurrentNavigableBlock.Role);
 
     /// <summary>
     /// Returns true if input should be suppressed because an edge-hold advance
@@ -75,16 +75,16 @@ public sealed partial class RailNav : ICameraClamp
     double ICameraClamp.ClampX(double cameraX, double zoom, double windowWidth)
         => ClampX(cameraX, zoom, windowWidth);
 
-    public void SetAnalysis(PageAnalysis analysis, IReadOnlySet<int> navigable)
+    public void SetAnalysis(PageAnalysis analysis, IReadOnlySet<BlockRole> navigable)
     {
         // If re-applying the same analysis (e.g. config change that didn't affect
-        // navigable classes), preserve the current navigation position.
+        // navigable roles), preserve the current navigation position.
         bool sameAnalysis = ReferenceEquals(_analysis, analysis);
 
         _navigableIndices.Clear();
         for (int i = 0; i < analysis.Blocks.Count; i++)
         {
-            if (navigable.Contains(analysis.Blocks[i].ClassId))
+            if (navigable.Contains(analysis.Blocks[i].Role))
                 _navigableIndices.Add(i);
         }
         _analysis = analysis;

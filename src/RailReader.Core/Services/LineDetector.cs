@@ -20,20 +20,19 @@ namespace RailReader.Core.Services;
 internal static class LineDetector
 {
     /// <summary>
-    /// Block classes treated as a single atomic line in rail mode. Only purely
+    /// Block roles treated as a single atomic line in rail mode. Only purely
     /// visual blocks belong here — they have no meaningful per-line structure
-    /// and should advance as one unit. Equations (<c>display_formula</c>,
-    /// <c>inline_formula</c>, <c>algorithm</c>) deliberately stay line-detectable
-    /// because stepwise derivations and algorithm pseudocode read line-by-line;
-    /// char-box clustering handles those without fragmenting sub/superscripts.
+    /// and should advance as one unit. Math roles (<see cref="BlockRole.DisplayMath"/>,
+    /// <see cref="BlockRole.InlineMath"/>, <see cref="BlockRole.Algorithm"/>)
+    /// deliberately stay line-detectable because stepwise derivations and
+    /// algorithm pseudocode read line-by-line; char-box clustering handles
+    /// those without fragmenting sub/superscripts.
     /// </summary>
-    internal static readonly HashSet<int> AtomicLineClasses =
+    internal static readonly HashSet<BlockRole> AtomicLineRoles =
     [
-        LayoutConstants.ClassChart,
-        LayoutConstants.ClassFooterImage,
-        LayoutConstants.ClassHeaderImage,
-        LayoutConstants.ClassImage,
-        LayoutConstants.ClassTable,
+        BlockRole.Figure,
+        BlockRole.Chart,
+        BlockRole.Table,
     ];
 
     /// <summary>
@@ -45,7 +44,7 @@ internal static class LineDetector
         IReadOnlyList<CharBox>? charBoxes,
         byte[] rgbBytes, int imgW, int imgH, float scaleX, float scaleY)
     {
-        if (AtomicLineClasses.Contains(block.ClassId))
+        if (AtomicLineRoles.Contains(block.Role))
             return [new LineInfo(block.BBox.Y + block.BBox.H / 2f, block.BBox.H)];
 
         if (charBoxes is { Count: > 0 })

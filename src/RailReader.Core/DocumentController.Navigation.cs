@@ -54,7 +54,7 @@ public sealed partial class DocumentController
             }
 
             // Either has navigable blocks (land on it) or needs async analysis
-            if (!doc.GoToPage(targetPage, _worker, _config.NavigableClasses, ww, wh))
+            if (!doc.GoToPage(targetPage, _worker, _config.NavigableRoles, ww, wh))
             {
                 NotifyRenderFailed(targetPage);
                 doc.PendingSkip = null;
@@ -90,7 +90,7 @@ public sealed partial class DocumentController
     private bool HasNavigableBlocks(PageAnalysis analysis)
     {
         foreach (var block in analysis.Blocks)
-            if (_config.NavigableClasses.Contains(block.ClassId))
+            if (_config.NavigableRoles.Contains(block.Role))
                 return true;
         return false;
     }

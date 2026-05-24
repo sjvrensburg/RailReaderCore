@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using RailReader.Core;
+using RailReader.Core.Analysis;
 using RailReader.Core.Models;
 
 namespace RailReader.Core.Services;
@@ -14,6 +15,8 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
     private bool _loggedOutputShapes;
 #endif
     private float[]? _chwBuffer;
+
+    public LayoutModelCapabilities Capabilities => PPDocLayoutV3Roles.Capabilities;
 
     static LayoutAnalyzer()
     {
@@ -69,7 +72,7 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
     public PageAnalysis RunAnalysis(byte[] rgbBytes, int pxW, int pxH, double pageW, double pageH,
         IReadOnlyList<CharBox>? charBoxes = null, CancellationToken ct = default)
     {
-        int target = LayoutConstants.InputSize;
+        int target = Capabilities.InputSize;
 
         ct.ThrowIfCancellationRequested();
 
@@ -100,7 +103,9 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
         var rawBlocks = ExtractDetections(results, pxW, pxH, mapScaleX, mapScaleY);
         if (rawBlocks is null)
             return new PageAnalysis { Blocks = [], PageWidth = pageW, PageHeight = pageH };
-        PostProcessBlocks(rawBlocks, rgbBytes, pxW, pxH, mapScaleX, mapScaleY, charBoxes);
+
+        Nms(rawBlocks, LayoutConstants.NmsIouThreshold);
+        SuppressNestedBlocks(rawBlocks);
 
         return new PageAnalysis
         {
@@ -150,6 +155,7 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
             return null;
 
         bool hasReadingOrder = detCols >= 7;
+        var classTable = Capabilities.Classes;
 
         var rawBlocks = new List<LayoutBlock>();
         for (int i = 0; i < detRows; i++)
@@ -164,7 +170,7 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
             int modelOrder = hasReadingOrder ? (int)detectionData[off + 6] : 0;
 
             if (confidence < LayoutConstants.ConfidenceThreshold) continue;
-            if (classId < 0 || classId >= LayoutConstants.LayoutClasses.Length) continue;
+            if (classId < 0 || classId >= classTable.Count) continue;
 
             float x = Math.Max(xmin, 0);
             float y = Math.Max(ymin, 0);
@@ -176,6 +182,7 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
             rawBlocks.Add(new LayoutBlock
             {
                 BBox = new BBox(x * mapScaleX, y * mapScaleY, w * mapScaleX, h * mapScaleY),
+                Role = classTable[classId].Role,
                 ClassId = classId,
                 Confidence = confidence,
                 Order = modelOrder,
@@ -183,25 +190,6 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
         }
 
         return rawBlocks;
-    }
-
-    private static void PostProcessBlocks(
-        List<LayoutBlock> rawBlocks, byte[] rgbBytes, int pxW, int pxH,
-        float mapScaleX, float mapScaleY, IReadOnlyList<CharBox>? charBoxes)
-    {
-        Nms(rawBlocks, LayoutConstants.NmsIouThreshold);
-        SuppressNestedBlocks(rawBlocks);
-
-        rawBlocks.Sort((a, b) =>
-        {
-            int cmp = a.Order.CompareTo(b.Order);
-            return cmp != 0 ? cmp : a.BBox.Y.CompareTo(b.BBox.Y);
-        });
-        for (int i = 0; i < rawBlocks.Count; i++)
-            rawBlocks[i].Order = i;
-
-        ResolveVerticalOverlaps(rawBlocks);
-        DetectLinesForBlocks(rawBlocks, rgbBytes, pxW, pxH, mapScaleX, mapScaleY, charBoxes);
     }
 
     private static float[] PreprocessImage(byte[] rgbBytes, int origW, int origH, int target, ref float[]? buffer)
@@ -308,63 +296,6 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
         for (int i = blocks.Count - 1; i >= 0; i--)
         {
             if (!keep[i]) blocks.RemoveAt(i);
-        }
-    }
-
-    /// <summary>
-    /// Trims vertically overlapping blocks so each block's bounding box covers only
-    /// its own content. When two blocks overlap vertically with similar X ranges,
-    /// the later block's top is pushed down to the earlier block's bottom.
-    /// This prevents line detection from finding text belonging to an adjacent block.
-    /// </summary>
-    private static void ResolveVerticalOverlaps(List<LayoutBlock> blocks)
-    {
-        // Blocks are already sorted by reading order / Y position.
-        for (int i = 0; i < blocks.Count; i++)
-        {
-            var a = blocks[i];
-            float aBottom = a.BBox.Y + a.BBox.H;
-
-            for (int j = i + 1; j < blocks.Count; j++)
-            {
-                var b = blocks[j];
-                float bBottom = b.BBox.Y + b.BBox.H;
-
-                // Check horizontal overlap: blocks must share significant X range
-                float overlapX = Math.Min(a.BBox.X + a.BBox.W, b.BBox.X + b.BBox.W)
-                    - Math.Max(a.BBox.X, b.BBox.X);
-                float minW = Math.Min(a.BBox.W, b.BBox.W);
-                if (overlapX < minW * 0.5f) continue; // not horizontally aligned
-
-                // Check vertical overlap: block A's bottom extends past block B's top
-                float overlapY = aBottom - b.BBox.Y;
-                if (overlapY <= 0) continue; // no vertical overlap
-
-                // Trim the later block's top to start at the earlier block's bottom
-                float newY = aBottom;
-                float newH = bBottom - newY;
-                if (newH < 5) continue; // don't shrink to nothing
-
-                blocks[j] = new LayoutBlock
-                {
-                    BBox = new BBox(b.BBox.X, newY, b.BBox.W, newH),
-                    ClassId = b.ClassId,
-                    Confidence = b.Confidence,
-                    Order = b.Order,
-                };
-            }
-        }
-    }
-
-    private static void DetectLinesForBlocks(
-        List<LayoutBlock> blocks, byte[] rgbBytes, int imgW, int imgH,
-        float scaleX, float scaleY, IReadOnlyList<CharBox>? charBoxes)
-    {
-        foreach (var block in blocks)
-        {
-            block.Lines = LineDetector.DetectLines(block, charBoxes, rgbBytes, imgW, imgH, scaleX, scaleY);
-            if (block.Lines.Count == 0)
-                block.Lines.Add(new LineInfo(block.BBox.Y + block.BBox.H / 2, block.BBox.H));
         }
     }
 

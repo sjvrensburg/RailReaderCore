@@ -7,7 +7,7 @@ public sealed class PeekEntry
 {
     public required int PageIndex { get; init; }
     public required int BlockIndex { get; init; }
-    public required int ClassId { get; init; }
+    public required BlockRole Role { get; init; }
     public required BBox BBox { get; init; }
 }
 

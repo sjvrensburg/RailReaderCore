@@ -376,12 +376,12 @@ public sealed class DocumentState : IDisposable
         return false;
     }
 
-    public void SubmitAnalysis(AnalysisWorker? worker, IReadOnlySet<int> navigableClasses)
+    public void SubmitAnalysis(AnalysisWorker? worker, IReadOnlySet<BlockRole> navigableRoles)
     {
         if (_analysisCache.TryGetValue(CurrentPage, out var cached))
         {
             _logger.Debug($"[SubmitAnalysis] Page {CurrentPage}: cache hit, {cached.Blocks.Count} blocks");
-            ApplyAnalysis(cached, navigableClasses);
+            ApplyAnalysis(cached, navigableRoles);
             return;
         }
 
@@ -407,7 +407,7 @@ public sealed class DocumentState : IDisposable
             try
             {
                 ct.ThrowIfCancellationRequested();
-                var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, LayoutConstants.InputSize);
+                var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize);
                 var pageText = _pdfText.ExtractPageText(_pdf.PdfBytes, page);
                 _logger.Debug($"[SubmitAnalysis] Page {page}: pixmap ready {pxW}x{pxH}, {pageText.CharBoxes.Count} chars, submitting...");
                 _marshaller.Post(() =>
@@ -426,15 +426,15 @@ public sealed class DocumentState : IDisposable
         }, ct);
     }
 
-    public void ReapplyNavigableClasses(IReadOnlySet<int> navigableClasses)
+    public void ReapplyNavigableRoles(IReadOnlySet<BlockRole> navigableRoles)
     {
         if (_analysisCache.TryGetValue(CurrentPage, out var cached))
-            Rail.SetAnalysis(cached, navigableClasses);
+            Rail.SetAnalysis(cached, navigableRoles);
     }
 
-    private void ApplyAnalysis(PageAnalysis analysis, IReadOnlySet<int> navigableClasses)
+    private void ApplyAnalysis(PageAnalysis analysis, IReadOnlySet<BlockRole> navigableRoles)
     {
-        Rail.SetAnalysis(analysis, navigableClasses);
+        Rail.SetAnalysis(analysis, navigableRoles);
         PendingRailSetup = false;
     }
 
@@ -469,7 +469,7 @@ public sealed class DocumentState : IDisposable
                 try
                 {
                     ct.ThrowIfCancellationRequested();
-                    var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, LayoutConstants.InputSize);
+                    var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize);
                     var pageText = _pdfText.ExtractPageText(_pdf.PdfBytes, page);
                     _marshaller.Post(() =>
                     {
@@ -512,7 +512,7 @@ public sealed class DocumentState : IDisposable
         try
         {
             var (pageW, pageH) = _pdf.GetPageSize(page);
-            var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, LayoutConstants.InputSize);
+            var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize);
             var pageText = GetOrExtractText(page);
             worker.Submit(new AnalysisRequest(FilePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes));
             return true;
@@ -524,7 +524,7 @@ public sealed class DocumentState : IDisposable
         }
     }
 
-    public bool GoToPage(int page, AnalysisWorker? worker, IReadOnlySet<int> navigableClasses, double windowWidth, double windowHeight)
+    public bool GoToPage(int page, AnalysisWorker? worker, IReadOnlySet<BlockRole> navigableRoles, double windowWidth, double windowHeight)
     {
         page = Math.Clamp(page, 0, PageCount - 1);
         if (page == CurrentPage) return true;
@@ -543,7 +543,7 @@ public sealed class DocumentState : IDisposable
             CurrentPage = oldPage;
             return false;
         }
-        SubmitAnalysis(worker, navigableClasses);
+        SubmitAnalysis(worker, navigableRoles);
         Camera.Zoom = oldZoom;
         ClampCamera(windowWidth, windowHeight);
         return true;

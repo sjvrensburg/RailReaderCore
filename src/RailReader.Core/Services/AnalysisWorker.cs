@@ -22,15 +22,41 @@ public sealed class AnalysisWorker : IDisposable
     private readonly Task _workerTask;
     private readonly ILogger _logger;
     private readonly IThreadMarshaller _marshaller;
+    private readonly IReadingOrderResolver _readingOrder;
 
-    /// <summary>Set to true once the worker loop has initialized the ONNX session.</summary>
+    /// <summary>Static capabilities of the analyzer running in this worker. Available before the analyzer finishes loading.</summary>
+    public LayoutModelCapabilities Capabilities { get; }
+
+    /// <summary>Page-rasterisation size the analyzer expects. Convenience alias for <c>Capabilities.InputSize</c>.</summary>
+    public int InputSize => Capabilities.InputSize;
+
+    /// <summary>Set to true once the worker loop has initialized the analyzer.</summary>
     public bool IsReady { get; private set; }
 
-    /// <summary>Set if the worker loop failed to start (e.g. ONNX model load failure).</summary>
+    /// <summary>Set if the worker loop failed to start (e.g. model load failure).</summary>
     public string? StartupError { get; private set; }
 
-    public AnalysisWorker(Func<ILayoutAnalyzer> analyzerFactory, IThreadMarshaller marshaller, ILogger? logger = null)
+    /// <summary>
+    /// Create a worker. Pass the analyzer's <see cref="LayoutModelCapabilities"/>
+    /// eagerly (these must match what <paramref name="analyzerFactory"/> will
+    /// later construct) so consumers can read <see cref="InputSize"/> immediately
+    /// without waiting for the model to load.
+    ///
+    /// <paramref name="readingOrderResolver"/> is optional: if null, the worker
+    /// picks <see cref="ModelOrderResolver"/> when the model provides reading
+    /// order, otherwise <see cref="TopDownReadingOrderResolver"/>.
+    /// </summary>
+    public AnalysisWorker(
+        LayoutModelCapabilities capabilities,
+        Func<ILayoutAnalyzer> analyzerFactory,
+        IThreadMarshaller marshaller,
+        IReadingOrderResolver? readingOrderResolver = null,
+        ILogger? logger = null)
     {
+        Capabilities = capabilities;
+        _readingOrder = readingOrderResolver ?? (capabilities.ProvidesReadingOrder
+            ? new ModelOrderResolver()
+            : new TopDownReadingOrderResolver());
         _logger = logger ?? NullLogger.Instance;
         _marshaller = marshaller;
         _requestChannel = Channel.CreateUnbounded<AnalysisRequest>();
@@ -66,10 +92,20 @@ public sealed class AnalysisWorker : IDisposable
         {
             await foreach (var request in _requestChannel.Reader.ReadAllAsync(ct))
             {
-                _logger.Debug($"[Worker] Running ONNX for {Path.GetFileName(request.FilePath)} page {request.Page}...");
+                _logger.Debug($"[Worker] Running analyzer for {Path.GetFileName(request.FilePath)} page {request.Page}...");
                 var analysis = analyzer.RunAnalysis(
                     request.RgbBytes, request.PxW, request.PxH, request.PageW, request.PageH,
                     request.CharBoxes, ct);
+
+                // Pipeline: assign reading order → trim overlaps + detect lines.
+                _readingOrder.AssignOrder(analysis.Blocks, analysis.PageWidth, analysis.PageHeight);
+
+                float mapScaleX = request.PxW > 0 ? (float)(request.PageW / request.PxW) : 1f;
+                float mapScaleY = request.PxH > 0 ? (float)(request.PageH / request.PxH) : 1f;
+                BlockPostProcessor.PostProcess(
+                    analysis.Blocks, request.RgbBytes, request.PxW, request.PxH,
+                    mapScaleX, mapScaleY, request.CharBoxes);
+
                 _logger.Debug($"[Worker] Page {request.Page}: {analysis.Blocks.Count} blocks detected");
 
                 await _resultChannel.Writer.WriteAsync(
