@@ -44,7 +44,7 @@ public sealed class AnalysisWorker : IDisposable
     ///
     /// <paramref name="readingOrderResolver"/> is optional: if null, the worker
     /// picks <see cref="ModelOrderResolver"/> when the model provides reading
-    /// order, otherwise <see cref="TopDownReadingOrderResolver"/>.
+    /// order, otherwise <see cref="XYCutPlusPlusResolver"/>.
     /// </summary>
     public AnalysisWorker(
         LayoutModelCapabilities capabilities,
@@ -56,7 +56,7 @@ public sealed class AnalysisWorker : IDisposable
         Capabilities = capabilities;
         _readingOrder = readingOrderResolver ?? (capabilities.ProvidesReadingOrder
             ? new ModelOrderResolver()
-            : new TopDownReadingOrderResolver());
+            : new XYCutPlusPlusResolver());
         _logger = logger ?? NullLogger.Instance;
         _marshaller = marshaller;
         _requestChannel = Channel.CreateUnbounded<AnalysisRequest>();
