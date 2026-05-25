@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.4.0
+
+Adds an algorithmic, column-aware reading-order resolver and an alternative
+ONNX layout analyzer (Docling Heron) alongside the existing PP-DocLayoutV3.
+Heron is downloadable separately via `scripts/download-model.sh heron` — it
+is not bundled with the desktop installer.
+
+### Added
+
+- **`XYCutPlusPlusResolver`** (`RailReader.Core.Services`) — column-aware
+  recursive XY-cut reading-order resolver. Pure geometry (no model, no IO).
+  Inspired by Liu, Li & Wei (2025), *"XY-Cut++: Advanced Layout Ordering via
+  Hierarchical Mask Mechanism"* ([arXiv:2504.10258](https://arxiv.org/abs/2504.10258));
+  this implementation adopts the paper's geometric kernel only — column-gutter
+  preference over horizontal cuts, with full-width spanning blocks (titles,
+  full-width figures, page-bottom footnotes) handled implicitly via the
+  straddler check. Designed for the two- and three-column academic layouts
+  that `TopDownReadingOrderResolver` mis-orders.
+- **`ReadingDirection` enum** (`RailReader.Core.Services`) — placeholder for
+  future CJK / Arabic support. Only `LeftToRightTopToBottom` is implemented;
+  other values throw `NotSupportedException` from the resolver ctor.
+- **`HeronLayoutAnalyzer`** (`RailReader.Core.Analysis`) — second
+  `ILayoutAnalyzer` implementation, against Docling's Heron model
+  (RT-DETRv2, 17 classes, 640×640 input). Lives alongside `LayoutAnalyzer`;
+  consumers pick which to instantiate. ONNX I/O: `images` (uint8 NCHW) +
+  `orig_target_sizes` (int64) → `labels` / `boxes` / `scores`, with
+  post-processing baked into the model graph.
+- **`DoclingHeronRoles`** (`RailReader.Core.Analysis`) — Heron's 17-class
+  label list with role mapping, exposed as `LayoutModelCapabilities` for
+  callers wiring `HeronLayoutAnalyzer`. `ProvidesReadingOrder: false`.
+- **`scripts/download-model.sh heron`** — Heron download block, model lands
+  at `models/docling-layout-heron.onnx` (~164 MB, Apache-2.0 license).
+  `download-model.sh ppdoc` and `download-model.sh all` are also accepted;
+  the no-arg invocation still downloads PP-DocLayoutV3 (unchanged default).
+
+### Changed
+
+- **Behaviour change (non-breaking API):** `AnalysisWorker`'s default
+  reading-order resolver for models that do *not* provide reading order is
+  now `XYCutPlusPlusResolver` (was `TopDownReadingOrderResolver`). Callers
+  that construct `AnalysisWorker` without an explicit `IReadingOrderResolver`
+  against a non-ordering model will see a different read order on
+  multi-column pages. Models that emit reading order (e.g. PP-DocLayoutV3)
+  are unaffected — they still default to `ModelOrderResolver`.
+  `TopDownReadingOrderResolver` is retained as a debug/fallback baseline.
+
 ## 0.3.1
 
 ### Added
