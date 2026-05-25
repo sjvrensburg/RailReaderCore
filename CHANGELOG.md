@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`HeronLayoutAnalyzer`** passed `orig_target_sizes` to the ONNX session as
+  `[pxH, pxW]` (the PyTorch `RTDetrImageProcessor` convention), but this
+  Heron ONNX export expects `[pxW, pxH]` — the baked-in post-processor
+  multiplies normalised box coords by the tensor as `[W, H, W, H]`. The
+  mismatch transposed the model's output: x-coords were scaled by the
+  height target and clamped to pixmap width, while y-coords were scaled by
+  the width target — producing detections only in roughly the top
+  `pageW/pageH × 100%` of the page on portrait inputs (e.g. ~75% on A4, so
+  the bottom of every academic-style page was silently dropped). Now passes
+  `[pxW, pxH]`, matching the ONNX export's expectation. Verified end-to-end
+  against the published 0.4.0 model on a two-column Pattern Recognition
+  paper: detections now reach within ~30 pt of the page bottom on portrait
+  pages, vs. ~240 pt short in 0.4.0.
+
 ## 0.4.0
 
 Adds an algorithmic, column-aware reading-order resolver and an alternative

@@ -17,9 +17,16 @@ namespace RailReader.Core.Services;
 /// post-processing baked in (top-k, score sigmoid, box decode) and exposes
 /// three named outputs: <c>labels</c>, <c>boxes</c>, <c>scores</c>. Inputs
 /// are <c>images</c> (uint8, NCHW 1×3×640×640) and <c>orig_target_sizes</c>
-/// (int64 [H, W]) — the model uses <c>orig_target_sizes</c> internally to
-/// scale predicted boxes back into pixel space, so passing the caller's
-/// rasterised <c>(pxH, pxW)</c> here yields boxes directly in that frame.
+/// (int64 <b>[W, H]</b>) — the model uses <c>orig_target_sizes</c> internally
+/// to scale predicted boxes back into pixel space, so passing the caller's
+/// rasterised <c>(pxW, pxH)</c> here yields boxes directly in that frame.
+/// Note this is <em>opposite</em> to the HuggingFace
+/// <c>RTDetrImageProcessor.post_process_object_detection(target_sizes=…)</c>
+/// convention used by the PyTorch reference predictor — which takes <c>[H, W]</c>.
+/// The mismatch was verified empirically against the published 0.4.0 model:
+/// passing <c>[H, W]</c> transposes outputs, so boxes near the bottom of a
+/// portrait page get clipped because the model thinks the canvas is wider
+/// than tall (<a href="https://github.com/sjvrensburg/RailReaderCore/issues">issue link</a>).
 /// </para>
 ///
 /// <para>
@@ -119,10 +126,14 @@ public sealed class HeronLayoutAnalyzer : ILayoutAnalyzer
         ct.ThrowIfCancellationRequested();
 
         var images = new DenseTensor<byte>(chwBytes, new[] { 1, 3, ModelInputSize, ModelInputSize });
-        // orig_target_sizes is (H, W) per HF Transformers convention — the
-        // model uses this to scale predicted boxes back from the 640×640
-        // internal frame to the caller's pxW × pxH frame.
-        var origSizes = new DenseTensor<long>(new long[] { pxH, pxW }, new[] { 1, 2 });
+        // orig_target_sizes is (W, H) for this Heron ONNX export — the baked-in
+        // post-processor multiplies normalised box coords by orig_target_sizes
+        // as [W, H, W, H], so x ends up scaled by element 0 and y by element 1.
+        // This is opposite to the PyTorch RTDetrImageProcessor convention (which
+        // takes [H, W]); the ONNX export wrapper transposes it. Empirically
+        // verified: passing [H, W] produces detections only in the top portion
+        // of portrait pages (y compressed by W/H, x clamped at H).
+        var origSizes = new DenseTensor<long>(new long[] { pxW, pxH }, new[] { 1, 2 });
 
         List<NamedOnnxValue> inputs =
         [
