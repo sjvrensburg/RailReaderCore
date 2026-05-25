@@ -26,8 +26,10 @@ dotnet test tests/RailReader.Core.Tests -c Release
 dotnet test tests/RailReader.Core.Tests --filter "ClassName=RailReader.Core.Tests.CameraTests"
 dotnet test tests/RailReader.Core.Tests --filter "FullyQualifiedName~TestMethodName"
 
-# Download PP-DocLayoutV3 ONNX model (only needed for RailReader.Core.Analysis consumers)
-./scripts/download-model.sh
+# Download a layout-detection ONNX model (only needed for RailReader.Core.Analysis consumers)
+./scripts/download-model.sh           # default: PP-DocLayoutV3
+./scripts/download-model.sh heron     # Docling Heron
+./scripts/download-model.sh all       # both
 ```
 
 **Always use `-c Release`** — debug builds are significantly slower for the inference paths.
@@ -63,7 +65,7 @@ Before publishing, test against the desktop app (`railreader2`) since public API
 RailReaderCore.slnx
 ├── src/RailReader.Core/             ← Portable abstractions: models, controllers, interfaces. No PDFium, no ONNX, no filesystem, no non-system NuGet deps.
 ├── src/RailReader.Core.Pdfium/      ← Desktop PDFium impls of IPdfTextService/IPdfLinkService/IPdfOutlineService + filesystem-backed AppConfig/AnnotationService/ConsoleLogger/LayoutModelLocator
-├── src/RailReader.Core.Analysis/    ← ONNX-backed ILayoutAnalyzer (PP-DocLayoutV3)
+├── src/RailReader.Core.Analysis/    ← ONNX-backed ILayoutAnalyzer (PP-DocLayoutV3, Docling Heron)
 ├── src/RailReader.Core.Vlm.OpenAI/  ← IVlmService impl for OpenAI-compatible chat-completions endpoints
 ├── src/RailReader.Renderer.Skia/    ← SkiaSharp rasterisation + IPdfServiceFactory (PDFium-backed)
 └── tests/RailReader.Core.Tests/     ← xUnit headless tests
@@ -83,7 +85,7 @@ The deliberate split: `Core` is the only project a non-desktop consumer (Lite / 
 
 ### RailReader.Core (the portable layer)
 
-UI-free, rendering-free, IO-free. Holds the orchestration surface (`DocumentController`, `DocumentState`), the data models, and the platform-boundary interfaces in `Services/I*.cs` (`IPdfService`, `IPdfTextService`, `IPdfLinkService`, `IPdfOutlineService`, `IPdfServiceFactory`, `IAnnotationStore`, `IRecentFilesStore`, `ILayoutAnalyzer`, `IVlmService`, `IMarkdownExportService`). Logging is injected once via `RailReaderLogging.Logger`; defaults to `NullLogger.Instance`.
+UI-free, rendering-free, IO-free. Holds the orchestration surface (`DocumentController`, `DocumentState`), the data models, and the platform-boundary interfaces in `Services/I*.cs` (`IPdfService`, `IPdfTextService`, `IPdfLinkService`, `IPdfOutlineService`, `IPdfServiceFactory`, `IAnnotationStore`, `IRecentFilesStore`, `ILayoutAnalyzer`, `IReadingOrderResolver`, `IVlmService`, `IMarkdownExportService`). The reading-order resolvers (`ModelOrderResolver`, `XYCutPlusPlusResolver`, `TopDownReadingOrderResolver`) also live here — pure-geometry, no model. Logging is injected once via `RailReaderLogging.Logger`; defaults to `NullLogger.Instance`.
 
 `VlmService` (static, in Core) is the pure half of the VLM surface: prompt assembly, structured-output JSON schemas, layout-class → action routing, and the `BlockAction`/`PromptStyle` enums. The actual chat-completions call lives behind `IVlmService` in a provider-specific sibling package.
 
@@ -99,7 +101,12 @@ Everything that touches the local filesystem or the PDFium native binary lives h
 
 ### RailReader.Core.Analysis (ONNX-backed inference)
 
-Single class: `LayoutAnalyzer` implements `ILayoutAnalyzer` against PP-DocLayoutV3 via `Microsoft.ML.OnnxRuntime`. Pipeline: letterbox the rasterized page to 800×800 → CHW float tensor → ONNX → `[N,7]` detections `[classId, confidence, xmin, ymin, xmax, ymax, readingOrder]` → confidence filter → NMS → reading-order sort. Never touches PDFium.
+Two analyzers, each an `ILayoutAnalyzer`:
+
+- **`LayoutAnalyzer`** wraps PP-DocLayoutV3 (25 classes, `ProvidesReadingOrder=true`). Pipeline: letterbox the rasterized page to 800×800 → CHW float tensor → ONNX → `[N,7]` detections `[classId, confidence, xmin, ymin, xmax, ymax, readingOrder]` → confidence filter → NMS. Class table + role mapping in `PPDocLayoutV3Roles`.
+- **`HeronLayoutAnalyzer`** wraps Docling Heron, an RT-DETRv2 export (17 classes, `ProvidesReadingOrder=false`). Pipeline: bilinear-resize the rasterized page to 640×640 uint8 NCHW → ONNX (`images` + `orig_target_sizes` inputs) → `[B,300]` `labels` / `[B,300,4]` `boxes` / `[B,300]` `scores` (post-processing baked into the graph) → confidence filter → NMS. Class table + role mapping in `DoclingHeronRoles`.
+
+Both share `LayoutAnalyzer.Nms` / `LayoutAnalyzer.SuppressNestedBlocks` (internal static helpers). Neither touches PDFium. The chosen analyzer is wired in by the consumer; reading order is then assigned downstream by Core's `IReadingOrderResolver` (`ModelOrderResolver` for PP, `XYCutPlusPlusResolver` for Heron — both picked automatically by `AnalysisWorker` based on `Capabilities.ProvidesReadingOrder`).
 
 ### RailReader.Core.Vlm.OpenAI (OpenAI-compatible VLM client)
 
