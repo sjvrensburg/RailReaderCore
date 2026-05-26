@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using RailReader.Core;
@@ -58,41 +57,7 @@ public sealed class HeronLayoutAnalyzer : ILayoutAnalyzer
 
     public LayoutModelCapabilities Capabilities => _capabilities;
 
-    static HeronLayoutAnalyzer()
-    {
-        // Pre-load the OnnxRuntime native library before OnnxRuntime's own static
-        // initializer runs. Mirrors LayoutAnalyzer's static ctor — see that
-        // class for the full reasoning (resolver conflict avoidance).
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
-
-        string ext, fallbackRid;
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-        {
-            ext = ".dylib";
-            fallbackRid = "osx-arm64";
-        }
-        else
-        {
-            ext = ".so";
-            fallbackRid = "linux-x64";
-        }
-
-        string libName = $"libonnxruntime{ext}";
-        string[] candidates =
-        [
-            Path.Combine(AppContext.BaseDirectory,
-                "runtimes", RuntimeInformation.RuntimeIdentifier, "native", libName),
-            Path.Combine(AppContext.BaseDirectory,
-                "runtimes", fallbackRid, "native", libName),
-            Path.Combine(AppContext.BaseDirectory, libName),
-        ];
-
-        foreach (var path in candidates)
-        {
-            if (File.Exists(path) && NativeLibrary.TryLoad(path, out _))
-                return;
-        }
-    }
+    static HeronLayoutAnalyzer() => OnnxRuntimeInitializer.Ensure();
 
     /// <summary>
     /// Loads the Docling Heron ONNX model.
@@ -208,32 +173,16 @@ public sealed class HeronLayoutAnalyzer : ILayoutAnalyzer
         for (int i = 0; i < numDetections; i++)
         {
             float confidence = scores[i];
-            if (confidence < LayoutConstants.ConfidenceThreshold) continue;
-
             int classId = (int)labels[i];
-            if (classId < 0 || classId >= classTable.Count) continue;
-
             int o = i * 4;
             float xmin = boxes[o];
             float ymin = boxes[o + 1];
             float xmax = boxes[o + 2];
             float ymax = boxes[o + 3];
 
-            float x = Math.Max(xmin, 0);
-            float y = Math.Max(ymin, 0);
-            float w = Math.Min(xmax, pxW) - x;
-            float h = Math.Min(ymax, pxH) - y;
-
-            if (w < 5 || h < 5) continue;
-
-            rawBlocks.Add(new LayoutBlock
-            {
-                BBox = new BBox(x * mapScaleX, y * mapScaleY, w * mapScaleX, h * mapScaleY),
-                Role = classTable[classId].Role,
-                ClassId = classId,
-                Confidence = confidence,
-                Order = 0,
-            });
+            if (LayoutAnalyzer.TryBuildBlock(classId, confidence, xmin, ymin, xmax, ymax,
+                    pxW, pxH, mapScaleX, mapScaleY, classTable, order: 0, out var block))
+                rawBlocks.Add(block);
         }
 
         return rawBlocks;

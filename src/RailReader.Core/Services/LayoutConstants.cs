@@ -12,4 +12,11 @@ public static class LayoutConstants
     public const float DarkLuminanceThreshold = 160.0f;
     public const float DensityThresholdFraction = 0.15f;
     public const int MinLineHeightPx = 3;
+
+    /// <summary>
+    /// Minimum width/height (in pixel space) below which a detection is
+    /// rejected as too small to be a meaningful block — filters out sliver
+    /// detections that survive NMS.
+    /// </summary>
+    public const float MinDetectionSizePx = 5f;
 }

@@ -52,10 +52,5 @@ public static class PPDocLayoutV3Roles
     /// or <c>"display_formula"</c>. Used by the <c>AppConfig</c> migration shim
     /// to upgrade configs persisted in the old name-based format.
     /// </summary>
-    public static BlockRole? RoleForName(string name)
-    {
-        foreach (var c in Classes)
-            if (c.Name == name) return c.Role;
-        return null;
-    }
+    public static BlockRole? RoleForName(string name) => Capabilities.RoleForName(name);
 }
