@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.5.0
+
+Adds a third `ILayoutAnalyzer` implementation — PP-DocLayout-S — alongside the
+existing PP-DocLayoutV3 and Docling Heron. PP-S is the lightweight option
+(~4.7 MB ONNX vs V3's ~50 MB / Heron's ~164 MB), intended as the detector for
+any future web (WASM/ORT-Web via `Avalonia.Browser`) or mobile build.
+
+### Added
+
+- **`PPDocLayoutSLayoutAnalyzer`** (`RailReader.Core.Analysis`) — third
+  `ILayoutAnalyzer` implementation against PaddleOCR's PP-DocLayout-S
+  (PicoDet/GFL, 23 classes, 480×480 model input). Lives alongside
+  `LayoutAnalyzer` and `HeronLayoutAnalyzer`. ONNX I/O: **two** inputs
+  (`image` float NCHW + `scale_factor` float [H/origH, W/origW] — note no
+  `im_shape`, unlike V3) → `[M, 6]` detection tensor + scalar `num_dets`
+  with NMS already baked into the graph at score_threshold=0.3. Boxes come
+  back already in caller-pixmap coordinates because `scale_factor` makes the
+  detection head un-resize them internally.
+- **`PPDocLayoutSRoles`** (`RailReader.Core.Analysis`) — PP-DocLayout-S's
+  23-class label list (from PP-S's `inference.yml`) with role mapping,
+  exposed as `LayoutModelCapabilities` for callers wiring
+  `PPDocLayoutSLayoutAnalyzer`. `ProvidesReadingOrder: false` — defaults
+  pair PP-S with `XYCutPlusPlusResolver` (same path as Heron).
+- **Decoupled InputSize / ModelInputSize** for PP-S: the analyzer advertises
+  `Capabilities.InputSize = 1920` (rasterisation hint to the consumer) while
+  internally running the model at 480×480. Rasterising straight to 480 loses
+  bibliography rows and small text on academic content; downsizing from
+  1920 inside the analyzer preserves recall without bloating the ONNX. This
+  is the load-bearing lesson from the Python `raildla` prototype that ports
+  the same detector.
+- **`scripts/download-model.sh pps`** — PP-DocLayout-S download block, lands
+  the model at `models/pp_doclayout_s.onnx`. Sourced from
+  [`stefanj0/PP-DocLayout-S-ONNX`](https://huggingface.co/stefanj0/PP-DocLayout-S-ONNX),
+  a `paddle2onnx` export of the upstream Paddle-native checkpoint
+  ([`PaddlePaddle/PP-DocLayout-S`](https://huggingface.co/PaddlePaddle/PP-DocLayout-S);
+  no official ONNX exists upstream). The source URL is overridable via
+  `PP_S_ONNX_URL`. `download-model.sh all` now downloads all three
+  analyzers' models.
+
 ## 0.4.1
 
 ### Fixed

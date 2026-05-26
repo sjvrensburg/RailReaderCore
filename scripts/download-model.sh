@@ -4,8 +4,9 @@
 # Usage:
 #   ./download-model.sh             # download default model (PP-DocLayoutV3)
 #   ./download-model.sh ppdoc       # PP-DocLayoutV3 only
+#   ./download-model.sh pps         # PP-DocLayout-S only (lightweight, ~4.7 MB)
 #   ./download-model.sh heron       # Docling Heron only
-#   ./download-model.sh all         # both
+#   ./download-model.sh all         # all three
 set -e
 
 MODEL_DIR="$(dirname "$0")/../models"
@@ -22,6 +23,25 @@ download_ppdoc() {
     echo "Downloading PP-DocLayoutV3.onnx..."
     curl -L -o "$path" \
         "https://huggingface.co/alex-dinh/PP-DocLayoutV3-ONNX/resolve/main/PP-DocLayoutV3.onnx"
+    echo "Downloaded to $path ($(du -h "$path" | cut -f1))"
+}
+
+download_pps() {
+    # PP-DocLayout-S (PicoDet/GFL, 23-class, 480x480 model input) — lightweight
+    # ILayoutAnalyzer intended for web (WASM/ORT-Web) and mobile builds where
+    # the 50 MB V3 model is too heavy. Hosted at stefanj0/PP-DocLayout-S-ONNX
+    # since PaddlePaddle ship the checkpoint only in Paddle-native format
+    # (.pdiparams + inference.json) — the .onnx there was produced locally via
+    # paddle2onnx from that upstream checkpoint.
+    local path="$MODEL_DIR/pp_doclayout_s.onnx"
+    if [ -f "$path" ]; then
+        echo "PP-DocLayout-S already exists at $path"
+        return
+    fi
+
+    local url="${PP_S_ONNX_URL:-https://huggingface.co/stefanj0/PP-DocLayout-S-ONNX/resolve/main/pp_doclayout_s.onnx}"
+    echo "Downloading pp_doclayout_s.onnx (~4.7 MB) ..."
+    curl -L -o "$path" "$url"
     echo "Downloaded to $path ($(du -h "$path" | cut -f1))"
 }
 
@@ -46,16 +66,24 @@ case "$WHICH" in
     ppdoc|pp|ppdoclayoutv3)
         download_ppdoc
         ;;
+    pps|pp-s|ppdocs|ppdoclayouts)
+        download_pps
+        ;;
     heron|docling)
         download_heron
         ;;
-    all|both)
+    all)
+        download_ppdoc
+        download_pps
+        download_heron
+        ;;
+    both)
         download_ppdoc
         download_heron
         ;;
     *)
         echo "Unknown model: $WHICH" >&2
-        echo "Usage: $0 [ppdoc|heron|all]" >&2
+        echo "Usage: $0 [ppdoc|pps|heron|all]" >&2
         exit 1
         ;;
 esac
