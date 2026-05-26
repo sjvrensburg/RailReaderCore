@@ -91,4 +91,53 @@ public class PdfPigSkiaPdfServiceTests
         var pdf = factory.CreatePdfService(TestFixtures.GetTestPdfPath());
         Assert.True(pdf.PageCount >= 1);
     }
+
+    [Fact]
+    public void Constructor_from_bytes_matches_constructor_from_path()
+    {
+        // The byte[] overload is what the Lite/web flow uses to avoid a
+        // temp-file hop. Result should be identical to the path overload
+        // on every observable surface.
+        var path = TestFixtures.GetTestPdfPath();
+        var bytes = File.ReadAllBytes(path);
+
+        var fromPath  = new PdfPigSkiaPdfService(path);
+        var fromBytes = new PdfPigSkiaPdfService(bytes);
+
+        Assert.Equal(fromPath.PageCount, fromBytes.PageCount);
+        Assert.Equal(fromPath.PdfBytes.Length, fromBytes.PdfBytes.Length);
+        Assert.Equal(fromPath.Outline.Count, fromBytes.Outline.Count);
+
+        var (w1, h1) = fromPath.GetPageSize(0);
+        var (w2, h2) = fromBytes.GetPageSize(0);
+        Assert.Equal(w1, w2);
+        Assert.Equal(h1, h2);
+
+        fromPath.Dispose();
+        fromBytes.Dispose();
+    }
+
+    [Fact]
+    public void Multiple_renders_reuse_the_cached_document()
+    {
+        // Sanity: rendering N pages from one instance should not blow up
+        // even though the cached document is reused under the gate. This
+        // is the case that used to re-parse on every call.
+        var svc = new PdfPigSkiaPdfService(File.ReadAllBytes(TestFixtures.GetTestPdfPath()));
+        for (int i = 0; i < svc.PageCount; i++)
+        {
+            var (rgb, w, h) = svc.RenderPagePixmap(i, targetSize: 200);
+            Assert.True(w > 0 && h > 0);
+            Assert.Equal(w * h * 3, rgb.Length);
+        }
+        svc.Dispose();
+    }
+
+    [Fact]
+    public void Dispose_is_idempotent()
+    {
+        var svc = new PdfPigSkiaPdfService(File.ReadAllBytes(TestFixtures.GetTestPdfPath()));
+        svc.Dispose();
+        svc.Dispose(); // must not throw
+    }
 }

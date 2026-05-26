@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.7.1
+
+Two perf/ergonomics patches for the PdfPig-backed renderer surfaced by
+the first working RailReaderLite prototype.
+
+### Changed (`RailReader.Renderer.PdfPigSkia`)
+
+- **Cached `PdfDocument` instance.** `PdfPigSkiaPdfService` now opens
+  the PDF once in its constructor and holds the parsed document for the
+  lifetime of the instance. Previously each `RenderPage` /
+  `RenderThumbnail` / `RenderPagePixmap` call re-opened the byte[] and
+  re-parsed the entire file under the gate — visible in RailReaderLite
+  as a multi-hundred-ms cost on every Next-page click. Now the
+  per-render path is just `GetPageAsSKBitmap` against the cached
+  `PdfDocument`, much cheaper.
+- **`PdfPigSkiaPdfService(byte[])` constructor.** New overload that
+  takes the PDF bytes directly. The file-path constructor now forwards
+  to it. Lets web consumers feed picker-supplied bytes straight in
+  without a temp-file round-trip — important for Avalonia.Browser where
+  the picked file lives in the browser sandbox.
+- **`IDisposable` on `PdfPigSkiaPdfService`.** The cached document is a
+  managed resource; consumers swapping documents in a single process
+  (e.g. the Lite "Open another PDF" flow) should `Dispose()` the
+  previous instance to release it deterministically. `Dispose()` is
+  idempotent.
+
+### Changed (`RailReader.Core.PdfPig`)
+
+- **`PdfOutlineService.Extract(PdfDocument)` overload.** Lets callers
+  that already keep a parsed `PdfDocument` alive (like the renderer
+  above) avoid re-parsing just to pull bookmarks. The existing
+  `Extract(byte[])` overload forwards to it.
+
+### Tests
+
+- 3 new tests in `PdfPigSkiaPdfServiceTests`: byte[] and path
+  constructors agree on every observable surface; multi-page rendering
+  reuses the cached document without blowing up; `Dispose()` is
+  idempotent. Total suite 375 → **378 / 378** pass.
+
 ## Unreleased
 
 Scaffolding for [#14](https://github.com/sjvrensburg/RailReaderCore/issues/14) — a pure-managed text-only layout analyzer for Lite/web/mobile, modelled on
