@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.3
+
+### Fixed
+
+- **PdfPig word-gap detection failed on tightly-typeset academic PDFs.**
+  The 0.7.2 fix used a geometry-based threshold (gap > 25 % of the
+  local font size) which worked for the SkiaSharp synthetic test
+  fixture but mis-fired on real journal text where inter-word gaps
+  can be smaller than the threshold. Result: drag-to-copy from a
+  Frontiers paper still produced
+  `"Inrecentyears,timeseriesanalysisbasedondeeplearning…"`. Now uses
+  PdfPig's purpose-built
+  [`NearestNeighbourWordExtractor`](https://github.com/UglyToad/PdfPig/wiki/Document-Layout-Analysis#word-extraction)
+  to identify word boundaries — clusters glyphs by mutual baseline
+  distance with a sophisticated algorithm that handles justified
+  typesetting, mixed fonts, and rotated text. Synthetic `' '` /
+  `'\n'` chars are inserted between consecutive words; the boundary
+  is checked on both sides to avoid duplicating whitespace that the
+  underlying PDF already encodes (some PDFs emit explicit space
+  characters in their content streams; the extractor preserves them
+  inside `Word.Letters`).
+
 ## 0.7.2
 
 ### Fixed

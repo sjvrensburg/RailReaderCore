@@ -3,6 +3,7 @@ using RailReader.Core.Models;
 using RailReader.Core.Services;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Content;
+using UglyToad.PdfPig.DocumentLayoutAnalysis.WordExtractor;
 
 namespace RailReader.Core.PdfPig;
 
@@ -108,120 +109,120 @@ public sealed class PdfTextService : IPdfTextService
     }
 
     /// <summary>
-    /// Word-gap threshold as a fraction of the local font size (PdfPig's
-    /// <c>Letter.PointSize</c>). Glyph widths vary per character — 'i'
-    /// and 'r' are ~3pt wide, 'm' and 'w' are ~9pt at the same font
-    /// size — so a width-based threshold mis-fires on kerning before
-    /// narrow letters. The font size is stable across chars in the
-    /// same run, giving a much more reliable reference. ~25% of the
-    /// font size corresponds to roughly the natural inter-word gap a
-    /// PDF renderer emits.
-    /// </summary>
-    private const float WordGapThreshold = 0.25f;
-
-    /// <summary>
-    /// Walks <see cref="Page.Letters"/>, flipping Y-up → Y-down using the
-    /// page height, and emits one <see cref="CharBox"/> per character in
-    /// the concatenated text. Ligature glyphs whose <c>Value</c> is
-    /// multi-char get one box per char, all pointing at the same glyph
-    /// rect — matches PDFium's per-codepoint behaviour so downstream
-    /// indexing is identical.
+    /// Walks the words returned by PdfPig's
+    /// <see cref="NearestNeighbourWordExtractor"/>, flipping each
+    /// letter's Y-up → Y-down using the page height, and emits one
+    /// <see cref="CharBox"/> per character in the concatenated text.
+    /// Ligature glyphs whose <c>Value</c> is multi-char get one box
+    /// per char, all pointing at the same glyph rect — matches
+    /// PDFium's per-codepoint behaviour so downstream indexing is
+    /// identical.
     ///
     /// <para>
-    /// PdfPig's <c>Letters</c> collection contains only the visible
-    /// glyphs from the PDF content stream — no whitespace tokens. To
-    /// keep the extracted text usable for word-boundary search and
-    /// drag-to-copy, this method inserts synthetic <c>' '</c> and
-    /// <c>'\n'</c> characters where the geometry implies them. The
-    /// synthetic chars get <see cref="CharBox"/>es positioned in the
-    /// physical gap so <see cref="PageText.ExtractTextInRect"/> picks
-    /// them up when the drag rect spans the surrounding glyphs.
+    /// PdfPig's raw <c>Letters</c> collection contains only the
+    /// visible glyphs from the PDF content stream — no whitespace
+    /// tokens — and naive geometry-based gap detection is unreliable
+    /// for justified typesetting where the inter-word gap can be
+    /// comparable to intra-word kerning. <c>NearestNeighbourWordExtractor</c>
+    /// is purpose-built for this problem and handles tight academic
+    /// typesetting correctly. Between consecutive extracted words we
+    /// insert a synthetic <c>' '</c> if they share a baseline, or
+    /// <c>'\n'</c> if they don't. The synthetic chars get
+    /// <see cref="CharBox"/>es positioned in the physical gap so
+    /// <see cref="PageText.ExtractTextInRect"/> picks them up when the
+    /// drag rect spans the surrounding glyphs.
     /// </para>
     /// </summary>
     private static PageText BuildPageText(Page page)
     {
-        var letters = page.Letters;
-        if (letters.Count == 0) return s_empty;
+        var words = page.GetWords(NearestNeighbourWordExtractor.Instance).ToList();
+        if (words.Count == 0) return s_empty;
 
         double pageH = page.Height;
-        var sb = new StringBuilder(letters.Count);
-        var boxes = new List<CharBox>(letters.Count);
+        var sb = new StringBuilder(words.Sum(w => w.Letters.Count));
+        var boxes = new List<CharBox>(sb.Capacity);
 
-        float prevRight = float.NaN;
-        float prevTop = float.NaN;
-        float prevBottom = float.NaN;
-        float prevPointSize = 0f;
+        float prevWordRight = float.NaN;
+        float prevWordTop = float.NaN;
+        float prevWordBottom = float.NaN;
 
-        foreach (var letter in letters)
+        foreach (var word in words)
         {
-            var rect = letter.BoundingBox;
-            float left   = (float)rect.Left;
-            float right  = (float)rect.Right;
-            float top    = (float)(pageH - rect.Top);
-            float bottom = (float)(pageH - rect.Bottom);
-            float height = bottom - top;
-            float pointSize = (float)letter.PointSize;
+            // Compute the word's flipped bbox once for break-detection
+            // against the previous word.
+            var wbox = word.BoundingBox;
+            float wLeft   = (float)wbox.Left;
+            float wRight  = (float)wbox.Right;
+            float wTop    = (float)(pageH - wbox.Top);
+            float wBottom = (float)(pageH - wbox.Bottom);
+            float wHeight = wBottom - wTop;
 
-            if (!float.IsNaN(prevRight))
+            if (!float.IsNaN(prevWordRight))
             {
-                float midY     = (top + bottom) / 2f;
-                float prevMidY = (prevTop + prevBottom) / 2f;
-                float refLineH = Math.Max(1f, Math.Max(height, prevBottom - prevTop));
+                float midY     = (wTop + wBottom) / 2f;
+                float prevMidY = (prevWordTop + prevWordBottom) / 2f;
+                float refLineH = Math.Max(1f, Math.Max(wHeight, prevWordBottom - prevWordTop));
                 bool sameLine = Math.Abs(midY - prevMidY) <= refLineH * 0.5f;
 
-                if (!sameLine)
+                // PDFs that encode spacing as explicit ' ' chars in the
+                // content stream produce Words whose Letters already
+                // contain that whitespace — sometimes as a trailing char
+                // of one word, sometimes as a whitespace-only word in
+                // its own right. Only inject our synthetic separator if
+                // there isn't whitespace already on either side.
+                char lastChar  = sb.Length > 0 ? sb[sb.Length - 1] : '\0';
+                char firstChar = word.Text.Length > 0 ? word.Text[0] : '\0';
+                bool boundaryAlreadyWhitespace = char.IsWhiteSpace(lastChar) || char.IsWhiteSpace(firstChar);
+
+                if (sameLine)
                 {
-                    // Line break — synthetic '\n' positioned at the
-                    // right edge of the previous letter so a drag that
-                    // catches the tail of line N captures the newline.
+                    if (!boundaryAlreadyWhitespace)
+                    {
+                        int idx = sb.Length;
+                        sb.Append(' ');
+                        float spaceTop    = Math.Min(prevWordTop, wTop);
+                        float spaceBottom = Math.Max(prevWordBottom, wBottom);
+                        boxes.Add(new CharBox(idx, prevWordRight, spaceTop, wLeft, spaceBottom));
+                    }
+                }
+                else if (lastChar != '\n')
+                {
                     int idx = sb.Length;
                     sb.Append('\n');
-                    boxes.Add(new CharBox(idx, prevRight, prevTop, prevRight + 1f, prevBottom));
+                    boxes.Add(new CharBox(idx, prevWordRight, prevWordTop,
+                                          prevWordRight + 1f, prevWordBottom));
+                }
+            }
+
+            foreach (var letter in word.Letters)
+            {
+                var rect = letter.BoundingBox;
+                float left   = (float)rect.Left;
+                float right  = (float)rect.Right;
+                float top    = (float)(pageH - rect.Top);
+                float bottom = (float)(pageH - rect.Bottom);
+
+                string value = letter.Value ?? "";
+                if (value.Length == 0)
+                {
+                    int index = sb.Length;
+                    sb.Append('�');
+                    boxes.Add(new CharBox(index, left, top, right, bottom));
                 }
                 else
                 {
-                    float gap = left - prevRight;
-                    // Use the larger of the two surrounding letters' font
-                    // sizes as the reference. Stable across the line, so
-                    // narrow chars like 'i'/'r' don't trip the threshold
-                    // inside words.
-                    float refSize = Math.Max(1f, Math.Max(pointSize, prevPointSize));
-                    if (gap > refSize * WordGapThreshold)
+                    foreach (var ch in value)
                     {
-                        // Word break — synthetic ' ' positioned in the
-                        // actual horizontal gap. ExtractTextInRect's
-                        // midpoint test picks it up whenever the drag
-                        // rect spans the surrounding glyphs.
-                        int idx = sb.Length;
-                        sb.Append(' ');
-                        float spaceTop    = Math.Min(prevTop, top);
-                        float spaceBottom = Math.Max(prevBottom, bottom);
-                        boxes.Add(new CharBox(idx, prevRight, spaceTop, left, spaceBottom));
+                        int index = sb.Length;
+                        sb.Append(ch);
+                        boxes.Add(new CharBox(index, left, top, right, bottom));
                     }
                 }
             }
 
-            string value = letter.Value ?? "";
-            if (value.Length == 0)
-            {
-                int index = sb.Length;
-                sb.Append('�');
-                boxes.Add(new CharBox(index, left, top, right, bottom));
-            }
-            else
-            {
-                foreach (var ch in value)
-                {
-                    int index = sb.Length;
-                    sb.Append(ch);
-                    boxes.Add(new CharBox(index, left, top, right, bottom));
-                }
-            }
-
-            prevRight     = right;
-            prevTop       = top;
-            prevBottom    = bottom;
-            prevPointSize = pointSize;
+            prevWordRight  = wRight;
+            prevWordTop    = wTop;
+            prevWordBottom = wBottom;
         }
 
         return new PageText(sb.ToString(), boxes);
