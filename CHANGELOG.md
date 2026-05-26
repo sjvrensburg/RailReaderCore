@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.1
+
+Pure internal refactor of `RailReader.Core.Analysis` to remove duplication
+introduced as the third `ILayoutAnalyzer` (PP-DocLayout-S) landed alongside
+PP-DocLayoutV3 and Docling Heron in 0.5.0. No behavioural change; 351/351
+tests pass; downstream consumers (railreader2) need no changes.
+
+### Changed
+
+- **`OnnxRuntimeInitializer`** (`RailReader.Core.Analysis`, internal) —
+  extracts the ~40-line OnnxRuntime native-library preload that was copy-
+  pasted into all three analyzers' static constructors. Each analyzer's
+  static ctor is now a one-liner. Behaviour is byte-identical; the helper
+  is idempotent via an `Interlocked` guard so the filesystem probes only
+  run once per process.
+- **`LayoutModelCapabilities.RoleForName(string)`** — promoted the
+  class-name → `BlockRole` lookup from three identical static methods
+  (`PPDocLayoutV3Roles`, `PPDocLayoutSRoles`, `DoclingHeronRoles`) to a
+  single method on the capabilities record. The three per-class static
+  `RoleForName` methods remain as one-line forwards for back-compat — no
+  consumer-visible signature change.
+- **`LayoutAnalyzer.TryBuildBlock(...)`** (internal) — extracts the
+  bounds-clamp + min-size check + `LayoutBlock` construction shared by all
+  three analyzers' detection-extraction loops. The 5-px minimum is now
+  named `LayoutConstants.MinDetectionSizePx` instead of a literal.
+- **`NormalizationConstants`** (`RailReader.Core.Analysis`, internal) —
+  hoists `ImageNetMean`/`ImageNetStd` out of `PPDocLayoutSLayoutAnalyzer`
+  so a future analyzer reusing those statistics doesn't redefine them.
+
 ## 0.5.0
 
 Adds a third `ILayoutAnalyzer` implementation — PP-DocLayout-S — alongside the
