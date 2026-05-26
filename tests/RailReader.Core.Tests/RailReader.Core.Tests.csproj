@@ -21,6 +21,7 @@
     <ProjectReference Include="../../src/RailReader.Core.Pdfium/RailReader.Core.Pdfium.csproj" />
     <ProjectReference Include="../../src/RailReader.Core.PdfPig/RailReader.Core.PdfPig.csproj" />
     <ProjectReference Include="../../src/RailReader.Renderer.PdfPigSkia/RailReader.Renderer.PdfPigSkia.csproj" />
+    <ProjectReference Include="../../src/RailReader.Core.Analysis.LightGbm/RailReader.Core.Analysis.LightGbm.csproj" />
     <ProjectReference Include="../../src/RailReader.Core.Analysis/RailReader.Core.Analysis.csproj" />
     <ProjectReference Include="../../src/RailReader.Renderer.Skia/RailReader.Renderer.Skia.csproj" />
   </ItemGroup>
