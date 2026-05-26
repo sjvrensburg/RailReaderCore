@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.7.0
+
+Adds the rasterisation half of the Lite/web/mobile story. Pairs the
+parser-only `RailReader.Core.PdfPig` (0.6.0) with a new managed renderer
+so a non-PDFium consumer now has the full `IPdfServiceFactory` surface.
+Closes [#13](https://github.com/sjvrensburg/RailReaderCore/issues/13).
+
+### Added
+
+- **`RailReader.Renderer.PdfPigSkia`** — new project. Implements
+  `IPdfService` (`PdfPigSkiaPdfService`) and `IPdfServiceFactory`
+  (`PdfPigSkiaPdfServiceFactory`) by composing `Core.PdfPig`'s
+  text/link/outline services with rasterisation through
+  [`PdfPig.Rendering.Skia`](https://github.com/BobLd/PdfPig.Rendering.Skia)
+  (BobLd, Apache-2.0). Mirrors `RailReader.Renderer.Skia`'s shape — same
+  `IRenderedPage` (`SKBitmap` wrapper), same `RenderPage / RenderThumbnail
+  / RenderPagePixmap` triple, same BGRA→RGB conversion outside the gate
+  for the ONNX analyzer feed.
+- **`PdfPigGate.Lock`** — internal serialisation gate for PdfPig calls,
+  mirroring the discipline of `PdfiumGate.Lock` in `Core.Pdfium`.
+  `PdfDocument` is not documented thread-safe, and `PdfPig.Rendering.Skia`
+  may hold global state, so every code path that opens a document goes
+  through the gate.
+- **DPI handling.** `RenderPage(dpi)` maps the caller's DPI request to
+  the renderer's scale factor (`dpi / 72`). `RenderThumbnail` and
+  `RenderPagePixmap` use the existing FitPageToTarget convention so
+  callers swap factories without touching call sites.
+
+### Tests
+
+- `tests/RailReader.Core.Tests/PdfPigSkiaPdfServiceTests.cs` — 6 new
+  smoke tests covering page count, size, full-page render, thumbnail
+  bounds, RGB pixmap shape + brightness sanity, and factory surface.
+  Total suite: **365/365** pass (359 prior + 6 new).
+- Same in-process isolation discipline as the parser tests — renderer
+  tests don't mix PDFium and PdfPig in one test method (the test host
+  crashes; see `PdfPigServiceTests` class summary).
+
+### Known limitation
+
+- `PdfPig.Rendering.Skia` 0.1.14.2 is self-declared pre-1.0. Pixel
+  fidelity vs PDFium is not yet measured side-by-side; the desktop hot
+  path keeps `Renderer.Skia`. Treat this renderer as the Lite/web/mobile
+  path until validated otherwise.
+
 ## 0.6.0
 
 Adds a fifth NuGet package — `RailReader.Core.PdfPig` — providing pure-
