@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 Adds a third `ILayoutAnalyzer` implementation — PP-DocLayout-S — alongside the
 existing PP-DocLayoutV3 and Docling Heron. PP-S is the lightweight option
