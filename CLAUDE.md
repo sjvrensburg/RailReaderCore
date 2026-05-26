@@ -27,9 +27,10 @@ dotnet test tests/RailReader.Core.Tests --filter "ClassName=RailReader.Core.Test
 dotnet test tests/RailReader.Core.Tests --filter "FullyQualifiedName~TestMethodName"
 
 # Download a layout-detection ONNX model (only needed for RailReader.Core.Analysis consumers)
-./scripts/download-model.sh           # default: PP-DocLayoutV3
-./scripts/download-model.sh heron     # Docling Heron
-./scripts/download-model.sh all       # both
+./scripts/download-model.sh           # default: PP-DocLayoutV3 (~50 MB)
+./scripts/download-model.sh pps       # PP-DocLayout-S (~4.7 MB, lightweight)
+./scripts/download-model.sh heron     # Docling Heron (~164 MB)
+./scripts/download-model.sh all       # all three
 ```
 
 **Always use `-c Release`** — debug builds are significantly slower for the inference paths.
@@ -65,7 +66,7 @@ Before publishing, test against the desktop app (`railreader2`) since public API
 RailReaderCore.slnx
 ├── src/RailReader.Core/             ← Portable abstractions: models, controllers, interfaces. No PDFium, no ONNX, no filesystem, no non-system NuGet deps.
 ├── src/RailReader.Core.Pdfium/      ← Desktop PDFium impls of IPdfTextService/IPdfLinkService/IPdfOutlineService + filesystem-backed AppConfig/AnnotationService/ConsoleLogger/LayoutModelLocator
-├── src/RailReader.Core.Analysis/    ← ONNX-backed ILayoutAnalyzer (PP-DocLayoutV3, Docling Heron)
+├── src/RailReader.Core.Analysis/    ← ONNX-backed ILayoutAnalyzer (PP-DocLayoutV3, PP-DocLayout-S, Docling Heron)
 ├── src/RailReader.Core.Vlm.OpenAI/  ← IVlmService impl for OpenAI-compatible chat-completions endpoints
 ├── src/RailReader.Renderer.Skia/    ← SkiaSharp rasterisation + IPdfServiceFactory (PDFium-backed)
 └── tests/RailReader.Core.Tests/     ← xUnit headless tests
@@ -101,12 +102,15 @@ Everything that touches the local filesystem or the PDFium native binary lives h
 
 ### RailReader.Core.Analysis (ONNX-backed inference)
 
-Two analyzers, each an `ILayoutAnalyzer`:
+Three analyzers, each an `ILayoutAnalyzer`:
 
 - **`LayoutAnalyzer`** wraps PP-DocLayoutV3 (25 classes, `ProvidesReadingOrder=true`). Pipeline: letterbox the rasterized page to 800×800 → CHW float tensor → ONNX → `[N,7]` detections `[classId, confidence, xmin, ymin, xmax, ymax, readingOrder]` → confidence filter → NMS. Class table + role mapping in `PPDocLayoutV3Roles`.
+- **`PPDocLayoutSLayoutAnalyzer`** wraps PP-DocLayout-S, a PicoDet/GFL export (23 classes, `ProvidesReadingOrder=false`, ~4.7 MB). Pipeline: bilinear-resize the rasterized page to 480×480 float NCHW with ImageNet normalisation → ONNX (`image` + `scale_factor` inputs, **no `im_shape`**) → `[M,6]` detections `[classId, confidence, xmin, ymin, xmax, ymax]` + scalar `num_dets` (NMS baked in at score_threshold=0.3) → confidence filter → NMS. Class table + role mapping in `PPDocLayoutSRoles`. **Note the InputSize/ModelInputSize split**: the caller rasterises at 1920 longest-edge (advertised via `Capabilities.InputSize`) — going straight to 480 loses bibliography rows and small text on academic content, so the analyzer downsizes the 1920-edge pixmap to 480×480 internally before inference. This was a load-bearing lesson from the Python `raildla` prototype.
 - **`HeronLayoutAnalyzer`** wraps Docling Heron, an RT-DETRv2 export (17 classes, `ProvidesReadingOrder=false`). Pipeline: bilinear-resize the rasterized page to 640×640 uint8 NCHW → ONNX (`images` + `orig_target_sizes` inputs) → `[B,300]` `labels` / `[B,300,4]` `boxes` / `[B,300]` `scores` (post-processing baked into the graph) → confidence filter → NMS. Class table + role mapping in `DoclingHeronRoles`.
 
-Both share `LayoutAnalyzer.Nms` / `LayoutAnalyzer.SuppressNestedBlocks` (internal static helpers). Neither touches PDFium. The chosen analyzer is wired in by the consumer; reading order is then assigned downstream by Core's `IReadingOrderResolver` (`ModelOrderResolver` for PP, `XYCutPlusPlusResolver` for Heron — both picked automatically by `AnalysisWorker` based on `Capabilities.ProvidesReadingOrder`).
+All three share `LayoutAnalyzer.Nms` / `LayoutAnalyzer.SuppressNestedBlocks` (internal static helpers). None touches PDFium. The chosen analyzer is wired in by the consumer; reading order is then assigned downstream by Core's `IReadingOrderResolver` (`ModelOrderResolver` for PP-V3, `XYCutPlusPlusResolver` for PP-S and Heron — picked automatically by `AnalysisWorker` based on `Capabilities.ProvidesReadingOrder`).
+
+PP-DocLayout-S is the intended detector for any future web (WASM/ORT-Web via `Avalonia.Browser`) or mobile build — V3 (~50 MB) and Heron (~164 MB) are too heavy for those targets. The PP-S analyzer's I/O contract is mirrored from the working Python reference at `~/RailDLA/src/raildla/detector.py`.
 
 ### RailReader.Core.Vlm.OpenAI (OpenAI-compatible VLM client)
 
