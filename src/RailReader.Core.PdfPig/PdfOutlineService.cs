@@ -14,21 +14,32 @@ public sealed class PdfOutlineService : IPdfOutlineService
 {
     public List<OutlineEntry> Extract(byte[] pdfBytes)
     {
-        var result = new List<OutlineEntry>();
-
         try
         {
             using var doc = PdfDocument.Open(pdfBytes);
-            if (!doc.TryGetBookmarks(out var bookmarks) || bookmarks is null)
-                return result;
-
-            foreach (var root in bookmarks.Roots)
-                result.Add(ConvertNode(root));
+            return Extract(doc);
         }
         catch (Exception ex)
         {
             RailReaderLogging.Logger.Error("[PdfPig.Outline] Failed to extract", ex);
+            return [];
         }
+    }
+
+    /// <summary>
+    /// Extracts the outline from an already-opened <see cref="PdfDocument"/>.
+    /// Lets callers that keep a long-lived document instance (e.g. a renderer
+    /// caching the parsed tree) avoid the round-trip of re-opening just for
+    /// outline lookup.
+    /// </summary>
+    public List<OutlineEntry> Extract(PdfDocument doc)
+    {
+        var result = new List<OutlineEntry>();
+        if (!doc.TryGetBookmarks(out var bookmarks) || bookmarks is null)
+            return result;
+
+        foreach (var root in bookmarks.Roots)
+            result.Add(ConvertNode(root));
 
         return result;
     }
