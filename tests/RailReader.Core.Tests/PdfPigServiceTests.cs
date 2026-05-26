@@ -34,6 +34,36 @@ public class PdfPigServiceTests
     }
 
     [Fact]
+    public void PageText_inserts_word_spaces_between_visible_glyphs()
+    {
+        // 0.7.2 regression guard: PdfPig.Letters has no explicit space
+        // tokens, so we reconstruct them from horizontal gaps. Without
+        // this, multi-word search and drag-to-copy returned garbage
+        // like "Page1of3" / "testparagraphwith…".
+        var bytes = File.ReadAllBytes(TestFixtures.GetTestPdfPath());
+        var page = new PdfTextService().ExtractPageText(bytes, 0);
+
+        Assert.Contains("Page 1 of 3", page.Text);
+        Assert.Contains("test paragraph", page.Text);
+    }
+
+    [Fact]
+    public void PageText_inserts_newlines_between_lines()
+    {
+        // The fixture writes three separate baseline lines on each page;
+        // the extractor should report two line breaks between them.
+        var bytes = File.ReadAllBytes(TestFixtures.GetTestPdfPath());
+        var page = new PdfTextService().ExtractPageText(bytes, 0);
+
+        Assert.Contains('\n', page.Text);
+        int newlines = page.Text.Count(c => c == '\n');
+        // At least two newlines (between three lines). May be more if
+        // pdftoX-style line detection over-splits, which is fine for
+        // selection/search.
+        Assert.True(newlines >= 2, $"expected ≥2 newlines, got {newlines}");
+    }
+
+    [Fact]
     public void Charbox_indexes_are_within_text_bounds()
     {
         var bytes = File.ReadAllBytes(TestFixtures.GetTestPdfPath());

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.7.2
+
+### Fixed
+
+- **PdfPig text extraction had no word spaces or line breaks.** PdfPig's
+  `Page.Letters` collection contains only the visible glyphs from the
+  content stream — PDF doesn't emit explicit space tokens, just
+  horizontal gaps — so `PdfTextService.BuildPageText` was concatenating
+  letters directly. Result: search for "hello world" never matched
+  anything ("hello world" never appeared in the extracted text), and
+  drag-to-copy produced glued-together gibberish like `"Besides,each
+  typeofmethodisconstracks…"`. Now reconstructs word boundaries from
+  geometry: a horizontal gap greater than 25 % of the local font size
+  emits a synthetic `' '`; a mid-Y change between consecutive letters
+  emits a synthetic `'\n'`. The synthetic chars get `CharBox`es
+  positioned in the actual physical gap so
+  `PageText.ExtractTextInRect` picks them up when a drag rect spans
+  the surrounding glyphs. The threshold uses `Letter.PointSize` rather
+  than glyph width because narrow chars (`i`, `r`, `t`) confused the
+  width-based version, mis-firing word breaks inside words like
+  "This" and "paragraph".
+
+### Tests
+
+- Two new regression tests: synthetic fixture extraction now contains
+  `"Page 1 of 3"` (with spaces) and at least 2 `'\n'`s between the
+  three lines. Total 378 → **380 / 380** pass.
+
 ## 0.7.1
 
 Two perf/ergonomics patches for the PdfPig-backed renderer surfaced by
