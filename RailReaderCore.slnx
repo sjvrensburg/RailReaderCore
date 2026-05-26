@@ -4,6 +4,7 @@
     <Project Path="src/RailReader.Core.Pdfium/RailReader.Core.Pdfium.csproj" />
     <Project Path="src/RailReader.Core.PdfPig/RailReader.Core.PdfPig.csproj" />
     <Project Path="src/RailReader.Core.Analysis/RailReader.Core.Analysis.csproj" />
+    <Project Path="src/RailReader.Core.Analysis.LightGbm/RailReader.Core.Analysis.LightGbm.csproj" />
     <Project Path="src/RailReader.Core.Vlm.OpenAI/RailReader.Core.Vlm.OpenAI.csproj" />
     <Project Path="src/RailReader.Renderer.Skia/RailReader.Renderer.Skia.csproj" />
     <Project Path="src/RailReader.Renderer.PdfPigSkia/RailReader.Renderer.PdfPigSkia.csproj" />

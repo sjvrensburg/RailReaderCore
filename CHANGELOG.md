@@ -1,5 +1,57 @@
 # Changelog
 
+## Unreleased
+
+Scaffolding for [#14](https://github.com/sjvrensburg/RailReaderCore/issues/14) — a pure-managed text-only layout analyzer for Lite/web/mobile, modelled on
+huridocs's fast pipeline (`pdftohtml` → tabular features → two LightGBM
+models). **Held back from nuget.org** until the feature-engineering port
+lands and is validated; tracking issue [#16](https://github.com/sjvrensburg/RailReaderCore/issues/16).
+
+### Added (not yet published)
+
+- **`RailReader.Core.Analysis.LightGbm`** — new project. `IsPackable=false`
+  until the FE port resolves. Contains:
+  - `ITextLayoutAnalyzer` — sibling interface to `ILayoutAnalyzer` for
+    analyzers that work on the PDF text layer rather than a rasterised
+    pixmap. Capabilities advertise `InputSize=0` to signal "skip
+    rasterisation".
+  - `DocLayNetRoles` — 11-class DocLayNet → `BlockRole` mapping. Same
+    shape as the existing role classes in `Core.Analysis` for the ONNX
+    analyzers.
+  - `LineTokenizer.Tokenize(Page)` — clusters PdfPig `Letter`s into
+    baseline lines via mid-Y clustering with a 1×-median-letter-height
+    threshold; flips Y-up→Y-down to match Core's coordinate convention.
+    Functional and tested.
+  - `LightGbmLayoutAnalyzer(tokenTypeModelPath, paragraphModelPath)` —
+    constructor loads both models via `LightGBMNet.Tree`
+    (`OvaPredictor.FromFile` / `BinaryPredictor.FromFile`). `RunAnalysis`
+    throws `NotImplementedException` until the FE port lands.
+- **`scripts/download-model.sh lightgbm`** — pulls
+  `token_type_lightgbm.model` and `paragraph_extraction_lightgbm.model`
+  from `HURIDOCS/pdf-document-layout-analysis` on HuggingFace.
+  **Model sizes are 106 MB + 17 MB ≈ 123 MB combined** — much heavier
+  than initially estimated; honest sizing baseline before the FE port
+  invests in WASM-load engineering.
+
+### Shape assertions (load-bearing for the future FE port)
+
+- token-type model `NumInputs == 1968` (context_size 4 × 8 pairs ×
+  246 features/pair)
+- paragraph model `NumInputs == 536`
+
+### Tests
+
+- 10 new tests across `LineTokenizerTests.cs` (5) and
+  `LightGbmAnalyzerSmokeTests.cs` (5). Model-loading tests pass
+  trivially when model files aren't downloaded — keeps CI green on a
+  clean checkout. Suite total: 365 → **375 / 375**.
+
+### Dependency
+
+- `LightGBMNet.Tree` 1.0.* (MIT, netstandard2.0, zero NuGet deps,
+  pure-managed). Parses LightGBM's text-dump format directly. Last
+  release 2025-11-28. Not bound to native `lib_lightgbm`.
+
 ## 0.7.0
 
 Adds the rasterisation half of the Lite/web/mobile story. Pairs the

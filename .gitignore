@@ -8,8 +8,12 @@ obj/
 # Rust legacy build artifacts (local only)
 target/
 
-# ONNX model (large, downloaded via script)
+# Model artefacts (large, downloaded via scripts/download-model.sh)
 models/*.onnx
+models/*.model
+
+# Test runner output
+**/TestResults/
 
 # Project-local
 config.json
