@@ -27,7 +27,21 @@ namespace RailReader.Core.Services;
 public sealed record LayoutModelCapabilities(
     int InputSize,
     IReadOnlyList<LayoutClassDescriptor> Classes,
-    bool ProvidesReadingOrder);
+    bool ProvidesReadingOrder)
+{
+    /// <summary>
+    /// Looks up the role mapped to a class name in <see cref="Classes"/>.
+    /// Returns null if the name is unknown. Used by config-migration shims
+    /// that need to translate name-based persisted settings into role-based
+    /// settings.
+    /// </summary>
+    public BlockRole? RoleForName(string name)
+    {
+        foreach (var c in Classes)
+            if (c.Name == name) return c.Role;
+        return null;
+    }
+}
 
 /// <summary>One entry in a layout model's class table.</summary>
 public sealed record LayoutClassDescriptor(int Id, string Name, BlockRole Role);

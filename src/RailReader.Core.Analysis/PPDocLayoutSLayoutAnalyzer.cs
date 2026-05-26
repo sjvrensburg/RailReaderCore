@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using RailReader.Core;
@@ -62,8 +61,8 @@ public sealed class PPDocLayoutSLayoutAnalyzer : ILayoutAnalyzer
 {
     private const int ModelInputSize = PPDocLayoutSRoles.ModelInputSize;
 
-    private static readonly float[] ImageNetMean = [0.485f, 0.456f, 0.406f];
-    private static readonly float[] ImageNetStd  = [0.229f, 0.224f, 0.225f];
+    private static readonly float[] ImageNetMean = NormalizationConstants.ImageNetMean;
+    private static readonly float[] ImageNetStd  = NormalizationConstants.ImageNetStd;
 
     private readonly InferenceSession _session;
     private readonly LayoutModelCapabilities _capabilities;
@@ -74,41 +73,7 @@ public sealed class PPDocLayoutSLayoutAnalyzer : ILayoutAnalyzer
 
     public LayoutModelCapabilities Capabilities => _capabilities;
 
-    static PPDocLayoutSLayoutAnalyzer()
-    {
-        // Pre-load the OnnxRuntime native library before OnnxRuntime's own static
-        // initializer runs. Mirrors LayoutAnalyzer's static ctor — see that
-        // class for the full reasoning (resolver conflict avoidance).
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
-
-        string ext, fallbackRid;
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-        {
-            ext = ".dylib";
-            fallbackRid = "osx-arm64";
-        }
-        else
-        {
-            ext = ".so";
-            fallbackRid = "linux-x64";
-        }
-
-        string libName = $"libonnxruntime{ext}";
-        string[] candidates =
-        [
-            Path.Combine(AppContext.BaseDirectory,
-                "runtimes", RuntimeInformation.RuntimeIdentifier, "native", libName),
-            Path.Combine(AppContext.BaseDirectory,
-                "runtimes", fallbackRid, "native", libName),
-            Path.Combine(AppContext.BaseDirectory, libName),
-        ];
-
-        foreach (var path in candidates)
-        {
-            if (File.Exists(path) && NativeLibrary.TryLoad(path, out _))
-                return;
-        }
-    }
+    static PPDocLayoutSLayoutAnalyzer() => OnnxRuntimeInitializer.Ensure();
 
     /// <summary>
     /// Loads the PP-DocLayout-S ONNX model.
@@ -245,24 +210,9 @@ public sealed class PPDocLayoutSLayoutAnalyzer : ILayoutAnalyzer
             float xmax = detectionData[off + 4];
             float ymax = detectionData[off + 5];
 
-            if (confidence < LayoutConstants.ConfidenceThreshold) continue;
-            if (classId < 0 || classId >= classTable.Count) continue;
-
-            float x = Math.Max(xmin, 0);
-            float y = Math.Max(ymin, 0);
-            float w = Math.Min(xmax, pxW) - x;
-            float h = Math.Min(ymax, pxH) - y;
-
-            if (w < 5 || h < 5) continue;
-
-            rawBlocks.Add(new LayoutBlock
-            {
-                BBox = new BBox(x * mapScaleX, y * mapScaleY, w * mapScaleX, h * mapScaleY),
-                Role = classTable[classId].Role,
-                ClassId = classId,
-                Confidence = confidence,
-                Order = 0,
-            });
+            if (LayoutAnalyzer.TryBuildBlock(classId, confidence, xmin, ymin, xmax, ymax,
+                    pxW, pxH, mapScaleX, mapScaleY, classTable, order: 0, out var block))
+                rawBlocks.Add(block);
         }
 
         return rawBlocks;

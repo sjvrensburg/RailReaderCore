@@ -79,10 +79,5 @@ public static class PPDocLayoutSRoles
     /// or <c>"paragraph_title"</c>. Useful for config-migration shims that need
     /// to translate name-based persisted settings into role-based settings.
     /// </summary>
-    public static BlockRole? RoleForName(string name)
-    {
-        foreach (var c in Classes)
-            if (c.Name == name) return c.Role;
-        return null;
-    }
+    public static BlockRole? RoleForName(string name) => Capabilities.RoleForName(name);
 }

@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using RailReader.Core;
@@ -19,44 +18,7 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
 
     public LayoutModelCapabilities Capabilities => _capabilities;
 
-    static LayoutAnalyzer()
-    {
-        // Pre-load the OnnxRuntime native library before OnnxRuntime's own static
-        // initializer runs. NativeLibrary.TryLoad caches the handle so the subsequent
-        // P/Invoke inside OnnxRuntime finds it already loaded — no resolver conflict.
-        // (SetDllImportResolver can only be called once per assembly and OnnxRuntime
-        // registers its own, so we must not use it.)
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
-
-        // Platform-specific library name and fallback RIDs
-        string ext, fallbackRid;
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-        {
-            ext = ".dylib";
-            fallbackRid = "osx-arm64";
-        }
-        else
-        {
-            ext = ".so";
-            fallbackRid = "linux-x64";
-        }
-
-        string libName = $"libonnxruntime{ext}";
-        string[] candidates =
-        [
-            Path.Combine(AppContext.BaseDirectory,
-                "runtimes", RuntimeInformation.RuntimeIdentifier, "native", libName),
-            Path.Combine(AppContext.BaseDirectory,
-                "runtimes", fallbackRid, "native", libName),
-            Path.Combine(AppContext.BaseDirectory, libName),
-        ];
-
-        foreach (var path in candidates)
-        {
-            if (File.Exists(path) && NativeLibrary.TryLoad(path, out _))
-                return;
-        }
-    }
+    static LayoutAnalyzer() => OnnxRuntimeInitializer.Ensure();
 
     /// <summary>
     /// Loads PP-DocLayoutV3 (or any model conforming to the same input/output
@@ -183,24 +145,9 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
             float ymax = detectionData[off + 5];
             int modelOrder = hasReadingOrder ? (int)detectionData[off + 6] : 0;
 
-            if (confidence < LayoutConstants.ConfidenceThreshold) continue;
-            if (classId < 0 || classId >= classTable.Count) continue;
-
-            float x = Math.Max(xmin, 0);
-            float y = Math.Max(ymin, 0);
-            float w = Math.Min(xmax, pxW) - x;
-            float h = Math.Min(ymax, pxH) - y;
-
-            if (w < 5 || h < 5) continue;
-
-            rawBlocks.Add(new LayoutBlock
-            {
-                BBox = new BBox(x * mapScaleX, y * mapScaleY, w * mapScaleX, h * mapScaleY),
-                Role = classTable[classId].Role,
-                ClassId = classId,
-                Confidence = confidence,
-                Order = modelOrder,
-            });
+            if (TryBuildBlock(classId, confidence, xmin, ymin, xmax, ymax,
+                    pxW, pxH, mapScaleX, mapScaleY, classTable, modelOrder, out var block))
+                rawBlocks.Add(block);
         }
 
         return rawBlocks;
@@ -235,6 +182,41 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
             }
         }
         return chwData;
+    }
+
+    /// <summary>
+    /// Shared post-detection construction: validates confidence and class id,
+    /// clamps the box to the pixmap, rejects detections smaller than
+    /// <see cref="LayoutConstants.MinDetectionSizePx"/>, and scales the
+    /// pixel-space box into page-space via <paramref name="mapScaleX"/>/
+    /// <paramref name="mapScaleY"/>.
+    /// </summary>
+    internal static bool TryBuildBlock(
+        int classId, float confidence,
+        float xmin, float ymin, float xmax, float ymax,
+        int pxW, int pxH, float mapScaleX, float mapScaleY,
+        IReadOnlyList<LayoutClassDescriptor> classTable, int order,
+        out LayoutBlock block)
+    {
+        block = default!;
+        if (confidence < LayoutConstants.ConfidenceThreshold) return false;
+        if (classId < 0 || classId >= classTable.Count) return false;
+
+        float x = Math.Max(xmin, 0);
+        float y = Math.Max(ymin, 0);
+        float w = Math.Min(xmax, pxW) - x;
+        float h = Math.Min(ymax, pxH) - y;
+        if (w < LayoutConstants.MinDetectionSizePx || h < LayoutConstants.MinDetectionSizePx) return false;
+
+        block = new LayoutBlock
+        {
+            BBox = new BBox(x * mapScaleX, y * mapScaleY, w * mapScaleX, h * mapScaleY),
+            Role = classTable[classId].Role,
+            ClassId = classId,
+            Confidence = confidence,
+            Order = order,
+        };
+        return true;
     }
 
     internal static float Iou(BBox a, BBox b)
