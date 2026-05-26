@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.6.0
+
+Adds a fifth NuGet package — `RailReader.Core.PdfPig` — providing pure-
+managed implementations of the three PDF parsing services
+(`IPdfTextService`, `IPdfLinkService`, `IPdfOutlineService`) backed by
+[UglyToad.PdfPig](https://github.com/UglyToad/PdfPig). This is the
+unblock for the planned `RailReaderLite` (Avalonia.Browser) and future
+mobile targets — neither can ship PDFium. Rasterisation (`IPdfService`)
+stays out of scope for this package; it lives in a sibling renderer just
+as PDFium's parsing (`Core.Pdfium`) sits next to `Renderer.Skia`.
+
+### Added
+
+- **`RailReader.Core.PdfPig`** — new project with three services:
+  - `PdfTextService` — wraps `Page.Letters`, flips Y-up → Y-down using
+    page height, emits one `CharBox` per character in the concatenated
+    text (ligature glyphs whose `Letter.Value` is multi-char get one box
+    per char, all pointing at the same `BoundingBox` — matches PDFium's
+    per-codepoint behaviour so downstream indexing is identical).
+  - `PdfLinkService` — walks `Page.GetAnnotations()`, filters to
+    `AnnotationType.Link`, resolves `PdfAction` into `UriDestination` /
+    `PageDestination(PageIndex = PageNumber - 1, …)`. Single pass covers
+    both URI and internal-document links.
+  - `PdfOutlineService` — walks `PdfDocument.TryGetBookmarks(...)`, maps
+    `DocumentBookmarkNode.PageNumber` (1-indexed) to Core's
+    `OutlineEntry.Page` (0-indexed). `ContainerBookmarkNode` (group-only)
+    yields entries with null page, matching PDFium's output shape.
+- **Cross-backend invariant.** Page indexes are 0-based on the Core
+  interface; both PDFium and PdfPig implementations handle the conversion
+  internally so consumers swap backends without index drift.
+
+### Tests
+
+- `tests/RailReader.Core.Tests/PdfPigServiceTests.cs` — 8 standalone
+  tests against the synthetic `TestFixtures.GetTestPdfPath()` PDF.
+  351 prior + 8 new = **359/359** pass.
+- **Documented limitation:** in-process cross-backend tests
+  (PDFium and PdfPig on the same byte[] in one xUnit test method) crash
+  the test host — almost certainly a native/managed allocator interaction
+  via PDFium's loaded shared library. Each backend works fine on its own;
+  real consumers only pick one factory anyway. Convergence-style asserts
+  should use golden files or separate test assemblies in the future.
+
 ## 0.5.1
 
 Pure internal refactor of `RailReader.Core.Analysis` to remove duplication
