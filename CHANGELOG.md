@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.8.0 — surface cleanup
+
+Pure cleanup pass. No new functionality. Public-API change: one
+type's access modifier widened (additive), one type removed
+(subtractive).
+
+### Removed
+
+- **`TopDownReadingOrderResolver`** + its tests. Never wired into
+  `AnalysisWorker`; the production resolver pair has always been
+  `ModelOrderResolver` (for model-supplied order) and
+  `XYCutPlusPlusResolver` (for unsupervised column-aware ordering).
+  The top-down resolver was a reference implementation kept around
+  for comparison and is no longer useful.
+- **`RailReader.Core.Analysis.LightGbm`** package + the
+  `LineTokenizer` / `LineToken` / `DocLayNetRoles` /
+  `ITextLayoutAnalyzer` / `LightGbmLayoutAnalyzer` scaffolding.
+  Held back from NuGet via `IsPackable=false` throughout and never
+  carried a real feature-engineering implementation. The intended
+  path (huridocs-style text-only DLA via two LightGBM models) is
+  superseded by the strategic move to native-mobile + ONNX
+  PP-DocLayoutV3, where the model size constraint that motivated
+  the LightGBM path no longer applies. Removed the corresponding
+  `lightgbm` target from `scripts/download-model.sh`.
+
+### Changed
+
+- **`LineDetector` is now `public`** (was `internal`). Lite v0.8.0
+  had to re-port the char-cluster line-detection algorithm because
+  the type was inaccessible from outside the assembly; the planned
+  .NET MAUI mobile build will hit the same problem against the
+  same algorithm. Promoting to `public` removes the duplication
+  for any downstream consumer that needs in-block line detection.
+  Pure additive surface change.
+
 ## 0.7.3
 
 ### Fixed

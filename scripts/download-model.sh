@@ -6,7 +6,6 @@
 #   ./download-model.sh ppdoc       # PP-DocLayoutV3 only
 #   ./download-model.sh pps         # PP-DocLayout-S only (lightweight, ~4.7 MB)
 #   ./download-model.sh heron       # Docling Heron only
-#   ./download-model.sh lightgbm    # huridocs LightGBM (token type + paragraph; ~few hundred KB)
 #   ./download-model.sh all         # all of the above
 set -e
 
@@ -63,25 +62,6 @@ download_heron() {
     echo "Downloaded to $path ($(du -h "$path" | cut -f1))"
 }
 
-download_lightgbm() {
-    # huridocs's fast text-only DLA pipeline. Two LightGBM models, each
-    # in LightGBM's plain text-dump format (loadable via lgb.Booster on
-    # Python side, via LightGBMNet.Tree.OvaPredictor / BinaryPredictor
-    # on .NET). Total ~few hundred KB combined. License: Apache-2.0
-    # (trained on DocLayNet, CDLA-Permissive-1.0).
-    local base="https://huggingface.co/HURIDOCS/pdf-document-layout-analysis/resolve/main"
-    for f in token_type_lightgbm.model paragraph_extraction_lightgbm.model; do
-        local path="$MODEL_DIR/$f"
-        if [ -f "$path" ]; then
-            echo "$f already exists at $path"
-            continue
-        fi
-        echo "Downloading $f..."
-        curl -L -o "$path" "$base/$f"
-        echo "Downloaded to $path ($(du -h "$path" | cut -f1))"
-    done
-}
-
 case "$WHICH" in
     ppdoc|pp|ppdoclayoutv3)
         download_ppdoc
@@ -92,14 +72,10 @@ case "$WHICH" in
     heron|docling)
         download_heron
         ;;
-    lightgbm|lgbm|huridocs)
-        download_lightgbm
-        ;;
     all)
         download_ppdoc
         download_pps
         download_heron
-        download_lightgbm
         ;;
     both)
         download_ppdoc
@@ -107,7 +83,7 @@ case "$WHICH" in
         ;;
     *)
         echo "Unknown model: $WHICH" >&2
-        echo "Usage: $0 [ppdoc|pps|heron|lightgbm|all]" >&2
+        echo "Usage: $0 [ppdoc|pps|heron|all]" >&2
         exit 1
         ;;
 esac
