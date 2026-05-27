@@ -17,7 +17,7 @@ namespace RailReader.Core.Services;
 ///      rasterized page. Used for scanned PDFs and any block where char
 ///      clustering produced nothing.
 /// </summary>
-internal static class LineDetector
+public static class LineDetector
 {
     /// <summary>
     /// Block roles treated as a single atomic line in rail mode. Only purely

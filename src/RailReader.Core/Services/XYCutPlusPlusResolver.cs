@@ -21,9 +21,9 @@ public enum ReadingDirection
 
 /// <summary>
 /// Column-aware recursive XY-cut reading-order resolver. Pure geometry — no
-/// model, no IO. Designed for the common academic-paper layouts that
-/// <see cref="TopDownReadingOrderResolver"/> mis-orders: two- and three-column
-/// pages, full-width titles and figures interleaved with column text, and
+/// model, no IO. Designed for the common academic-paper layouts that a
+/// naive top-down Y-then-X sort mis-orders: two- and three-column pages,
+/// full-width titles and figures interleaved with column text, and
 /// page-bottom footnotes.
 ///
 /// <para>
