@@ -57,6 +57,9 @@ public sealed class HeronLayoutAnalyzer : ILayoutAnalyzer
 
     public LayoutModelCapabilities Capabilities => _capabilities;
 
+    /// <summary>Perf-analysis seam: lets a harness tune SessionOptions (thread count, execution mode) before the session is built. Null in normal use.</summary>
+    public static Action<SessionOptions>? ConfigureSession;
+
     static HeronLayoutAnalyzer() => OnnxRuntimeInitializer.Ensure();
 
     /// <summary>
@@ -75,6 +78,7 @@ public sealed class HeronLayoutAnalyzer : ILayoutAnalyzer
         var opts = new SessionOptions();
         opts.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
         opts.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
+        ConfigureSession?.Invoke(opts);
         _session = new InferenceSession(modelPath, opts);
 
         RailReaderLogging.Logger.Debug($"[Heron ONNX] Input names: {string.Join(", ", _session.InputNames)}");

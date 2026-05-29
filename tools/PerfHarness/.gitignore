@@ -1,0 +1,4 @@
+bin/
+obj/
+*-result.txt
+last-run.txt

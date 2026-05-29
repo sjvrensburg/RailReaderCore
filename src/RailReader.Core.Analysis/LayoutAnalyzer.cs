@@ -18,6 +18,15 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
 
     public LayoutModelCapabilities Capabilities => _capabilities;
 
+    /// <summary>
+    /// Optional hook to customise the ONNX <see cref="SessionOptions"/> before
+    /// the inference session is created — e.g. capping <c>IntraOpNumThreads</c>
+    /// for a low-core target or registering a hardware execution provider.
+    /// Invoked once per analyzer construction, after the defaults are applied.
+    /// Null (the default) leaves the session at its built-in configuration.
+    /// </summary>
+    public static Action<SessionOptions>? ConfigureSession;
+
     static LayoutAnalyzer() => OnnxRuntimeInitializer.Ensure();
 
     /// <summary>
@@ -39,6 +48,7 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
         opts.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
         // Suppress noisy NCHWc Conv kernel warnings while preserving genuine errors
         opts.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
+        ConfigureSession?.Invoke(opts);
         _session = new InferenceSession(modelPath, opts);
 
         RailReaderLogging.Logger.Debug($"[ONNX] Input names: {string.Join(", ", _session.InputNames)}");

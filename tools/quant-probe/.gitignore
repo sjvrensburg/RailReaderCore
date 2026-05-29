@@ -1,0 +1,5 @@
+# Bulky / generated quantization artifacts — keep the .py scripts, not these.
+rasters/
+out/
+*.onnx
+*-result.txt
