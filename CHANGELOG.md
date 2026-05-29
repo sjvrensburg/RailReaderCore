@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.9.0 — model selection + INT8 Heron default
+
+Adds first-class model selection and makes a quantized Docling Heron the
+recommended default. The headline is a **2.6–3× faster** layout-analysis
+inference path (backbone-only INT8 Heron) at ~0.99 detection agreement with
+FP32 Heron on held-out academic pages.
+
+### ⚠ Breaking
+
+- **`LayoutModelLocator.FindModelPath()` now probes for the default model
+  (`docling-layout-heron-int8.onnx`), not `PP-DocLayoutV3.onnx`.** The returned
+  file is a **Heron** model and can only be run by `HeronLayoutAnalyzer` — code
+  that previously fed this path into the V3 `LayoutAnalyzer` will break at
+  runtime. Migrate to `LayoutAnalyzerFactory.Create(...)`, or pass an explicit
+  descriptor: `LayoutModelLocator.FindModelPath(LayoutModelRegistry.PPDocLayoutV3)`.
+  New filename-/descriptor-taking overloads of `FindModelPath` are available.
+
+### Added
+
+- **`LayoutModelArchitecture`** (Core) — enum of the ONNX architecture families
+  (`PPDocLayoutV3`, `PPDocLayoutS`, `Heron`).
+- **`LayoutModelDescriptor`** (Core) — self-describing model entry: id, display
+  name, architecture, on-disk filename, download URL, raster input size,
+  reading-order flag, quantized flag.
+- **`LayoutModelRegistry`** (Core) — canonical model set with `Default` =
+  backbone-INT8 Heron (`heron-int8`), plus `Heron`, `PPDocLayoutV3`,
+  `PPDocLayoutS`, `All`, and `ById(...)`.
+- **`LayoutAnalyzerFactory`** (Core.Analysis) — maps an architecture/descriptor
+  to the correct `ILayoutAnalyzer` and exposes `CapabilitiesFor(...)` for eager
+  `AnalysisWorker` wiring.
+- **`ConfigureSession`** static hook on all three analyzers (null by default) —
+  customise ONNX `SessionOptions` (thread count, execution provider) before the
+  inference session is created.
+- **`scripts/download-model.sh`** now defaults to `heron-int8` and supports the
+  `heron-int8` target (model published at
+  `stefanj0/docling-layout-heron-int8-onnx` on HuggingFace, ~69 MB).
+
+### Notes
+
+- The INT8 Heron model is a separate download; it is not embedded in any NuGet
+  package. Quantization recipe, validation harness, and results are in
+  `tools/quant-probe/README.md` (backbone-only QDQ; decoder kept FP32;
+  validated at recall=0.990 / IoU=0.984 vs FP32 Heron on 88 held-out pages).
+- CI/release pipeline is unchanged — build, test, pack, publish only; no model.
+- Note: `v0.8.0` code reached `main` but was never tagged; `0.9.0` is the
+  successor to the last published release (`0.7.3`).
+
 ## 0.8.0 — surface cleanup
 
 Pure cleanup pass. No new functionality. Public-API change: one
