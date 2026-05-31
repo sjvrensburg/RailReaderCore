@@ -320,6 +320,87 @@ public class XYCutPlusPlusResolverTests
         Assert.Equal(new[] { "LEFT", "RIGHT" }.Select(t => t.GetHashCode()), blocks.Select(Id));
     }
 
+    // -----------------------------------------------------------------
+    // Many headings + short paragraphs: phantom-gutter rejection,
+    // Y-primary leaf ordering, and heading attachment.
+    // -----------------------------------------------------------------
+
+    [Fact]
+    public void RealPage_ContributionsThenSectionHeading_HeadingDoesNotJumpAheadOfBullet()
+    {
+        // Exact geometry from "Foundation Models for Time Series Analysis"
+        // (KDD'24), page 2 right column. The "2 Background" heading (y=357) must
+        // NOT be ordered ahead of the "Future research" bullet (y=311) above it.
+        // Regression for the density-guard + text-stream-sort interaction.
+        var bComp = Block(317.1f, 212.7f, 242.8f, 40.9f, tag: "comprehensive");
+        var bNovel = Block(316.8f, 257.4f, 242.6f, 51.2f, tag: "novel");
+        var bFuture = Block(317.0f, 311.7f, 242.0f, 30.7f, tag: "future");
+        var hBackground = Block(317.0f, 357.1f, 77.9f, 10.6f, role: BlockRole.Heading, tag: "2-background");
+        var bFoundation = Block(316.9f, 372.3f, 242.9f, 150.1f, tag: "foundation-models");
+
+        var blocks = new List<LayoutBlock> { hBackground, bFuture, bComp, bFoundation, bNovel };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 612, 792);
+
+        var order = blocks.Select(Id).ToList();
+        Assert.Equal(
+            new[] { "comprehensive", "novel", "future", "2-background", "foundation-models" }
+                .Select(t => t.GetHashCode()),
+            order);
+    }
+
+    [Fact]
+    public void RaggedShortParagraphs_NoPhantomColumnSplit()
+    {
+        // A single column of short, ragged-right one-sentence paragraphs. Their
+        // right edges vary, manufacturing a >12pt non-straddled gap on the right —
+        // but it does not span the column height, so it must be rejected.
+        var p0 = Block(40,  50, 380, 24, tag: "p0"); // right edge 420
+        var p1 = Block(40,  84, 250, 24, tag: "p1"); // right edge 290 (ragged)
+        var p2 = Block(40, 118, 300, 24, tag: "p2"); // right edge 340
+        var p3 = Block(40, 152, 210, 24, tag: "p3"); // right edge 250
+
+        var blocks = new List<LayoutBlock> { p2, p0, p3, p1 };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 480, 800);
+
+        Assert.Equal(new[] { "p0", "p1", "p2", "p3" }.Select(t => t.GetHashCode()),
+            blocks.Select(Id));
+    }
+
+    [Fact]
+    public void HeadingAttachment_HeadingPulledDownToItsBody()
+    {
+        // A heading whose body sits just below it must read immediately before
+        // that body even if another block shares the region.
+        var prevPara = Block(40,  40, 400, 60, tag: "prev");
+        var heading = Block(40, 120, 120, 14, role: BlockRole.Heading, tag: "H");
+        var body = Block(40, 140, 400, 80, tag: "body");
+
+        var blocks = new List<LayoutBlock> { prevPara, heading, body };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 480, 800);
+
+        var order = blocks.Select(Id).ToList();
+        int iH = order.IndexOf(Id(heading)), iBody = order.IndexOf(Id(body));
+        Assert.Equal(iH + 1, iBody); // heading immediately precedes its body
+        Assert.True(order.IndexOf(Id(prevPara)) < iH);
+    }
+
+    [Fact]
+    public void NarrowSidebar_BelowMinColumnWidth_NotTreatedAsColumn()
+    {
+        // A 40pt-wide sliver beside a wide body. The gap between them exceeds the
+        // gutter threshold, but the sliver is under MinColumnWidthFraction of the
+        // region — it must not become a phantom first column read entirely first.
+        var sliver = Block(20, 60, 40, 200, tag: "sliver");
+        var body0 = Block(120, 60, 400, 60, tag: "b0");
+        var body1 = Block(120, 140, 400, 60, tag: "b1");
+
+        var blocks = new List<LayoutBlock> { body1, sliver, body0 };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 600, 800);
+
+        // The sliver is not pulled ahead of the whole body as a column.
+        Assert.NotEqual(Id(sliver), blocks.Select(Id).First());
+    }
+
     [Fact]
     public void TinyVerticalGapBelowGutterThreshold_DoesNotSplitColumns()
     {
