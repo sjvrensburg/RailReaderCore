@@ -161,6 +161,48 @@ public class SearchServiceTests : IDisposable
     }
 
     [Fact]
+    public void DocumentChange_ClearsStaleSearchMatches()
+    {
+        // Simulate: search ran against _state (document A), results cached.
+        var matches = MakeMatches(0, 1, 2);
+        _search.FinalizeSearch(_state, matches);
+        Assert.Equal(3, _search.SearchMatches.Count);
+
+        // Now the "active document" switches to a new DocumentState (document B).
+        var factory = TestFixtures.CreatePdfFactory();
+        var pdfPath = TestFixtures.GetTestPdfPath();
+        DocumentState? docB = new DocumentState(pdfPath,
+            factory.CreatePdfService(pdfPath),
+            factory.CreatePdfTextService(),
+            factory.CreatePdfLinkService(),
+            new AppConfig().ToCoreSettings(),
+            new SynchronousThreadMarshaller());
+        try
+        {
+            DocumentState? activeDoc = _state;
+            var search = new SearchService(
+                () => activeDoc,
+                () => (800.0, 600.0),
+                _ => { });
+
+            // Establish search results against docA
+            search.FinalizeSearch(_state, matches);
+            Assert.Equal(3, search.SearchMatches.Count);
+
+            // Switch active document to docB (simulates file open)
+            activeDoc = docB;
+
+            // Navigation entry-points must detect the change and clear stale results
+            search.NextMatch();
+            Assert.Empty(search.SearchMatches);
+        }
+        finally
+        {
+            docB.Dispose();
+        }
+    }
+
+    [Fact]
     public void GoToMatch_OutOfRange_NoOp()
     {
         var matches = MakeMatches(0, 0);

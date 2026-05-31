@@ -35,6 +35,18 @@ public sealed class SearchService
     private Dictionary<int, List<SearchMatch>> _searchMatchesByPage = [];
     public List<SearchMatch>? CurrentPageSearchMatches { get; private set; }
     public int ActiveMatchIndex { get; set; }
+    private DocumentState? _searchedDocument;
+
+    /// <summary>
+    /// Clears search state when the active document has changed since the last search.
+    /// Prevents stale results from a previous document appearing on a newly-opened one.
+    /// </summary>
+    private void ClearIfDocumentChanged()
+    {
+        var current = _getActiveDocument();
+        if (!ReferenceEquals(current, _searchedDocument))
+            CloseSearch();
+    }
 
     public void CloseSearch()
     {
@@ -42,6 +54,7 @@ public sealed class SearchService
         _searchMatchesByPage = [];
         CurrentPageSearchMatches = null;
         ActiveMatchIndex = 0;
+        _searchedDocument = null;
     }
 
     public void ExecuteSearch(string query, bool caseSensitive, bool useRegex)
@@ -117,6 +130,7 @@ public sealed class SearchService
     /// </summary>
     public void FinalizeSearch(DocumentState doc, List<SearchMatch> allMatches)
     {
+        _searchedDocument = doc;
         SearchMatches = allMatches;
         var byPage = new Dictionary<int, List<SearchMatch>>();
         foreach (var m in allMatches)
@@ -140,6 +154,7 @@ public sealed class SearchService
 
     public void NextMatch()
     {
+        ClearIfDocumentChanged();
         if (SearchMatches.Count == 0) return;
         ActiveMatchIndex = (ActiveMatchIndex + 1) % SearchMatches.Count;
         NavigateToActiveMatch();
@@ -148,6 +163,7 @@ public sealed class SearchService
 
     public void PreviousMatch()
     {
+        ClearIfDocumentChanged();
         if (SearchMatches.Count == 0) return;
         ActiveMatchIndex = (ActiveMatchIndex - 1 + SearchMatches.Count) % SearchMatches.Count;
         NavigateToActiveMatch();
@@ -156,6 +172,7 @@ public sealed class SearchService
 
     public void GoToMatch(int matchIndex)
     {
+        ClearIfDocumentChanged();
         if (matchIndex < 0 || matchIndex >= SearchMatches.Count) return;
         ActiveMatchIndex = matchIndex;
         NavigateToActiveMatch();
@@ -164,6 +181,7 @@ public sealed class SearchService
 
     public (string Pre, string Match, string Post) GetMatchSnippet(SearchMatch match, int contextChars = 40)
     {
+        ClearIfDocumentChanged();
         var text = _getActiveDocument()?.GetOrExtractText(match.PageIndex).Text;
         if (text is null) return ("", "", "");
 
