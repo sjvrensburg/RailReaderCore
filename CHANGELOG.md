@@ -36,6 +36,17 @@ section heading).
   1,195-page real-PDF corpus (vs PP-DocLayout-V3's own reading order as
   reference): two-column interleaving dropped from ~40% to ~27% of two-column
   pages and mean body reading-order disagreement fell ~19%.
+- **Projection-profile column-split fallback — hybrid detector.** When the
+  straddler sweep finds no clean gutter (a block crosses the column boundary), a
+  vertical-coverage projection profile is tried: it locates a low-coverage valley
+  (≤`ProjectionValleyCoverage` of region height) flanked by two real column bands
+  (≥`ProjectionFlankCoverage`), requiring ≥2 stacked blocks per side. This
+  survives a thin/short block (stray figure, equation, wide caption) crossing the
+  gutter — the case pure XY-cut cannot resolve — while the stack requirement and
+  flank test prevent splitting genuine single columns. On the same 1,195-page
+  corpus this halved residual interleaving again (~27% → ~13.5% of two-column
+  pages) and lowered body reading-order disagreement a further ~11% (cumulative
+  ~28% reduction vs the prior release).
 
 ## 0.10.0 — XY-Cut++ reading order for model-less detectors
 

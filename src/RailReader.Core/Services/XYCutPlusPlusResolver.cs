@@ -131,6 +131,23 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     /// </summary>
     public const float HeadingAttachGapPoints = 36f;
 
+    /// <summary>
+    /// Projection-profile gutter: an interior X position counts as a column
+    /// gutter only if the fraction of the region height covered by content there
+    /// is at or below this value. The straddler sweep requires a gutter to be
+    /// crossed by <i>no</i> block; the projection profile relaxes that to "almost
+    /// no" content, so a thin/short block crossing the gutter (a stray figure,
+    /// an equation that pokes across) no longer hides the columns.
+    /// </summary>
+    public const float ProjectionValleyCoverage = 0.18f;
+
+    /// <summary>
+    /// Projection-profile gutter: the columns flanking the valley must each cover
+    /// at least this fraction of the region height somewhere, so a mere dip in a
+    /// single sparse column is not mistaken for a gutter.
+    /// </summary>
+    public const float ProjectionFlankCoverage = 0.45f;
+
     private readonly ReadingDirection _direction;
 
     public XYCutPlusPlusResolver(ReadingDirection direction = ReadingDirection.LeftToRightTopToBottom)
@@ -285,12 +302,22 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         var splitX = FindColumnSplit(blocks);
         if (splitX is float sx)
         {
+            // Partition by block centre: for a clean (straddler-validated) split
+            // no block crosses sx so this matches edge-based partition exactly;
+            // for a projection split a crosser is assigned to its majority side.
             var left = new List<LayoutBlock>(blocks.Count);
             var right = new List<LayoutBlock>(blocks.Count);
             foreach (var b in blocks)
             {
-                if (b.BBox.X + b.BBox.W <= sx) left.Add(b);
+                if (b.BBox.X + b.BBox.W * 0.5f < sx) left.Add(b);
                 else right.Add(b);
+            }
+            // Safety: if centre-partition somehow leaves one side empty (e.g. all
+            // centres on one side of a projection split), don't recurse infinitely.
+            if (left.Count == 0 || right.Count == 0)
+            {
+                foreach (var b in OrderLeaf(blocks, charBoxes)) output.Add(b);
+                return;
             }
             Cut(left, output, charBoxes);
             Cut(right, output, charBoxes);
@@ -624,7 +651,102 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
             if (IsValidColumnSplit(blocks, g.Mid, regH, regW))
                 return g.Mid;
         }
-        return null;
+
+        // Fallback: the straddler sweep found no clean gutter (something crosses
+        // the column boundary). Try a vertical-coverage projection profile, which
+        // tolerates thin/short crossers.
+        return FindProjectionSplit(blocks, regTop, regBottom, regLeft, regRight, regH, regW);
+    }
+
+    /// <summary>
+    /// Projection-profile column finder. Samples the fraction of the region
+    /// height covered by content across X, then looks in the interior for the
+    /// lowest-coverage position (a candidate gutter) that is (a) at or below
+    /// <see cref="ProjectionValleyCoverage"/>, (b) flanked on both sides by a band
+    /// reaching <see cref="ProjectionFlankCoverage"/>, and (c) validated for
+    /// balance/width by <see cref="IsValidCenterSplit"/>. Unlike the straddler
+    /// sweep this survives a single block crossing the gutter, because one short
+    /// crosser contributes little coverage at the gutter X. Returns the split X
+    /// or null.
+    /// </summary>
+    private static float? FindProjectionSplit(List<LayoutBlock> blocks,
+        float regTop, float regBottom, float regLeft, float regRight, float regH, float regW)
+    {
+        if (regH <= 0 || regW <= 0) return null;
+
+        int bins = Math.Clamp((int)regW, 32, 512);
+        float binW = regW / bins;
+        var cov = new float[bins];
+        for (int i = 0; i < bins; i++)
+        {
+            float x = regLeft + (i + 0.5f) * binW;
+            cov[i] = CoverageAtX(blocks, x) / regH;
+        }
+
+        // Restrict the search to the interior so we never split off a sliver.
+        int margin = Math.Max(1, (int)(bins * MinColumnWidthFraction));
+        int lo = margin, hi = bins - margin;
+        if (hi - lo < 1) return null;
+
+        int valley = -1;
+        float min = float.MaxValue;
+        for (int i = lo; i < hi; i++)
+            if (cov[i] < min) { min = cov[i]; valley = i; }
+
+        if (valley < 0 || min > ProjectionValleyCoverage) return null;
+
+        // Both flanks must contain a substantial column somewhere.
+        float leftMax = 0f, rightMax = 0f;
+        for (int i = 0; i < valley; i++) leftMax = Math.Max(leftMax, cov[i]);
+        for (int i = valley + 1; i < bins; i++) rightMax = Math.Max(rightMax, cov[i]);
+        if (leftMax < ProjectionFlankCoverage || rightMax < ProjectionFlankCoverage) return null;
+
+        float splitX = regLeft + (valley + 0.5f) * binW;
+        return IsValidCenterSplit(blocks, splitX, regH, regW) ? splitX : (float?)null;
+    }
+
+    /// <summary>Union vertical extent (page points) covered by blocks spanning column X.</summary>
+    private static float CoverageAtX(List<LayoutBlock> blocks, float x)
+    {
+        var intervals = new List<(float S, float E)>();
+        foreach (var b in blocks)
+            if (b.BBox.X <= x && x <= b.BBox.X + b.BBox.W)
+                intervals.Add((b.BBox.Y, b.BBox.Y + b.BBox.H));
+        if (intervals.Count == 0) return 0f;
+        intervals.Sort((a, b) => a.S.CompareTo(b.S));
+        float total = 0f, curS = intervals[0].S, curE = intervals[0].E;
+        for (int i = 1; i < intervals.Count; i++)
+        {
+            var (s, e) = intervals[i];
+            if (s > curE) { total += curE - curS; curS = s; curE = e; }
+            else if (e > curE) curE = e;
+        }
+        total += curE - curS;
+        return total;
+    }
+
+    /// <summary>
+    /// Like <see cref="IsValidColumnSplit"/> but partitions by block centre (so a
+    /// block crossing <paramref name="splitX"/> is assigned to the side it mostly
+    /// sits on) — used for projection splits where a crosser may exist.
+    /// </summary>
+    private static bool IsValidCenterSplit(List<LayoutBlock> blocks, float splitX, float regH, float regW)
+    {
+        var left = blocks.Where(b => b.BBox.X + b.BBox.W * 0.5f < splitX).ToList();
+        var right = blocks.Where(b => b.BBox.X + b.BBox.W * 0.5f >= splitX).ToList();
+        // A column is a *stack* of blocks; require ≥2 each side so a single
+        // side-by-side pair (e.g. two cells of one line) isn't read as columns.
+        // The precise straddler path stays permissive; only this fallback does.
+        if (left.Count < 2 || right.Count < 2) return false;
+        if (regH > 0 && (UnionHeight(left) < MinColumnCoverageFraction * regH
+                      || UnionHeight(right) < MinColumnCoverageFraction * regH)) return false;
+        if (regW > 0)
+        {
+            float leftW = left.Max(b => b.BBox.X + b.BBox.W) - left.Min(b => b.BBox.X);
+            float rightW = right.Max(b => b.BBox.X + b.BBox.W) - right.Min(b => b.BBox.X);
+            if (Math.Min(leftW, rightW) < MinColumnWidthFraction * regW) return false;
+        }
+        return true;
     }
 
     /// <summary>

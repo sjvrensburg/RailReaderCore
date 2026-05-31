@@ -445,10 +445,54 @@ public class XYCutPlusPlusResolverTests
     }
 
     [Fact]
-    public void TinyVerticalGapBelowGutterThreshold_DoesNotSplitColumns()
+    public void TwoColumns_WithContentBlockCrossingGutter_ProjectionSplitRecoversColumns()
     {
-        // 5pt gap between two stacks of blocks — under MinColumnGutterPoints (12pt).
-        // Should fall through to a horizontal cut and read top-to-bottom.
+        // A wide figure pokes across the gutter mid-page while both columns
+        // continue above and below it. The straddler sweep finds no clean gutter
+        // (the figure bridges left↔right), but the projection profile sees a
+        // low-coverage valley at the gutter and still splits column-first.
+        var lTop = Block(40,  60, 240, 80, tag: "Lt");
+        var lMid = Block(40, 380, 240, 80, tag: "Lm");
+        var lBot = Block(40, 560, 240, 80, tag: "Lb");
+        var rTop = Block(310, 60, 240, 80, tag: "Rt");
+        var rMid = Block(310, 380, 240, 80, tag: "Rm");
+        var rBot = Block(310, 560, 240, 80, tag: "Rb");
+        // Figure crossing the gutter (x 250→520) over a short y-band only.
+        var fig = Block(250, 250, 270, 60, role: BlockRole.Figure, tag: "Fig");
+
+        var blocks = new List<LayoutBlock> { rBot, lTop, fig, rMid, lBot, rTop, lMid };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 600, 800);
+
+        var order = blocks.Select(Id).ToList();
+        // All left-column blocks precede all right-column blocks (not interleaved).
+        int lastLeft = new[] { lTop, lMid, lBot }.Max(b => order.IndexOf(Id(b)));
+        int firstRight = new[] { rTop, rMid, rBot }.Min(b => order.IndexOf(Id(b)));
+        Assert.True(lastLeft < firstRight, $"columns interleaved: lastLeft={lastLeft} firstRight={firstRight}");
+    }
+
+    [Fact]
+    public void SingleColumn_ProjectionDoesNotInventAColumn()
+    {
+        // One dense column of full-width paragraphs: no interior coverage valley,
+        // so the projection fallback must NOT split it.
+        var blocks = new List<LayoutBlock>
+        {
+            Block(40,  50, 480, 60, tag: "p0"),
+            Block(40, 120, 480, 60, tag: "p1"),
+            Block(40, 190, 480, 60, tag: "p2"),
+            Block(40, 260, 480, 60, tag: "p3"),
+        };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 560, 800);
+        Assert.Equal(new[] { "p0", "p1", "p2", "p3" }.Select(t => t.GetHashCode()), blocks.Select(Id));
+    }
+
+    [Fact]
+    public void TightGutterTwoStacks_ProjectionReadsColumnFirst()
+    {
+        // Two clean vertical stacks separated by only a 5pt gutter — below the
+        // straddler floor, so the straddler sweep won't split. But the projection
+        // profile sees a full-height zero-coverage valley flanked by two stacks
+        // (≥2 blocks each) and correctly reads it column-first.
         var a = Block(40,  50, 200, 30, tag: "a");
         var b = Block(245, 50, 200, 30, tag: "b");
         var c = Block(40, 100, 200, 30, tag: "c");
@@ -457,8 +501,8 @@ public class XYCutPlusPlusResolverTests
         var blocks = new List<LayoutBlock> { d, b, c, a };
         new XYCutPlusPlusResolver().AssignOrder(blocks, 480, 800);
 
-        // No column split → row-major (top-down, then left-to-right).
-        Assert.Equal(new[] { "a", "b", "c", "d" }.Select(t => t.GetHashCode()),
+        // Column-first: left stack (a,c) before right stack (b,d).
+        Assert.Equal(new[] { "a", "c", "b", "d" }.Select(t => t.GetHashCode()),
             blocks.Select(Id));
     }
 }
