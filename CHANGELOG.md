@@ -26,6 +26,16 @@ section heading).
 - **Heading attachment.** A final pass keeps each `Heading`/`Title` immediately
   ahead of the body block directly beneath it (`HeadingAttachGapPoints`), so a
   heading is never stranded from the text it introduces.
+- **Furniture pre-masking + lower gutter floor — fewer two-column interleaves.**
+  Running headers, footers and page numbers are now lifted out before the cut
+  (and re-anchored at their spatial position afterward), so a page number or
+  header crossing the column boundary no longer suppresses the gutter and forces
+  the whole page to read as a single interleaved column. `MinColumnGutterPoints`
+  is lowered 12 → 7pt to catch the tight gutters (8–11pt) common in journals,
+  now safe because of the coverage/width validation above. Measured on a
+  1,195-page real-PDF corpus (vs PP-DocLayout-V3's own reading order as
+  reference): two-column interleaving dropped from ~40% to ~27% of two-column
+  pages and mean body reading-order disagreement fell ~19%.
 
 ## 0.10.0 — XY-Cut++ reading order for model-less detectors
 

@@ -79,11 +79,13 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
 {
     /// <summary>
     /// Minimum width (in page points) for a vertical gap to qualify as a
-    /// column gutter. Academic-paper gutters are typically 20–50pt; this floor
-    /// prevents tiny rendering-noise gaps inside a single column from being
-    /// mistaken for a column boundary.
+    /// column gutter. Many journals set column gutters as tight as 8–11pt, so
+    /// this floor is deliberately low; the false positives a low floor would
+    /// otherwise admit (ragged-text gaps, slivers) are rejected downstream by
+    /// <see cref="MinColumnCoverageFraction"/> / <see cref="MinColumnWidthFraction"/>
+    /// validation, which makes the floor safe to lower.
     /// </summary>
-    public const float MinColumnGutterPoints = 12f;
+    public const float MinColumnGutterPoints = 7f;
 
     /// <summary>
     /// Minimum height (in page points) for a horizontal gap to qualify as a
@@ -189,10 +191,19 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     /// <summary>
     /// Partitions <paramref name="all"/> into <paramref name="masked"/> (floating
     /// blocks lifted out before cutting) and <paramref name="body"/> (everything
-    /// the recursive cut sees). A block is masked when it is either a margin note
-    /// (narrow, sitting beside a much wider block) or a clipping spanner (a large
-    /// block that 2D-overlaps another block rather than cleanly dividing the
-    /// page). Full-width dividers — which y-overlap nothing — are left in the body.
+    /// the recursive cut sees). A block is masked when it is page furniture
+    /// (running header / footer / page number), a margin note (narrow, sitting
+    /// beside a much wider block), or a clipping spanner (a large block that
+    /// 2D-overlaps another block rather than cleanly dividing the page).
+    /// Full-width dividers — which y-overlap nothing — are left in the body.
+    ///
+    /// <para>
+    /// Furniture is masked because a header/footer/page number positioned across
+    /// the column boundary bridges the two columns in the XY-cut sweep and so
+    /// suppresses the column gutter entirely — defeating the split for the whole
+    /// page. Lifting it out (and re-inserting it at the page extremes) lets the
+    /// columns be found.
+    /// </para>
     /// </summary>
     private static void PreMask(List<LayoutBlock> all, List<LayoutBlock> masked, List<LayoutBlock> body)
     {
@@ -201,7 +212,9 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
 
         foreach (var b in all)
         {
-            if (IsMarginNote(b, all, medianWidth) || IsClippingSpanner(b, all, medianWidth, medianHeight))
+            if (IsFurniture(b.Role)
+                || IsMarginNote(b, all, medianWidth)
+                || IsClippingSpanner(b, all, medianWidth, medianHeight))
                 masked.Add(b);
             else
                 body.Add(b);
@@ -345,20 +358,25 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     {
         if (masked.Count == 0) return;
 
-        // Process top-to-bottom so multiple masked blocks keep a stable order.
+        // All masked blocks — furniture (header/footer/page number) and floating
+        // content (margin notes, clipping spanners) alike — are re-anchored next
+        // to their nearest already-ordered body block, preserving their spatial
+        // position in the reading stream. Role-leading blocks (titles, headings,
+        // running headers) go just before that anchor; everything else just
+        // after. Furniture is masked only so it cannot bridge the columns during
+        // the cut; it is *not* forced to the page extremes, which would diverge
+        // from the natural position it occupies on the page.
         foreach (var m in masked.OrderBy(b => b.BBox.Y).ThenBy(b => b.BBox.X))
         {
-            if (ordered.Count == 0)
-            {
-                ordered.Add(m);
-                continue;
-            }
-
+            if (ordered.Count == 0) { ordered.Add(m); continue; }
             int anchor = NearestBlockIndex(ordered, m);
             int insertAt = LeadsInReadingOrder(m.Role) ? anchor : anchor + 1;
             ordered.Insert(insertAt, m);
         }
     }
+
+    private static bool IsFurniture(BlockRole role) =>
+        role is BlockRole.Header or BlockRole.Footer or BlockRole.PageNumber;
 
     private static int NearestBlockIndex(List<LayoutBlock> ordered, LayoutBlock m)
     {

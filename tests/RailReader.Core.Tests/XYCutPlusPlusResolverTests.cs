@@ -402,6 +402,49 @@ public class XYCutPlusPlusResolverTests
     }
 
     [Fact]
+    public void TwoColumns_NarrowGutterWithCrossingPageNumber_StillColumnFirst()
+    {
+        // Real-corpus failure: ~9pt gutter (below the old 12pt floor) AND a page
+        // number straddling the column boundary at the bottom. Either alone
+        // defeated the column split and interleaved the columns. The page number
+        // must be masked (furniture) and the 9pt gutter accepted.
+        var l0 = Block(40,  50, 110, 30, tag: "L0");
+        var l1 = Block(40, 100, 110, 30, tag: "L1");
+        var r0 = Block(159, 50, 111, 30, tag: "R0"); // gutter 150->159 = 9pt
+        var r1 = Block(159, 100, 111, 30, tag: "R1");
+        var pageNo = Block(145, 780, 20, 10, role: BlockRole.PageNumber, tag: "PG"); // crosses gutter
+
+        var blocks = new List<LayoutBlock> { r1, pageNo, l0, r0, l1 };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 300, 820);
+
+        var order = blocks.Select(Id).ToList();
+        // Left column fully before right column (not interleaved) — the page
+        // number crossing the gutter no longer defeats the split.
+        Assert.True(order.IndexOf(Id(l0)) < order.IndexOf(Id(l1)));
+        Assert.True(order.IndexOf(Id(l1)) < order.IndexOf(Id(r0)));
+        Assert.True(order.IndexOf(Id(r0)) < order.IndexOf(Id(r1)));
+        // Page number is furniture → not ordered ahead of the body.
+        Assert.NotEqual(Id(pageNo), order[0]);
+    }
+
+    [Fact]
+    public void RunningHeaderAndFooter_GoToExtremes()
+    {
+        var header = Block(40, 20, 400, 12, role: BlockRole.Header, tag: "HDR");
+        var body0 = Block(40, 60, 400, 80, tag: "b0");
+        var body1 = Block(40, 150, 400, 80, tag: "b1");
+        var footer = Block(40, 760, 400, 12, role: BlockRole.Footer, tag: "FTR");
+
+        var blocks = new List<LayoutBlock> { body1, footer, header, body0 };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 480, 800);
+
+        var order = blocks.Select(Id).ToList();
+        Assert.Equal(Id(header), order[0]);
+        Assert.Equal(Id(footer), order[^1]);
+        Assert.True(order.IndexOf(Id(body0)) < order.IndexOf(Id(body1)));
+    }
+
+    [Fact]
     public void TinyVerticalGapBelowGutterThreshold_DoesNotSplitColumns()
     {
         // 5pt gap between two stacks of blocks — under MinColumnGutterPoints (12pt).
