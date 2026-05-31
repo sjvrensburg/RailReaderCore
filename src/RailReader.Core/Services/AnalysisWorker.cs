@@ -98,7 +98,8 @@ public sealed class AnalysisWorker : IDisposable
                     request.CharBoxes, ct);
 
                 // Pipeline: assign reading order → trim overlaps + detect lines.
-                _readingOrder.AssignOrder(analysis.Blocks, analysis.PageWidth, analysis.PageHeight);
+                _readingOrder.AssignOrder(analysis.Blocks, analysis.PageWidth, analysis.PageHeight,
+                    request.CharBoxes);
 
                 float mapScaleX = request.PxW > 0 ? (float)(request.PageW / request.PxW) : 1f;
                 float mapScaleY = request.PxH > 0 ? (float)(request.PageH / request.PxH) : 1f;

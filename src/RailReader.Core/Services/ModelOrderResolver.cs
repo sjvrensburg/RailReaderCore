@@ -12,7 +12,8 @@ namespace RailReader.Core.Services;
 /// </summary>
 public sealed class ModelOrderResolver : IReadingOrderResolver
 {
-    public void AssignOrder(IList<LayoutBlock> blocks, double pageWidth, double pageHeight)
+    public void AssignOrder(IList<LayoutBlock> blocks, double pageWidth, double pageHeight,
+        IReadOnlyList<CharBox>? charBoxes = null)
     {
         var sorted = blocks
             .OrderBy(b => b.Order)
