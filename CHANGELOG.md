@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.10.0 — XY-Cut++ reading order for model-less detectors
+
+Reworks `XYCutPlusPlusResolver` (the default reading-order resolver for layout
+models that don't emit their own order — Docling Heron, PP-DocLayout-S) from the
+geometric XY-cut kernel into the full three-stage XY-Cut++ pipeline
+(arXiv:2504.10258): pre-masking of floating blocks, density-aware cutting, and
+role-aware re-insertion, plus an optional PDF-text-layer tie-break. Targets the
+cases that broke in practice — margin/side notes and footnotes embedded in
+complex multi-column layouts.
+
+### ⚠ Breaking (source-compatible)
+
+- **`IReadingOrderResolver.AssignOrder` gained an optional
+  `IReadOnlyList<CharBox>? charBoxes = null` parameter.** Existing callers compile
+  unchanged (defaulted). Custom `IReadingOrderResolver` implementations must add
+  the parameter to their method signature.
+
+### Changed
+
+- **`XYCutPlusPlusResolver`** now lifts out margin notes / asides and column-
+  clipping spanners before cutting and re-inserts them by geometry + `BlockRole`
+  priority; full-width dividers (titles, full-width figures, footnote bands) are
+  still handled inline by the cut. When the caller passes the page's `CharBox`
+  list, geometrically-ambiguous leaf regions are ordered by content-stream index.
+  `AnalysisWorker` now forwards `request.CharBoxes` into the resolver.
+
 ## 0.9.1 — SearchService stale-cache fix
 
 ### Fixed

@@ -19,6 +19,14 @@ public interface IReadingOrderResolver
     /// (by setting <see cref="LayoutBlock.Order"/>) and reorders the list so
     /// that <c>blocks[i].Order == i</c>. The resolver may consult or ignore
     /// any existing <c>Order</c> hints set by the analyzer.
+    ///
+    /// <paramref name="charBoxes"/> is an optional per-character bounding-box
+    /// list from the PDF text layer (in the same page-point coordinate space as
+    /// <see cref="LayoutBlock.BBox"/>). Geometry-only resolvers ignore it; a
+    /// resolver may use the characters' content-stream <see cref="CharBox.Index"/>
+    /// as a tie-break to disambiguate blocks that geometry alone cannot order.
+    /// Null/empty for scanned PDFs with no text layer.
     /// </summary>
-    void AssignOrder(IList<LayoutBlock> blocks, double pageWidth, double pageHeight);
+    void AssignOrder(IList<LayoutBlock> blocks, double pageWidth, double pageHeight,
+        IReadOnlyList<CharBox>? charBoxes = null);
 }
