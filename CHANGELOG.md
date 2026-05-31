@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.1 — SearchService stale-cache fix
+
+### Fixed
+
+- **`SearchService`** (`RailReader.Core`) — search results from a previously-opened
+  document were kept alive after the active document changed. Any call to
+  `NextMatch`, `PreviousMatch`, `GoToMatch`, or `GetMatchSnippet` could then serve
+  phantom highlights from the old document on the newly-opened one. The service now
+  tracks which `DocumentState` the last search ran against and auto-clears its state
+  when the active document changes.
+
 ## 0.9.0 — model selection + INT8 Heron default
 
 Adds first-class model selection and makes a quantized Docling Heron the
