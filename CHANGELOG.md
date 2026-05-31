@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — XY-Cut++ reading order for model-less detectors
+## 0.10.0 — XY-Cut++ reading order for model-less detectors
 
 Reworks `XYCutPlusPlusResolver` (the default reading-order resolver for layout
 models that don't emit their own order — Docling Heron, PP-DocLayout-S) from the
