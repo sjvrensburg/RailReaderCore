@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.11.0 — super-block merge-then-order
+
+Adds a merge pre-pass to `XYCutPlusPlusResolver` that substantially improves
+reading order on multi-column scientific layouts, validated against
+PP-DocLayout-V3 on a 1,195-page real-PDF corpus.
+
+### Changed
+
+- **`XYCutPlusPlusResolver` now orders via transient "super-blocks".** Before
+  cutting, vertically-adjacent, horizontally-overlapping, same-class blocks are
+  grouped into column-run super-blocks (gap ≤ `MergeGapPoints` = 6pt; merge
+  classes: body / {Footnote,Reference} / {DisplayMath,Algorithm,InlineMath};
+  Figure/Table/Chart/furniture and full-width blocks ≥ `MergeBarrierWidthFraction`
+  are barriers). The super-blocks are ordered by the existing cut/projection
+  machinery, then expanded top-to-bottom. The super-blocks are a **transient
+  scaffold** — the output is still the original fine-grained blocks, only their
+  `Order` changes, so VLM crops, Markdown export, PeekIndex, line detection and
+  the `structure` CLI are unaffected.
+- Corpus result vs the 0.10.1 resolver (V3 reading order as reference): column
+  interleaving **108 → 48 pages (−56%)**, body-only mean Kendall-τ **0.073 →
+  0.062 (−15%)**, near-perfect pages **~33% → 48%**, body exact-match **31.9% →
+  39.3%**. The gain is in the distribution (far more pages perfectly ordered,
+  far fewer catastrophic interleaves) — the profile that matters for rail-mode
+  navigation. Isolating math as its own merge class was the key refinement
+  (over-merges 14% → 8.6%).
+- New `XYCutPlusPlusResolver(mergeAdjacent: false)` constructor flag restores the
+  pre-merge behaviour.
+
 ## 0.10.1 — reading-order fixes for heading-heavy layouts
 
 Fixes a 0.10.0 regression and hardens column detection for pages with many
