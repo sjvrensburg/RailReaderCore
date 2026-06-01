@@ -117,8 +117,8 @@ public static class OverlayRenderer
             float hlPad = line.Height * (float)linePadding;
             linePaint.Color = palette.ResolveLineHighlight(tint, tintOpacity).ToSKColor();
             canvas.DrawRect(SKRect.Create(
-                block.BBox.X, line.Y - line.Height / 2 - hlPad,
-                block.BBox.W, line.Height + hlPad * 2), linePaint);
+                line.X, line.Y - line.Height / 2 - hlPad,
+                line.Width, line.Height + hlPad * 2), linePaint);
         }
         else if (lineFocusBlur)
         {
@@ -127,7 +127,7 @@ public static class OverlayRenderer
             float pad = line.Height * 0.15f;
             linePaint.Color = palette.BlockOutline.WithAlpha(200).ToSKColor();
             canvas.DrawRect(SKRect.Create(
-                block.BBox.X - BlockMargin - barWidth,
+                line.X - BlockMargin - barWidth,
                 line.Y - line.Height / 2 - pad,
                 barWidth,
                 line.Height + pad * 2), linePaint);

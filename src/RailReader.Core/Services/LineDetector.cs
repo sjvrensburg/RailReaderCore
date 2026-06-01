@@ -39,22 +39,89 @@ public static class LineDetector
     /// Returns line runs (in block-relative pixel coordinates) for a block,
     /// using char clustering when available and pixel projection as fallback.
     /// </summary>
+    /// <summary>
+    /// Cluster split threshold as a multiple of median char height. Math blocks
+    /// use a more generous multiple so a single display equation's stacked parts
+    /// (fraction bars, sub/superscripts, matrix rows) cluster into one line
+    /// rather than fragmenting — while genuinely separated derivation rows, whose
+    /// inter-row gaps are larger, still split. Tuned against the Surya line
+    /// oracle (see tools/line-eval): char-clustering was over-segmenting
+    /// DisplayMath ~3-4×.
+    /// </summary>
+    internal const float DefaultSplitMultiplier = 1.0f;
+    internal const float MathSplitMultiplier = 1.3f;
+
+    private static readonly HashSet<BlockRole> MathRoles =
+        [BlockRole.DisplayMath, BlockRole.InlineMath, BlockRole.Algorithm];
+
     public static List<LineInfo> DetectLines(
         LayoutBlock block,
         IReadOnlyList<CharBox>? charBoxes,
         byte[] rgbBytes, int imgW, int imgH, float scaleX, float scaleY)
     {
         if (AtomicLineRoles.Contains(block.Role))
-            return [new LineInfo(block.BBox.Y + block.BBox.H / 2f, block.BBox.H)];
+            return [new LineInfo(block.BBox.Y + block.BBox.H / 2f, block.BBox.H, block.BBox.X, block.BBox.W)];
 
         if (charBoxes is { Count: > 0 })
         {
-            var charLines = DetectLinesFromChars(block.BBox, charBoxes);
+            float mult = MathRoles.Contains(block.Role) ? MathSplitMultiplier : DefaultSplitMultiplier;
+            var charLines = DetectLinesFromChars(block.BBox, charBoxes, mult);
             if (charLines.Count > 0)
-                return charLines;
+                return NormalizeLines(charLines, block.BBox);
         }
 
-        return DetectLinesFromPixels(block, rgbBytes, imgW, imgH, scaleX, scaleY);
+        return NormalizeLines(DetectLinesFromPixels(block, rgbBytes, imgW, imgH, scaleX, scaleY), block.BBox);
+    }
+
+    /// <summary>
+    /// Enforces the invariants every line consumer (rail stepping, snap, line
+    /// focus/highlight, and chunk concatenation) silently assumes: positive
+    /// height, geometry clamped inside the block, sorted top-to-bottom, and no
+    /// two lines overlapping by more than half the smaller. Idempotent.
+    /// </summary>
+    internal static List<LineInfo> NormalizeLines(List<LineInfo> lines, BBox block)
+    {
+        float top = block.Y, bottom = block.Y + block.H;
+        float left = block.X, right = block.X + block.W;
+
+        var clamped = new List<LineInfo>(lines.Count);
+        foreach (var l in lines)
+        {
+            float h = l.Height;
+            if (h <= 0) continue;
+            // Clamp the [top,bottom] band into the block, recompute centre/height.
+            float lt = Math.Max(top, l.Y - h / 2f);
+            float lb = Math.Min(bottom, l.Y + h / 2f);
+            if (lb - lt <= 0) continue;
+            float lx = Math.Max(left, l.X);
+            float lr = Math.Min(right, l.X + l.Width);
+            float lw = lr - lx > 0 ? lr - lx : block.W;
+            clamped.Add(new LineInfo((lt + lb) / 2f, lb - lt, lx, lw));
+        }
+
+        clamped.Sort((a, b) => a.Y.CompareTo(b.Y));
+
+        // Merge lines whose vertical bands overlap by > 50% of the smaller.
+        var merged = new List<LineInfo>(clamped.Count);
+        foreach (var l in clamped)
+        {
+            if (merged.Count > 0)
+            {
+                var p = merged[^1];
+                float pt = p.Y - p.Height / 2f, pb = p.Y + p.Height / 2f;
+                float lt = l.Y - l.Height / 2f, lb = l.Y + l.Height / 2f;
+                float ov = Math.Min(pb, lb) - Math.Max(pt, lt);
+                if (ov > 0.5f * Math.Min(p.Height, l.Height))
+                {
+                    float nt = Math.Min(pt, lt), nb = Math.Max(pb, lb);
+                    float nx = Math.Min(p.X, l.X), nr = Math.Max(p.X + p.Width, l.X + l.Width);
+                    merged[^1] = new LineInfo((nt + nb) / 2f, nb - nt, nx, nr - nx);
+                    continue;
+                }
+            }
+            merged.Add(l);
+        }
+        return merged;
     }
 
     /// <summary>
@@ -69,14 +136,15 @@ public static class LineDetector
     /// the cluster's min-top to max-bottom — this includes ascenders, descenders,
     /// and sub/superscripts within the line.
     /// </remarks>
-    internal static List<LineInfo> DetectLinesFromChars(BBox bbox, IReadOnlyList<CharBox> charBoxes)
+    internal static List<LineInfo> DetectLinesFromChars(
+        BBox bbox, IReadOnlyList<CharBox> charBoxes, float splitMultiplier = DefaultSplitMultiplier)
     {
         float left = bbox.X;
         float right = bbox.X + bbox.W;
         float top = bbox.Y;
         float bottom = bbox.Y + bbox.H;
 
-        var chars = new List<(float MidY, float Top, float Bottom, float Height)>(charBoxes.Count);
+        var chars = new List<(float MidY, float Top, float Bottom, float Height, float Left, float Right)>(charBoxes.Count);
         foreach (var c in charBoxes)
         {
             float h = c.Bottom - c.Top;
@@ -87,7 +155,7 @@ public static class LineDetector
             if (midX < left || midX > right) continue;
             if (midY < top || midY > bottom) continue;
 
-            chars.Add((midY, c.Top, c.Bottom, h));
+            chars.Add((midY, c.Top, c.Bottom, h, c.Left, c.Right));
         }
 
         if (chars.Count == 0) return [];
@@ -98,9 +166,10 @@ public static class LineDetector
 
         chars.Sort((a, b) => a.MidY.CompareTo(b.MidY));
 
-        // Greedy clustering. Threshold deliberately generous (1.0 × refHeight) so
-        // sub/superscripts and inline math don't fragment a single visual line.
-        float splitThreshold = refHeight * 1.0f;
+        // Greedy clustering. Threshold generous (>= 1.0 × refHeight) so sub/
+        // superscripts and inline math don't fragment a single visual line; math
+        // blocks pass a larger multiplier to avoid splitting a stacked equation.
+        float splitThreshold = refHeight * splitMultiplier;
         var lines = new List<LineInfo>();
         int clusterStart = 0;
         float clusterSumMidY = chars[0].MidY;
@@ -125,19 +194,19 @@ public static class LineDetector
         return lines;
 
         static LineInfo MakeLine(
-            List<(float MidY, float Top, float Bottom, float Height)> sorted,
+            List<(float MidY, float Top, float Bottom, float Height, float Left, float Right)> sorted,
             int start, int endExclusive)
         {
-            float minTop = float.PositiveInfinity;
-            float maxBottom = float.NegativeInfinity;
+            float minTop = float.PositiveInfinity, maxBottom = float.NegativeInfinity;
+            float minLeft = float.PositiveInfinity, maxRight = float.NegativeInfinity;
             for (int i = start; i < endExclusive; i++)
             {
                 if (sorted[i].Top < minTop) minTop = sorted[i].Top;
                 if (sorted[i].Bottom > maxBottom) maxBottom = sorted[i].Bottom;
+                if (sorted[i].Left < minLeft) minLeft = sorted[i].Left;
+                if (sorted[i].Right > maxRight) maxRight = sorted[i].Right;
             }
-            float h = maxBottom - minTop;
-            float y = (minTop + maxBottom) * 0.5f;
-            return new LineInfo(y, h);
+            return new LineInfo((minTop + maxBottom) * 0.5f, maxBottom - minTop, minLeft, maxRight - minLeft);
         }
     }
 
@@ -164,7 +233,8 @@ public static class LineDetector
         foreach (var run in runs)
         {
             float centerYPx = run.Start + run.Height / 2.0f;
-            lines.Add(new LineInfo(block.BBox.Y + centerYPx * scaleY, run.Height * scaleY));
+            lines.Add(new LineInfo(block.BBox.Y + centerYPx * scaleY, run.Height * scaleY,
+                block.BBox.X, block.BBox.W));
         }
         return lines;
     }

@@ -81,7 +81,8 @@ public static class BlockPostProcessor
         {
             block.Lines = LineDetector.DetectLines(block, charBoxes, rgbBytes, imgW, imgH, scaleX, scaleY);
             if (block.Lines.Count == 0)
-                block.Lines.Add(new LineInfo(block.BBox.Y + block.BBox.H / 2, block.BBox.H));
+                block.Lines.Add(new LineInfo(block.BBox.Y + block.BBox.H / 2, block.BBox.H,
+                    block.BBox.X, block.BBox.W));
         }
     }
 }

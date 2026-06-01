@@ -71,11 +71,15 @@ public static class ScreenshotCompositor
         {
             var line = doc.Rail.CurrentLineInfo;
             float pad = line.Height * (float)options.LinePadding;
-            // Line rect in page-point space
+            // Line rect in page-point space — use the line's own horizontal extent
+            // (not full page width) so only the active line's column stays sharp.
             float lineTop = line.Y - line.Height / 2f - pad;
             float lineHeight = line.Height + pad * 2;
+            float xPad = line.Height * (float)options.LinePadding;
+            float lineLeft = line.X - xPad;
+            float lineWidth = line.Width + xPad * 2;
             // Convert to bitmap coordinates
-            var lineRect = SKRect.Create(0, lineTop * scaleY, bitmapW, lineHeight * scaleY);
+            var lineRect = SKRect.Create(lineLeft * scaleX, lineTop * scaleY, lineWidth * scaleX, lineHeight * scaleY);
 
             float sigma = (float)(4.0 * options.LineFocusBlurIntensity) * ((scaleX + scaleY) / 2f);
             if (sigma >= 0.5f)
