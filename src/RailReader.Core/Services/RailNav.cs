@@ -88,6 +88,7 @@ public sealed partial class RailNav : ICameraClamp
                 _navigableIndices.Add(i);
         }
         _analysis = analysis;
+        BuildChunks();
 
         if (!sameAnalysis)
         {
@@ -303,9 +304,9 @@ public sealed partial class RailNav : ICameraClamp
     private bool IsAtHardEdge(double cameraX, double zoom, double windowWidth, ScrollDirection dir)
     {
         if (_navigableIndices.Count == 0) return false;
-        var (blockLeft, blockRight, blockWidthPx) = GetBlockBounds(zoom);
+        var (blockLeft, blockRight, blockWidthPx) = GetChunkBounds(zoom);
 
-        // If the whole block fits in the window it is centred and cannot scroll at all.
+        // If the whole chunk fits in the window it is centred and cannot scroll at all.
         if (blockWidthPx <= windowWidth) return true;
 
         const double epsilon = 2.0; // pixels of tolerance
@@ -389,7 +390,7 @@ public sealed partial class RailNav : ICameraClamp
     {
         if (_navigableIndices.Count == 0) return cameraX;
 
-        var (blockLeft, blockRight, blockWidthPx) = GetBlockBounds(zoom);
+        var (blockLeft, blockRight, blockWidthPx) = GetChunkBounds(zoom);
 
         double result;
         if (blockWidthPx <= windowWidth)

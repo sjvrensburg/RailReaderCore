@@ -19,7 +19,7 @@ public sealed partial class RailNav
     {
         if (!CanNavigate) return;
 
-        var (blockLeft, blockRight, blockWidthPx) = GetBlockBounds(zoom);
+        var (blockLeft, blockRight, blockWidthPx) = GetChunkBounds(zoom);
         double targetX;
         if (blockWidthPx <= windowWidth && ShouldCenterBlock())
             targetX = windowWidth / 2.0 - (blockLeft + blockRight) / 2.0 * zoom;
@@ -53,7 +53,7 @@ public sealed partial class RailNav
     public double ComputeHorizontalFraction(double cameraX, double zoom, double windowWidth)
     {
         if (!CanNavigate) return 0;
-        var (blockLeft, blockRight, blockWidthPx) = GetBlockBounds(zoom);
+        var (blockLeft, blockRight, blockWidthPx) = GetChunkBounds(zoom);
         if (blockWidthPx <= windowWidth) return 0;
 
         double maxX = -blockLeft * zoom;
@@ -78,7 +78,7 @@ public sealed partial class RailNav
         double centeredY = windowHeight / 2.0 - line.Y * zoom;
         VerticalBias = targetY - centeredY;
 
-        var (blockLeft, blockRight, blockWidthPx) = GetBlockBounds(zoom);
+        var (blockLeft, blockRight, blockWidthPx) = GetChunkBounds(zoom);
         double targetX;
         if (blockWidthPx <= windowWidth)
         {
@@ -124,20 +124,21 @@ public sealed partial class RailNav
 
     private (double X, double Y) ComputeTargetCamera(double zoom, double windowWidth, double windowHeight)
     {
-        var block = CurrentNavigableBlock;
         var line = CurrentLineInfo;
         double targetY = windowHeight / 2.0 - line.Y * zoom + VerticalBias;
 
-        double blockWidthPx = block.BBox.W * zoom;
+        // Frame the whole chunk (column run) so crossing block boundaries within
+        // a column doesn't shift the camera horizontally.
+        var (chunkLeft, chunkRight, chunkWidthPx) = GetChunkBounds(zoom);
         double targetX;
-        if (blockWidthPx < windowWidth * CoreTuning.CenterBlockThreshold && ShouldCenterBlock())
+        if (chunkWidthPx < windowWidth * CoreTuning.CenterBlockThreshold && ShouldCenterBlock())
         {
-            double blockCenterX = block.BBox.X + block.BBox.W / 2.0;
-            targetX = windowWidth / 2.0 - blockCenterX * zoom;
+            double chunkCenterX = (chunkLeft + chunkRight) / 2.0;
+            targetX = windowWidth / 2.0 - chunkCenterX * zoom;
         }
         else
         {
-            targetX = windowWidth * 0.05 - block.BBox.X * zoom;
+            targetX = windowWidth * 0.05 - chunkLeft * zoom;
         }
 
         if (_config.PixelSnapping)

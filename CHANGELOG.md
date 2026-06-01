@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.13.0 — rail navigation chunks
+
+Rail mode now reads a column as one continuous unit instead of stepping
+block-by-block, building on the self-describing lines from 0.12.0.
+
+### Added
+
+- **`RailNav` navigation chunks.** Consecutive navigable blocks that read
+  continuously down one column (overlapping horizontally, small vertical gap ≤
+  `RailNav.ChunkMaxGapPoints`) are grouped into a "chunk". New public surface:
+  `RailNav.CurrentChunk`, `RailNav.ChunkCount`, `RailNav.ChunkMaxGapPoints`.
+  A column change or a section-sized gap starts a new chunk.
+
+### Changed
+
+- **Camera framing is per-chunk, not per-block.** Horizontal clamping, centering,
+  edge-hold and snap targets now frame the whole chunk, so crossing a block
+  boundary within a column (e.g. a narrow heading into a wide paragraph) no
+  longer shifts the view sideways. For single-block chunks this is identical to
+  the previous behaviour.
+- **Auto-scroll pacing is per-chunk.** The heavier role-based entry pause fires
+  only when auto-scroll crosses into a *new* chunk (a new column/section);
+  block boundaries within a column read straight through without the previous
+  stutter. Per-line read pacing is unchanged.
+
 ## 0.12.0 — self-describing lines + line-detection fixes
 
 Foundation for navigation chunks: each detected line now carries its own
