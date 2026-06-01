@@ -12,12 +12,25 @@ var v3Path = args[0];
 var outPrefix = args[1];
 var dirs = args.Skip(2).ToArray();
 int maxPages = int.TryParse(Environment.GetEnvironmentVariable("ORDEREVAL_MAXPAGES"), out var mp) ? mp : 12;
-float[] gaps = { 6f, 10f, 14f, 20f, 30f };
+const float Gap = 6f;
+
+// Role -> merge class. Blocks only merge with same-class neighbours, so a run
+// can't spill across a reading-thread boundary (body -> footnote/reference).
+static int ClassBase(BlockRole r) => 1;
+static int ClassNote(BlockRole r) => r is BlockRole.Footnote or BlockRole.Reference ? 2 : 1;
+static int ClassNoteMath(BlockRole r) =>
+    r is BlockRole.Footnote or BlockRole.Reference ? 2
+    : r is BlockRole.DisplayMath or BlockRole.Algorithm or BlockRole.InlineMath ? 3 : 1;
+
+var variants = new (string Name, Func<BlockRole, int> Cls)[]
+{
+    ("base", ClassBase), ("note", ClassNote), ("notemath", ClassNoteMath)
+};
 
 RailReaderLogging.Logger = NullLogger.Instance;
 var factory = new SkiaPdfServiceFactory();
 
-Console.Error.WriteLine($"Loading V3 analyzer: {v3Path}  (gaps={string.Join(",", gaps)})");
+Console.Error.WriteLine($"Loading V3 analyzer: {v3Path}  (gap={Gap}, variants={string.Join(",", variants.Select(v => v.Name))})");
 using var analyzer = new LayoutAnalyzer(v3Path);
 int inputSize = analyzer.Capabilities.InputSize;
 
@@ -33,8 +46,8 @@ Console.Error.WriteLine($"{pdfs.Count} PDFs; maxPages/doc={maxPages}");
 var pageRecords = new List<PageRec>();
 var textSvc = factory.CreatePdfTextService();
 int docIdx = 0;
-var impurePerGap = new int[gaps.Length];
-var multiPerGap = new int[gaps.Length];
+var impurePerVariant = new int[variants.Length];
+var multiPerVariant = new int[variants.Length];
 
 foreach (var pdfPath in pdfs)
 {
@@ -75,9 +88,9 @@ foreach (var pdfPath in pdfs)
             for (int i = 0; i < v3Seq.Count; i++) v3RankById[v3Seq[i]] = i;
 
             var mergeSeqs = new List<List<int>>();
-            foreach (var gap in gaps)
+            for (int vi = 0; vi < variants.Length; vi++)
             {
-                var groups = MergeGroups(blocks.Select(Clone).ToList(), pw, gap);
+                var groups = MergeGroups(blocks.Select(Clone).ToList(), pw, Gap, variants[vi].Cls);
                 var supers = new List<LayoutBlock>();
                 for (int gi = 0; gi < groups.Count; gi++)
                 {
@@ -98,13 +111,12 @@ foreach (var pdfPath in pdfs)
                         mergeSeq.Add(m.ClassId);
                 mergeSeqs.Add(mergeSeq);
 
-                int gi2 = Array.IndexOf(gaps, gap);
                 foreach (var g in groups)
                 {
                     if (g.Count < 2) continue;
-                    multiPerGap[gi2]++;
+                    multiPerVariant[vi]++;
                     var ranks = g.Select(m => v3RankById[m.ClassId]).ToList();
-                    if (ranks.Max() - ranks.Min() + 1 != g.Count) impurePerGap[gi2]++;
+                    if (ranks.Max() - ranks.Min() + 1 != g.Count) impurePerVariant[vi]++;
                 }
             }
 
@@ -129,18 +141,18 @@ double BodyTau(PageRec r, List<int> seq)
     return KendallTauDistance(a, b);
 }
 
-Console.Error.WriteLine($"\nPages usable: {usable.Count}");
+Console.Error.WriteLine($"\nPages usable: {usable.Count}  (gap={Gap})");
 Console.Error.WriteLine($"RAW   body-tau={usable.Average(r => BodyTau(r, r.OursSeq)):F4}  "
     + $"exact={usable.Count(r => KendallTauDistance(r.V3Seq, r.OursSeq) == 0)}");
-Console.Error.WriteLine($"{"gap",4} {"bodyTau",8} {"fullTau",8} {"exact",6} {"purity%",8}");
-for (int gi = 0; gi < gaps.Length; gi++)
+Console.Error.WriteLine($"{"variant",-10} {"bodyTau",8} {"fullTau",8} {"exact",6} {"purity%",8}");
+for (int vi = 0; vi < variants.Length; vi++)
 {
-    int g = gi;
-    double bt = usable.Average(r => BodyTau(r, r.MergeSeqs[g]));
-    double ft = usable.Average(r => KendallTauDistance(r.V3Seq, r.MergeSeqs[g]));
-    int ex = usable.Count(r => KendallTauDistance(r.V3Seq, r.MergeSeqs[g]) == 0);
-    double pur = 100.0 * (multiPerGap[g] - impurePerGap[g]) / Math.Max(1, multiPerGap[g]);
-    Console.Error.WriteLine($"{gaps[g],4} {bt,8:F4} {ft,8:F4} {ex,6} {pur,8:F1}");
+    int v = vi;
+    double bt = usable.Average(r => BodyTau(r, r.MergeSeqs[v]));
+    double ft = usable.Average(r => KendallTauDistance(r.V3Seq, r.MergeSeqs[v]));
+    int ex = usable.Count(r => KendallTauDistance(r.V3Seq, r.MergeSeqs[v]) == 0);
+    double pur = 100.0 * (multiPerVariant[v] - impurePerVariant[v]) / Math.Max(1, multiPerVariant[v]);
+    Console.Error.WriteLine($"{variants[v].Name,-10} {bt,8:F4} {ft,8:F4} {ex,6} {pur,8:F1}");
 }
 
 // Dump per-gap merge files + raw, for the interleaving analyzer (OursSeq = the ordering).
@@ -154,12 +166,12 @@ void Dump(string path, Func<PageRec, List<int>> seq) =>
         })
     }));
 Dump(outPrefix + "_raw.json", r => r.OursSeq);
-for (int gi = 0; gi < gaps.Length; gi++)
+for (int vi = 0; vi < variants.Length; vi++)
 {
-    int g = gi;
-    Dump($"{outPrefix}_merge{gaps[g]:F0}.json", r => r.MergeSeqs[g]);
+    int v = vi;
+    Dump($"{outPrefix}_{variants[v].Name}.json", r => r.MergeSeqs[v]);
 }
-Console.Error.WriteLine($"Wrote {outPrefix}_raw.json and per-gap merge files");
+Console.Error.WriteLine($"Wrote {outPrefix}_raw.json and per-variant merge files");
 
 static LayoutBlock Clone(LayoutBlock b) => new()
 { BBox = b.BBox, Role = b.Role, ClassId = b.ClassId, Confidence = b.Confidence, Order = b.Order };
@@ -169,20 +181,23 @@ static bool IsBarrier(LayoutBlock b, double pageW) =>
         or BlockRole.Header or BlockRole.Footer or BlockRole.PageNumber
     || b.BBox.W >= 0.55 * pageW;
 
-static List<List<LayoutBlock>> MergeGroups(List<LayoutBlock> blocks, double pageW, float gapThresh)
+static List<List<LayoutBlock>> MergeGroups(List<LayoutBlock> blocks, double pageW, float gapThresh,
+    Func<BlockRole, int> classOf)
 {
     var sorted = blocks.OrderBy(b => b.BBox.Y).ThenBy(b => b.BBox.X).ToList();
     var groups = new List<List<LayoutBlock>>();
-    var info = new List<(float L, float R, float Bottom)>();
+    var info = new List<(float L, float R, float Bottom, int Cls)>();
     foreach (var b in sorted)
     {
         float bl = b.BBox.X, br = b.BBox.X + b.BBox.W, bb = b.BBox.Y + b.BBox.H;
-        if (IsBarrier(b, pageW)) { groups.Add([b]); info.Add((bl, br, bb)); continue; }
+        int cls = classOf(b.Role);
+        if (IsBarrier(b, pageW)) { groups.Add([b]); info.Add((bl, br, bb, -1)); continue; }
         int best = -1; float bestFrac = -1;
         for (int g = 0; g < groups.Count; g++)
         {
             if (IsBarrier(groups[g][^1], pageW)) continue;
-            var (gl, gr, gbot) = info[g];
+            var (gl, gr, gbot, gcls) = info[g];
+            if (gcls != cls) continue; // soft barrier: only merge same reading-thread class
             float ov = Math.Min(gr, br) - Math.Max(gl, bl);
             float minW = Math.Min(gr - gl, b.BBox.W);
             float frac = minW > 0 ? ov / minW : 0;
@@ -193,10 +208,10 @@ static List<List<LayoutBlock>> MergeGroups(List<LayoutBlock> blocks, double page
         if (best >= 0)
         {
             groups[best].Add(b);
-            var (gl, gr, gbot) = info[best];
-            info[best] = (Math.Min(gl, bl), Math.Max(gr, br), Math.Max(gbot, bb));
+            var (gl, gr, gbot, gcls) = info[best];
+            info[best] = (Math.Min(gl, bl), Math.Max(gr, br), Math.Max(gbot, bb), gcls);
         }
-        else { groups.Add([b]); info.Add((bl, br, bb)); }
+        else { groups.Add([b]); info.Add((bl, br, bb, cls)); }
     }
     return groups;
 }

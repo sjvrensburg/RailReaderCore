@@ -65,6 +65,23 @@ barely moves; the win is in the distribution — far more pages perfectly ordere
 and far fewer catastrophic interleaves, which is what matters for rail-mode
 navigation.
 
-Residual ~14% over-merged groups motivate role-aware **soft barriers** (break a
-run at Footnote/Reference transitions; gap relative to local line-height) — the
-next refinement to prototype here before productionising the pass.
+### Role-aware soft barriers (merge classes)
+
+Blocks only merge with same **class** neighbours, so a run can't spill across a
+reading-thread boundary. Variants at gap=6:
+
+| variant | classes | body-τ | purity | interleaving |
+|---------|---------|-------:|-------:|-------------:|
+| base     | all one class | 0.0696 | 86.2% | 43 |
+| note     | + {Footnote,Reference} | 0.0695 | 86.2% | 43 |
+| **notemath** | + {DisplayMath,Algorithm,InlineMath} | **0.0609** | **91.4%** | 48 |
+
+The footnote/reference split is **neutral** — that was not the over-merge source.
+The win is **isolating math**: equations/derivations/equation-number decorations
+spilling into text runs were the dominant over-merge. `notemath` cuts impure
+groups ~14%→8.6%, body-only mean τ 0.073→0.062 (−15%), near-perfect pages
+~33%→48%, while interleaving still ~halves vs raw (108→48).
+
+**Recommended production recipe:** merge-then-order, gap = 6pt, 3 merge classes
+— body / {Footnote,Reference} / {DisplayMath,Algorithm,InlineMath}. (Isolating
+math also matches the rail-UX preference for derivations as their own unit.)
