@@ -215,4 +215,63 @@ public class LineDetectorTests
         var lines = LineDetector.DetectLines(block, null, rgb, imgW, imgH, scaleX: 1f, scaleY: 1f);
         Assert.Equal(3, lines.Count);
     }
+
+    // --- P0: horizontal extent, normalization, math merge ---
+
+    [Fact]
+    public void CharClustering_PopulatesHorizontalExtent()
+    {
+        // One line of chars from x=100 (left of first) to x=157 (right of last).
+        var chars = new List<CharBox>();
+        for (int c = 0; c < 8; c++)
+            chars.Add(new CharBox(c, 100 + c * 8, 100, 100 + c * 8 + 7, 110));
+        var bbox = new BBox(90, 98, 90, 14);
+
+        var lines = LineDetector.DetectLinesFromChars(bbox, chars);
+        Assert.Single(lines);
+        Assert.Equal(100f, lines[0].X, 1f);              // min char left (c=0)
+        Assert.Equal(63f, lines[0].Width, 1f);           // max right (156+7=163) - 100
+    }
+
+    [Fact]
+    public void NormalizeLines_SortsClampsAndMergesOverlaps()
+    {
+        var block = new BBox(0, 0, 100, 100);
+        var input = new List<LineInfo>
+        {
+            new(60, 10, 0, 100),
+            new(20, 10, 0, 100),
+            new(22, 10, 0, 100),   // overlaps the y=20 line -> merge
+            new(5, 0, 0, 100),     // zero height -> dropped
+            new(200, 10, 0, 100),  // outside block -> clamped away / dropped
+        };
+        var outp = LineDetector.NormalizeLines(input, block);
+
+        for (int i = 1; i < outp.Count; i++)
+            Assert.True(outp[i - 1].Y <= outp[i].Y, "lines must be sorted by Y");
+        foreach (var l in outp)
+        {
+            Assert.True(l.Height > 0);
+            Assert.True(l.Y - l.Height / 2 >= -0.01f && l.Y + l.Height / 2 <= 100.01f, "within block");
+        }
+        // y=20 and y=22 merged -> two distinct lines remain (merged-20, 60).
+        Assert.Equal(2, outp.Count);
+    }
+
+    [Fact]
+    public void DisplayMath_MergesTightRowsThatTextWouldSplit()
+    {
+        // Rows spaced 1.1x char height: Text splits them, DisplayMath (1.3x
+        // threshold) merges — without collapsing to atomic.
+        var (block, chars) = MakeLines(lineCount: 4, charsPerLine: 6, charHeight: 10f, lineGap: 1f);
+
+        block.Role = BlockRole.Text;
+        var textLines = LineDetector.DetectLines(block, chars, [], 0, 0, 1, 1);
+
+        block.Role = BlockRole.DisplayMath;
+        var mathLines = LineDetector.DetectLines(block, chars, [], 0, 0, 1, 1);
+
+        Assert.True(mathLines.Count < textLines.Count,
+            $"math({mathLines.Count}) should merge tighter than text({textLines.Count})");
+    }
 }

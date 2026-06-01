@@ -22,32 +22,33 @@ SKIP = {"Figure", "Chart", "Table", "Header", "Footer", "PageNumber", "Decoratio
 
 ora_by = {(p["pdf"], p["page"]): p for p in oracle}
 
-def yband_ours(line):      # [y, h] -> (top, bottom)
-    y, h = line; return (y - h / 2.0, y + h / 2.0)
+def our_box(line):      # [y, h, x, w] -> (x1, y1, x2, y2)
+    y, h, x, w = line
+    return (x, y - h / 2.0, x + w, y + h / 2.0)
 
-def overlap(a, b):
-    return max(0.0, min(a[1], b[1]) - max(a[0], b[0]))
+def iou(a, b):
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    if inter <= 0: return 0.0
+    ua = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / ua if ua > 0 else 0.0
 
 def score_block(our_lines, gt_lines):
-    """Greedy 1-D coverage match. Returns (tp, fp, fn, ious)."""
-    our_bands = [yband_ours(l) for l in our_lines]
-    gt_bands = [(y1, y2) for (_, y1, _, y2) in gt_lines]
-    used = [False] * len(our_bands)
-    tp = 0; ious = []
-    for gt in gt_bands:
-        gh = gt[1] - gt[0]
-        if gh <= 0: continue
+    """Greedy 2-D IoU match (IoU >= 0.5). Returns (tp, fp, fn, ious)."""
+    ob = [our_box(l) for l in our_lines]
+    gb = [(x1, y1, x2, y2) for (x1, y1, x2, y2) in gt_lines]
+    used = [False] * len(ob); tp = 0; ious = []
+    for g in gb:
         best, bj = 0.0, -1
-        for j, ob in enumerate(our_bands):
+        for j, o in enumerate(ob):
             if used[j]: continue
-            ov = overlap(gt, ob)
-            if ov > best: best, bj = ov, j
-        if bj >= 0 and best >= 0.5 * gh:
-            used[bj] = True; tp += 1
-            union = max(gt[1], our_bands[bj][1]) - min(gt[0], our_bands[bj][0])
-            ious.append(best / union if union > 0 else 0)
+            v = iou(g, o)
+            if v > best: best, bj = v, j
+        if bj >= 0 and best >= 0.5:
+            used[bj] = True; tp += 1; ious.append(best)
     fp = used.count(False)
-    fn = len(gt_bands) - tp
+    fn = len(gb) - tp
     return tp, fp, fn, ious
 
 def run(filter_text=None):

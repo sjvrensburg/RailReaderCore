@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.12.0 — self-describing lines + line-detection fixes
+
+Foundation for navigation chunks: each detected line now carries its own
+horizontal extent and the line set is contract-guaranteed. Also fixes the
+dominant line-detection error found by the Surya oracle (see `tools/line-eval`).
+
+### ⚠ Breaking (source-compatible for readers)
+
+- **`LineInfo` gained `X` and `Width`:** `LineInfo(float Y, float Height, float X, float Width)`.
+  `Y` (centre) and `Height` (span) keep their meaning, so code that reads
+  `.Y`/`.Height` is unaffected; only code that *constructs* `LineInfo` must pass
+  the two new fields. Populated from char extents (tight) or block width (pixel/
+  atomic/fallback).
+
+### Changed
+
+- **`LineDetector` normalizes its output** (`NormalizeLines`): positive height,
+  geometry clamped inside the block, sorted top-to-bottom, overlapping lines
+  merged — making the invariants every consumer (rail stepping, snap, line
+  focus/highlight, chunk concatenation) assumed actually guaranteed.
+- **DisplayMath over-segmentation fixed:** math blocks now use a larger cluster
+  split threshold (`MathSplitMultiplier` 1.3×) so a single display equation's
+  stacked parts don't fragment into 3–4 lines, while genuine multi-line
+  derivations still split. Validated against the Surya line oracle: overall line
+  F1 0.964 → **0.973** (precision 0.962 → 0.980), DisplayMath line-count error
+  −31%.
+- **Renderers use per-line horizontal extent:** `OverlayRenderer` line highlight
+  and `ScreenshotCompositor` line-focus blur now track the line's own `X`/`Width`
+  instead of the full parent-block / page width — tighter focus today, and the
+  prerequisite for navigation chunks spanning blocks of differing widths.
+
 ## 0.11.0 — super-block merge-then-order
 
 Adds a merge pre-pass to `XYCutPlusPlusResolver` that substantially improves

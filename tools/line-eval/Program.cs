@@ -68,7 +68,7 @@ foreach (var pdfPath in pdfs)
             {
                 role = b.Role.ToString(),
                 x = b.BBox.X, y = b.BBox.Y, w = b.BBox.W, h = b.BBox.H,
-                lines = b.Lines.Select(l => new[] { l.Y, l.Height }).ToList()
+                lines = b.Lines.Select(l => new[] { l.Y, l.Height, l.X, l.Width }).ToList()
             }).ToList();
 
             pageOut.Add(new
