@@ -75,6 +75,9 @@ public static class ScreenshotCompositor
             // (not full page width) so only the active line's column stays sharp.
             float lineTop = line.Y - line.Height / 2f - pad;
             float lineHeight = line.Height + pad * 2;
+            // Symmetric point-space inset: reuse the same LinePadding·height value
+            // for the horizontal cutout so the sharp region has an even margin in
+            // page points on all sides (not a width-relative pad).
             float xPad = line.Height * (float)options.LinePadding;
             float lineLeft = line.X - xPad;
             float lineWidth = line.Width + xPad * 2;

@@ -259,6 +259,22 @@ public class LineDetectorTests
     }
 
     [Fact]
+    public void NormalizeLines_HorizontalExtentOutsideBlock_StaysInsideBlock()
+    {
+        // A line whose X/Width lies entirely to the right of the block must not
+        // be emitted outside the block (renderers draw highlight/crop from X/Width).
+        var block = new BBox(40, 50, 200, 100);
+        var input = new List<LineInfo> { new(80, 20, 400, 50) }; // extent [400,450], block right = 240
+
+        var outp = LineDetector.NormalizeLines(input, block);
+
+        Assert.Single(outp);
+        Assert.True(outp[0].X >= 40 - 0.01f, "line left inside block");
+        Assert.True(outp[0].X + outp[0].Width <= 240 + 0.01f, "line right inside block");
+        Assert.True(outp[0].Width > 0);
+    }
+
+    [Fact]
     public void DisplayMath_MergesTightRowsThatTextWouldSplit()
     {
         // Rows spaced 1.1x char height: Text splits them, DisplayMath (1.3x

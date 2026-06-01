@@ -21,7 +21,7 @@ public sealed partial class RailNav
 
         var (blockLeft, blockRight, blockWidthPx) = GetChunkBounds(zoom);
         double targetX;
-        if (blockWidthPx <= windowWidth && ShouldCenterBlock())
+        if (ShouldCenterUnit(blockWidthPx, windowWidth))
             targetX = windowWidth / 2.0 - (blockLeft + blockRight) / 2.0 * zoom;
         else
             targetX = windowWidth - blockRight * zoom;
@@ -131,7 +131,7 @@ public sealed partial class RailNav
         // a column doesn't shift the camera horizontally.
         var (chunkLeft, chunkRight, chunkWidthPx) = GetChunkBounds(zoom);
         double targetX;
-        if (chunkWidthPx < windowWidth * CoreTuning.CenterBlockThreshold && ShouldCenterBlock())
+        if (ShouldCenterUnit(chunkWidthPx, windowWidth))
         {
             double chunkCenterX = (chunkLeft + chunkRight) / 2.0;
             targetX = windowWidth / 2.0 - chunkCenterX * zoom;

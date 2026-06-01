@@ -190,6 +190,56 @@ public class AutoScrollStateMachineTests
     }
 
     [Fact]
+    public void Dwell_ResetsOnBlockCrossing_SoNextFitBlockDwellsAgain()
+    {
+        // Regression: a within-chunk block crossing carries duration 0 but MUST
+        // reset the per-block dwell, else the next fit-in-window block flashes
+        // past without its settling dwell.
+        var sm = new AutoScrollStateMachine(new NoOpClamp());
+        double t = 0; sm.GetScrollElapsedSeconds = () => t;
+        sm.Start(5.0);
+        double cam = 0;
+        // fit-in-window block, one line, tiny dwell so the pause clears fast
+        var ctx = MakeContext(rawBlockWidthPx: 100, blockRight: 50, blockLineCount: 1,
+            linePauseMs: 1, windowWidth: 600, zoom: 1, maxSpeed: 5);
+
+        t = 20; sm.Tick(ref cam, 0.016, ctx);                  // scroll to end → dwell
+        Assert.Equal(AutoScrollState.Dwelling, sm.CurrentState);
+        System.Threading.Thread.Sleep(3);
+        Assert.True(sm.Tick(ref cam, 0.016, ctx));             // dwell done → advance, Scrolling
+
+        sm.RequestDeferredPause(0, resetDwell: true);          // within-chunk crossing
+        sm.Tick(ref cam, 0.016, ctx);                          // WaitingForSnap → Scrolling (reinit)
+
+        t += 20; sm.Tick(ref cam, 0.016, ctx);                 // next fit block reaches end
+        Assert.Equal(AutoScrollState.Dwelling, sm.CurrentState); // re-dwells thanks to reset
+    }
+
+    [Fact]
+    public void Dwell_NotReset_OnMidBlockLineAdvance()
+    {
+        // The original guard must hold: a mid-block line advance (duration 0,
+        // resetDwell false) does NOT reset dwell, so a narrow block doesn't
+        // re-dwell on every line.
+        var sm = new AutoScrollStateMachine(new NoOpClamp());
+        double t = 0; sm.GetScrollElapsedSeconds = () => t;
+        sm.Start(5.0);
+        double cam = 0;
+        var ctx = MakeContext(rawBlockWidthPx: 100, blockRight: 50, blockLineCount: 1,
+            linePauseMs: 1, windowWidth: 600, zoom: 1, maxSpeed: 5);
+
+        t = 20; sm.Tick(ref cam, 0.016, ctx);
+        Assert.Equal(AutoScrollState.Dwelling, sm.CurrentState);
+        System.Threading.Thread.Sleep(3);
+        Assert.True(sm.Tick(ref cam, 0.016, ctx));             // Scrolling
+
+        sm.RequestDeferredPause(0);                            // mid-block line advance, no reset
+        sm.Tick(ref cam, 0.016, ctx);                          // → Scrolling
+        t += 20; sm.Tick(ref cam, 0.016, ctx);                 // reaches end again
+        Assert.NotEqual(AutoScrollState.Dwelling, sm.CurrentState); // does NOT re-dwell
+    }
+
+    [Fact]
     public void SetBoost_DoublesScrollSpeed()
     {
         // Inject a controlled elapsed-time source so the wall-clock positioning

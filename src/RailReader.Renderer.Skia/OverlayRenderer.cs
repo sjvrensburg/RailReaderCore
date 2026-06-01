@@ -122,12 +122,15 @@ public static class OverlayRenderer
         }
         else if (lineFocusBlur)
         {
-            // Thin vertical bar indicator when highlight is off but blur is on
+            // Thin vertical bar indicator when highlight is off but blur is on.
+            // Anchored to the block's left edge (not the line's tight char extent)
+            // so it forms a stable left rail rather than stepping in/out on
+            // indented lines.
             const float barWidth = 3f;
             float pad = line.Height * 0.15f;
             linePaint.Color = palette.BlockOutline.WithAlpha(200).ToSKColor();
             canvas.DrawRect(SKRect.Create(
-                line.X - BlockMargin - barWidth,
+                block.BBox.X - BlockMargin - barWidth,
                 line.Y - line.Height / 2 - pad,
                 barWidth,
                 line.Height + pad * 2), linePaint);
