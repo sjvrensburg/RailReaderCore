@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.10.1 — reading-order fixes for heading-heavy layouts
+
+Fixes a 0.10.0 regression and hardens column detection for pages with many
+headings and short paragraphs (e.g. contribution bullet lists followed by a
+section heading).
+
+### Fixed
+
+- **`XYCutPlusPlusResolver` no longer orders a heading ahead of a paragraph that
+  visually precedes it.** In 0.10.0 the density guard could collapse a dense
+  column into a single leaf, which was then sorted purely by PDF content-stream
+  index — and PDFs routinely draw headings out of visual order. Leaf ordering is
+  now **Y-primary**: blocks are grouped top-down into rows and the text-stream
+  index only breaks ties *within* a row. Regression covered by a test using the
+  real geometry that exposed it.
+
+### Changed
+
+- **Column-split validation (phantom-gutter rejection).** A candidate column
+  gutter is now accepted only if both sides carry content over a minimum fraction
+  of the region height (`MinColumnCoverageFraction`) and both sides are at least
+  `MinColumnWidthFraction` of the region width — rejecting sliver/phantom columns
+  produced by ragged short paragraphs or narrow headings.
+- **Heading attachment.** A final pass keeps each `Heading`/`Title` immediately
+  ahead of the body block directly beneath it (`HeadingAttachGapPoints`), so a
+  heading is never stranded from the text it introduces.
+- **Furniture pre-masking + lower gutter floor — fewer two-column interleaves.**
+  Running headers, footers and page numbers are now lifted out before the cut
+  (and re-anchored at their spatial position afterward), so a page number or
+  header crossing the column boundary no longer suppresses the gutter and forces
+  the whole page to read as a single interleaved column. `MinColumnGutterPoints`
+  is lowered 12 → 7pt to catch the tight gutters (8–11pt) common in journals,
+  now safe because of the coverage/width validation above. Measured on a
+  1,195-page real-PDF corpus (vs PP-DocLayout-V3's own reading order as
+  reference): two-column interleaving dropped from ~40% to ~27% of two-column
+  pages and mean body reading-order disagreement fell ~19%.
+- **Projection-profile column-split fallback — hybrid detector.** When the
+  straddler sweep finds no clean gutter (a block crosses the column boundary), a
+  vertical-coverage projection profile is tried: it locates a low-coverage valley
+  (≤`ProjectionValleyCoverage` of region height) flanked by two real column bands
+  (≥`ProjectionFlankCoverage`), requiring ≥2 stacked blocks per side. This
+  survives a thin/short block (stray figure, equation, wide caption) crossing the
+  gutter — the case pure XY-cut cannot resolve — while the stack requirement and
+  flank test prevent splitting genuine single columns. On the same 1,195-page
+  corpus this halved residual interleaving again (~27% → ~13.5% of two-column
+  pages) and lowered body reading-order disagreement a further ~11% (cumulative
+  ~28% reduction vs the prior release).
+
 ## 0.10.0 — XY-Cut++ reading order for model-less detectors
 
 Reworks `XYCutPlusPlusResolver` (the default reading-order resolver for layout

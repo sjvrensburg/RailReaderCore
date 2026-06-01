@@ -79,11 +79,13 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
 {
     /// <summary>
     /// Minimum width (in page points) for a vertical gap to qualify as a
-    /// column gutter. Academic-paper gutters are typically 20–50pt; this floor
-    /// prevents tiny rendering-noise gaps inside a single column from being
-    /// mistaken for a column boundary.
+    /// column gutter. Many journals set column gutters as tight as 8–11pt, so
+    /// this floor is deliberately low; the false positives a low floor would
+    /// otherwise admit (ragged-text gaps, slivers) are rejected downstream by
+    /// <see cref="MinColumnCoverageFraction"/> / <see cref="MinColumnWidthFraction"/>
+    /// validation, which makes the floor safe to lower.
     /// </summary>
-    public const float MinColumnGutterPoints = 12f;
+    public const float MinColumnGutterPoints = 7f;
 
     /// <summary>
     /// Minimum height (in page points) for a horizontal gap to qualify as a
@@ -105,6 +107,46 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     /// below) a wider block.
     /// </summary>
     public const float MarginNoteWidthFraction = 0.5f;
+
+    /// <summary>
+    /// Minimum fraction of a region's height that each side of a candidate column
+    /// gutter must carry content over. A one-sided phantom gutter (e.g. the
+    /// whitespace right of a ragged column) has a near-empty side and is rejected;
+    /// a genuine column — even a sparse one with a body at top and a footnote at
+    /// bottom — clears this low floor. The stronger guard against slivers is
+    /// <see cref="MinColumnWidthFraction"/>.
+    /// </summary>
+    public const float MinColumnCoverageFraction = 0.15f;
+
+    /// <summary>
+    /// Minimum width of each side of a column split, as a fraction of the region
+    /// width. Rejects sliver "columns" produced by phantom gutters.
+    /// </summary>
+    public const float MinColumnWidthFraction = 0.15f;
+
+    /// <summary>
+    /// Maximum vertical gap (in page points) between a heading and the body block
+    /// directly below it for the two to be treated as attached during the
+    /// heading-attachment pass.
+    /// </summary>
+    public const float HeadingAttachGapPoints = 36f;
+
+    /// <summary>
+    /// Projection-profile gutter: an interior X position counts as a column
+    /// gutter only if the fraction of the region height covered by content there
+    /// is at or below this value. The straddler sweep requires a gutter to be
+    /// crossed by <i>no</i> block; the projection profile relaxes that to "almost
+    /// no" content, so a thin/short block crossing the gutter (a stray figure,
+    /// an equation that pokes across) no longer hides the columns.
+    /// </summary>
+    public const float ProjectionValleyCoverage = 0.18f;
+
+    /// <summary>
+    /// Projection-profile gutter: the columns flanking the valley must each cover
+    /// at least this fraction of the region height somewhere, so a mere dip in a
+    /// single sparse column is not mistaken for a gutter.
+    /// </summary>
+    public const float ProjectionFlankCoverage = 0.45f;
 
     private readonly ReadingDirection _direction;
 
@@ -147,6 +189,10 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         // Phase 3: re-insert masked blocks by geometry + role priority.
         ReinsertMasked(ordered, masked);
 
+        // Heading attachment: keep a heading adjacent to and ahead of the body
+        // block directly beneath it.
+        AttachHeadings(ordered);
+
         blocks.Clear();
         for (int i = 0; i < ordered.Count; i++)
         {
@@ -162,10 +208,19 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     /// <summary>
     /// Partitions <paramref name="all"/> into <paramref name="masked"/> (floating
     /// blocks lifted out before cutting) and <paramref name="body"/> (everything
-    /// the recursive cut sees). A block is masked when it is either a margin note
-    /// (narrow, sitting beside a much wider block) or a clipping spanner (a large
-    /// block that 2D-overlaps another block rather than cleanly dividing the
-    /// page). Full-width dividers — which y-overlap nothing — are left in the body.
+    /// the recursive cut sees). A block is masked when it is page furniture
+    /// (running header / footer / page number), a margin note (narrow, sitting
+    /// beside a much wider block), or a clipping spanner (a large block that
+    /// 2D-overlaps another block rather than cleanly dividing the page).
+    /// Full-width dividers — which y-overlap nothing — are left in the body.
+    ///
+    /// <para>
+    /// Furniture is masked because a header/footer/page number positioned across
+    /// the column boundary bridges the two columns in the XY-cut sweep and so
+    /// suppresses the column gutter entirely — defeating the split for the whole
+    /// page. Lifting it out (and re-inserting it at the page extremes) lets the
+    /// columns be found.
+    /// </para>
     /// </summary>
     private static void PreMask(List<LayoutBlock> all, List<LayoutBlock> masked, List<LayoutBlock> body)
     {
@@ -174,7 +229,9 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
 
         foreach (var b in all)
         {
-            if (IsMarginNote(b, all, medianWidth) || IsClippingSpanner(b, all, medianWidth, medianHeight))
+            if (IsFurniture(b.Role)
+                || IsMarginNote(b, all, medianWidth)
+                || IsClippingSpanner(b, all, medianWidth, medianHeight))
                 masked.Add(b);
             else
                 body.Add(b);
@@ -237,18 +294,30 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
             return;
         }
 
-        // Prefer the widest valid vertical (column) gutter. A vertical cut at X
-        // is valid iff no block's [xmin, xmax] strictly straddles X.
-        var vCut = FindWidestVerticalGap(blocks);
-        if (vCut is { Width: >= MinColumnGutterPoints } v)
+        // Prefer the widest *validated* vertical (column) gutter. A candidate
+        // cut at X must (a) be straddled by no block, (b) have content flanking
+        // it on both sides over most of the region height, and (c) leave both
+        // sides wide enough to be real columns — guarding against phantom
+        // gutters from ragged short paragraphs / narrow headings.
+        var splitX = FindColumnSplit(blocks);
+        if (splitX is float sx)
         {
-            float splitX = v.Mid;
+            // Partition by block centre: for a clean (straddler-validated) split
+            // no block crosses sx so this matches edge-based partition exactly;
+            // for a projection split a crosser is assigned to its majority side.
             var left = new List<LayoutBlock>(blocks.Count);
             var right = new List<LayoutBlock>(blocks.Count);
             foreach (var b in blocks)
             {
-                if (b.BBox.X + b.BBox.W <= splitX) left.Add(b);
+                if (b.BBox.X + b.BBox.W * 0.5f < sx) left.Add(b);
                 else right.Add(b);
+            }
+            // Safety: if centre-partition somehow leaves one side empty (e.g. all
+            // centres on one side of a projection split), don't recurse infinitely.
+            if (left.Count == 0 || right.Count == 0)
+            {
+                foreach (var b in OrderLeaf(blocks, charBoxes)) output.Add(b);
+                return;
             }
             Cut(left, output, charBoxes);
             Cut(right, output, charBoxes);
@@ -316,20 +385,25 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     {
         if (masked.Count == 0) return;
 
-        // Process top-to-bottom so multiple masked blocks keep a stable order.
+        // All masked blocks — furniture (header/footer/page number) and floating
+        // content (margin notes, clipping spanners) alike — are re-anchored next
+        // to their nearest already-ordered body block, preserving their spatial
+        // position in the reading stream. Role-leading blocks (titles, headings,
+        // running headers) go just before that anchor; everything else just
+        // after. Furniture is masked only so it cannot bridge the columns during
+        // the cut; it is *not* forced to the page extremes, which would diverge
+        // from the natural position it occupies on the page.
         foreach (var m in masked.OrderBy(b => b.BBox.Y).ThenBy(b => b.BBox.X))
         {
-            if (ordered.Count == 0)
-            {
-                ordered.Add(m);
-                continue;
-            }
-
+            if (ordered.Count == 0) { ordered.Add(m); continue; }
             int anchor = NearestBlockIndex(ordered, m);
             int insertAt = LeadsInReadingOrder(m.Role) ? anchor : anchor + 1;
             ordered.Insert(insertAt, m);
         }
     }
+
+    private static bool IsFurniture(BlockRole role) =>
+        role is BlockRole.Header or BlockRole.Footer or BlockRole.PageNumber;
 
     private static int NearestBlockIndex(List<LayoutBlock> ordered, LayoutBlock m)
     {
@@ -350,24 +424,129 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     private static bool LeadsInReadingOrder(BlockRole role) =>
         role is BlockRole.Title or BlockRole.Heading or BlockRole.Header;
 
+    /// <summary>
+    /// Ensures every heading sits immediately before its body — the block in the
+    /// same column directly beneath it within <see cref="HeadingAttachGapPoints"/>.
+    /// Guards against a heading being ordered ahead of a paragraph that visually
+    /// precedes it (or stranded apart from the text it introduces) when the
+    /// content stream or a cut boundary disagrees with the layout.
+    /// </summary>
+    private static void AttachHeadings(List<LayoutBlock> ordered)
+    {
+        if (ordered.Count < 2) return;
+
+        // Snapshot the headings up front; we mutate the list as we relocate them.
+        var headings = ordered
+            .Where(b => b.Role is BlockRole.Heading or BlockRole.Title)
+            .ToList();
+
+        foreach (var h in headings)
+        {
+            var body = FindHeadingBody(ordered, h);
+            if (body is null) continue;
+
+            int hIdx = ordered.IndexOf(h);
+            int bodyIdx = ordered.IndexOf(body);
+            if (hIdx < 0 || bodyIdx < 0 || bodyIdx == hIdx + 1) continue; // already adjacent
+
+            ordered.RemoveAt(hIdx);
+            bodyIdx = ordered.IndexOf(body); // recompute after removal
+            ordered.Insert(bodyIdx, h);
+        }
+    }
+
+    /// <summary>
+    /// The body block a heading introduces: the nearest block directly below the
+    /// heading, in the same column (x-overlapping, similar left edge) and within
+    /// <see cref="HeadingAttachGapPoints"/>. Null when no such block exists (e.g.
+    /// a trailing heading or a heading above a figure).
+    /// </summary>
+    private static LayoutBlock? FindHeadingBody(List<LayoutBlock> ordered, LayoutBlock h)
+    {
+        float hBottom = h.BBox.Y + h.BBox.H;
+        LayoutBlock? best = null;
+        float bestGap = float.MaxValue;
+
+        foreach (var b in ordered)
+        {
+            if (ReferenceEquals(b, h)) continue;
+            if (b.Role is BlockRole.Heading or BlockRole.Title) continue; // body is not another heading
+            if (b.BBox.Y < h.BBox.Y) continue;                            // must be below the heading's top
+            if (!XOverlap(h.BBox, b.BBox)) continue;
+            if (Math.Abs(b.BBox.X - h.BBox.X) > h.BBox.W) continue;       // roughly the same column start
+
+            float gap = b.BBox.Y - hBottom;
+            if (gap < -h.BBox.H || gap > HeadingAttachGapPoints) continue; // allow slight overlap
+            if (gap < bestGap) { bestGap = gap; best = b; }
+        }
+        return best;
+    }
+
     // ---------------------------------------------------------------------
     // Phase 4: leaf ordering (with optional text-layer tie-break)
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Orders a leaf region. When a text layer is supplied and yields a
-    /// content-stream index for every block, sorts by that index (true PDF
-    /// reading order); otherwise sorts top-down then left-to-right.
+    /// Orders a leaf region. <b>Y-primary</b>: blocks are grouped top-down into
+    /// rows (a "row" is a run of blocks whose vertical bands overlap), and only
+    /// <i>within</i> a row is the order decided by the text layer's content-stream
+    /// index (when available) or left-to-right geometry.
+    ///
+    /// <para>
+    /// The text-stream index is deliberately <b>not</b> used as the primary key:
+    /// a PDF's content stream is not guaranteed to follow visual order (headings,
+    /// drop caps and floats are routinely drawn out of sequence), so sorting a
+    /// whole column by stream index can lift a heading above the paragraph that
+    /// visually precedes it. Geometry decides vertical order; the text layer only
+    /// disambiguates blocks that share a row.
+    /// </para>
     /// </summary>
     private static IEnumerable<LayoutBlock> OrderLeaf(List<LayoutBlock> blocks, IReadOnlyList<CharBox>? charBoxes)
     {
         if (blocks.Count <= 1) return blocks;
 
+        var sorted = blocks.OrderBy(b => b.BBox.Y).ToList();
+        var rows = new List<List<LayoutBlock>>();
+        float rowTop = 0, rowBottom = 0;
+        foreach (var b in sorted)
+        {
+            float top = b.BBox.Y, bottom = b.BBox.Y + b.BBox.H;
+            if (rows.Count > 0)
+            {
+                float overlap = Math.Min(rowBottom, bottom) - Math.Max(rowTop, top);
+                float minH = Math.Min(bottom - top, rowBottom - rowTop);
+                if (overlap > 0.5f * minH)
+                {
+                    rows[^1].Add(b);
+                    rowTop = Math.Min(rowTop, top);
+                    rowBottom = Math.Max(rowBottom, bottom);
+                    continue;
+                }
+            }
+            rows.Add([b]);
+            rowTop = top;
+            rowBottom = bottom;
+        }
+
+        var result = new List<LayoutBlock>(blocks.Count);
+        foreach (var row in rows)
+            result.AddRange(OrderRow(row, charBoxes));
+        return result;
+    }
+
+    /// <summary>
+    /// Orders blocks that share a row: by content-stream index when the text
+    /// layer covers every block in the row, else left-to-right.
+    /// </summary>
+    private static IEnumerable<LayoutBlock> OrderRow(List<LayoutBlock> row, IReadOnlyList<CharBox>? charBoxes)
+    {
+        if (row.Count <= 1) return row;
+
         if (charBoxes is { Count: > 0 })
         {
-            var keyed = new List<(LayoutBlock Block, float Index)>(blocks.Count);
+            var keyed = new List<(LayoutBlock Block, float Index)>(row.Count);
             bool allHaveText = true;
-            foreach (var b in blocks)
+            foreach (var b in row)
             {
                 float idx = MedianCharIndex(b.BBox, charBoxes);
                 if (float.IsNaN(idx)) { allHaveText = false; break; }
@@ -377,7 +556,7 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
                 return keyed.OrderBy(k => k.Index).Select(k => k.Block);
         }
 
-        return blocks.OrderBy(b => b.BBox.Y).ThenBy(b => b.BBox.X);
+        return row.OrderBy(b => b.BBox.X);
     }
 
     /// <summary>
@@ -438,32 +617,184 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     }
 
     /// <summary>
-    /// Widest vertical strip with no straddling block. Sorts by xmin and sweeps
-    /// while tracking the running max of xmax; a gap appears when the next
-    /// block's xmin exceeds that running max. Null if no such strip exists.
+    /// Finds the X coordinate of the widest valid column split, or null if none.
+    /// Candidate gaps are the non-straddled vertical strips (found by the xmin
+    /// sweep); the widest one that also passes coverage (<see cref="MinColumnCoverageFraction"/>)
+    /// and width (<see cref="MinColumnWidthFraction"/>) validation is returned.
     /// </summary>
-    private static VGap? FindWidestVerticalGap(List<LayoutBlock> blocks)
+    private static float? FindColumnSplit(List<LayoutBlock> blocks)
     {
         if (blocks.Count < 2) return null;
 
+        float regTop = blocks.Min(b => b.BBox.Y);
+        float regBottom = blocks.Max(b => b.BBox.Y + b.BBox.H);
+        float regLeft = blocks.Min(b => b.BBox.X);
+        float regRight = blocks.Max(b => b.BBox.X + b.BBox.W);
+        float regH = regBottom - regTop;
+        float regW = regRight - regLeft;
+
         var sorted = blocks.OrderBy(b => b.BBox.X).ToList();
         float runningMaxRight = sorted[0].BBox.X + sorted[0].BBox.W;
-        VGap? best = null;
-
+        var gaps = new List<VGap>();
         for (int i = 1; i < sorted.Count; i++)
         {
             float xmin = sorted[i].BBox.X;
             if (xmin > runningMaxRight)
-            {
-                var gap = new VGap(runningMaxRight, xmin);
-                if (best is null || gap.Width > best.Value.Width)
-                    best = gap;
-            }
+                gaps.Add(new VGap(runningMaxRight, xmin));
             float xmax = sorted[i].BBox.X + sorted[i].BBox.W;
             if (xmax > runningMaxRight) runningMaxRight = xmax;
         }
 
-        return best;
+        foreach (var g in gaps.OrderByDescending(g => g.Width))
+        {
+            if (g.Width < MinColumnGutterPoints) break;
+            if (IsValidColumnSplit(blocks, g.Mid, regH, regW))
+                return g.Mid;
+        }
+
+        // Fallback: the straddler sweep found no clean gutter (something crosses
+        // the column boundary). Try a vertical-coverage projection profile, which
+        // tolerates thin/short crossers.
+        return FindProjectionSplit(blocks, regTop, regBottom, regLeft, regRight, regH, regW);
+    }
+
+    /// <summary>
+    /// Projection-profile column finder. Samples the fraction of the region
+    /// height covered by content across X, then looks in the interior for the
+    /// lowest-coverage position (a candidate gutter) that is (a) at or below
+    /// <see cref="ProjectionValleyCoverage"/>, (b) flanked on both sides by a band
+    /// reaching <see cref="ProjectionFlankCoverage"/>, and (c) validated for
+    /// balance/width by <see cref="IsValidCenterSplit"/>. Unlike the straddler
+    /// sweep this survives a single block crossing the gutter, because one short
+    /// crosser contributes little coverage at the gutter X. Returns the split X
+    /// or null.
+    /// </summary>
+    private static float? FindProjectionSplit(List<LayoutBlock> blocks,
+        float regTop, float regBottom, float regLeft, float regRight, float regH, float regW)
+    {
+        if (regH <= 0 || regW <= 0) return null;
+
+        int bins = Math.Clamp((int)regW, 32, 512);
+        float binW = regW / bins;
+        var cov = new float[bins];
+        for (int i = 0; i < bins; i++)
+        {
+            float x = regLeft + (i + 0.5f) * binW;
+            cov[i] = CoverageAtX(blocks, x) / regH;
+        }
+
+        // Restrict the search to the interior so we never split off a sliver.
+        int margin = Math.Max(1, (int)(bins * MinColumnWidthFraction));
+        int lo = margin, hi = bins - margin;
+        if (hi - lo < 1) return null;
+
+        int valley = -1;
+        float min = float.MaxValue;
+        for (int i = lo; i < hi; i++)
+            if (cov[i] < min) { min = cov[i]; valley = i; }
+
+        if (valley < 0 || min > ProjectionValleyCoverage) return null;
+
+        // Both flanks must contain a substantial column somewhere.
+        float leftMax = 0f, rightMax = 0f;
+        for (int i = 0; i < valley; i++) leftMax = Math.Max(leftMax, cov[i]);
+        for (int i = valley + 1; i < bins; i++) rightMax = Math.Max(rightMax, cov[i]);
+        if (leftMax < ProjectionFlankCoverage || rightMax < ProjectionFlankCoverage) return null;
+
+        float splitX = regLeft + (valley + 0.5f) * binW;
+        return IsValidCenterSplit(blocks, splitX, regH, regW) ? splitX : (float?)null;
+    }
+
+    /// <summary>Union vertical extent (page points) covered by blocks spanning column X.</summary>
+    private static float CoverageAtX(List<LayoutBlock> blocks, float x)
+    {
+        var intervals = new List<(float S, float E)>();
+        foreach (var b in blocks)
+            if (b.BBox.X <= x && x <= b.BBox.X + b.BBox.W)
+                intervals.Add((b.BBox.Y, b.BBox.Y + b.BBox.H));
+        if (intervals.Count == 0) return 0f;
+        intervals.Sort((a, b) => a.S.CompareTo(b.S));
+        float total = 0f, curS = intervals[0].S, curE = intervals[0].E;
+        for (int i = 1; i < intervals.Count; i++)
+        {
+            var (s, e) = intervals[i];
+            if (s > curE) { total += curE - curS; curS = s; curE = e; }
+            else if (e > curE) curE = e;
+        }
+        total += curE - curS;
+        return total;
+    }
+
+    /// <summary>
+    /// Like <see cref="IsValidColumnSplit"/> but partitions by block centre (so a
+    /// block crossing <paramref name="splitX"/> is assigned to the side it mostly
+    /// sits on) — used for projection splits where a crosser may exist.
+    /// </summary>
+    private static bool IsValidCenterSplit(List<LayoutBlock> blocks, float splitX, float regH, float regW)
+    {
+        var left = blocks.Where(b => b.BBox.X + b.BBox.W * 0.5f < splitX).ToList();
+        var right = blocks.Where(b => b.BBox.X + b.BBox.W * 0.5f >= splitX).ToList();
+        // A column is a *stack* of blocks; require ≥2 each side so a single
+        // side-by-side pair (e.g. two cells of one line) isn't read as columns.
+        // The precise straddler path stays permissive; only this fallback does.
+        if (left.Count < 2 || right.Count < 2) return false;
+        if (regH > 0 && (UnionHeight(left) < MinColumnCoverageFraction * regH
+                      || UnionHeight(right) < MinColumnCoverageFraction * regH)) return false;
+        if (regW > 0)
+        {
+            float leftW = left.Max(b => b.BBox.X + b.BBox.W) - left.Min(b => b.BBox.X);
+            float rightW = right.Max(b => b.BBox.X + b.BBox.W) - right.Min(b => b.BBox.X);
+            if (Math.Min(leftW, rightW) < MinColumnWidthFraction * regW) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Validates a candidate column split at <paramref name="splitX"/>: both sides
+    /// must carry content over at least <see cref="MinColumnCoverageFraction"/> of
+    /// the region height (a real gutter is flanked top-to-bottom; a ragged-text
+    /// gap is not) and both sides must be at least <see cref="MinColumnWidthFraction"/>
+    /// of the region width (rejecting sliver phantom columns).
+    /// </summary>
+    private static bool IsValidColumnSplit(List<LayoutBlock> blocks, float splitX, float regH, float regW)
+    {
+        var left = blocks.Where(b => b.BBox.X + b.BBox.W <= splitX).ToList();
+        var right = blocks.Where(b => b.BBox.X >= splitX).ToList();
+        if (left.Count == 0 || right.Count == 0) return false;
+
+        if (regH > 0)
+        {
+            if (UnionHeight(left) < MinColumnCoverageFraction * regH) return false;
+            if (UnionHeight(right) < MinColumnCoverageFraction * regH) return false;
+        }
+
+        if (regW > 0)
+        {
+            float leftW = left.Max(b => b.BBox.X + b.BBox.W) - left.Min(b => b.BBox.X);
+            float rightW = right.Max(b => b.BBox.X + b.BBox.W) - right.Min(b => b.BBox.X);
+            if (Math.Min(leftW, rightW) < MinColumnWidthFraction * regW) return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>Total vertical extent covered by the union of the blocks' Y intervals.</summary>
+    private static float UnionHeight(List<LayoutBlock> blocks)
+    {
+        var intervals = blocks
+            .Select(b => (Start: b.BBox.Y, End: b.BBox.Y + b.BBox.H))
+            .OrderBy(t => t.Start)
+            .ToList();
+
+        float total = 0f, curStart = intervals[0].Start, curEnd = intervals[0].End;
+        for (int i = 1; i < intervals.Count; i++)
+        {
+            var (s, e) = intervals[i];
+            if (s > curEnd) { total += curEnd - curStart; curStart = s; curEnd = e; }
+            else if (e > curEnd) curEnd = e;
+        }
+        total += curEnd - curStart;
+        return total;
     }
 
     /// <summary>

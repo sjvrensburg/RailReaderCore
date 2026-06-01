@@ -320,11 +320,179 @@ public class XYCutPlusPlusResolverTests
         Assert.Equal(new[] { "LEFT", "RIGHT" }.Select(t => t.GetHashCode()), blocks.Select(Id));
     }
 
+    // -----------------------------------------------------------------
+    // Many headings + short paragraphs: phantom-gutter rejection,
+    // Y-primary leaf ordering, and heading attachment.
+    // -----------------------------------------------------------------
+
     [Fact]
-    public void TinyVerticalGapBelowGutterThreshold_DoesNotSplitColumns()
+    public void RealPage_ContributionsThenSectionHeading_HeadingDoesNotJumpAheadOfBullet()
     {
-        // 5pt gap between two stacks of blocks — under MinColumnGutterPoints (12pt).
-        // Should fall through to a horizontal cut and read top-to-bottom.
+        // Exact geometry from "Foundation Models for Time Series Analysis"
+        // (KDD'24), page 2 right column. The "2 Background" heading (y=357) must
+        // NOT be ordered ahead of the "Future research" bullet (y=311) above it.
+        // Regression for the density-guard + text-stream-sort interaction.
+        var bComp = Block(317.1f, 212.7f, 242.8f, 40.9f, tag: "comprehensive");
+        var bNovel = Block(316.8f, 257.4f, 242.6f, 51.2f, tag: "novel");
+        var bFuture = Block(317.0f, 311.7f, 242.0f, 30.7f, tag: "future");
+        var hBackground = Block(317.0f, 357.1f, 77.9f, 10.6f, role: BlockRole.Heading, tag: "2-background");
+        var bFoundation = Block(316.9f, 372.3f, 242.9f, 150.1f, tag: "foundation-models");
+
+        var blocks = new List<LayoutBlock> { hBackground, bFuture, bComp, bFoundation, bNovel };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 612, 792);
+
+        var order = blocks.Select(Id).ToList();
+        Assert.Equal(
+            new[] { "comprehensive", "novel", "future", "2-background", "foundation-models" }
+                .Select(t => t.GetHashCode()),
+            order);
+    }
+
+    [Fact]
+    public void RaggedShortParagraphs_NoPhantomColumnSplit()
+    {
+        // A single column of short, ragged-right one-sentence paragraphs. Their
+        // right edges vary, manufacturing a >12pt non-straddled gap on the right —
+        // but it does not span the column height, so it must be rejected.
+        var p0 = Block(40,  50, 380, 24, tag: "p0"); // right edge 420
+        var p1 = Block(40,  84, 250, 24, tag: "p1"); // right edge 290 (ragged)
+        var p2 = Block(40, 118, 300, 24, tag: "p2"); // right edge 340
+        var p3 = Block(40, 152, 210, 24, tag: "p3"); // right edge 250
+
+        var blocks = new List<LayoutBlock> { p2, p0, p3, p1 };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 480, 800);
+
+        Assert.Equal(new[] { "p0", "p1", "p2", "p3" }.Select(t => t.GetHashCode()),
+            blocks.Select(Id));
+    }
+
+    [Fact]
+    public void HeadingAttachment_HeadingPulledDownToItsBody()
+    {
+        // A heading whose body sits just below it must read immediately before
+        // that body even if another block shares the region.
+        var prevPara = Block(40,  40, 400, 60, tag: "prev");
+        var heading = Block(40, 120, 120, 14, role: BlockRole.Heading, tag: "H");
+        var body = Block(40, 140, 400, 80, tag: "body");
+
+        var blocks = new List<LayoutBlock> { prevPara, heading, body };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 480, 800);
+
+        var order = blocks.Select(Id).ToList();
+        int iH = order.IndexOf(Id(heading)), iBody = order.IndexOf(Id(body));
+        Assert.Equal(iH + 1, iBody); // heading immediately precedes its body
+        Assert.True(order.IndexOf(Id(prevPara)) < iH);
+    }
+
+    [Fact]
+    public void NarrowSidebar_BelowMinColumnWidth_NotTreatedAsColumn()
+    {
+        // A 40pt-wide sliver beside a wide body. The gap between them exceeds the
+        // gutter threshold, but the sliver is under MinColumnWidthFraction of the
+        // region — it must not become a phantom first column read entirely first.
+        var sliver = Block(20, 60, 40, 200, tag: "sliver");
+        var body0 = Block(120, 60, 400, 60, tag: "b0");
+        var body1 = Block(120, 140, 400, 60, tag: "b1");
+
+        var blocks = new List<LayoutBlock> { body1, sliver, body0 };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 600, 800);
+
+        // The sliver is not pulled ahead of the whole body as a column.
+        Assert.NotEqual(Id(sliver), blocks.Select(Id).First());
+    }
+
+    [Fact]
+    public void TwoColumns_NarrowGutterWithCrossingPageNumber_StillColumnFirst()
+    {
+        // Real-corpus failure: ~9pt gutter (below the old 12pt floor) AND a page
+        // number straddling the column boundary at the bottom. Either alone
+        // defeated the column split and interleaved the columns. The page number
+        // must be masked (furniture) and the 9pt gutter accepted.
+        var l0 = Block(40,  50, 110, 30, tag: "L0");
+        var l1 = Block(40, 100, 110, 30, tag: "L1");
+        var r0 = Block(159, 50, 111, 30, tag: "R0"); // gutter 150->159 = 9pt
+        var r1 = Block(159, 100, 111, 30, tag: "R1");
+        var pageNo = Block(145, 780, 20, 10, role: BlockRole.PageNumber, tag: "PG"); // crosses gutter
+
+        var blocks = new List<LayoutBlock> { r1, pageNo, l0, r0, l1 };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 300, 820);
+
+        var order = blocks.Select(Id).ToList();
+        // Left column fully before right column (not interleaved) — the page
+        // number crossing the gutter no longer defeats the split.
+        Assert.True(order.IndexOf(Id(l0)) < order.IndexOf(Id(l1)));
+        Assert.True(order.IndexOf(Id(l1)) < order.IndexOf(Id(r0)));
+        Assert.True(order.IndexOf(Id(r0)) < order.IndexOf(Id(r1)));
+        // Page number is furniture → not ordered ahead of the body.
+        Assert.NotEqual(Id(pageNo), order[0]);
+    }
+
+    [Fact]
+    public void RunningHeaderAndFooter_GoToExtremes()
+    {
+        var header = Block(40, 20, 400, 12, role: BlockRole.Header, tag: "HDR");
+        var body0 = Block(40, 60, 400, 80, tag: "b0");
+        var body1 = Block(40, 150, 400, 80, tag: "b1");
+        var footer = Block(40, 760, 400, 12, role: BlockRole.Footer, tag: "FTR");
+
+        var blocks = new List<LayoutBlock> { body1, footer, header, body0 };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 480, 800);
+
+        var order = blocks.Select(Id).ToList();
+        Assert.Equal(Id(header), order[0]);
+        Assert.Equal(Id(footer), order[^1]);
+        Assert.True(order.IndexOf(Id(body0)) < order.IndexOf(Id(body1)));
+    }
+
+    [Fact]
+    public void TwoColumns_WithContentBlockCrossingGutter_ProjectionSplitRecoversColumns()
+    {
+        // A wide figure pokes across the gutter mid-page while both columns
+        // continue above and below it. The straddler sweep finds no clean gutter
+        // (the figure bridges left↔right), but the projection profile sees a
+        // low-coverage valley at the gutter and still splits column-first.
+        var lTop = Block(40,  60, 240, 80, tag: "Lt");
+        var lMid = Block(40, 380, 240, 80, tag: "Lm");
+        var lBot = Block(40, 560, 240, 80, tag: "Lb");
+        var rTop = Block(310, 60, 240, 80, tag: "Rt");
+        var rMid = Block(310, 380, 240, 80, tag: "Rm");
+        var rBot = Block(310, 560, 240, 80, tag: "Rb");
+        // Figure crossing the gutter (x 250→520) over a short y-band only.
+        var fig = Block(250, 250, 270, 60, role: BlockRole.Figure, tag: "Fig");
+
+        var blocks = new List<LayoutBlock> { rBot, lTop, fig, rMid, lBot, rTop, lMid };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 600, 800);
+
+        var order = blocks.Select(Id).ToList();
+        // All left-column blocks precede all right-column blocks (not interleaved).
+        int lastLeft = new[] { lTop, lMid, lBot }.Max(b => order.IndexOf(Id(b)));
+        int firstRight = new[] { rTop, rMid, rBot }.Min(b => order.IndexOf(Id(b)));
+        Assert.True(lastLeft < firstRight, $"columns interleaved: lastLeft={lastLeft} firstRight={firstRight}");
+    }
+
+    [Fact]
+    public void SingleColumn_ProjectionDoesNotInventAColumn()
+    {
+        // One dense column of full-width paragraphs: no interior coverage valley,
+        // so the projection fallback must NOT split it.
+        var blocks = new List<LayoutBlock>
+        {
+            Block(40,  50, 480, 60, tag: "p0"),
+            Block(40, 120, 480, 60, tag: "p1"),
+            Block(40, 190, 480, 60, tag: "p2"),
+            Block(40, 260, 480, 60, tag: "p3"),
+        };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 560, 800);
+        Assert.Equal(new[] { "p0", "p1", "p2", "p3" }.Select(t => t.GetHashCode()), blocks.Select(Id));
+    }
+
+    [Fact]
+    public void TightGutterTwoStacks_ProjectionReadsColumnFirst()
+    {
+        // Two clean vertical stacks separated by only a 5pt gutter — below the
+        // straddler floor, so the straddler sweep won't split. But the projection
+        // profile sees a full-height zero-coverage valley flanked by two stacks
+        // (≥2 blocks each) and correctly reads it column-first.
         var a = Block(40,  50, 200, 30, tag: "a");
         var b = Block(245, 50, 200, 30, tag: "b");
         var c = Block(40, 100, 200, 30, tag: "c");
@@ -333,8 +501,8 @@ public class XYCutPlusPlusResolverTests
         var blocks = new List<LayoutBlock> { d, b, c, a };
         new XYCutPlusPlusResolver().AssignOrder(blocks, 480, 800);
 
-        // No column split → row-major (top-down, then left-to-right).
-        Assert.Equal(new[] { "a", "b", "c", "d" }.Select(t => t.GetHashCode()),
+        // Column-first: left stack (a,c) before right stack (b,d).
+        Assert.Equal(new[] { "a", "c", "b", "d" }.Select(t => t.GetHashCode()),
             blocks.Select(Id));
     }
 }
