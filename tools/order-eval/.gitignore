@@ -1,0 +1,5 @@
+# Bulky / generated eval artifacts — keep the source, not these.
+bin/
+obj/
+*.json
+*.log
