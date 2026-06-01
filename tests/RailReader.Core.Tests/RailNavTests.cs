@@ -567,4 +567,74 @@ public class RailNavTests
         // Bias should scale by newZoom/previousZoom = 8/4 = 2x
         Assert.Equal(200.0, _nav.VerticalBias, precision: 5);
     }
+
+    // ===== Navigation chunks (benefit B) =====
+
+    private static LayoutBlock ChunkBlock(float x, float y, float w, float h, BlockRole role = BlockRole.Text)
+    {
+        var b = new LayoutBlock { BBox = new BBox(x, y, w, h), Role = role, Confidence = 0.9f };
+        b.Lines.Add(new LineInfo(y + h / 2, h, x, w)); // one line per block
+        return b;
+    }
+
+    private static PageAnalysis ChunkAnalysis(params LayoutBlock[] blocks)
+    {
+        for (int i = 0; i < blocks.Length; i++) blocks[i].Order = i;
+        return new PageAnalysis { Blocks = [.. blocks], PageWidth = 600, PageHeight = 800 };
+    }
+
+    private static readonly HashSet<BlockRole> NavRoles = [BlockRole.Text, BlockRole.Heading];
+
+    [Fact]
+    public void Chunks_TightColumnRun_FormsOneChunk()
+    {
+        // Narrow heading + two paragraphs, same column, tight gaps → one chunk.
+        var a = ChunkAnalysis(
+            ChunkBlock(40, 50, 100, 14, BlockRole.Heading),
+            ChunkBlock(40, 70, 240, 40),
+            ChunkBlock(40, 116, 240, 40));
+        _nav.SetAnalysis(a, NavRoles);
+        Assert.Equal(1, _nav.ChunkCount);
+    }
+
+    [Fact]
+    public void Chunks_DifferentColumns_AreSeparateChunks()
+    {
+        var a = ChunkAnalysis(
+            ChunkBlock(40, 50, 240, 40),
+            ChunkBlock(40, 96, 240, 40),
+            ChunkBlock(320, 50, 240, 40),   // right column → new chunk
+            ChunkBlock(320, 96, 240, 40));
+        _nav.SetAnalysis(a, NavRoles);
+        Assert.Equal(2, _nav.ChunkCount);
+    }
+
+    [Fact]
+    public void Chunks_LargeVerticalGap_StartsNewChunk()
+    {
+        var a = ChunkAnalysis(
+            ChunkBlock(40, 50, 240, 40),     // bottom 90
+            ChunkBlock(40, 300, 240, 40));   // gap 210 ≫ ChunkMaxGapPoints
+        _nav.SetAnalysis(a, NavRoles);
+        Assert.Equal(2, _nav.ChunkCount);
+    }
+
+    [Fact]
+    public void CurrentChunk_StableWithinChunk_AdvancesAcrossBoundary()
+    {
+        var a = ChunkAnalysis(
+            ChunkBlock(40, 50, 240, 40),    // chunk 0
+            ChunkBlock(40, 96, 240, 40),    // chunk 0 (same column, tight)
+            ChunkBlock(320, 50, 240, 40));  // chunk 1 (right column)
+        _nav.SetAnalysis(a, NavRoles);
+        _nav.Active = true;
+
+        Assert.Equal(0, _nav.CurrentChunk);
+        _nav.NextLine();                                  // → block 1, still chunk 0
+        Assert.Equal(1, _nav.CurrentBlock);
+        Assert.Equal(0, _nav.CurrentChunk);
+        _nav.NextLine();                                  // → block 2, new chunk
+        Assert.Equal(2, _nav.CurrentBlock);
+        Assert.Equal(1, _nav.CurrentChunk);
+    }
 }

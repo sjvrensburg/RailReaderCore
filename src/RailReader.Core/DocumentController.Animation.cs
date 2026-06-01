@@ -170,6 +170,7 @@ public sealed partial class DocumentController
             {
                 int prevBlock = doc.Rail.CurrentBlock;
                 int prevLine = doc.Rail.CurrentLine;
+                int prevChunk = doc.Rail.CurrentChunk;
                 var adv = AdvanceLine(doc, forward: true, ww, wh);
                 switch (adv)
                 {
@@ -189,8 +190,11 @@ public sealed partial class DocumentController
                             break;
                         }
                         doc.StartSnap(ww, wh);
-                        bool enteredNewBlock = doc.Rail.CurrentBlock != prevBlock;
-                        doc.Rail.PauseAutoScroll(enteredNewBlock ? GetBlockEntryPause(doc) : 0);
+                        // Heavier role-based entry pause only when crossing into a NEW
+                        // chunk (new column/section); crossing block boundaries within a
+                        // column reads continuously (no stutter).
+                        bool enteredNewChunk = doc.Rail.CurrentChunk != prevChunk;
+                        doc.Rail.PauseAutoScroll(enteredNewChunk ? GetBlockEntryPause(doc) : 0);
                         break;
                 }
                 overlayChanged = true;
