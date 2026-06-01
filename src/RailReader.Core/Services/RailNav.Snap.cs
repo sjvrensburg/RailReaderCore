@@ -141,6 +141,19 @@ public sealed partial class RailNav
             targetX = windowWidth * 0.05 - chunkLeft * zoom;
         }
 
+        // Keep the target inside the scrollable range for wide content. The 5%
+        // line-start inset sits *outside* the range (its left boundary already
+        // includes the content margin), so ClampX's soft-ease would treat it as
+        // over-scroll and pull the camera left frame-by-frame after the snap —
+        // the "overshoot left then snap right" on each line advance. Hard-clamp
+        // into the range so the per-frame soft ClampX is a no-op here.
+        if (chunkWidthPx > windowWidth)
+        {
+            double maxX = -chunkLeft * zoom;                  // left boundary
+            double minX = windowWidth - chunkRight * zoom;    // right boundary
+            targetX = Math.Clamp(targetX, minX, maxX);
+        }
+
         if (_config.PixelSnapping)
         {
             targetY = Math.Round(targetY);

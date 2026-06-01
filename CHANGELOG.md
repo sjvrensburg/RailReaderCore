@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.13.1 — fix auto-scroll line-advance jitter
+
+### Fixed
+
+- **Auto-scroll no longer overshoots left then snaps back on each line advance.**
+  The carriage-return snap target (a 5% line-start inset) sat *outside* the
+  scrollable range for content wider than the window, so `ClampX`'s soft-ease
+  treated it as over-scroll and pulled the camera left frame-by-frame after the
+  snap before scrolling resumed. `ComputeTargetCamera` now hard-clamps the target
+  into the scrollable range, so the snap lands exactly where the camera is held
+  and the per-frame soft clamp is a no-op. (Pre-existing; most visible at high
+  zoom where lines are wider than the window.)
+
 ## 0.13.0 — rail navigation chunks
 
 Rail mode now reads a column as one continuous unit instead of stepping

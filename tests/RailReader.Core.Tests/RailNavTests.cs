@@ -637,4 +637,25 @@ public class RailNavTests
         Assert.Equal(2, _nav.CurrentBlock);
         Assert.Equal(1, _nav.CurrentChunk);
     }
+
+    [Fact]
+    public void SnapTarget_ForWideBlock_IsClampStable()
+    {
+        // A block far wider than the window triggers ClampX's soft-clamp. The
+        // carriage-return snap target must already equal the clamped position so
+        // auto-scroll resume doesn't nudge the camera — the "overshoot left then
+        // snap right to line start" the user reported on each line advance.
+        var a = ChunkAnalysis(ChunkBlock(40, 50, 400, 30)); // 400pt × zoom 4 = 1600px ≫ 800
+        _nav.SetAnalysis(a, NavRoles);
+        _nav.Active = true;
+
+        double camX = 0, camY = 0;
+        _nav.StartSnapToCurrent(camX, camY, Zoom, WindowWidth, WindowHeight);
+        // Snap uses a real Stopwatch (SnapDurationMs=1); let wall-clock time pass
+        // so it completes and camX settles on the snap target.
+        for (int i = 0; i < 5; i++) { System.Threading.Thread.Sleep(2); _nav.Tick(ref camX, ref camY, 0.05, Zoom, WindowWidth); }
+
+        double reclamped = ((ICameraClamp)_nav).ClampX(camX, Zoom, WindowWidth);
+        Assert.Equal(reclamped, camX, precision: 2); // re-clamping must not move it
+    }
 }
