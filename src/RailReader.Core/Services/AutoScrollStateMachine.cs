@@ -142,15 +142,16 @@ internal sealed class AutoScrollStateMachine
     /// Pass durationMs=0 to wait for snap completion without any display pause.
     /// Transition: current state -> WaitingForSnap.
     /// </summary>
-    public void RequestDeferredPause(double durationMs)
+    public void RequestDeferredPause(double durationMs, bool resetDwell = false)
     {
         if (CurrentState == AutoScrollState.Inactive) return;
         _pendingPauseMs = durationMs;
-        // Only reset dwell tracking for genuine new-block entries (durationMs > 0).
-        // Mid-block line advances (durationMs = 0) stay within the same block —
-        // resetting _dwelt here caused every line of a narrow block to re-trigger
-        // a full LinePauseMs * BlockLineCount dwell, compounding over time.
-        if (durationMs > 0) _dwelt = false;
+        // Dwell tracking is a PER-BLOCK concern: reset whenever the advance crosses
+        // a block boundary (resetDwell) — including within-chunk crossings that now
+        // carry durationMs = 0 — so each fit-in-window block gets its own dwell.
+        // A mid-block line advance (no block change, durationMs = 0) must NOT reset,
+        // else every line of a narrow block re-triggers a full dwell.
+        if (durationMs > 0 || resetDwell) _dwelt = false;
         CurrentState = AutoScrollState.WaitingForSnap;
     }
 

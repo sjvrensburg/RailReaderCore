@@ -21,9 +21,9 @@ public sealed partial class RailNav
     /// <summary>Inject a settling pause into auto-scroll (e.g. after advancing to a new block).
     /// The pause is deferred until any snap animation completes, so the full duration
     /// is perceived as stillness after the camera reaches its target.</summary>
-    public void PauseAutoScroll(double durationMs)
+    public void PauseAutoScroll(double durationMs, bool resetDwell = false)
     {
-        _autoScrollState.RequestDeferredPause(durationMs);
+        _autoScrollState.RequestDeferredPause(durationMs, resetDwell);
     }
 
     /// <summary>Set/clear the boost flag (user holding D/Right during auto-scroll).</summary>

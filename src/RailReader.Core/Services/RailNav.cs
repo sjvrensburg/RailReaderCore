@@ -55,6 +55,16 @@ public sealed partial class RailNav : ICameraClamp
         _config.CenteringRoles.Contains(CurrentNavigableBlock.Role);
 
     /// <summary>
+    /// Single centering predicate shared by the snap target and the per-frame
+    /// clamp, so they agree: a centering-role unit is centred only when it is
+    /// narrower than <see cref="CoreTuning.CenterBlockThreshold"/> of the window.
+    /// Using different thresholds in the two paths caused a snap-then-jump for
+    /// content in the [threshold·window, window) band.
+    /// </summary>
+    private bool ShouldCenterUnit(double widthPx, double windowWidth) =>
+        widthPx < windowWidth * CoreTuning.CenterBlockThreshold && ShouldCenterBlock();
+
+    /// <summary>
     /// Returns true if input should be suppressed because an edge-hold advance
     /// snap animation is still in progress.
     /// </summary>
@@ -395,7 +405,7 @@ public sealed partial class RailNav : ICameraClamp
         double result;
         if (blockWidthPx <= windowWidth)
         {
-            if (ShouldCenterBlock())
+            if (ShouldCenterUnit(blockWidthPx, windowWidth))
             {
                 double center = (blockLeft + blockRight) / 2.0;
                 result = windowWidth / 2.0 - center * zoom;

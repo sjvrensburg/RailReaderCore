@@ -192,9 +192,13 @@ public sealed partial class DocumentController
                         doc.StartSnap(ww, wh);
                         // Heavier role-based entry pause only when crossing into a NEW
                         // chunk (new column/section); crossing block boundaries within a
-                        // column reads continuously (no stutter).
+                        // column reads continuously (no stutter). But always reset the
+                        // per-block dwell on ANY block change so each fit-in-window block
+                        // still gets its settling dwell.
                         bool enteredNewChunk = doc.Rail.CurrentChunk != prevChunk;
-                        doc.Rail.PauseAutoScroll(enteredNewChunk ? GetBlockEntryPause(doc) : 0);
+                        bool enteredNewBlock = doc.Rail.CurrentBlock != prevBlock;
+                        doc.Rail.PauseAutoScroll(enteredNewChunk ? GetBlockEntryPause(doc) : 0,
+                            resetDwell: enteredNewBlock);
                         break;
                 }
                 overlayChanged = true;

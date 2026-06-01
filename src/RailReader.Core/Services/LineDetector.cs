@@ -95,7 +95,10 @@ public static class LineDetector
             if (lb - lt <= 0) continue;
             float lx = Math.Max(left, l.X);
             float lr = Math.Min(right, l.X + l.Width);
-            float lw = lr - lx > 0 ? lr - lx : block.W;
+            float lw;
+            if (lr - lx > 0) { lw = lr - lx; }
+            else { lx = left; lw = block.W; }   // extent doesn't overlap → span the block, anchored at its left
+            if (lw <= 0) continue;              // degenerate block width
             clamped.Add(new LineInfo((lt + lb) / 2f, lb - lt, lx, lw));
         }
 

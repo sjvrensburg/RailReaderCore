@@ -132,6 +132,13 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     public const float HeadingAttachGapPoints = 36f;
 
     /// <summary>
+    /// Maximum number of reading-order positions a heading may be moved during
+    /// heading attachment. Bounds the relocation to a local nudge so a distant
+    /// geometric match cannot reorder many intervening blocks.
+    /// </summary>
+    public const int HeadingAttachMaxShift = 8;
+
+    /// <summary>
     /// Projection-profile gutter: an interior X position counts as a column
     /// gutter only if the fraction of the region height covered by content there
     /// is at or below this value. The straddler sweep requires a gutter to be
@@ -194,9 +201,16 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
             return;
         }
 
+        // Pre-mask medians are computed from the ORIGINAL blocks (not the
+        // super-block unions), so margin-note / spanner thresholds aren't skewed
+        // by tall merged runs.
+        var all = blocks.ToList();
+        float medW = Median(all.Select(b => b.BBox.W));
+        float medH = Median(all.Select(b => b.BBox.H));
+
         var ordered = _mergeAdjacent
-            ? OrderViaSuperBlocks(blocks.ToList(), pageWidth, pageHeight, charBoxes)
-            : OrderBlocks(blocks.ToList(), charBoxes);
+            ? OrderViaSuperBlocks(all, pageWidth, pageHeight, charBoxes, medW, medH)
+            : OrderBlocks(all, charBoxes, medW, medH);
 
         blocks.Clear();
         for (int i = 0; i < ordered.Count; i++)
@@ -211,11 +225,12 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     /// masked → heading attachment. Returns the blocks in reading order (does not
     /// set <see cref="LayoutBlock.Order"/>, does not mutate the input list).
     /// </summary>
-    private List<LayoutBlock> OrderBlocks(List<LayoutBlock> input, IReadOnlyList<CharBox>? charBoxes)
+    private List<LayoutBlock> OrderBlocks(List<LayoutBlock> input, IReadOnlyList<CharBox>? charBoxes,
+        float medianWidth, float medianHeight)
     {
         var masked = new List<LayoutBlock>();
         var body = new List<LayoutBlock>(input.Count);
-        PreMask(input, masked, body);
+        PreMask(input, masked, body, medianWidth, medianHeight);
 
         var ordered = new List<LayoutBlock>(input.Count);
         if (body.Count > 0)
@@ -236,13 +251,17 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     /// trivially correct, which is where most reading-order errors lived.
     /// </summary>
     private List<LayoutBlock> OrderViaSuperBlocks(List<LayoutBlock> all, double pageWidth, double pageHeight,
-        IReadOnlyList<CharBox>? charBoxes)
+        IReadOnlyList<CharBox>? charBoxes, float medianWidth, float medianHeight)
     {
         var groups = MergeGroups(all, pageWidth);
 
         // Build one super-block per group: singletons reuse the original block
-        // (preserving its role for pre-masking); multi-member runs get a synthetic
-        // body block spanning the union.
+        // (preserving its role); multi-member runs get a synthetic body block
+        // spanning the union. The run is deliberately given Role=Text rather than
+        // its leading member's role: a column run's internal order (including a
+        // leading heading) is already correct via top-down expansion, and
+        // carrying a Heading role would make AttachHeadings act on the whole run —
+        // which corpus validation showed shifts common-case ordering for no gain.
         var supers = new List<LayoutBlock>(groups.Count);
         var groupOf = new Dictionary<LayoutBlock, List<LayoutBlock>>(ReferenceEqualityComparer.Instance);
         foreach (var g in groups)
@@ -262,14 +281,16 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
             groupOf[super] = g;
         }
 
-        var orderedSupers = OrderBlocks(supers, charBoxes);
+        var orderedSupers = OrderBlocks(supers, charBoxes, medianWidth, medianHeight);
 
         var result = new List<LayoutBlock>(all.Count);
         foreach (var s in orderedSupers)
         {
             var g = groupOf[s];
             if (g.Count == 1) result.Add(g[0]);
-            else foreach (var m in g.OrderBy(b => b.BBox.Y).ThenBy(b => b.BBox.X)) result.Add(m);
+            // Expand via the same leaf ordering used elsewhere, so a same-row pair
+            // inside a run uses the content-stream tie-break, not bare left-to-right.
+            else result.AddRange(OrderLeaf(g, charBoxes));
         }
         return result;
     }
@@ -354,11 +375,9 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     /// columns be found.
     /// </para>
     /// </summary>
-    private static void PreMask(List<LayoutBlock> all, List<LayoutBlock> masked, List<LayoutBlock> body)
+    private static void PreMask(List<LayoutBlock> all, List<LayoutBlock> masked, List<LayoutBlock> body,
+        float medianWidth, float medianHeight)
     {
-        float medianWidth = Median(all.Select(b => b.BBox.W));
-        float medianHeight = Median(all.Select(b => b.BBox.H));
-
         foreach (var b in all)
         {
             if (IsFurniture(b.Role)
@@ -580,6 +599,10 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
             int hIdx = ordered.IndexOf(h);
             int bodyIdx = ordered.IndexOf(body);
             if (hIdx < 0 || bodyIdx < 0 || bodyIdx == hIdx + 1) continue; // already adjacent
+            // Only a short local nudge: a far-away geometric match (a reinserted
+            // block, or content the cut placed in another region) must not be
+            // pulled across many intervening blocks and reorder them.
+            if (Math.Abs(bodyIdx - hIdx) > HeadingAttachMaxShift) continue;
 
             ordered.RemoveAt(hIdx);
             bodyIdx = ordered.IndexOf(body); // recompute after removal
@@ -676,11 +699,23 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
 
         if (charBoxes is { Count: > 0 })
         {
+            // Restrict the (page-wide) char list to this row's Y band once, so the
+            // per-block median lookup scans a small slice rather than re-scanning
+            // every char box for each block in the row.
+            float rowTop = row.Min(b => b.BBox.Y);
+            float rowBottom = row.Max(b => b.BBox.Y + b.BBox.H);
+            var rowChars = new List<CharBox>();
+            foreach (var cb in charBoxes)
+            {
+                float midY = (cb.Top + cb.Bottom) * 0.5f;
+                if (midY >= rowTop && midY <= rowBottom) rowChars.Add(cb);
+            }
+
             var keyed = new List<(LayoutBlock Block, float Index)>(row.Count);
             bool allHaveText = true;
             foreach (var b in row)
             {
-                float idx = MedianCharIndex(b.BBox, charBoxes);
+                float idx = MedianCharIndex(b.BBox, rowChars);
                 if (float.IsNaN(idx)) { allHaveText = false; break; }
                 keyed.Add((b, idx));
             }
@@ -827,10 +862,13 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
 
         if (valley < 0 || min > ProjectionValleyCoverage) return null;
 
-        // Both flanks must contain a substantial column somewhere.
+        // Both flanks must contain a substantial column *within the interior*
+        // (the same [lo,hi) band the valley was chosen from). Scanning into the
+        // excluded margins could let dense edge content masquerade as a column
+        // flanking the gutter when it does not actually sit beside it.
         float leftMax = 0f, rightMax = 0f;
-        for (int i = 0; i < valley; i++) leftMax = Math.Max(leftMax, cov[i]);
-        for (int i = valley + 1; i < bins; i++) rightMax = Math.Max(rightMax, cov[i]);
+        for (int i = lo; i < valley; i++) leftMax = Math.Max(leftMax, cov[i]);
+        for (int i = valley + 1; i < hi; i++) rightMax = Math.Max(rightMax, cov[i]);
         if (leftMax < ProjectionFlankCoverage || rightMax < ProjectionFlankCoverage) return null;
 
         float splitX = regLeft + (valley + 0.5f) * binW;

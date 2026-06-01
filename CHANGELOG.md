@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.13.2 — review-driven fixes
+
+Fixes from a repo-wide multi-agent review of the 0.10–0.13 reading-order /
+line-detection / rail-navigation work.
+
+### Fixed
+
+- **Auto-scroll: fit-in-window blocks within a chunk now keep their dwell.** A
+  within-chunk block crossing carried `PauseAutoScroll(0)`, which didn't reset
+  the per-block dwell flag, so the second short block in a column flashed past
+  without its settling pause. Dwell now resets on any block change, independent
+  of the (chunk-gated) heavy entry pause.
+- **Rail framing: no snap-then-jump for centering-role content of width
+  0.75–1.0× window.** The snap target and the per-frame clamp used different
+  centering thresholds (0.75 vs 1.0); both now share one predicate.
+- **`LineDetector.NormalizeLines`: a line whose horizontal extent doesn't overlap
+  its block no longer lands outside the block** (it now spans the block, anchored
+  at its left), preserving the inside-block invariant the renderers rely on.
+
+### Changed
+
+- Pre-mask medians are computed from the original blocks, not the (inflated)
+  super-block unions, so margin-note/spanner thresholds aren't skewed.
+- Heading attachment is bounded to a short local nudge (`HeadingAttachMaxShift`),
+  so a distant geometric match can't reorder many intervening blocks.
+- Projection-split flank scan is restricted to the validated interior band.
+- Multi-member super-block expansion uses the shared leaf ordering (content-stream
+  tie-break for same-row blocks) instead of bare left-to-right.
+- The line-focus indicator bar anchors to the block's left edge (stable rail)
+  rather than the per-line tight extent.
+- Per-page reading-order char-index lookup scans only the row's Y band.
+
 ## 0.13.1 — fix auto-scroll line-advance jitter
 
 ### Fixed
