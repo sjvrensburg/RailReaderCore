@@ -486,6 +486,86 @@ public class XYCutPlusPlusResolverTests
         Assert.Equal(new[] { "p0", "p1", "p2", "p3" }.Select(t => t.GetHashCode()), blocks.Select(Id));
     }
 
+    // -----------------------------------------------------------------
+    // Super-block merge pre-pass (merge tight-spaced runs, order coarse,
+    // expand top-down). gap=6pt, classes body / notes / math.
+    // -----------------------------------------------------------------
+
+    [Fact]
+    public void TightlySpacedColumns_MergeReadsColumnFirst()
+    {
+        // Two columns of paragraphs spaced ~4pt apart (tight enough to merge into
+        // two tall super-blocks). Reads column-first via the coarse super-block
+        // ordering, expanded top-down.
+        var l0 = Block(40,  50, 210, 34, tag: "L0");
+        var l1 = Block(40,  88, 210, 34, tag: "L1");
+        var l2 = Block(40, 126, 210, 34, tag: "L2");
+        var r0 = Block(260, 50, 210, 34, tag: "R0");
+        var r1 = Block(260, 88, 210, 34, tag: "R1");
+        var r2 = Block(260, 126, 210, 34, tag: "R2");
+
+        var blocks = new List<LayoutBlock> { r1, l0, r0, l2, r2, l1 };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 520, 800);
+
+        Assert.Equal(new[] { "L0", "L1", "L2", "R0", "R1", "R2" }.Select(t => t.GetHashCode()),
+            blocks.Select(Id));
+    }
+
+    [Fact]
+    public void FullWidthTitle_NotAbsorbedByColumnRun()
+    {
+        // A full-width title above a tight column run must stay its own
+        // super-block (merge barrier), read first, not swallowed by the column.
+        var title = Block(40, 10, 460, 20, role: BlockRole.Title, tag: "T");
+        var l0 = Block(40,  60, 210, 30, tag: "L0");
+        var l1 = Block(40,  94, 210, 30, tag: "L1");
+        var r0 = Block(260, 60, 210, 30, tag: "R0");
+        var r1 = Block(260, 94, 210, 30, tag: "R1");
+
+        var blocks = new List<LayoutBlock> { r1, l0, title, r0, l1 };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 520, 800);
+
+        var order = blocks.Select(Id).ToList();
+        Assert.Equal(Id(title), order[0]);
+        Assert.True(order.IndexOf(Id(l0)) < order.IndexOf(Id(l1)));
+        Assert.True(order.IndexOf(Id(l1)) < order.IndexOf(Id(r0)));
+        Assert.True(order.IndexOf(Id(r0)) < order.IndexOf(Id(r1)));
+    }
+
+    [Fact]
+    public void MathBlock_IsolatedClass_StillReadsInColumnFlow()
+    {
+        // A display equation tightly nested between two paragraphs. Math is a
+        // separate merge class (so it never gets absorbed/reordered into the text
+        // run), yet the super-block ordering still reads text→equation→text.
+        var t0 = Block(40,  50, 210, 30, tag: "t0");
+        var eq = Block(40,  84, 210, 30, role: BlockRole.DisplayMath, tag: "eq");
+        var t1 = Block(40, 118, 210, 30, tag: "t1");
+
+        var blocks = new List<LayoutBlock> { t1, eq, t0 };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 520, 800);
+
+        Assert.Equal(new[] { "t0", "eq", "t1" }.Select(t => t.GetHashCode()), blocks.Select(Id));
+    }
+
+    [Fact]
+    public void MergeDisabled_ProducesDenseValidOrder()
+    {
+        // The merge pre-pass can be turned off via the constructor; the core
+        // resolver still yields a dense, column-first order.
+        var l0 = Block(40,  50, 210, 34, tag: "L0");
+        var l1 = Block(40,  88, 210, 34, tag: "L1");
+        var r0 = Block(260, 50, 210, 34, tag: "R0");
+        var r1 = Block(260, 88, 210, 34, tag: "R1");
+
+        var blocks = new List<LayoutBlock> { r1, l0, r0, l1 };
+        new XYCutPlusPlusResolver(mergeAdjacent: false).AssignOrder(blocks, 520, 800);
+
+        for (int i = 0; i < blocks.Count; i++) Assert.Equal(i, blocks[i].Order);
+        var order = blocks.Select(Id).ToList();
+        Assert.True(order.IndexOf(Id(l0)) < order.IndexOf(Id(r0)));
+    }
+
     [Fact]
     public void TightGutterTwoStacks_ProjectionReadsColumnFirst()
     {
