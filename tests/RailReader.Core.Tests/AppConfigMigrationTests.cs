@@ -1,3 +1,4 @@
+using System.Text.Json;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
 using Xunit;
@@ -6,6 +7,24 @@ namespace RailReader.Core.Tests;
 
 public class AppConfigMigrationTests
 {
+    [Fact]
+    public void Deserialize_ConfigWithoutAnalysisKnobs_UsesDefaults()
+    {
+        // A current-schema config saved before the window/cache knobs existed.
+        // They are purely additive with defaults, so no migration is needed —
+        // the absent keys must deserialize to the property initializers.
+        const string json = """
+        { "schema_version": 2, "rail_zoom_threshold": 4.0 }
+        """;
+
+        var config = JsonSerializer.Deserialize(json, RailReaderJsonContext.Default.AppConfig);
+
+        Assert.NotNull(config);
+        Assert.Equal(4.0, config!.RailZoomThreshold);
+        Assert.Equal(12, config.BackgroundAnalysisWindowPages);
+        Assert.Equal(24, config.PageCacheRadius);
+    }
+
     [Fact]
     public void Migrate_TranslatesLegacyPPDocLayoutNamesToRoles()
     {

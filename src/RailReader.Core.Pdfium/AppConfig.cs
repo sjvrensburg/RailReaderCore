@@ -24,6 +24,8 @@ public sealed class AppConfig : IRecentFilesStore
     public double DefaultAutoScrollSpeed => (ScrollSpeedStart + ScrollSpeedMax) / 2.0;
     public double ScrollRampTime { get; set; } = 1.5;
     public int AnalysisLookaheadPages { get; set; } = 2;
+    public int BackgroundAnalysisWindowPages { get; set; } = 12;
+    public int PageCacheRadius { get; set; } = 24;
     public float UiFontScale { get; set; } = 1.25f;
     public ColourEffect ColourEffect { get; set; } = ColourEffect.None;
     public double ColourEffectIntensity { get; set; } = 1.0;
@@ -77,6 +79,8 @@ public sealed class AppConfig : IRecentFilesStore
         ScrollSpeedMax = ScrollSpeedMax,
         ScrollRampTime = ScrollRampTime,
         AnalysisLookaheadPages = AnalysisLookaheadPages,
+        BackgroundAnalysisWindowPages = BackgroundAnalysisWindowPages,
+        PageCacheRadius = PageCacheRadius,
         LinePadding = LinePadding,
         AutoScrollLinePauseMs = AutoScrollLinePauseMs,
         AutoScrollBlockPauseMs = AutoScrollBlockPauseMs,
