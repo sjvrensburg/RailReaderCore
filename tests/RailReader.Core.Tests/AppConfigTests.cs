@@ -20,6 +20,23 @@ public class AppConfigTests
     }
 
     [Fact]
+    public void DefaultConfig_HasAnalysisWindowAndCacheDefaults()
+    {
+        var config = new AppConfig();
+        Assert.Equal(12, config.BackgroundAnalysisWindowPages);
+        Assert.Equal(24, config.PageCacheRadius);
+    }
+
+    [Fact]
+    public void ToCoreSettings_MapsAnalysisWindowAndCacheRadius()
+    {
+        var config = new AppConfig { BackgroundAnalysisWindowPages = 5, PageCacheRadius = 9 };
+        var settings = config.ToCoreSettings();
+        Assert.Equal(5, settings.BackgroundAnalysisWindowPages);
+        Assert.Equal(9, settings.PageCacheRadius);
+    }
+
+    [Fact]
     public void PropertySetting_WorksCorrectly()
     {
         var config = new AppConfig { RailZoomThreshold = 5.0 };

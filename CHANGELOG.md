@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.16.0 — analysis-tuning knobs in AppConfig
+
+Surfaces the 0.15.0 `CoreSettings.BackgroundAnalysisWindowPages` and
+`CoreSettings.PageCacheRadius` through the file-backed `AppConfig` so desktop /
+consumer apps can persist and expose them as user settings (unblocks
+railreader2#133 Part B).
+
+### Added
+
+- **`AppConfig.BackgroundAnalysisWindowPages`** (default `12`) and
+  **`AppConfig.PageCacheRadius`** (default `24`), both mapped into
+  `ToCoreSettings()`. Purely additive — no `SchemaVersion` bump and no
+  migration: configs written before these keys existed deserialize to the
+  defaults (covered by a regression test).
+
 ## 0.15.1 — internal cleanup
 
 No behaviour or API change — a quality pass over the 0.15.0 analysis code.
