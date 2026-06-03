@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.15.0 — bounded background analysis + per-page cache eviction
+
+Follow-up to the 0.14.0 profiling work. Two changes that stop sustained CPU
+and unbounded memory growth on long reading sessions over large documents.
+
+### Added
+
+- **`CoreSettings.BackgroundAnalysisWindowPages`** (default `12`): the
+  background analysis sweep now covers only ±N pages around the current page
+  instead of eagerly analysing every page of the document up front. The window
+  re-centres on the current page as the reader navigates, so the whole document
+  is still analysed page-by-page while reading — but opening a file no longer
+  pins every core for the length of the document (and, with multiple tabs open,
+  for every tab). `<= 0` restores the legacy whole-document sweep. Once the
+  window is covered the queue reports exhausted, letting the consumer's
+  background poll timer stop.
+- **`CoreSettings.PageCacheRadius`** (default `24`): pages farther than this
+  from the current page are evicted from the per-page **text** and **link**
+  caches (they re-extract cheaply on revisit), bounding the previously
+  monotonic managed-heap growth of reading a large PDF end-to-end. `<= 0`
+  disables eviction. The analysis-geometry cache is intentionally **not**
+  evicted — it is cheap to retain and expensive (an ONNX inference) to recompute.
+
+### Changed
+
+- `BackgroundAnalysisQueue` now takes a window size and bounds its
+  forward/backward scan to that window (recomputed on each `Reset`).
+- `DocumentState.CurrentPage` evicts distant text/link cache entries on change;
+  `DocumentController.OnConfigChanged` propagates the new tuning to open
+  documents via `DocumentState.UpdateBackgroundSettings`.
+
+Both settings flow through to consumers as defaults without any config-layer
+change; a consumer can override them in its `CoreSettings` snapshot.
+
 ## 0.14.0 — conservative ONNX session defaults
 
 Profiling the RailReader2 Linux AppImage traced its CPU/RAM appetite to the

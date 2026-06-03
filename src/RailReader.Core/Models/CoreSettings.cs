@@ -34,6 +34,26 @@ public sealed record CoreSettings
 
     // Analysis
     public int AnalysisLookaheadPages { get; init; } = 2;
+
+    /// <summary>
+    /// How many pages on either side of the current page the background
+    /// analysis sweep will cover. The sweep re-centres on the current page as
+    /// the user navigates, so the whole document is still analysed page-by-page
+    /// while reading — but opening a file no longer eagerly analyses every page
+    /// up front (which pinned every core for the length of the document).
+    /// <c>&lt;= 0</c> restores the legacy whole-document sweep.
+    /// </summary>
+    public int BackgroundAnalysisWindowPages { get; init; } = 12;
+
+    /// <summary>
+    /// Eviction radius for the per-page text and link caches: pages farther
+    /// than this from the current page are dropped (they re-extract cheaply on
+    /// revisit). Bounds the otherwise-monotonic memory growth of reading a
+    /// large document end-to-end. <c>&lt;= 0</c> disables eviction. The small
+    /// analysis-geometry cache is intentionally not evicted — it is cheap to
+    /// hold and expensive (an ONNX inference) to recompute.
+    /// </summary>
+    public int PageCacheRadius { get; init; } = 24;
     public IReadOnlySet<BlockRole> NavigableRoles { get; init; } = Services.DefaultRoleSets.Navigable;
     public IReadOnlySet<BlockRole> CenteringRoles { get; init; } = Services.DefaultRoleSets.Centering;
 

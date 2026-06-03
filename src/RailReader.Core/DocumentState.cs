@@ -49,7 +49,11 @@ public sealed class DocumentState : IDisposable
     public int CurrentPage
     {
         get => _currentPage;
-        set => SetField(ref _currentPage, value, nameof(CurrentPage));
+        set
+        {
+            if (SetField(ref _currentPage, value, nameof(CurrentPage)))
+                EvictDistantPageCaches(value);
+        }
     }
 
     public double PageWidth
@@ -112,6 +116,9 @@ public sealed class DocumentState : IDisposable
     public IReadOnlyDictionary<int, PageAnalysis> AnalysisCache => _analysisCache;
     public IReadOnlyDictionary<int, PageText> TextCache => _textCache;
     public IReadOnlyDictionary<int, List<PdfLink>> LinkCache => _linkCache;
+    // Pages farther than this from CurrentPage are dropped from the text/link
+    // caches; <= 0 disables eviction. See CoreSettings.PageCacheRadius.
+    private int _pageCacheRadius;
     public Queue<int> PendingAnalysis { get; } = new();
     internal BackgroundAnalysisQueue BackgroundQueue { get; private set; } = null!;
 
@@ -184,7 +191,46 @@ public sealed class DocumentState : IDisposable
         _marginCropping = config.MarginCropping;
         Rail = new RailNav(config);
         Outline = _pdf.Outline;
-        BackgroundQueue = new BackgroundAnalysisQueue(PageCount);
+        _pageCacheRadius = config.PageCacheRadius;
+        BackgroundQueue = new BackgroundAnalysisQueue(PageCount, config.BackgroundAnalysisWindowPages);
+    }
+
+    /// <summary>
+    /// Applies background-analysis / cache tuning from an updated settings
+    /// snapshot. Mirrors how <see cref="RailNav.UpdateConfig"/> propagates rail
+    /// settings; called from the controller's config-changed path.
+    /// </summary>
+    internal void UpdateBackgroundSettings(CoreSettings config)
+    {
+        _marshaller.AssertUIThread();
+        BackgroundQueue.WindowPages = config.BackgroundAnalysisWindowPages;
+        _pageCacheRadius = config.PageCacheRadius;
+        EvictDistantPageCaches(CurrentPage);
+    }
+
+    /// <summary>
+    /// Drops text/link cache entries for pages outside ±<see cref="_pageCacheRadius"/>
+    /// of <paramref name="center"/>. The analysis-geometry cache is left intact
+    /// (cheap to hold, expensive to recompute).
+    /// </summary>
+    private void EvictDistantPageCaches(int center)
+    {
+        if (_pageCacheRadius <= 0) return;
+        int lo = center - _pageCacheRadius, hi = center + _pageCacheRadius;
+        EvictOutside(_textCache, lo, hi);
+        EvictOutside(_linkCache, lo, hi);
+    }
+
+    private static void EvictOutside<TValue>(Dictionary<int, TValue> cache, int lo, int hi)
+    {
+        if (cache.Count == 0) return;
+        List<int>? stale = null;
+        foreach (var page in cache.Keys)
+            if (page < lo || page > hi)
+                (stale ??= []).Add(page);
+        if (stale is null) return;
+        foreach (var page in stale)
+            cache.Remove(page);
     }
 
     /// <summary>

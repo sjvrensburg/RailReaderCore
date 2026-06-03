@@ -488,6 +488,7 @@ public sealed partial class DocumentController : IDisposable
         {
             doc.Rail.UpdateConfig(_config);
             doc.ReapplyNavigableRoles(_config.NavigableRoles);
+            doc.UpdateBackgroundSettings(_config);
         }
     }
 
