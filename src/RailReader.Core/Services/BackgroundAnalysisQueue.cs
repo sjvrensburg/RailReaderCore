@@ -47,16 +47,11 @@ internal sealed class BackgroundAnalysisQueue
         // if it was never analysed (e.g. worker wasn't ready on first load).
         _nextForward = currentPage;
         _nextBackward = currentPage - 1;
-        if (WindowPages > 0)
-        {
-            _forwardLimit = Math.Min(_pageCount, currentPage + WindowPages + 1);
-            _backwardLimit = Math.Max(0, currentPage - WindowPages);
-        }
-        else
-        {
-            _forwardLimit = _pageCount;
-            _backwardLimit = 0;
-        }
+        // WindowPages <= 0 means the whole document: a window of _pageCount
+        // makes both clamps collapse to the full [0, _pageCount) range.
+        int window = WindowPages > 0 ? WindowPages : _pageCount;
+        _forwardLimit = Math.Min(_pageCount, currentPage + window + 1);
+        _backwardLimit = Math.Max(0, currentPage - window);
     }
 
     public bool IsExhausted => _nextForward >= _forwardLimit && _nextBackward < _backwardLimit;

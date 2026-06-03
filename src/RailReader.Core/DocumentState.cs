@@ -223,7 +223,6 @@ public sealed class DocumentState : IDisposable
 
     private static void EvictOutside<TValue>(Dictionary<int, TValue> cache, int lo, int hi)
     {
-        if (cache.Count == 0) return;
         List<int>? stale = null;
         foreach (var page in cache.Keys)
             if (page < lo || page > hi)

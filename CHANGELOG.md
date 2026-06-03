@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.15.1 — internal cleanup
+
+No behaviour or API change — a quality pass over the 0.15.0 analysis code.
+
+### Changed
+
+- `BackgroundAnalysisQueue.Reset` computes its window bounds with a single
+  clamp expression instead of a whole-document/windowed `if`/`else` (the
+  `<= 0` whole-document case now falls out of the same `Math.Min`/`Math.Max`).
+- Dropped a redundant empty-check in the per-page cache eviction helper.
+
 ## 0.15.0 — bounded background analysis + per-page cache eviction
 
 Follow-up to the 0.14.0 profiling work. Two changes that stop sustained CPU
