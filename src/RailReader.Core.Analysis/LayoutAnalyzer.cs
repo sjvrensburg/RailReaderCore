@@ -44,11 +44,7 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
     {
         _capabilities = capabilities ?? PPDocLayoutV3Roles.Capabilities;
 
-        var opts = new SessionOptions();
-        opts.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
-        // Suppress noisy NCHWc Conv kernel warnings while preserving genuine errors
-        opts.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
-        ConfigureSession?.Invoke(opts);
+        var opts = AnalyzerSessionOptions.Create(ConfigureSession);
         _session = new InferenceSession(modelPath, opts);
 
         RailReaderLogging.Logger.Debug($"[ONNX] Input names: {string.Join(", ", _session.InputNames)}");

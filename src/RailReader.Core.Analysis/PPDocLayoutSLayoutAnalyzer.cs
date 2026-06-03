@@ -97,10 +97,7 @@ public sealed class PPDocLayoutSLayoutAnalyzer : ILayoutAnalyzer
     {
         _capabilities = capabilities ?? PPDocLayoutSRoles.Capabilities;
 
-        var opts = new SessionOptions();
-        opts.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
-        opts.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
-        ConfigureSession?.Invoke(opts);
+        var opts = AnalyzerSessionOptions.Create(ConfigureSession);
         _session = new InferenceSession(modelPath, opts);
 
         RailReaderLogging.Logger.Debug($"[PP-S ONNX] Input names: {string.Join(", ", _session.InputNames)}");

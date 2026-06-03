@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.14.0 — conservative ONNX session defaults
+
+Profiling the RailReader2 Linux AppImage traced its CPU/RAM appetite to the
+layout analyzers' ONNX Runtime session: a bare `new SessionOptions()` let ORT
+default `IntraOpNumThreads` to the physical-core count (a single page inference
+fanned across every core — ~13× CPU on a 14-core box) and left the CPU memory
+arena enabled (a sticky, never-returned native-RSS floor of ~420 MB). Neither
+was tunable from outside the process — the managed `Microsoft.ML.OnnxRuntime`
+build ignores `OMP_NUM_THREADS`/`ORT_INTRA_OP_NUM_THREADS` and ORT sets its own
+per-thread affinity, so `taskset` is partly defeated. The only effective lever
+is `SessionOptions` itself.
+
+### Changed
+
+- **All three layout analyzers (`LayoutAnalyzer`, `HeronLayoutAnalyzer`,
+  `PPDocLayoutSLayoutAnalyzer`) now build their `SessionOptions` with
+  conservative CPU defaults** via the shared `AnalyzerSessionOptions` helper:
+  `IntraOpNumThreads = clamp(ProcessorCount, 1, 4)`, `InterOpNumThreads = 1`,
+  `ExecutionMode = ORT_SEQUENTIAL`, and `EnableCpuMemArena = false`. This caps
+  inference to at most 4 cores and removes the retained-arena RSS floor. The
+  per-analyzer `ConfigureSession` hook still runs **after** these defaults, so a
+  consumer can restore the previous all-cores behaviour or raise the cap.
+
+  *Behavioural change:* consumers that relied on inference saturating all cores
+  for minimum per-page latency will see slightly higher per-page wall time in
+  exchange for a machine that no longer pins every core. Override via
+  `ConfigureSession` if the old behaviour is wanted.
+
 ## 0.13.2 — review-driven fixes
 
 Fixes from a repo-wide multi-agent review of the 0.10–0.13 reading-order /
