@@ -17,25 +17,97 @@ public class AnnotationFile
     public string SourcePdf { get; set; } = "";
     /// <summary>Full path to the source PDF. Used for orphan detection in internal storage.</summary>
     public string SourcePdfPath { get; set; } = "";
-    public Dictionary<int, List<Annotation>> Pages { get; } = [];
-    public List<BookmarkEntry> Bookmarks { get; } = [];
+    public Dictionary<int, List<Annotation>> Pages { get; set; } = [];
+    public List<BookmarkEntry> Bookmarks { get; set; } = [];
+}
+
+/// <summary>Where an annotation came from — used to decide write-back behaviour.</summary>
+public enum AnnotationSource
+{
+    /// <summary>Authored in RailReader; not (yet) present in the PDF.</summary>
+    RailReader,
+    /// <summary>Read from the PDF's own /Annots dictionary.</summary>
+    InPdf,
+}
+
+/// <summary>
+/// Acrobat review state (/State under the "Review" /StateModel). <see cref="None"/>
+/// means no explicit review state has been set.
+/// </summary>
+public enum ReviewState
+{
+    None,
+    Accepted,
+    Rejected,
+    Cancelled,
+    Completed,
 }
 
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "type")]
 [JsonDerivedType(typeof(HighlightAnnotation), "highlight")]
+[JsonDerivedType(typeof(UnderlineAnnotation), "underline")]
+[JsonDerivedType(typeof(StrikeOutAnnotation), "strikeout")]
+[JsonDerivedType(typeof(SquigglyAnnotation), "squiggly")]
 [JsonDerivedType(typeof(FreehandAnnotation), "freehand")]
 [JsonDerivedType(typeof(TextNoteAnnotation), "text_note")]
 [JsonDerivedType(typeof(RectAnnotation), "rect")]
+[JsonDerivedType(typeof(CaretAnnotation), "caret")]
+[JsonDerivedType(typeof(FreeTextAnnotation), "free_text")]
 public abstract class Annotation
 {
     public string Color { get; set; } = "#FFFF00";
     public float Opacity { get; set; } = 1.0f;
+
+    // --- Native PDF round-trip metadata ---
+    // Null/empty for RailReader-authored annotations until they are written into
+    // the PDF; populated when read from an existing /Annots dictionary.
+
+    /// <summary>Author — PDF /T.</summary>
+    public string? Author { get; set; }
+
+    /// <summary>Comment / note text — PDF /Contents. For FreeText this is the body.</summary>
+    public string? Contents { get; set; }
+
+    /// <summary>Intent / subject label — PDF /Subj (e.g. "Comment on Text").</summary>
+    public string? Subject { get; set; }
+
+    /// <summary>Stable unique id — PDF /NM. Identity and dedupe key across stores.</summary>
+    public string? NativeId { get; set; }
+
+    /// <summary>Creation timestamp — PDF /CreationDate.</summary>
+    public DateTimeOffset? CreatedUtc { get; set; }
+
+    /// <summary>Last-modified timestamp — PDF /M.</summary>
+    public DateTimeOffset? ModifiedUtc { get; set; }
+
+    /// <summary>Review state — PDF /State + /StateModel "Review".</summary>
+    public ReviewState State { get; set; } = ReviewState.None;
+
+    /// <summary>Parent annotation's <see cref="NativeId"/> for replies — PDF /IRT.</summary>
+    public string? InReplyTo { get; set; }
+
+    /// <summary>Provenance of this annotation (in-PDF vs RailReader-authored).</summary>
+    public AnnotationSource Source { get; set; } = AnnotationSource.RailReader;
+
+    /// <summary>
+    /// Faithful DeviceRGB colour components (each 0..1) from the PDF /C array, when
+    /// known. Authoritative over <see cref="Color"/> for round-trip; null when unknown
+    /// (e.g. PDFium cannot report /C because the annotation carries an /AP stream).
+    /// Length 3 when set.
+    /// </summary>
+    public float[]? ColorComponents { get; set; }
 }
 
-public class HighlightAnnotation : Annotation
+/// <summary>Text-markup annotation anchored to one or more text quads (PDF QuadPoints).</summary>
+public abstract class TextMarkupAnnotation : Annotation
 {
     public List<HighlightRect> Rects { get; set; } = [];
 }
+
+public class HighlightAnnotation : TextMarkupAnnotation;
+public class UnderlineAnnotation : TextMarkupAnnotation;
+public class StrikeOutAnnotation : TextMarkupAnnotation;
+public class SquigglyAnnotation : TextMarkupAnnotation;
 
 public record struct HighlightRect(float X, float Y, float W, float H);
 
@@ -65,6 +137,30 @@ public class RectAnnotation : Annotation
     public float H { get; set; }
     public float StrokeWidth { get; set; } = 2f;
     public bool Filled { get; set; }
+}
+
+/// <summary>
+/// Caret ("inserted text") markup — a small insertion marker. PDF /Caret.
+/// The note text (if any) lives in <see cref="Annotation.Contents"/>.
+/// </summary>
+public class CaretAnnotation : Annotation
+{
+    public float X { get; set; }
+    public float Y { get; set; }
+    public float W { get; set; }
+    public float H { get; set; }
+}
+
+/// <summary>
+/// Free-text ("typewriter") annotation drawn directly on the page. PDF /FreeText.
+/// The displayed text lives in <see cref="Annotation.Contents"/>.
+/// </summary>
+public class FreeTextAnnotation : Annotation
+{
+    public float X { get; set; }
+    public float Y { get; set; }
+    public float W { get; set; }
+    public float H { get; set; }
 }
 
 public interface IUndoAction
@@ -134,8 +230,10 @@ public class PositionSnapshot
     {
         TextNoteAnnotation tn => new() { X = tn.X, Y = tn.Y },
         FreehandAnnotation f => new() { Points = [.. f.Points] },
-        HighlightAnnotation h => new() { Rects = [.. h.Rects] },
+        TextMarkupAnnotation m => new() { Rects = [.. m.Rects] },
         RectAnnotation r => new() { X = r.X, Y = r.Y },
+        CaretAnnotation c => new() { X = c.X, Y = c.Y },
+        FreeTextAnnotation ft => new() { X = ft.X, Y = ft.Y },
         _ => new(),
     };
 
@@ -149,11 +247,17 @@ public class PositionSnapshot
             case FreehandAnnotation f when Points is not null:
                 f.Points = [.. Points];
                 break;
-            case HighlightAnnotation h when Rects is not null:
-                h.Rects = [.. Rects];
+            case TextMarkupAnnotation m when Rects is not null:
+                m.Rects = [.. Rects];
                 break;
             case RectAnnotation r:
                 r.X = X; r.Y = Y;
+                break;
+            case CaretAnnotation c:
+                c.X = X; c.Y = Y;
+                break;
+            case FreeTextAnnotation ft:
+                ft.X = X; ft.Y = Y;
                 break;
         }
     }

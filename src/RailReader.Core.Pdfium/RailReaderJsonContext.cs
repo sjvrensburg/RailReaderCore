@@ -17,7 +17,12 @@ namespace RailReader.Core.Services;
 [JsonSerializable(typeof(AnnotationFile))]
 [JsonSerializable(typeof(Annotation))]
 [JsonSerializable(typeof(HighlightAnnotation))]
+[JsonSerializable(typeof(UnderlineAnnotation))]
+[JsonSerializable(typeof(StrikeOutAnnotation))]
+[JsonSerializable(typeof(SquigglyAnnotation))]
 [JsonSerializable(typeof(FreehandAnnotation))]
 [JsonSerializable(typeof(TextNoteAnnotation))]
 [JsonSerializable(typeof(RectAnnotation))]
+[JsonSerializable(typeof(CaretAnnotation))]
+[JsonSerializable(typeof(FreeTextAnnotation))]
 internal partial class RailReaderJsonContext : JsonSerializerContext;

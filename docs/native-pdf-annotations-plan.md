@@ -85,6 +85,11 @@ pipeline. No write-back. Lowest risk.
    - `HighlightAnnotation`'s comment now lives in base `Contents` (covers the 22).
    - **Color fidelity:** store the original float `/C` + `/CA` alongside the hex
      convenience accessor — the hex round-trip is lossy (`.0235291`).
+   - **Pre-existing bug fixed here:** `AnnotationFile.Pages`/`Bookmarks` were get-only
+     collections; the source-gen serializer does not repopulate get-only collections on
+     deserialize, so `AnnotationService.Load` returned them **empty** — saved annotations
+     and bookmarks silently vanished on reload. Added setters (canonical fix). Worth a
+     CHANGELOG bug-fix entry at release time.
 
 3. **`PdfAnnotationReader` (new, `Core.Pdfium`)** — reads a page's `/Annots`, maps to
    Core types. Geometry is the inverse of `AnnotationExportService`: reuse
