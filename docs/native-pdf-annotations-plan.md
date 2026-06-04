@@ -208,7 +208,15 @@ Acrobat's Bookmarks panel anyway; the visible `/Outlines` would collide with the
 TOC that `PdfOutlineService` already reads. Cost/benefit doesn't justify it — revisit only
 if a managed writer (e.g. PdfPig outline support) makes it cheap and safe.
 
-## PR 5 — Migration + cleanup (scoped 2026-06-04)
+## PR 5 — Migration + cleanup (scoped + Core implemented 2026-06-04)
+
+**Decisions (2026-06-04):** heads-up only — **no privacy/sidecar-only mode**; **lazy-on-save**
+— no explicit batch migration. So tasks 4 and 5 below are dropped.
+
+**Status:** Core-side done (commit 7c62b4d) — task 1 (content-aware dedup via shared
+`AnnotationEquivalence`), task 2 (cleanup + dedup safety net), task 3 (Core
+`OnSidecarMigration` heads-up signal). **Remaining:** railreader2 shows the heads-up
+(UI), and task 6 (CHANGELOG breaking entry + CLAUDE.md notes).
 
 **Key realization:** migration is *already mostly automatic* via the PR 2 flow. Existing
 users keep annotations in `~/.config/railreader2/annotations/<hash>.json` (Source=RailReader,
