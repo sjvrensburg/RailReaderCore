@@ -492,7 +492,9 @@ public sealed class PdfAnnotationWriter
     /// <summary>Stamps the shared PDF metadata keys (/NM, /Contents, /T, /Subj, dates, flags).</summary>
     private static void ApplyCommonMetadata(IntPtr annot, Annotation ann)
     {
-        FPDFAnnot_SetFlags(annot, FPDF_ANNOT_FLAG_PRINT);
+        // Preserve the annotation's original /F flags (Hidden/NoView/ReadOnly/Locked/…);
+        // default to Print for RailReader-authored annots (Flags unset).
+        FPDFAnnot_SetFlags(annot, ann.Flags != 0 ? ann.Flags : FPDF_ANNOT_FLAG_PRINT);
 
         // Stable id: reuse the existing /NM when known, otherwise mint one. The PDF is
         // the record; the in-memory model is not mutated here.

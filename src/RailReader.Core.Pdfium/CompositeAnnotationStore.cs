@@ -237,14 +237,15 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
 
             foreach (var ann in sidecarList)
             {
-                // Dedup against native by /NM or by value. Value-equivalence is what keeps
-                // lazy migration idempotent: once a sidecar annotation has been baked into the
-                // PDF (with a fresh /NM), its still-present sidecar copy — which has no /NM to
-                // match on — is suppressed here, so a failed/late sidecar cleanup can't surface
-                // duplicates.
-                bool duplicate = target.Any(e =>
-                    (ann.NativeId is not null && string.Equals(e.NativeId, ann.NativeId, StringComparison.Ordinal))
-                    || AnnotationEquivalence.ContentEquivalent(e, ann));
+                // A sidecar annotation that still carries a /NM is a tracked, distinct
+                // annotation — dedup it only by exact /NM match. A /NM-less one is a migration
+                // candidate: dedup it by value, so once it has been baked into the PDF (with a
+                // fresh /NM) its still-present sidecar copy is suppressed even if cleanup was
+                // missed — keeping lazy migration idempotent without over-suppressing distinct
+                // annotations that merely look alike.
+                bool duplicate = ann.NativeId is not null
+                    ? target.Any(e => string.Equals(e.NativeId, ann.NativeId, StringComparison.Ordinal))
+                    : target.Any(e => AnnotationEquivalence.ContentEquivalent(e, ann));
                 if (!duplicate) target.Add(ann);
             }
 

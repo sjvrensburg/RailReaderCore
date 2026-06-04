@@ -96,6 +96,13 @@ public abstract class Annotation
     /// Length 3 when set.
     /// </summary>
     public float[]? ColorComponents { get; set; }
+
+    /// <summary>
+    /// PDF annotation flags (/F) — Print, Hidden, NoView, ReadOnly, Locked, etc. Preserved
+    /// so an edit/recreate doesn't strip them. 0 means "unset"; the writer then defaults to
+    /// Print so RailReader-authored annotations remain printable.
+    /// </summary>
+    public int Flags { get; set; }
 }
 
 /// <summary>Text-markup annotation anchored to one or more text quads (PDF QuadPoints).</summary>

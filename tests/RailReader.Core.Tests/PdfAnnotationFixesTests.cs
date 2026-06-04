@@ -183,6 +183,46 @@ public class PdfAnnotationFixesTests
         Assert.Equal(ReviewState.Accepted, Assert.Single(ReadBack(bytes)).State);
     }
 
+    // #8 — a sidecar annotation with its own distinct /NM is kept even if it looks
+    // content-identical to a native one (only /NM-less migration leftovers are content-deduped).
+    [Fact]
+    public void Merge_KeepsDistinctSidecarAnnotation_WithItsOwnNativeId()
+    {
+        var path = TempPdf();
+        try
+        {
+            var store = new PdfAnnotationStore();
+            store.Save(path, OnePage(new HighlightAnnotation { Rects = [new HighlightRect(72, 100, 80, 16)], Contents = "note" }));
+
+            var sidecar = new SingleFileSidecar
+            {
+                Current = OnePage(new HighlightAnnotation
+                {
+                    Rects = [new HighlightRect(72, 100, 80, 16)], Contents = "note", // content-identical
+                    NativeId = "a-distinct-id", // …but its own identity
+                }),
+            };
+
+            var merged = new CompositeAnnotationStore(sidecar).Load(path)!;
+            Assert.Equal(2, merged.Pages[0].Count); // both kept, not over-suppressed
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    // #12 — annotation flags (/F) survive a round trip instead of being reset to Print-only.
+    [Fact]
+    public void AnnotationFlags_RoundTrip()
+    {
+        const int flags = 4 | 32; // Print | NoView
+        var bytes = new PdfAnnotationWriter().WriteReconciled(PlainPdf(),
+            OnePage(new HighlightAnnotation { Rects = [new HighlightRect(72, 100, 80, 16)], Flags = flags }));
+
+        Assert.Equal(flags, Assert.Single(ReadBack(bytes)).Flags);
+    }
+
     /// <summary>Single-PDF in-memory sidecar whose state mutates like the real one.</summary>
     private sealed class SingleFileSidecar : IAnnotationStore
     {

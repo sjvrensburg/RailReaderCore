@@ -227,6 +227,7 @@ public sealed class PdfAnnotationReader
     private static void ApplyCommonMetadata(IntPtr annot, Annotation a)
     {
         a.Source = AnnotationSource.InPdf;
+        a.Flags = FPDFAnnot_GetFlags(annot);
         a.Author = ReadAnnotString(annot, "T");
         a.Subject = ReadAnnotString(annot, "Subj");
         a.NativeId = ReadAnnotString(annot, "NM");
