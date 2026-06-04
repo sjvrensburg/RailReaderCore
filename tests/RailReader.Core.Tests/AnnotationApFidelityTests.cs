@@ -62,6 +62,19 @@ public class AnnotationApFidelityTests(ITestOutputHelper output)
             new RectAnnotation { X = 72, Y = 440, W = 150, H = 30, Color = "#E00000", StrokeWidth = 2 },
             bbox: (70, 438, 224, 472), minNonWhite: 25);
 
+    [Fact]
+    public void FreeText_RendersInIndependentEngines()
+        // FreeText carries no /AP; viewers synthesise the appearance from the /DA the writer
+        // emits (font/size/colour) + /Contents — the same viewer-side-synthesis contract as
+        // the markup subtypes. The text glyphs alone (no background fill) clear the threshold.
+        => AssertRenders(
+            new FreeTextAnnotation
+            {
+                X = 72, Y = 250, W = 240, H = 40,
+                Contents = "Hello FreeText", Color = "#C00000", FontSize = 18f,
+            },
+            bbox: (72, 248, 312, 292), minNonWhite: 200);
+
     private void AssertRenders(Annotation ann, (int X0, int Y0, int X1, int Y1) bbox, int minNonWhite)
     {
         var pdfPath = Path.Combine(Path.GetTempPath(), $"rr-ap-{Guid.NewGuid():N}.pdf");

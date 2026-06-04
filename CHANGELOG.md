@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.18.0 — markup + FreeText authoring
+
+Closes the authoring gap for annotation types the model already read and wrote but
+could not be *created*: the drag-over-text markup tools (Underline / StrikeOut /
+Squiggly) and the FreeText ("typewriter") tool. Purely **additive** — existing public
+signatures are unchanged; consumers opt in via the new `AnnotationTool` values and the
+new `AnnotationInteractionHandler` members.
+
+### Added
+
+- **Drag-over-text markup tools.** `AnnotationTool` gains `Underline`, `StrikeOut`, and
+  `Squiggly`. In `AnnotationInteractionHandler` they follow the exact Highlight path
+  (`SetAnnotationTool` → pointer down/move/up → preview → commit), reusing the same
+  text-selection→rects pipeline (`BuildHighlightRects`) and differing only in the
+  committed `TextMarkupAnnotation` subtype. The commit is now routed through a
+  subtype-parameterised helper, `CreateTextMarkup(tool, rects, color, opacity)`, instead
+  of four copies; `IsTextMarkupTool(tool)` classifies the markup tools.
+- **FreeText authoring.** `AnnotationTool.FreeText` plus a creation path:
+  - the drag gesture builds a box preview and, on pointer-up, stashes a
+    `PendingFreeText` box for the UI to fill (`CommitPendingFreeText(doc, text)` /
+    `CancelPendingFreeText()`); a plain click falls back to a default-sized box;
+  - `AddFreeText(doc, x, y, w, h, text, fontSize)` creates one directly (headless /
+    text-collected-up-front consumers).
+- **`FreeTextAnnotation.FontSize`** (defaults to 12) — the point size synthesised into
+  the PDF `/DA`.
+
+### Fixed / changed
+
+- **FreeText now renders when authored.** PDFium creates the `/FreeText` object but never
+  generates the `/DA` (default appearance) it needs, which is why an authored FreeText was
+  previously invisible (it was the one subtype not covered by viewer-side appearance
+  synthesis). `PdfAnnotationWriter` now synthesises a minimal `/DA`
+  (`/Helv <size> Tf <r g b> rg`, the colour from `Color`/`FontSize`); viewers
+  (Poppler, MuPDF, Acrobat) synthesise the appearance from `/DA` + `/Contents` — the same
+  contract the markup subtypes already rely on, verified for FreeText in
+  `AnnotationApFidelityTests`. **No baked `/AP` is needed** (and PDFium's `FPDFAnnot_SetAP`
+  can't attach a font `/Resources` dict, so a hand-rolled `/AP` would render *less*
+  reliably than viewer synthesis). The text colour lives in `/DA`, not `/C`, so no opaque
+  background box is painted.
+- **Faithful FreeText round-trip.** `PdfAnnotationReader` parses the text colour and font
+  size back out of `/DA`, and `AnnotationEquivalence` compares `FontSize`, so an authored
+  FreeText survives read→edit→write losslessly. A subtype-resolved colour (FreeText `/DA`)
+  now takes precedence over PDFium's `FPDFAnnot_GetColor`, which reports a bogus black for a
+  FreeText that carries no `/C`. In-place FreeText edits update `/DA` (not `/C`).
+
 ## 0.17.1 — sticky-note popup fix
 
 ### Fixed
