@@ -91,6 +91,10 @@ pipeline. No write-back. Lowest risk.
    `GetCropBoxTransform`, add `PdfPointToPage` (inverse of `PagePointToPdf`); honor
    `/Rotate`. QuadPoints → `List<HighlightRect>`. Resolve `/Popup`→parent and
    `/IRT`→`InReplyTo`. Skip `/Link`.
+   - **Color caveat (verified on the driving PDF):** `FPDFAnnot_GetColor` returns
+     `false` (all-zeros) when an annotation carries a baked `/AP` appearance stream —
+     true for all 40 Acrobat annots here. The reader must fall back: per-subtype default
+     color, or parse `/C` directly. Do **not** trust GetColor alone.
 
 4. **Wire into load** — `CompositeAnnotationStore.Load` reads in-PDF annots first;
    if a legacy sidecar exists, merge deduped by `/NM`. Viewer / line-detection /
