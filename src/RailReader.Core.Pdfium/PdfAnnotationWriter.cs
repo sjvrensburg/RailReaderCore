@@ -91,6 +91,228 @@ public sealed class PdfAnnotationWriter
         }
     }
 
+    private const float GeometryTolerance = 0.75f;
+
+    /// <summary>
+    /// Reconciles the PDF's managed annotations to match <paramref name="file"/>,
+    /// keyed by <see cref="Annotation.NativeId"/> (/NM), and returns the updated bytes
+    /// via incremental save. Idempotent and lossless for unchanged annotations:
+    /// <list type="bullet">
+    /// <item><b>Add</b> — annotations without a /NM are created; a fresh /NM is minted and
+    /// written back into <paramref name="file"/> (<see cref="AnnotationSource.InPdf"/>), so
+    /// a subsequent save recognises them and does not duplicate.</item>
+    /// <item><b>Delete</b> — managed PDF annotations whose /NM is no longer present in
+    /// <paramref name="file"/> are removed.</item>
+    /// <item><b>Edit</b> — matched annotations are compared by value; unchanged ones are left
+    /// completely untouched (preserving Acrobat /RC, /AP, etc.); changed rect-based ones are
+    /// updated in place; changed text-markup/ink ones are deleted and recreated with the
+    /// same /NM.</item>
+    /// </list>
+    /// <b>Mutates</b> <paramref name="file"/> by back-filling /NM and Source on newly persisted
+    /// annotations. Caret annotations can be edited in place but never created
+    /// (<see cref="CaretAnnotation"/>). Only pages present in <paramref name="file"/> are
+    /// visited.
+    /// </summary>
+    public byte[] WriteReconciled(byte[] pdfBytes, AnnotationFile file)
+    {
+        lock (PdfiumGate.Lock)
+        {
+            PdfiumResolver.EnsureLibraryInitialized();
+
+            var pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
+            try
+            {
+                var doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, null);
+                if (doc == IntPtr.Zero)
+                    throw new InvalidOperationException("Failed to load PDF via PDFium");
+
+                try
+                {
+                    int pageCount = FPDF_GetPageCount(doc);
+                    foreach (var pageIndex in file.Pages.Keys.Where(k => k >= 0 && k < pageCount).OrderBy(k => k))
+                    {
+                        var page = FPDF_LoadPage(doc, pageIndex);
+                        if (page == IntPtr.Zero) continue;
+                        try
+                        {
+                            ReconcilePage(page, file.Pages[pageIndex]);
+                        }
+                        finally
+                        {
+                            FPDF_ClosePage(page);
+                        }
+                    }
+
+                    return SaveIncremental(doc);
+                }
+                finally
+                {
+                    FPDF_CloseDocument(doc);
+                }
+            }
+            finally
+            {
+                pinned.Free();
+            }
+        }
+    }
+
+    private static void ReconcilePage(IntPtr page, List<Annotation> desired)
+    {
+        var (cl, cb, vh) = GetCropBoxTransform(page);
+
+        var desiredByNm = new Dictionary<string, Annotation>(StringComparer.Ordinal);
+        var desiredNew = new List<Annotation>();
+        foreach (var a in desired)
+        {
+            if (string.IsNullOrEmpty(a.NativeId)) desiredNew.Add(a);
+            else desiredByNm[a.NativeId!] = a;
+        }
+
+        var toDelete = new List<int>();
+        var recreate = new List<Annotation>();
+        var inPlace = new List<(int Index, Annotation Ann)>();
+        var matched = new HashSet<string>(StringComparer.Ordinal);
+
+        int count = FPDFPage_GetAnnotCount(page);
+        for (int i = 0; i < count; i++)
+        {
+            var annot = FPDFPage_GetAnnot(page, i);
+            if (annot == IntPtr.Zero) continue;
+            try
+            {
+                if (!IsManagedSubtype(FPDFAnnot_GetSubtype(annot))) continue;
+
+                var nm = ReadAnnotString(annot, "NM");
+                if (string.IsNullOrEmpty(nm)) continue; // unidentifiable — never touch
+
+                if (!desiredByNm.TryGetValue(nm!, out var want))
+                {
+                    toDelete.Add(i); // removed from the model → delete from the PDF
+                    continue;
+                }
+
+                matched.Add(nm!);
+                var current = PdfAnnotationReader.ReadSingle(annot, cl, cb, vh);
+                if (current is not null && ContentEquivalent(current, want))
+                    continue; // unchanged → leave the original annotation untouched
+
+                if (want is TextMarkupAnnotation or FreehandAnnotation)
+                {
+                    toDelete.Add(i);
+                    recreate.Add(want); // quad/ink geometry → delete + recreate (same /NM)
+                }
+                else
+                {
+                    inPlace.Add((i, want)); // rect-based → modify in place, preserving other keys
+                }
+            }
+            finally
+            {
+                FPDFPage_CloseAnnot(annot);
+            }
+        }
+
+        // Desired annotations with a /NM that isn't in the PDF (e.g. migrated) → create with that /NM.
+        foreach (var (nm, want) in desiredByNm)
+            if (!matched.Contains(nm)) recreate.Add(want);
+
+        // In-place edits first (indices are still valid)…
+        foreach (var (index, ann) in inPlace)
+        {
+            var annot = FPDFPage_GetAnnot(page, index);
+            if (annot == IntPtr.Zero) continue;
+            try { EditRectBasedInPlace(annot, ann, cl, cb, vh); }
+            finally { FPDFPage_CloseAnnot(annot); }
+        }
+
+        // …then deletions, descending so earlier indices stay valid…
+        foreach (var index in toDelete.OrderByDescending(x => x))
+            FPDFPage_RemoveAnnot(page, index);
+
+        // …then additions: new authored (mint /NM, mark persisted) and recreated edits.
+        foreach (var ann in desiredNew)
+        {
+            ann.NativeId = Guid.NewGuid().ToString();
+            WriteAnnotationToPage(page, ann, cl, cb, vh);
+            ann.Source = AnnotationSource.InPdf;
+        }
+        foreach (var ann in recreate)
+            WriteAnnotationToPage(page, ann, cl, cb, vh);
+    }
+
+    private static bool IsManagedSubtype(int subtype) => subtype is
+        FPDF_ANNOT_TEXT or FPDF_ANNOT_FREETEXT or FPDF_ANNOT_SQUARE or
+        FPDF_ANNOT_HIGHLIGHT or FPDF_ANNOT_UNDERLINE or FPDF_ANNOT_SQUIGGLY or
+        FPDF_ANNOT_STRIKEOUT or FPDF_ANNOT_CARET or FPDF_ANNOT_INK;
+
+    private static void EditRectBasedInPlace(IntPtr annot, Annotation ann,
+        float cropLeft, float cropBottom, double visibleHeight)
+    {
+        FsRectF rect = ann switch
+        {
+            TextNoteAnnotation tn => StickyRect(tn.X, tn.Y, cropLeft, cropBottom, visibleHeight),
+            CaretAnnotation c => BoxRect(c.X, c.Y, c.W, c.H, cropLeft, cropBottom, visibleHeight),
+            FreeTextAnnotation ft => BoxRect(ft.X, ft.Y, ft.W, ft.H, cropLeft, cropBottom, visibleHeight),
+            RectAnnotation r => BoxRect(r.X, r.Y, r.W, r.H, cropLeft, cropBottom, visibleHeight),
+            _ => default,
+        };
+        FPDFAnnot_SetRect(annot, ref rect);
+        SetString(annot, "Contents", EffectiveContents(ann));
+        SetString(annot, "M", FormatPdfDate(DateTimeOffset.Now));
+    }
+
+    private static FsRectF StickyRect(float x, float y, float cl, float cb, double vh)
+    {
+        var (px, py) = PagePointToPdf(x, y, cl, cb, vh);
+        return new FsRectF { Left = px, Bottom = py - StickyNoteSize, Right = px + StickyNoteSize, Top = py };
+    }
+
+    private static FsRectF BoxRect(float x, float y, float w, float h, float cl, float cb, double vh)
+    {
+        var (lx, by) = PagePointToPdf(x, y + h, cl, cb, vh);
+        var (rx, ty) = PagePointToPdf(x + w, y, cl, cb, vh);
+        return new FsRectF { Left = lx, Bottom = by, Right = rx, Top = ty };
+    }
+
+    private static string EffectiveContents(Annotation ann)
+        => ann.Contents ?? (ann as TextNoteAnnotation)?.Text ?? "";
+
+    /// <summary>True when two annotations of the same type have equal content + geometry.</summary>
+    private static bool ContentEquivalent(Annotation a, Annotation b)
+    {
+        if (a.GetType() != b.GetType()) return false;
+        if (!string.Equals(EffectiveContents(a), EffectiveContents(b), StringComparison.Ordinal)) return false;
+
+        static bool Close(float x, float y) => Math.Abs(x - y) <= GeometryTolerance;
+        static bool RectClose(HighlightRect r, HighlightRect s)
+            => Close(r.X, s.X) && Close(r.Y, s.Y) && Close(r.W, s.W) && Close(r.H, s.H);
+
+        switch (a)
+        {
+            case TextMarkupAnnotation ma when b is TextMarkupAnnotation mb:
+                if (ma.Rects.Count != mb.Rects.Count) return false;
+                for (int i = 0; i < ma.Rects.Count; i++)
+                    if (!RectClose(ma.Rects[i], mb.Rects[i])) return false;
+                return true;
+            case FreehandAnnotation fa when b is FreehandAnnotation fb:
+                if (fa.Points.Count != fb.Points.Count) return false;
+                for (int i = 0; i < fa.Points.Count; i++)
+                    if (!Close(fa.Points[i].X, fb.Points[i].X) || !Close(fa.Points[i].Y, fb.Points[i].Y)) return false;
+                return true;
+            case TextNoteAnnotation ta when b is TextNoteAnnotation tb:
+                return Close(ta.X, tb.X) && Close(ta.Y, tb.Y);
+            case CaretAnnotation ca when b is CaretAnnotation cbx:
+                return Close(ca.X, cbx.X) && Close(ca.Y, cbx.Y) && Close(ca.W, cbx.W) && Close(ca.H, cbx.H);
+            case FreeTextAnnotation fta when b is FreeTextAnnotation ftb:
+                return Close(fta.X, ftb.X) && Close(fta.Y, ftb.Y) && Close(fta.W, ftb.W) && Close(fta.H, ftb.H);
+            case RectAnnotation ra when b is RectAnnotation rb:
+                return Close(ra.X, rb.X) && Close(ra.Y, rb.Y) && Close(ra.W, rb.W) && Close(ra.H, rb.H);
+            default:
+                return false;
+        }
+    }
+
     /// <summary>
     /// Writes a single annotation onto an already-loaded PDFium page. Shared by the
     /// in-place writer and <see cref="AnnotationExportService"/>. Caller holds

@@ -84,11 +84,8 @@ public sealed class PdfAnnotationReader
             if (annot == IntPtr.Zero) continue;
             try
             {
-                int subtype = FPDFAnnot_GetSubtype(annot);
-                var mapped = Map(annot, subtype, cropLeft, cropBottom, visibleHeight);
-                if (mapped is null) continue;
-                ApplyCommonMetadata(annot, mapped);
-                result.Add(mapped);
+                var mapped = ReadSingle(annot, cropLeft, cropBottom, visibleHeight);
+                if (mapped is not null) result.Add(mapped);
             }
             finally
             {
@@ -97,6 +94,20 @@ public sealed class PdfAnnotationReader
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Maps one already-open PDFium annotation handle to a Core annotation (with
+    /// metadata), or null for unsupported subtypes. Shared with the reconciling writer.
+    /// Caller owns the handle and holds <see cref="PdfiumGate.Lock"/>.
+    /// </summary>
+    internal static Annotation? ReadSingle(IntPtr annot, float cropLeft, float cropBottom, double visibleHeight)
+    {
+        int subtype = FPDFAnnot_GetSubtype(annot);
+        var mapped = Map(annot, subtype, cropLeft, cropBottom, visibleHeight);
+        if (mapped is null) return null;
+        ApplyCommonMetadata(annot, mapped);
+        return mapped;
     }
 
     private static Annotation? Map(IntPtr annot, int subtype,
