@@ -17,6 +17,7 @@ internal static class PdfiumNative
     // Document
     [DllImport(Lib)] internal static extern IntPtr FPDF_LoadMemDocument(IntPtr data, int size, string? password);
     [DllImport(Lib)] internal static extern void FPDF_CloseDocument(IntPtr document);
+    [DllImport(Lib)] internal static extern int FPDF_GetSignatureCount(IntPtr document);
 
     // Pages
     [DllImport(Lib)] internal static extern int FPDF_GetPageCount(IntPtr document);

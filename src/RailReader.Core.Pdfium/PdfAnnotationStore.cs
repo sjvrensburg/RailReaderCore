@@ -37,8 +37,19 @@ public sealed class PdfAnnotationStore : IAnnotationStore
 
     public bool Save(string pdfPath, AnnotationFile annotations) => Reconcile(pdfPath, annotations);
 
-    /// <summary>Removes all managed annotations from the PDF (reconciles to empty).</summary>
-    public bool Delete(string pdfPath) => Reconcile(pdfPath, new AnnotationFile());
+    /// <summary>Removes all managed annotations from the PDF (reconciles every annotated page to empty).</summary>
+    public bool Delete(string pdfPath)
+    {
+        if (!File.Exists(pdfPath)) return false;
+        // Reconciliation only visits pages present in the file; to clear everything we must
+        // enumerate the pages that currently hold annotations and give each an empty list.
+        var empty = new AnnotationFile();
+        var current = Load(pdfPath);
+        if (current is not null)
+            foreach (var page in current.Pages.Keys)
+                empty.Pages[page] = [];
+        return Reconcile(pdfPath, empty);
+    }
 
     private bool Reconcile(string pdfPath, AnnotationFile annotations)
     {
