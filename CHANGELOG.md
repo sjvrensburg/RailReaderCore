@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.18.1 — straight markup baselines
+
+### Fixed
+
+- **Authored Underline/StrikeOut/Squiggly rendered with a ragged baseline (#37).**
+  `AnnotationInteractionHandler.MergeCharBoxesIntoLines` grouped selected characters
+  into lines by character *top* with a 4px threshold. Ascenders and capitals (`l`, `h`,
+  `T`) sit several px above x-height letters, routinely exceeding 4px, so a single visual
+  line fragmented into multiple rects of differing top/bottom — and the markup renderer
+  drew the line at each rect's own y, producing a jumping baseline. Highlights hid it
+  (abutting filled boxes); the line-style markups exposed it. The merge now groups by
+  **vertical overlap** with the running line band, so one rect spans the whole line
+  (top = min, bottom = max) regardless of ascenders/descenders, and the markups draw
+  straight. Highlight rects authored over a line are tidier as a side effect. Native
+  reviewer markups (read from `/Annots` quad-points) were never affected.
+
+  *Deferred (per #37, lower priority):* nudging an underline up to the text baseline
+  (above descenders) rather than the line-band bottom — needs the renderer to carry the
+  x-height band, a larger change than the straightness fix.
+
 ## 0.18.0 — markup + FreeText authoring
 
 Closes the authoring gap for annotation types the model already read and wrote but

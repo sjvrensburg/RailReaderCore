@@ -744,19 +744,22 @@ public sealed class AnnotationInteractionHandler
         int end = Math.Min(charStart + charLength, pageText.CharBoxes.Count);
         float curLeft = 0, curTop = 0, curRight = 0, curBottom = 0;
         bool hasRect = false;
-        const float lineThreshold = 4f;
 
         for (int i = charStart; i < end; i++)
         {
             var cb = pageText.CharBoxes[i];
             if (cb.Left == 0 && cb.Right == 0 && cb.Top == 0 && cb.Bottom == 0) continue;
 
-            if (!hasRect)
-            {
-                curLeft = cb.Left; curTop = cb.Top; curRight = cb.Right; curBottom = cb.Bottom;
-                hasRect = true;
-            }
-            else if (Math.Abs(cb.Top - curTop) < lineThreshold)
+            // Group characters into one rect per visual line by VERTICAL OVERLAP with the
+            // running line band, not by top-equality. Ascenders/capitals (l, h, T) sit
+            // several px above x-height letters (a, o, e) — more than a fixed top threshold —
+            // so a top-equality test fragmented one line into per-ascender rects, which made
+            // the Underline/StrikeOut/Squiggly markups draw a ragged, jumping baseline
+            // (issue #37). Overlap keeps the whole line as a single band (top = min,
+            // bottom = max); the next line sits below the band past its leading gap, so it
+            // correctly starts a fresh rect.
+            bool sameLine = hasRect && cb.Top < curBottom && cb.Bottom > curTop;
+            if (sameLine)
             {
                 curLeft = Math.Min(curLeft, cb.Left);
                 curRight = Math.Max(curRight, cb.Right);
@@ -765,8 +768,9 @@ public sealed class AnnotationInteractionHandler
             }
             else
             {
-                yield return (curLeft, curTop, curRight, curBottom);
+                if (hasRect) yield return (curLeft, curTop, curRight, curBottom);
                 curLeft = cb.Left; curTop = cb.Top; curRight = cb.Right; curBottom = cb.Bottom;
+                hasRect = true;
             }
         }
 
