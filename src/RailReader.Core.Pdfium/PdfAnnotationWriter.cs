@@ -14,9 +14,9 @@ namespace RailReader.Core.Services;
 /// via <see cref="PdfiumNative.PagePointToPdf"/>, the inverse of
 /// <see cref="PdfAnnotationReader"/>.</para>
 ///
-/// <para><see cref="AddAuthoredAnnotations"/> performs an <b>incremental, in-place</b>
+/// <para><see cref="AddAuthoredAnnotations"/> performs an <b>in-place</b>
 /// write: it loads the existing document, appends the RailReader-authored
-/// annotations, and saves via <c>FPDF_SaveAsCopy(FPDF_INCREMENTAL)</c> — preserving
+/// annotations, and saves via <c>FPDF_SaveAsCopy</c> — preserving
 /// the document's existing /Annots, AcroForm, and any digital signatures. This is
 /// the opposite of <see cref="AnnotationExportService"/>, which bakes a flattened
 /// copy into a new document.</para>
@@ -32,7 +32,7 @@ public sealed class PdfAnnotationWriter
     /// <summary>
     /// Appends every RailReader-authored annotation (<see cref="AnnotationSource.RailReader"/>)
     /// from <paramref name="annotations"/> into the existing PDF and returns the updated
-    /// bytes via incremental save. In-PDF annotations are left untouched.
+    /// bytes (a full rewrite that preserves the document's existing content). In-PDF annotations are left untouched.
     /// </summary>
     /// <remarks>
     /// PR 2 step 1 scope: this only <i>adds</i> authored annotations; it does not yet
@@ -77,7 +77,7 @@ public sealed class PdfAnnotationWriter
                         }
                     }
 
-                    return SaveIncremental(doc);
+                    return SaveDocumentBytes(doc);
                 }
                 finally
                 {
@@ -95,8 +95,7 @@ public sealed class PdfAnnotationWriter
 
     /// <summary>
     /// Reconciles the PDF's managed annotations to match <paramref name="file"/>,
-    /// keyed by <see cref="Annotation.NativeId"/> (/NM), and returns the updated bytes
-    /// via incremental save. Idempotent and lossless for unchanged annotations:
+    /// keyed by <see cref="Annotation.NativeId"/> (/NM), and returns the updated bytes. Idempotent and lossless for unchanged annotations:
     /// <list type="bullet">
     /// <item><b>Add</b> — annotations without a /NM are created; a fresh /NM is minted and
     /// written back into <paramref name="file"/> (<see cref="AnnotationSource.InPdf"/>), so
@@ -143,7 +142,7 @@ public sealed class PdfAnnotationWriter
                         }
                     }
 
-                    return SaveIncremental(doc);
+                    return SaveDocumentBytes(doc);
                 }
                 finally
                 {
@@ -547,7 +546,18 @@ public sealed class PdfAnnotationWriter
         finally { pin.Free(); }
     }
 
-    private static byte[] SaveIncremental(IntPtr document)
+    /// <summary>
+    /// Serialises the (already-modified) loaded document to bytes. Uses a full
+    /// <c>FPDF_SaveAsCopy</c> rewrite (flag 0), not an incremental update: PDFium's
+    /// incremental save appends a fresh xref section that strict validators (qpdf)
+    /// flag as damaged on linearised / xref-stream source PDFs, whereas a full rewrite
+    /// of the loaded document emits one clean xref while still preserving the document's
+    /// existing /Annots and AcroForm (this is the loaded-doc path, not the
+    /// new-doc/ImportPages flatten). Signed PDFs never reach here — they are routed to
+    /// the sidecar by <see cref="CompositeAnnotationStore"/> — so incremental's
+    /// signature-ByteRange preservation is not needed.
+    /// </summary>
+    private static byte[] SaveDocumentBytes(IntPtr document)
     {
         using var ms = new MemoryStream();
         byte[] buffer = [];
@@ -566,9 +576,9 @@ public sealed class PdfAnnotationWriter
             WriteBlock = Marshal.GetFunctionPointerForDelegate(writeBlock),
         };
 
-        bool ok = FPDF_SaveAsCopy(document, ref fileWrite, FPDF_INCREMENTAL);
+        bool ok = FPDF_SaveAsCopy(document, ref fileWrite, 0);
         GC.KeepAlive(writeBlock);
-        if (!ok) throw new InvalidOperationException("FPDF_SaveAsCopy (incremental) failed");
+        if (!ok) throw new InvalidOperationException("FPDF_SaveAsCopy failed");
         return ms.ToArray();
     }
 }
