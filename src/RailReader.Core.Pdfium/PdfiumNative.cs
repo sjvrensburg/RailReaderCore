@@ -9,6 +9,11 @@ internal static class PdfiumNative
 {
     private const string Lib = "pdfium";
 
+    // Library lifecycle. FPDF_InitLibrary is idempotent in PDFium (guarded by a
+    // global flag), so calling it is safe even when PDFtoImage has already
+    // initialised the library.
+    [DllImport(Lib)] internal static extern void FPDF_InitLibrary();
+
     // Document
     [DllImport(Lib)] internal static extern IntPtr FPDF_LoadMemDocument(IntPtr data, int size, string? password);
     [DllImport(Lib)] internal static extern void FPDF_CloseDocument(IntPtr document);

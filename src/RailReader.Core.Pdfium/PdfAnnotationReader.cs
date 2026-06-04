@@ -27,6 +27,10 @@ public sealed class PdfAnnotationReader
     {
         var file = new AnnotationFile();
 
+        // The annotation store can be queried before any SkiaPdfService is
+        // constructed, so PDFium may not have been initialised by PDFtoImage yet.
+        PdfiumResolver.EnsureLibraryInitialized();
+
         lock (PdfiumGate.Lock)
         {
             IntPtr doc = IntPtr.Zero;

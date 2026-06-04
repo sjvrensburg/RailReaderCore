@@ -17,6 +17,8 @@ namespace RailReader.Core.Services;
 public static class PdfiumResolver
 {
     private static bool s_initialized;
+    private static bool s_libraryInitialized;
+    private static readonly object s_libraryInitLock = new();
 
     public static void Initialize()
     {
@@ -26,6 +28,29 @@ public static class PdfiumResolver
         NativeLibrary.SetDllImportResolver(
             typeof(PdfiumResolver).Assembly,
             ResolvePdfium);
+    }
+
+    /// <summary>
+    /// Registers the DLL resolver and ensures the PDFium native library is
+    /// initialised. Normally PDFtoImage (in the renderer package) initialises
+    /// PDFium on first use, but Core.Pdfium services that touch PDFium directly —
+    /// e.g. <see cref="PdfAnnotationReader"/> via the annotation store — may run
+    /// before any render. This makes initialisation explicit and order-independent.
+    /// <c>FPDF_InitLibrary</c> is idempotent, so this is safe alongside PDFtoImage.
+    /// </summary>
+    public static void EnsureLibraryInitialized()
+    {
+        Initialize();
+        if (s_libraryInitialized) return;
+        lock (s_libraryInitLock)
+        {
+            if (s_libraryInitialized) return;
+            lock (PdfiumGate.Lock)
+            {
+                PdfiumNative.FPDF_InitLibrary();
+            }
+            s_libraryInitialized = true;
+        }
     }
 
     private static IntPtr ResolvePdfium(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
