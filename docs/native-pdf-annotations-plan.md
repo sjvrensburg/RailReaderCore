@@ -146,8 +146,22 @@ AcroForm, and signatures.
    all render correctly in both. No Acrobat needed; see [[reference-ap-fidelity-testing]].
    FreeText (needs `/DA`+`/AP`) is the known exception, not authored by RailReader.
 
-**PR 2 is complete** (read + write + reconcile + route + fidelity-verified). Next: a railreader2
-integration pass to confirm edits persist into the PDF end-to-end.
+**PR 2 is complete** (read + write + reconcile + route + fidelity-verified).
+
+### PR 2 write-side integration test (railreader2 fork, 2026-06-04)
+
+Validated against a temp fork of railreader2 wired to local-packed Core
+(`CompositeAnnotationStore.Default`):
+- **Full solution builds** (GUI + CLI + Export + tests) — the model restructure,
+  `AnnotationFile` setters, and new types did **not** break railreader2's compilation.
+- **End-to-end write** through the packaged Core: load the real Acrobat PDF (40 annots) →
+  delete a reviewer's "accuracy" highlight → add a new comment → save → reload: count back
+  to 40, our comment persisted, "accuracy" gone, other reviewer comments + author intact,
+  routed to the PDF (no sidecar fallback).
+- **Bug found & fixed (commit d604bf4):** the incremental save produced a qpdf-"damaged"
+  xref on this linearised source. Switched to a full `FPDF_SaveAsCopy` rewrite → qpdf clean
+  ("No syntax or stream encoding errors"), AcroForm preserved, and the written comment
+  renders in Poppler.
 
 2. **Edit/delete semantics keyed on `/NM`** — update rewrites the matching annot in
    place; delete via `FPDFPage_RemoveAnnot`. New annots get a fresh UUID `/NM`.
