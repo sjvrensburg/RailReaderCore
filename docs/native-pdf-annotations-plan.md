@@ -129,10 +129,16 @@ AcroForm, and signatures.
    `/NM /Contents /T /Subj /CreationDate /M`. **Finding:** PDFium can't *create* Caret
    annots (not in its creatable whitelist) — Caret is read-only; editing an existing
    caret must go through in-place dict modification, not recreate.
-   - **Still TODO this PR:** edit/delete-by-`/NM` + idempotent save (mark authored annots
-     persisted so re-save doesn't duplicate); `/AP` regeneration fidelity check (render a
-     written highlight and confirm it shows in Acrobat, not just that it's re-readable);
-     wire into a `PdfAnnotationStore : IAnnotationStore`.
+2. ✅ **Reconciling write-back + `PdfAnnotationStore`** (commit ce7ec3f) —
+   `WriteReconciled` keyed by `/NM`: idempotent add (mint `/NM`, write back to model),
+   delete-by-`/NM`, value-based edit (unchanged → untouched/lossless; changed rect-based →
+   in-place; changed markup/ink → delete+recreate same `/NM`; caret → in-place only).
+   `PdfAnnotationStore : IAnnotationStore` (atomic temp-file replace). Proven on the real
+   Acrobat PDF: a no-op save preserves all 40 comments losslessly and idempotently.
+   - **Still TODO this PR:** `/AP` regeneration fidelity check (render a written highlight
+     and confirm it shows in Acrobat, not just that it's re-readable); `CompositeAnnotationStore`
+     routing (writable PDF → `PdfAnnotationStore`, else sidecar) + make it the default; signed-PDF
+     guard (incremental-only; warn).
 
 2. **Edit/delete semantics keyed on `/NM`** — update rewrites the matching annot in
    place; delete via `FPDFPage_RemoveAnnot`. New annots get a fresh UUID `/NM`.
