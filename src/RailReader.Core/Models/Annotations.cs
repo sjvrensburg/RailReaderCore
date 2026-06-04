@@ -142,6 +142,9 @@ public class RectAnnotation : Annotation
 /// <summary>
 /// Caret ("inserted text") markup — a small insertion marker. PDF /Caret.
 /// The note text (if any) lives in <see cref="Annotation.Contents"/>.
+/// <para>Read-only: PDFium can surface and preserve existing carets but cannot
+/// <i>create</i> them (Caret is not in its supported-subtype whitelist), and
+/// RailReader has no caret-authoring tool.</para>
 /// </summary>
 public class CaretAnnotation : Annotation
 {

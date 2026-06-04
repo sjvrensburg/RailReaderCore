@@ -84,6 +84,12 @@ internal static class PdfiumNative
         [MarshalAs(UnmanagedType.LPStr)] string? pageRange, int insertIndex);
     [DllImport(Lib)] internal static extern bool FPDF_SaveAsCopy(
         IntPtr document, ref FpdfFileWrite fileWrite, uint flags);
+    [DllImport(Lib)] internal static extern bool FPDFPage_RemoveAnnot(IntPtr page, int index);
+
+    // FPDF_SaveAsCopy flags
+    internal const uint FPDF_INCREMENTAL = 1;
+    internal const uint FPDF_NO_INCREMENTAL = 2;
+    internal const uint FPDF_REMOVE_SECURITY = 3;
 
     // Annotation creation
     [DllImport(Lib)] internal static extern IntPtr FPDFPage_CreateAnnot(IntPtr page, int subtype);
