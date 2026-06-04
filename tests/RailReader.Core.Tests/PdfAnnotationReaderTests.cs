@@ -76,8 +76,12 @@ public class PdfAnnotationReaderTests
         var note = Assert.IsType<TextNoteAnnotation>(file.Pages[0].Single());
         Assert.Equal(300f, note.X, Tol);
         Assert.Equal(150f, note.Y, Tol);
-        // /Contents is mapped onto the base Contents field by the reader.
+        // /Contents is mapped onto the base Contents field by the reader; the legacy Text
+        // field stays empty for in-PDF notes. EffectiveContents (what the renderer/writer use)
+        // bridges the two so the popup is non-empty. Regression for issue #34.
         Assert.Equal("a sticky note", note.Contents);
+        Assert.Equal("", note.Text);
+        Assert.Equal("a sticky note", note.EffectiveContents);
     }
 
     [Fact]
