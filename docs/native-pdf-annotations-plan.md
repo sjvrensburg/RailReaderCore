@@ -208,14 +208,89 @@ Acrobat's Bookmarks panel anyway; the visible `/Outlines` would collide with the
 TOC that `PdfOutlineService` already reads. Cost/benefit doesn't justify it — revisit only
 if a managed writer (e.g. PdfPig outline support) makes it cheap and safe.
 
-## PR 5 — Migration + cleanup
+## PR 5 — Migration + cleanup (scoped 2026-06-04)
 
-1. One-time migration: existing `~/.config/railreader2/annotations/*.json` → write into
-   the PDF on next open (when writable), then mark the sidecar migrated.
-2. Keep `JsonAnnotationStore` only as the non-writable fallback + import/export-JSON
-   feature; delete the parallel-store assumptions from `DocumentController`/
-   `AnnotationFileManager`.
-3. Update CLAUDE.md architecture notes + CHANGELOG (breaking-change entry).
+**Key realization:** migration is *already mostly automatic* via the PR 2 flow. Existing
+users keep annotations in `~/.config/railreader2/annotations/<hash>.json` (Source=RailReader,
+no `/NM`). On open, `CompositeAnnotationStore.Load` merges them into the model; on the first
+save of a **writable** PDF, `WriteReconciled` writes them into the PDF (minting `/NM`,
+Source→InPdf) and `PersistBookmarksToSidecar` rewrites the sidecar to bookmarks-only (or
+deletes it). So PR 5 is **hardening that flow**, not building a new one — plus consent.
+
+### The one real hazard: duplication
+
+`MergeSidecarInto` dedups sidecar-vs-native **by `/NM` only**. Migrated annots get a *new*
+`/NM` in the PDF, but their sidecar copies have **no `/NM`** — so the two can't be matched.
+If the PDF write succeeds but the sidecar cleanup fails (non-atomic: `_pdfStore.Save` then
+`PersistBookmarksToSidecar` are separate steps), the next load re-merges the sidecar copies
+as **duplicates**. This is the core correctness problem PR 5 must close.
+
+### Tasks
+
+1. **Content-aware dedup (the linchpin).** Make `MergeSidecarInto` skip a sidecar annot when
+   an equivalent native annot already exists — match by `/NM` **or** by value. Extract the
+   value comparator already in `PdfAnnotationWriter.ContentEquivalent` into a shared internal
+   `AnnotationEquivalence` helper and use it in both. This makes the whole migration idempotent
+   and dup-proof even if cleanup fails or a save is retried. (In steady state the sidecar is
+   bookmarks-only, so this only ever fires during the migration window — no perf concern.)
+
+2. **Guaranteed cleanup, best-effort + safety-net.** Keep `PersistBookmarksToSidecar` rewriting
+   the sidecar to bookmarks-only after a writable save; rely on task 1 as the safety net for the
+   non-atomic window. No explicit "migrated" marker needed — an annot-empty sidecar *is* the
+   migrated state.
+
+3. **Consent / awareness signal.** When `Load` sees un-migrated sidecar annots for a writable
+   PDF, fire a one-time signal (mirror `OnSidecarFallback`, e.g. `OnSidecarMigration`) so the
+   desktop can tell the user *"your existing notes for this document will be written into the
+   PDF on next save"* before it silently happens. ⚠ This is the most important UX item —
+   baking private review notes into a PDF the user may share is a surprising behavior change.
+
+4. **(Decision) Sidecar-only / privacy mode.** Add a `CoreSettings` flag
+   (`StoreAnnotationsInPdf`, default true) so a user who shares PDFs can keep annotations in the
+   sidecar (the routing simply always takes the fallback path). Pairs with the consent dialog's
+   "Keep separate" choice. **Needs user sign-off** — it's a product decision, not just plumbing.
+
+5. **(Optional) Explicit batch migration.** A user-triggered `Migrate(pdfPath)` / `MigrateAll()`
+   (iterating `AnnotationService.ListStored()`, writable PDFs only) for users who want their
+   notes baked in upfront without editing each file. Idempotent via task 1. Gated behind an
+   explicit action (CLI command / settings button) — never proactive on open (Load must not
+   mutate PDFs as a side effect).
+
+6. **Docs + CHANGELOG.** Breaking-change entry (annotations now stored *in* writable PDFs);
+   update CLAUDE.md's settings/architecture notes. `DocumentController`/`AnnotationFileManager`
+   need no change — they were always single-`IAnnotationStore`; "parallel store" was conceptual
+   and is now unified behind `CompositeAnnotationStore`.
+
+### Edge cases / invariants
+
+- **Read-only / signed PDFs:** never migrated — their sidecar annotations are permanent and
+  correct. Routing already gates this (fallback path).
+- **Legacy sidecars** (`<name>.railreader2.json` next to the PDF): already migrated to internal
+  storage by `AnnotationService.Load`; unaffected.
+- **Bookmarks** stay in the sidecar (PR 4 deferred) — migration moves only *annotations* out.
+- **One-way:** once baked in, annotations are in the PDF; "un-migrate" isn't supported. The
+  consent signal (task 3) + privacy mode (task 4) are the mitigations.
+- **Schema:** old `version:1` JSON deserializes into the extended model (new fields default);
+  no JSON schema migration needed (the get-only reload bug is already fixed).
+
+### Tests
+
+- Migrate-on-save: writable PDF + sidecar annots → first save bakes them in; sidecar becomes
+  bookmarks-only; reload shows no duplicates.
+- **Dup-proofing:** simulate failed cleanup (sidecar retains annots after PDF write) → reload →
+  content-dedup suppresses duplicates; a second save converges (sidecar cleaned, count stable).
+- Read-only PDF: sidecar annots stay put, not written to the PDF.
+- Bookmarks survive migration in the sidecar.
+- Privacy mode on: writable PDF still routes annots to the sidecar.
+- `Migrate(pdfPath)` idempotent (run twice → no dup).
+
+### Risks
+
+- **Behavior change is user-visible** — annotations now travel inside shared PDFs. Consent +
+  privacy mode are mandatory mitigations, both railreader2-side UX.
+- Content-equivalence dedup could (rarely) suppress a genuinely-distinct identical annotation
+  during the migration window — acceptable trade vs. guaranteed dups; only active while a
+  sidecar still holds annots.
 
 ---
 
