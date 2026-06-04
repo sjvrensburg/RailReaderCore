@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.17.0 — native PDF annotations
+
+Annotations can now live **inside the PDF** (the document's own `/Annots`), so
+RailReader interoperates with Acrobat Pro review workflows: it reads the
+reviewer's comments, and writes/edits/deletes annotations back into the file as
+if they were created natively. This is **opt-in** — the default
+`DocumentController` wiring (a consumer-supplied `AnnotationService`) is unchanged;
+a consumer activates it by injecting `CompositeAnnotationStore.Default` as its
+`IAnnotationStore`.
+
+### Added
+
+- **In-PDF annotation store.** `CompositeAnnotationStore` (an `IAnnotationStore`)
+  makes the PDF's `/Annots` the canonical store and keeps the JSON sidecar as a
+  fallback. `Load` reads native annotations (via `PdfAnnotationReader`) and merges
+  the sidecar; `Save` routes by writability — **writable + unsigned** PDFs are
+  reconciled in place (`PdfAnnotationStore` → `PdfAnnotationWriter`, full
+  `FPDF_SaveAsCopy` rewrite preserving `/Annots`/AcroForm), while
+  **read-only / signed** PDFs fall back to the sidecar. Reconciliation is keyed by
+  `/NM`: idempotent add, delete, and value-based edit (unchanged annotations are
+  left byte-for-byte untouched).
+- **New annotation subtypes:** `UnderlineAnnotation`, `StrikeOutAnnotation`,
+  `SquigglyAnnotation` (under a shared `TextMarkupAnnotation` base), plus
+  `CaretAnnotation` and `FreeTextAnnotation`. Carets are read-only (PDFium can't
+  create them). Rendered and hit-testable via `AnnotationRenderer` /
+  `AnnotationGeometry`.
+- **Round-trip metadata on `Annotation`:** `Author`, `Contents`, `Subject`,
+  `NativeId` (`/NM`), `CreatedUtc`, `ModifiedUtc`, `State` (`ReviewState`),
+  `InReplyTo` (`/IRT`, read-only), `Source` (`AnnotationSource`), `Flags` (`/F`),
+  and faithful `ColorComponents` (`/C`).
+- **Consumer signals:** `CompositeAnnotationStore.OnSidecarFallback` (a save was
+  stored separately because the PDF is read-only/signed) and `OnSidecarMigration`
+  (a writable PDF's existing sidecar annotations will be baked into the file on the
+  next save — a heads-up before notes enter a shareable document).
+- PDFium read/write bindings for the `FPDFAnnot_*` annotation surface and
+  `FPDF_GetSignatureCount` / `FPDF_GetPageCount`.
+
+### Changed
+
+- **Breaking (minor source impact):** `HighlightAnnotation` now derives from
+  `TextMarkupAnnotation` rather than `Annotation` directly; an exhaustive
+  pattern-match over annotation types should add cases for the new subtypes.
+- `AnnotationFile.Pages` / `Bookmarks` are now `{ get; set; }` (were get-only) —
+  see Fixed.
+- `AnnotationExportService` delegates per-annotation writing to the shared
+  `PdfAnnotationWriter` and writes only RailReader-authored annotations
+  (`Source != InPdf`); native ones already arrive via `FPDF_ImportPages`, so this
+  removes the double-write that duplicated every native annotation in an export.
+
+### Fixed
+
+- **Sidecar reload data loss:** `AnnotationFile.Pages` / `Bookmarks` were get-only,
+  which the source-generated serializer does not repopulate on deserialize — so
+  `AnnotationService.Load` returned them **empty** and saved annotations/bookmarks
+  silently vanished on reload. Adding setters fixes the round-trip.
+- Reconciliation no longer duplicates in-PDF annotations that lack a `/NM`, and no
+  longer marks empty-geometry annotations as persisted (which lost them from both
+  the PDF and the sidecar).
+- Colour / opacity / fill / stroke-width edits now persist (annotation equivalence
+  compares style), and `RectAnnotation.Filled` + stroke widths round-trip.
+- `CompositeAnnotationStore.Default`'s caches are thread-safe and path-normalised
+  (case-sensitive `Ordinal`), and `MoveAnnotation` handles the new markup subtypes.
+
 ## 0.16.0 — analysis-tuning knobs in AppConfig
 
 Surfaces the 0.15.0 `CoreSettings.BackgroundAnalysisWindowPages` and
