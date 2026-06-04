@@ -262,7 +262,7 @@ public sealed class PdfAnnotationReader
                 out uint r, out uint g, out uint b, out _))
         {
             a.ColorComponents = [r / 255f, g / 255f, b / 255f];
-            a.Color = $"#{r:X2}{g:X2}{b:X2}";
+            a.Color = ColorUtils.ToHexColor(r / 255f, g / 255f, b / 255f);
         }
         else
         {
@@ -297,7 +297,7 @@ public sealed class PdfAnnotationReader
         {
             r = Math.Clamp(r, 0, 1); g = Math.Clamp(g, 0, 1); b = Math.Clamp(b, 0, 1);
             ft.ColorComponents = [r, g, b];
-            ft.Color = $"#{(int)Math.Round(r * 255):X2}{(int)Math.Round(g * 255):X2}{(int)Math.Round(b * 255):X2}";
+            ft.Color = ColorUtils.ToHexColor(r, g, b);
         }
 
         for (int i = 0; i < t.Length; i++)

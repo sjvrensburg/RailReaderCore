@@ -31,4 +31,15 @@ public static class ColorUtils
         }
         return new ColorRGBA(255, 255, 0, alpha); // fallback yellow
     }
+
+    /// <summary>
+    /// Formats RGB components (each 0..1) as a <c>#RRGGBB</c> hex string — the inverse of
+    /// <see cref="ParseHexColor"/>'s colour channels. Clamps to range and rounds to the
+    /// nearest byte so callers don't each re-implement the float→hex conversion.
+    /// </summary>
+    public static string ToHexColor(float r, float g, float b)
+    {
+        static int Channel(float v) => (int)Math.Round(Math.Clamp(v, 0f, 1f) * 255f);
+        return $"#{Channel(r):X2}{Channel(g):X2}{Channel(b):X2}";
+    }
 }
