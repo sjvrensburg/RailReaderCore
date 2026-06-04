@@ -122,11 +122,17 @@ pipeline. No write-back. Lowest risk.
 Outcome: create/edit/delete persists into the PDF, preserving all other annots,
 AcroForm, and signatures.
 
-1. **`PdfAnnotationStore : IAnnotationStore`** — `Write` mutates the loaded document and
-   saves via `FPDF_SaveAsCopy(FPDF_INCREMENTAL)`. Refactor the
-   `AnnotationExportService` write helpers into a shared `PdfAnnotationWriter` usable for
-   in-place writes. Every create/edit sets `/T /Contents /NM /M /CreationDate /Subj` and
-   **regenerates `/AP`** so RailReader-authored annots look native in Acrobat.
+1. ✅ **`PdfAnnotationWriter`** (commit 1bfdd72) — `AddAuthoredAnnotations` loads the
+   existing doc, appends authored annots, and saves via `FPDF_SaveAsCopy(FPDF_INCREMENTAL)`,
+   preserving existing `/Annots` + AcroForm + signatures. Shared per-annotation writers
+   extracted from `AnnotationExportService` (which now delegates). Stamps
+   `/NM /Contents /T /Subj /CreationDate /M`. **Finding:** PDFium can't *create* Caret
+   annots (not in its creatable whitelist) — Caret is read-only; editing an existing
+   caret must go through in-place dict modification, not recreate.
+   - **Still TODO this PR:** edit/delete-by-`/NM` + idempotent save (mark authored annots
+     persisted so re-save doesn't duplicate); `/AP` regeneration fidelity check (render a
+     written highlight and confirm it shows in Acrobat, not just that it's re-readable);
+     wire into a `PdfAnnotationStore : IAnnotationStore`.
 
 2. **Edit/delete semantics keyed on `/NM`** — update rewrites the matching annot in
    place; delete via `FPDFPage_RemoveAnnot`. New annots get a fresh UUID `/NM`.
