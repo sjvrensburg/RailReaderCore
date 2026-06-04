@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.1 — sticky-note popup fix
 
 ### Fixed
 
