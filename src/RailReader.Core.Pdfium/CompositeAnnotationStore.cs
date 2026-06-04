@@ -34,9 +34,14 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
 {
     private readonly IAnnotationStore _sidecar;
     private readonly PdfAnnotationStore _pdfStore;
-    private readonly HashSet<string> _warned = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _migrationWarned = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, bool> _signedCache = new(StringComparer.OrdinalIgnoreCase);
+    // CompositeAnnotationStore.Default is a process-wide singleton; these caches are guarded
+    // by _cacheLock since Load/Save can be reached from more than one thread. Keys are
+    // full-path-normalised and compared Ordinal — case-insensitive comparison would collide
+    // two distinct files on a case-sensitive filesystem (Linux) and yield a wrong verdict.
+    private readonly object _cacheLock = new();
+    private readonly HashSet<string> _warned = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _migrationWarned = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, bool> _signedCache = new(StringComparer.Ordinal);
 
     public CompositeAnnotationStore(IAnnotationStore sidecar, PdfAnnotationStore? pdfStore = null)
     {
@@ -68,7 +73,7 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
         // Heads-up: a writable PDF whose sidecar still holds annotations will have them baked
         // into the PDF on the next save (lazy migration). Signal the consumer once.
         if (SidecarHasAnnotations(sidecar) && GetFallbackReason(pdfPath) is null
-            && _migrationWarned.Add(Path.GetFullPath(pdfPath)))
+            && AddOnce(_migrationWarned, pdfPath))
             OnSidecarMigration?.Invoke(pdfPath);
 
         if (native is null || !HasAnnotations(native))
@@ -134,7 +139,9 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
 
     private bool IsSigned(string pdfPath)
     {
-        if (_signedCache.TryGetValue(pdfPath, out var cached)) return cached;
+        var key = Path.GetFullPath(pdfPath);
+        lock (_cacheLock)
+            if (_signedCache.TryGetValue(key, out var cached)) return cached;
 
         bool signed = false;
         try
@@ -164,14 +171,20 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
             RailReaderLogging.Logger.Debug($"[Annotations] Signature probe failed for {pdfPath}: {ex.Message}");
         }
 
-        _signedCache[pdfPath] = signed;
+        lock (_cacheLock) _signedCache[key] = signed;
         return signed;
     }
 
     private void WarnOnce(string pdfPath, SidecarFallbackReason reason)
     {
-        if (_warned.Add(Path.GetFullPath(pdfPath)))
+        if (AddOnce(_warned, pdfPath))
             OnSidecarFallback?.Invoke(pdfPath, reason);
+    }
+
+    /// <summary>Thread-safe "first time for this path?" check against a warn set.</summary>
+    private bool AddOnce(HashSet<string> set, string pdfPath)
+    {
+        lock (_cacheLock) return set.Add(Path.GetFullPath(pdfPath));
     }
 
     // --- sidecar persistence ---

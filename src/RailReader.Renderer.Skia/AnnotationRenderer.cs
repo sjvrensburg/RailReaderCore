@@ -41,33 +41,34 @@ public static class AnnotationRenderer
     [ThreadStatic] private static SKPath? s_noteIconPath;
     [ThreadStatic] private static SKPath? s_noteFoldPath;
 
+    // Reused per-draw paths/paints for the markup line / caret / free-text subtypes.
+    [ThreadStatic] private static SKPath? s_squigglyPath;
+    [ThreadStatic] private static SKPath? s_caretPath;
+    [ThreadStatic] private static SKPaint? s_freeTextBgPaint;
+    [ThreadStatic] private static SKPaint? s_freeTextPaint;
+
     /// <summary>
-    /// Z-order: highlights → freehand + rectangles → text notes.
+    /// Z-order: text-markup (highlight/underline/strikeout/squiggly) → freehand + rects +
+    /// free-text → text notes + carets.
     /// </summary>
     internal static int ZOrder(Annotation ann) => ann switch
     {
-        HighlightAnnotation => 0,
-        FreehandAnnotation  => 1,
-        RectAnnotation      => 1,
-        TextNoteAnnotation  => 2,
+        TextMarkupAnnotation => 0, // Highlight + Underline/StrikeOut/Squiggly
+        FreehandAnnotation   => 1,
+        RectAnnotation       => 1,
+        FreeTextAnnotation   => 1,
+        TextNoteAnnotation   => 2,
+        CaretAnnotation      => 2,
         _ => 1,
     };
 
     /// <summary>
     /// Returns a pre-sorted copy of annotations in z-order for use by the compositor.
     /// Call on the UI thread when building render state to avoid LINQ on the render path.
+    /// Stable so insertion order is preserved within a z-band; exhaustive via <see cref="ZOrder"/>.
     /// </summary>
     public static List<Annotation> SortByZOrder(List<Annotation> annotations)
-    {
-        var sorted = new List<Annotation>(annotations.Count);
-        // Three-pass avoids LINQ allocation on the render path.
-        foreach (var a in annotations) if (a is HighlightAnnotation) sorted.Add(a);
-        foreach (var a in annotations) if (a is FreehandAnnotation or RectAnnotation) sorted.Add(a);
-        foreach (var a in annotations) if (a is TextNoteAnnotation) sorted.Add(a);
-        System.Diagnostics.Debug.Assert(sorted.Count == annotations.Count,
-            "Unknown annotation type — update SortByZOrder to handle it");
-        return sorted;
-    }
+        => annotations.OrderBy(ZOrder).ToList();
 
     public static void DrawAnnotations(SKCanvas canvas, List<Annotation> annotations, Annotation? selected,
         bool expandAllNotes = false)
@@ -87,6 +88,15 @@ public static class AnnotationRenderer
             case HighlightAnnotation highlight:
                 DrawHighlight(canvas, highlight, color);
                 break;
+            case UnderlineAnnotation underline:
+                DrawTextMarkupLine(canvas, underline, color, MarkupLineStyle.Underline);
+                break;
+            case StrikeOutAnnotation strikeOut:
+                DrawTextMarkupLine(canvas, strikeOut, color, MarkupLineStyle.StrikeOut);
+                break;
+            case SquigglyAnnotation squiggly:
+                DrawTextMarkupLine(canvas, squiggly, color, MarkupLineStyle.Squiggly);
+                break;
             case FreehandAnnotation freehand:
                 DrawFreehand(canvas, freehand, color);
                 break;
@@ -95,6 +105,12 @@ public static class AnnotationRenderer
                 break;
             case RectAnnotation rect:
                 DrawRect(canvas, rect, color);
+                break;
+            case CaretAnnotation caret:
+                DrawCaret(canvas, caret, color);
+                break;
+            case FreeTextAnnotation freeText:
+                DrawFreeText(canvas, freeText, color);
                 break;
         }
 
@@ -157,6 +173,86 @@ public static class AnnotationRenderer
         paint.Color = color;
         foreach (var r in highlight.Rects)
             canvas.DrawRect(SKRect.Create(r.X, r.Y, r.W, r.H), paint);
+    }
+
+    private enum MarkupLineStyle { Underline, StrikeOut, Squiggly }
+
+    /// <summary>Draws underline/strikeout/squiggly markup as a line per QuadPoint rect.</summary>
+    private static void DrawTextMarkupLine(SKCanvas canvas, TextMarkupAnnotation m, SKColor color, MarkupLineStyle style)
+    {
+        var paint = GetStrokePaint();
+        paint.Color = color.WithAlpha(255);
+        foreach (var r in m.Rects)
+        {
+            float thickness = Math.Max(1f, r.H * 0.06f);
+            paint.StrokeWidth = thickness;
+            float y = style == MarkupLineStyle.StrikeOut ? r.Y + r.H / 2f : r.Y + r.H - thickness;
+            if (style == MarkupLineStyle.Squiggly)
+                DrawSquiggle(canvas, r.X, r.X + r.W, y, paint, Math.Max(1.5f, thickness));
+            else
+                canvas.DrawLine(r.X, y, r.X + r.W, y, paint);
+        }
+    }
+
+    private static void DrawSquiggle(SKCanvas canvas, float x0, float x1, float y, SKPaint paint, float amplitude)
+    {
+        var path = s_squigglyPath ??= new SKPath();
+        path.Reset();
+        float halfWave = Math.Max(2f, amplitude * 2f);
+        path.MoveTo(x0, y);
+        bool up = true;
+        for (float x = x0; x < x1; x += halfWave)
+        {
+            float nx = Math.Min(x + halfWave, x1);
+            path.LineTo(nx, up ? y - amplitude : y + amplitude);
+            up = !up;
+        }
+        canvas.DrawPath(path, paint);
+    }
+
+    private static void DrawCaret(SKCanvas canvas, CaretAnnotation c, SKColor color)
+    {
+        // Upward insertion marker filling the annotation rect.
+        var path = s_caretPath ??= new SKPath();
+        path.Reset();
+        float cx = c.X + c.W / 2f;
+        path.MoveTo(c.X, c.Y + c.H);
+        path.LineTo(cx, c.Y);
+        path.LineTo(c.X + c.W, c.Y + c.H);
+        path.Close();
+        var paint = GetFillPaint();
+        paint.Color = color.WithAlpha(255);
+        canvas.DrawPath(path, paint);
+    }
+
+    private static void DrawFreeText(SKCanvas canvas, FreeTextAnnotation ft, SKColor color)
+    {
+        var rect = SKRect.Create(ft.X, ft.Y, ft.W, ft.H);
+
+        var bg = s_freeTextBgPaint ??= new SKPaint { IsAntialias = true };
+        bg.Color = new SKColor(255, 255, 255, 220);
+        canvas.DrawRect(rect, bg);
+
+        var border = GetStrokePaint();
+        border.Color = color.WithAlpha(255);
+        border.StrokeWidth = 1f;
+        canvas.DrawRect(rect, border);
+
+        if (string.IsNullOrEmpty(ft.Contents)) return;
+
+        var font = s_noteFont ??= new SKFont(SKTypeface.Default, 9);
+        var textPaint = s_freeTextPaint ??= new SKPaint { IsAntialias = true };
+        textPaint.Color = color.WithAlpha(255);
+
+        var lines = WrapText(ft.Contents!, font, Math.Max(1f, ft.W - PopupPadding * 2));
+        float lineHeight = font.Size * 1.4f;
+        float ty = ft.Y + PopupPadding + font.Size;
+        foreach (var line in lines)
+        {
+            if (ty > ft.Y + ft.H) break; // clip to the box
+            canvas.DrawText(line, ft.X + PopupPadding, ty, font, textPaint);
+            ty += lineHeight;
+        }
     }
 
     private static void DrawFreehand(SKCanvas canvas, FreehandAnnotation freehand, SKColor color)
