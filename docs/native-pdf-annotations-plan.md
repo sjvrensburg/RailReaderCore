@@ -185,6 +185,25 @@ managed code — fits the planned Lite/mobile path). Core is untouched; only the
 impl differs. Confirm PdfPig's annotation-write + `/AP` generation coverage before
 committing the mobile side.
 
+## PR 1 integration test (railreader2 fork, 2026-06-04)
+
+Validated PR 1 end-to-end against a temp fork of railreader2 wired to a local-packed
+Core (`CompositeAnnotationStore.Default` swapped in at the `DocumentController` ctor and
+the CLI/export `.Load` sites). Results:
+
+- **Before:** CLI `annotations` command reported "No annotations found" (sidecar-only).
+- **After:** reads **all 40** native Acrobat annotations (22 highlight + 17 text + 1 caret)
+  with correct page-space geometry, `/CA` opacity, and outline-heading association.
+- **Core bug found & fixed (commit 4faaf72):** `CompositeAnnotationStore.Load` ran before
+  any `SkiaPdfService` was constructed, so PDFium (which Core.Pdfium relies on PDFtoImage
+  to initialise) was uninitialised → **segfault**. Fixed by `FPDF_InitLibrary` +
+  `PdfiumResolver.EnsureLibraryInitialized()`.
+- **railreader2-side gaps confirmed (feed PR 3 cross-repo work):** the desktop CLI's
+  `SerializeAnnotation` / `AnnotationOutput` DTO predates the new model — it doesn't carry
+  `Contents` (reviewer comment text is read by Core but dropped by railreader2's serializer)
+  and has no `Caret` case (serialised as `"unknown"`). The viewer/exporter need the new
+  subtypes + author/contents/date fields.
+
 ## Cross-repo (railreader2)
 
 Breaking: the default store changes and new model types/fields appear. The desktop
