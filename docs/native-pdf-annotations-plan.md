@@ -101,9 +101,17 @@ pipeline. No write-back. Lowest risk.
      true for all 40 Acrobat annots here. The reader must fall back: per-subtype default
      color, or parse `/C` directly. Do **not** trust GetColor alone.
 
-4. **Wire into load** — `CompositeAnnotationStore.Load` reads in-PDF annots first;
-   if a legacy sidecar exists, merge deduped by `/NM`. Viewer / line-detection /
-   rail-mode already consume `AnnotationFile`, so they light up unchanged.
+4. **Wire into load** — ✅ `CompositeAnnotationStore` (Core.Pdfium) reads in-PDF annots
+   via `PdfAnnotationReader` and merges the sidecar on top, deduped by `/NM` (native
+   wins); bookmarks carried from the sidecar. `Save` persists **only** RailReader-authored
+   annotations (`Source != InPdf`) + bookmarks to the sidecar — native annots are
+   read-only in PR 1 and re-read from the PDF each load. `CompositeAnnotationStore.Default`
+   wraps `AnnotationService.Default`.
+   - **Cross-repo wiring to light it up:** railreader2 currently injects
+     `AnnotationService.Default` as its `IAnnotationStore`. Switch that to
+     `CompositeAnnotationStore.Default` and native comments appear in the viewer
+     (line-detection / rail-mode consume `AnnotationFile` unchanged). No Core API change
+     needed — it's a one-line wiring swap in the desktop app.
 
 5. **Tests** — `TestFixtures` emits a synthetic PDF with Highlight+Text+Caret via the
    write path; reopen and assert geometry/author/contents/state recovered. Crop-box +
