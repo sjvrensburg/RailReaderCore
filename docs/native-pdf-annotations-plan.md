@@ -135,10 +135,18 @@ AcroForm, and signatures.
    in-place; changed markup/ink → delete+recreate same `/NM`; caret → in-place only).
    `PdfAnnotationStore : IAnnotationStore` (atomic temp-file replace). Proven on the real
    Acrobat PDF: a no-op save preserves all 40 comments losslessly and idempotently.
-   - **Still TODO this PR:** `/AP` regeneration fidelity check (render a written highlight
-     and confirm it shows in Acrobat, not just that it's re-readable); `CompositeAnnotationStore`
-     routing (writable PDF → `PdfAnnotationStore`, else sidecar) + make it the default; signed-PDF
-     guard (incremental-only; warn).
+3. ✅ **Routing + signed-PDF guard** (commit d904f16) — `CompositeAnnotationStore.Save`
+   routes by writability: writable+unsigned → `PdfAnnotationStore` (annots into the PDF,
+   bookmarks to a thin sidecar until PR 4); read-only/signed/no-permission → authored annots
+   + bookmarks to the sidecar with a one-time `OnSidecarFallback` signal. Signatures detected
+   via `FPDF_GetSignatureCount` (cached); write-permission via a non-mutating open probe.
+   - **Remaining (verification, not a feature):** `/AP` fidelity — render a written highlight
+     and confirm it *shows* in Acrobat/external viewers, not just that it round-trips
+     structurally. RailReader's own viewer draws annots from the model, so this only affects
+     interop fidelity.
+
+**PR 2 is functionally complete** (read + write + reconcile + route). Next: a railreader2
+integration pass to confirm edits persist into the PDF end-to-end, then the `/AP` render check.
 
 2. **Edit/delete semantics keyed on `/NM`** — update rewrites the matching annot in
    place; delete via `FPDFPage_RemoveAnnot`. New annots get a fresh UUID `/NM`.
