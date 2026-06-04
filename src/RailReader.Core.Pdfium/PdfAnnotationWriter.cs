@@ -194,10 +194,12 @@ public sealed class PdfAnnotationWriter
                 if (current is not null && AnnotationEquivalence.ContentEquivalent(current, want))
                     continue; // unchanged → leave the original annotation untouched
 
-                if (want is TextMarkupAnnotation or FreehandAnnotation)
+                if (want is TextMarkupAnnotation or FreehandAnnotation or RectAnnotation)
                 {
+                    // Quad/ink geometry, and Rect fill — which can't be cleared in place since
+                    // PDFium can't remove /IC — are handled by delete + recreate (same /NM).
                     toDelete.Add(i);
-                    recreate.Add(want); // quad/ink geometry → delete + recreate (same /NM)
+                    recreate.Add(want);
                 }
                 else
                 {
@@ -230,9 +232,18 @@ public sealed class PdfAnnotationWriter
         // …then additions: new authored (mint /NM, mark persisted) and recreated edits.
         foreach (var ann in desiredNew)
         {
+            // An in-PDF annotation with no /NM is already in the document but unidentifiable;
+            // re-creating it would duplicate it. Leave it untouched.
+            if (ann.Source == AnnotationSource.InPdf) continue;
+
             ann.NativeId = Guid.NewGuid().ToString();
-            WriteAnnotationToPage(page, ann, cl, cb, vh);
-            ann.Source = AnnotationSource.InPdf;
+            // Only mark it persisted if an annotation was actually written — empty-geometry
+            // annots (0 rects / <2 ink points) and Carets write nothing, and must NOT be
+            // flagged InPdf or they'd be lost from both the PDF and the sidecar.
+            if (WriteAnnotationToPage(page, ann, cl, cb, vh))
+                ann.Source = AnnotationSource.InPdf;
+            else
+                ann.NativeId = null;
         }
         foreach (var ann in recreate)
             WriteAnnotationToPage(page, ann, cl, cb, vh);
@@ -243,6 +254,11 @@ public sealed class PdfAnnotationWriter
         FPDF_ANNOT_HIGHLIGHT or FPDF_ANNOT_UNDERLINE or FPDF_ANNOT_SQUIGGLY or
         FPDF_ANNOT_STRIKEOUT or FPDF_ANNOT_CARET or FPDF_ANNOT_INK;
 
+    /// <summary>
+    /// In-place edit for rect-based annotations that PDFium can't (or shouldn't) recreate —
+    /// Text (sticky), Caret (uncreatable), and FreeText — preserving their other keys.
+    /// Rect/markup/ink changes go through delete+recreate instead.
+    /// </summary>
     private static void EditRectBasedInPlace(IntPtr annot, Annotation ann,
         float cropLeft, float cropBottom, double visibleHeight)
     {
@@ -251,12 +267,17 @@ public sealed class PdfAnnotationWriter
             TextNoteAnnotation tn => StickyRect(tn.X, tn.Y, cropLeft, cropBottom, visibleHeight),
             CaretAnnotation c => BoxRect(c.X, c.Y, c.W, c.H, cropLeft, cropBottom, visibleHeight),
             FreeTextAnnotation ft => BoxRect(ft.X, ft.Y, ft.W, ft.H, cropLeft, cropBottom, visibleHeight),
-            RectAnnotation r => BoxRect(r.X, r.Y, r.W, r.H, cropLeft, cropBottom, visibleHeight),
             _ => default,
         };
         FPDFAnnot_SetRect(annot, ref rect);
+
+        // Re-apply colour so a colour edit isn't dropped on an in-place edit.
+        var color = ResolveColor(ann);
+        FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_COLOR, color.R, color.G, color.B, color.A);
+
         SetString(annot, "Contents", AnnotationEquivalence.EffectiveContents(ann));
         SetString(annot, "M", FormatPdfDate(DateTimeOffset.Now));
+        WriteReviewState(annot, ann.State);
     }
 
     private static FsRectF StickyRect(float x, float y, float cl, float cb, double vh)
@@ -277,33 +298,32 @@ public sealed class PdfAnnotationWriter
     /// in-place writer and <see cref="AnnotationExportService"/>. Caller holds
     /// <see cref="PdfiumGate.Lock"/>.
     /// </summary>
-    internal static void WriteAnnotationToPage(IntPtr page, Annotation ann,
+    /// <summary>Returns true iff a PDF annotation was actually created (false for an
+    /// unsupported subtype or empty geometry, so the caller can avoid marking it persisted).</summary>
+    internal static bool WriteAnnotationToPage(IntPtr page, Annotation ann,
         float cropLeft, float cropBottom, double visibleHeight)
     {
         switch (ann)
         {
             case TextMarkupAnnotation m:
-                WriteTextMarkup(page, m, MarkupSubtype(m), cropLeft, cropBottom, visibleHeight);
-                break;
+                return WriteTextMarkup(page, m, MarkupSubtype(m), cropLeft, cropBottom, visibleHeight);
             case FreehandAnnotation f:
-                WriteInk(page, f, cropLeft, cropBottom, visibleHeight);
-                break;
+                return WriteInk(page, f, cropLeft, cropBottom, visibleHeight);
             case RectAnnotation r:
-                WriteRect(page, r, cropLeft, cropBottom, visibleHeight);
-                break;
+                return WriteRect(page, r, cropLeft, cropBottom, visibleHeight);
             case TextNoteAnnotation tn:
-                WriteTextNote(page, tn, cropLeft, cropBottom, visibleHeight);
-                break;
+                return WriteTextNote(page, tn, cropLeft, cropBottom, visibleHeight);
             case CaretAnnotation:
                 // PDFium's FPDFPage_CreateAnnot cannot create Caret annotations (not in its
                 // supported-subtype whitelist). Carets are read-only: we surface existing ones
                 // (PdfAnnotationReader) and preserve them on save, but never author new ones.
                 // RailReader has no caret-authoring tool, so this only matters defensively.
                 RailReaderLogging.Logger.Debug("[PdfAnnotationWriter] Skipping Caret: PDFium cannot create caret annotations");
-                break;
+                return false;
             case FreeTextAnnotation ft:
-                WriteRectShaped(page, ft, FPDF_ANNOT_FREETEXT, ft.X, ft.Y, ft.W, ft.H, cropLeft, cropBottom, visibleHeight);
-                break;
+                return WriteRectShaped(page, ft, FPDF_ANNOT_FREETEXT, ft.X, ft.Y, ft.W, ft.H, cropLeft, cropBottom, visibleHeight);
+            default:
+                return false;
         }
     }
 
@@ -315,13 +335,13 @@ public sealed class PdfAnnotationWriter
         _ => FPDF_ANNOT_HIGHLIGHT,
     };
 
-    private static void WriteTextMarkup(IntPtr page, TextMarkupAnnotation m, int subtype,
+    private static bool WriteTextMarkup(IntPtr page, TextMarkupAnnotation m, int subtype,
         float cropLeft, float cropBottom, double visibleHeight)
     {
-        if (m.Rects.Count == 0) return;
+        if (m.Rects.Count == 0) return false;
 
         var annot = FPDFPage_CreateAnnot(page, subtype);
-        if (annot == IntPtr.Zero) return;
+        if (annot == IntPtr.Zero) return false;
         try
         {
             var color = ResolveColor(m);
@@ -341,6 +361,7 @@ public sealed class PdfAnnotationWriter
             var bounding = new FsRectF { Left = minX, Bottom = minY, Right = maxX, Top = maxY };
             FPDFAnnot_SetRect(annot, ref bounding);
             ApplyCommonMetadata(annot, m);
+            return true;
         }
         finally
         {
@@ -348,13 +369,13 @@ public sealed class PdfAnnotationWriter
         }
     }
 
-    private static void WriteInk(IntPtr page, FreehandAnnotation f,
+    private static bool WriteInk(IntPtr page, FreehandAnnotation f,
         float cropLeft, float cropBottom, double visibleHeight)
     {
-        if (f.Points.Count < 2) return;
+        if (f.Points.Count < 2) return false;
 
         var annot = FPDFPage_CreateAnnot(page, FPDF_ANNOT_INK);
-        if (annot == IntPtr.Zero) return;
+        if (annot == IntPtr.Zero) return false;
         try
         {
             var color = ResolveColor(f);
@@ -376,6 +397,7 @@ public sealed class PdfAnnotationWriter
             var bounding = new FsRectF { Left = minX - pad, Bottom = minY - pad, Right = maxX + pad, Top = maxY + pad };
             FPDFAnnot_SetRect(annot, ref bounding);
             ApplyCommonMetadata(annot, f);
+            return true;
         }
         finally
         {
@@ -383,30 +405,21 @@ public sealed class PdfAnnotationWriter
         }
     }
 
-    private static void WriteRect(IntPtr page, RectAnnotation ra,
+    private static bool WriteRect(IntPtr page, RectAnnotation ra,
         float cropLeft, float cropBottom, double visibleHeight)
     {
         var annot = FPDFPage_CreateAnnot(page, FPDF_ANNOT_SQUARE);
-        if (annot == IntPtr.Zero) return;
+        if (annot == IntPtr.Zero) return false;
         try
         {
-            var color = ResolveColor(ra);
-            if (ra.Filled)
-            {
-                FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_INTERIOR, color.R, color.G, color.B, color.A);
-                FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_COLOR, color.R, color.G, color.B, color.A);
-            }
-            else
-            {
-                FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_COLOR, color.R, color.G, color.B, 255);
-            }
-            FPDFAnnot_SetBorder(annot, 0, 0, ra.StrokeWidth);
+            ApplyRectStyle(annot, ra);
 
             var (lx, by) = PagePointToPdf(ra.X, ra.Y + ra.H, cropLeft, cropBottom, visibleHeight);
             var (rx, ty) = PagePointToPdf(ra.X + ra.W, ra.Y, cropLeft, cropBottom, visibleHeight);
             var rect = new FsRectF { Left = lx, Bottom = by, Right = rx, Top = ty };
             FPDFAnnot_SetRect(annot, ref rect);
             ApplyCommonMetadata(annot, ra);
+            return true;
         }
         finally
         {
@@ -414,11 +427,11 @@ public sealed class PdfAnnotationWriter
         }
     }
 
-    private static void WriteTextNote(IntPtr page, TextNoteAnnotation tn,
+    private static bool WriteTextNote(IntPtr page, TextNoteAnnotation tn,
         float cropLeft, float cropBottom, double visibleHeight)
     {
         var annot = FPDFPage_CreateAnnot(page, FPDF_ANNOT_TEXT);
-        if (annot == IntPtr.Zero) return;
+        if (annot == IntPtr.Zero) return false;
         try
         {
             var color = ResolveColor(tn);
@@ -428,6 +441,7 @@ public sealed class PdfAnnotationWriter
             var rect = new FsRectF { Left = px, Bottom = py - StickyNoteSize, Right = px + StickyNoteSize, Top = py };
             FPDFAnnot_SetRect(annot, ref rect);
             ApplyCommonMetadata(annot, tn);
+            return true;
         }
         finally
         {
@@ -435,12 +449,12 @@ public sealed class PdfAnnotationWriter
         }
     }
 
-    /// <summary>Writes a simple rect-bounded annotation (Caret, FreeText).</summary>
-    private static void WriteRectShaped(IntPtr page, Annotation ann, int subtype,
+    /// <summary>Writes a simple rect-bounded annotation (FreeText).</summary>
+    private static bool WriteRectShaped(IntPtr page, Annotation ann, int subtype,
         float x, float y, float w, float h, float cropLeft, float cropBottom, double visibleHeight)
     {
         var annot = FPDFPage_CreateAnnot(page, subtype);
-        if (annot == IntPtr.Zero) return;
+        if (annot == IntPtr.Zero) return false;
         try
         {
             var color = ResolveColor(ann);
@@ -451,11 +465,28 @@ public sealed class PdfAnnotationWriter
             var rect = new FsRectF { Left = lx, Bottom = by, Right = rx, Top = ty };
             FPDFAnnot_SetRect(annot, ref rect);
             ApplyCommonMetadata(annot, ann);
+            return true;
         }
         finally
         {
             FPDFPage_CloseAnnot(annot);
         }
+    }
+
+    /// <summary>Applies a rect annotation's colour, fill, and border — shared by create and in-place edit.</summary>
+    private static void ApplyRectStyle(IntPtr annot, RectAnnotation ra)
+    {
+        var color = ResolveColor(ra);
+        if (ra.Filled)
+        {
+            FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_INTERIOR, color.R, color.G, color.B, color.A);
+            FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_COLOR, color.R, color.G, color.B, color.A);
+        }
+        else
+        {
+            FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_COLOR, color.R, color.G, color.B, 255);
+        }
+        FPDFAnnot_SetBorder(annot, 0, 0, ra.StrokeWidth);
     }
 
     /// <summary>Stamps the shared PDF metadata keys (/NM, /Contents, /T, /Subj, dates, flags).</summary>
@@ -477,16 +508,28 @@ public sealed class PdfAnnotationWriter
         var now = DateTimeOffset.Now;
         SetString(annot, "CreationDate", FormatPdfDate(ann.CreatedUtc ?? now));
         SetString(annot, "M", FormatPdfDate(ann.ModifiedUtc ?? now));
+
+        WriteReviewState(annot, ann.State);
+        // Note: /IRT (reply linkage) is an indirect object reference; PDFium has no API to set
+        // it, so reply threading is read-only and not re-emitted on write.
+    }
+
+    /// <summary>Writes the Acrobat review state (/State + /StateModel "Review"); no-op for None.</summary>
+    private static void WriteReviewState(IntPtr annot, ReviewState state)
+    {
+        if (state == ReviewState.None) return;
+        SetString(annot, "StateModel", "Review");
+        SetString(annot, "State", state.ToString()); // Accepted/Rejected/Cancelled/Completed
     }
 
     private static ColorRGBA ResolveColor(Annotation ann)
     {
+        // The hex Color is the write source of truth: ColorComponents (faithful floats from
+        // the reader) only matter for displaying unchanged annotations, which are never
+        // rewritten. Preferring ColorComponents here would ignore a user's colour edit, which
+        // updates Color but leaves the stale ColorComponents in place.
         byte a = (byte)Math.Clamp(ann.Opacity * 255f, 0f, 255f);
-        if (ann.ColorComponents is { Length: 3 } c)
-            return new ColorRGBA(To255(c[0]), To255(c[1]), To255(c[2]), a);
         return ColorUtils.ParseHexColor(ann.Color, a);
-
-        static byte To255(float v) => (byte)Math.Clamp(v * 255f, 0f, 255f);
     }
 
     /// <summary>Formats a PDF date string: D:YYYYMMDDHHmmSS±HH'mm'.</summary>

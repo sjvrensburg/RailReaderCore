@@ -117,6 +117,8 @@ internal static class PdfiumNative
     [DllImport(Lib)] internal static extern bool FPDFAnnot_GetRect(IntPtr annot, out FsRectF rect);
     [DllImport(Lib)] internal static extern bool FPDFAnnot_GetColor(IntPtr annot, int colorType,
         out uint r, out uint g, out uint b, out uint a);
+    [DllImport(Lib)] internal static extern bool FPDFAnnot_GetBorder(IntPtr annot,
+        out float horizontalRadius, out float verticalRadius, out float borderWidth);
     [DllImport(Lib)] internal static extern nuint FPDFAnnot_CountAttachmentPoints(IntPtr annot);
     [DllImport(Lib)] internal static extern bool FPDFAnnot_GetAttachmentPoints(IntPtr annot,
         nuint quadIndex, out FsQuadPointsF quadPoints);

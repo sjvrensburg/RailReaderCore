@@ -142,12 +142,20 @@ public sealed class PdfAnnotationReader
             case FPDF_ANNOT_SQUARE:
             {
                 var (x, y, w, h) = ReadRect(annot, cropLeft, cropBottom, visibleHeight);
-                return new RectAnnotation { X = x, Y = y, W = w, H = h };
+                var rect = new RectAnnotation { X = x, Y = y, W = w, H = h };
+                if (FPDFAnnot_GetBorder(annot, out _, out _, out float bw)) rect.StrokeWidth = bw;
+                // /IC (interior colour) present ⇒ filled. (GetColor(INTERIOR) returns a default
+                // even when /IC is absent, so test the key directly.)
+                rect.Filled = FPDFAnnot_HasKey(annot, "IC");
+                return rect;
             }
             case FPDF_ANNOT_INK:
             {
                 var points = ReadInk(annot, cropLeft, cropBottom, visibleHeight);
-                return points.Count >= 2 ? new FreehandAnnotation { Points = points } : null;
+                if (points.Count < 2) return null;
+                var ink = new FreehandAnnotation { Points = points };
+                if (FPDFAnnot_GetBorder(annot, out _, out _, out float bw) && bw > 0) ink.StrokeWidth = bw;
+                return ink;
             }
 
             // Link → IPdfLinkService; Popup → companion of its parent; everything else

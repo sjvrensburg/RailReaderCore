@@ -17,11 +17,26 @@ internal static class AnnotationEquivalence
     internal static string EffectiveContents(Annotation ann)
         => ann.Contents ?? (ann as TextNoteAnnotation)?.Text ?? "";
 
-    /// <summary>True when two annotations of the same type have equal content + geometry.</summary>
+    /// <summary>True when two annotations share colour, opacity, and (where applicable) fill
+    /// and stroke width. Compares the display hex colour (consistent in read and write paths),
+    /// not <see cref="Annotation.ColorComponents"/>, which is only populated on read.</summary>
+    private static bool StyleEquivalent(Annotation a, Annotation b)
+    {
+        if (!string.Equals(a.Color, b.Color, StringComparison.OrdinalIgnoreCase)) return false;
+        if (Math.Abs(a.Opacity - b.Opacity) > 0.01f) return false;
+        if (a is RectAnnotation ra && b is RectAnnotation rb)
+            return ra.Filled == rb.Filled && Math.Abs(ra.StrokeWidth - rb.StrokeWidth) <= 0.1f;
+        if (a is FreehandAnnotation fa && b is FreehandAnnotation fb)
+            return Math.Abs(fa.StrokeWidth - fb.StrokeWidth) <= 0.1f;
+        return true;
+    }
+
+    /// <summary>True when two annotations of the same type have equal content, style, and geometry.</summary>
     internal static bool ContentEquivalent(Annotation a, Annotation b)
     {
         if (a.GetType() != b.GetType()) return false;
         if (!string.Equals(EffectiveContents(a), EffectiveContents(b), StringComparison.Ordinal)) return false;
+        if (!StyleEquivalent(a, b)) return false;
 
         static bool Close(float x, float y) => Math.Abs(x - y) <= GeometryTolerance;
         static bool RectClose(HighlightRect r, HighlightRect s)

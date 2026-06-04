@@ -88,7 +88,10 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
         {
             // PDF is canonical: reconcile annotations into the document.
             bool ok = _pdfStore.Save(pdfPath, file);
-            PersistBookmarksToSidecar(pdfPath, file);
+            // Only touch the sidecar once the PDF write succeeded — otherwise a failed write
+            // followed by deleting the sidecar would destroy the only copy of un-migrated annots.
+            if (ok)
+                PersistBookmarksToSidecar(pdfPath, file);
             return ok;
         }
 
