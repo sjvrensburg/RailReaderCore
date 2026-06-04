@@ -35,6 +35,7 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
     private readonly IAnnotationStore _sidecar;
     private readonly PdfAnnotationStore _pdfStore;
     private readonly HashSet<string> _warned = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _migrationWarned = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _signedCache = new(StringComparer.OrdinalIgnoreCase);
 
     public CompositeAnnotationStore(IAnnotationStore sidecar, PdfAnnotationStore? pdfStore = null)
@@ -52,10 +53,23 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
     /// </summary>
     public Action<string, SidecarFallbackReason>? OnSidecarFallback { get; set; }
 
+    /// <summary>
+    /// Raised (once per PDF path per session) when a writable PDF still has annotations in the
+    /// sidecar that will be migrated <i>into</i> the PDF on the next save. Lets the UI give the
+    /// user a heads-up before their notes are baked into a potentially-shared document.
+    /// </summary>
+    public Action<string>? OnSidecarMigration { get; set; }
+
     public AnnotationFile? Load(string pdfPath)
     {
         var sidecar = _sidecar.Load(pdfPath);
         var native = _pdfStore.Load(pdfPath);
+
+        // Heads-up: a writable PDF whose sidecar still holds annotations will have them baked
+        // into the PDF on the next save (lazy migration). Signal the consumer once.
+        if (SidecarHasAnnotations(sidecar) && GetFallbackReason(pdfPath) is null
+            && _migrationWarned.Add(Path.GetFullPath(pdfPath)))
+            OnSidecarMigration?.Invoke(pdfPath);
 
         if (native is null || !HasAnnotations(native))
             return sidecar; // no native annotations → behave exactly like the sidecar store
@@ -194,28 +208,31 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
 
     private static bool HasAnnotations(AnnotationFile f) => f.Pages.Values.Any(l => l.Count > 0);
 
+    private static bool SidecarHasAnnotations(AnnotationFile? f) => f is not null && HasAnnotations(f);
+
     private static void MergeSidecarInto(AnnotationFile native, AnnotationFile? sidecar)
     {
         if (sidecar is null) return;
 
         foreach (var (page, sidecarList) in sidecar.Pages)
         {
-            var nativeIds = native.Pages.TryGetValue(page, out var existing)
-                ? existing.Where(a => a.NativeId is not null).Select(a => a.NativeId!).ToHashSet(StringComparer.Ordinal)
-                : [];
+            native.Pages.TryGetValue(page, out var target);
+            target ??= [];
 
             foreach (var ann in sidecarList)
             {
-                if (ann.NativeId is not null && nativeIds.Contains(ann.NativeId))
-                    continue; // native copy wins
-
-                if (!native.Pages.TryGetValue(page, out var target))
-                {
-                    target = [];
-                    native.Pages[page] = target;
-                }
-                target.Add(ann);
+                // Dedup against native by /NM or by value. Value-equivalence is what keeps
+                // lazy migration idempotent: once a sidecar annotation has been baked into the
+                // PDF (with a fresh /NM), its still-present sidecar copy — which has no /NM to
+                // match on — is suppressed here, so a failed/late sidecar cleanup can't surface
+                // duplicates.
+                bool duplicate = target.Any(e =>
+                    (ann.NativeId is not null && string.Equals(e.NativeId, ann.NativeId, StringComparison.Ordinal))
+                    || AnnotationEquivalence.ContentEquivalent(e, ann));
+                if (!duplicate) target.Add(ann);
             }
+
+            if (target.Count > 0) native.Pages[page] = target;
         }
     }
 
