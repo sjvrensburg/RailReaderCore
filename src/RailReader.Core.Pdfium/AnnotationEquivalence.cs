@@ -60,7 +60,8 @@ internal static class AnnotationEquivalence
             case CaretAnnotation ca when b is CaretAnnotation cbx:
                 return Close(ca.X, cbx.X) && Close(ca.Y, cbx.Y) && Close(ca.W, cbx.W) && Close(ca.H, cbx.H);
             case FreeTextAnnotation fta when b is FreeTextAnnotation ftb:
-                return Close(fta.X, ftb.X) && Close(fta.Y, ftb.Y) && Close(fta.W, ftb.W) && Close(fta.H, ftb.H);
+                return Close(fta.X, ftb.X) && Close(fta.Y, ftb.Y) && Close(fta.W, ftb.W) && Close(fta.H, ftb.H)
+                    && Math.Abs(fta.FontSize - ftb.FontSize) <= 0.1f;
             case RectAnnotation ra when b is RectAnnotation rb:
                 return Close(ra.X, rb.X) && Close(ra.Y, rb.Y) && Close(ra.W, rb.W) && Close(ra.H, rb.H);
             default:

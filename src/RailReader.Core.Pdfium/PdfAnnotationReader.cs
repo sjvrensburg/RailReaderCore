@@ -137,7 +137,13 @@ public sealed class PdfAnnotationReader
             case FPDF_ANNOT_FREETEXT:
             {
                 var (x, y, w, h) = ReadRect(annot, cropLeft, cropBottom, visibleHeight);
-                return new FreeTextAnnotation { X = x, Y = y, W = w, H = h };
+                var ft = new FreeTextAnnotation { X = x, Y = y, W = w, H = h };
+                // FreeText carries its text colour and point size in /DA (not /C), so parse
+                // it back for a faithful round-trip — the inverse of PdfAnnotationWriter's
+                // BuildFreeTextDa. Sets Color/ColorComponents (honoured over the GetColor
+                // fallback in ApplyCommonMetadata) and FontSize.
+                ApplyFreeTextDa(ft, ReadAnnotString(annot, "DA"));
+                return ft;
             }
             case FPDF_ANNOT_SQUARE:
             {
@@ -245,14 +251,22 @@ public sealed class PdfAnnotationReader
         // Colour: /C via PDFium. Returns false when the annotation carries a baked
         // /AP appearance stream (true for most Acrobat output) — in that case leave
         // ColorComponents null and fall back to a per-subtype default colour.
-        if (FPDFAnnot_GetColor(annot, FPDFANNOT_COLORTYPE_COLOR,
+        // A subtype reader may already have resolved the colour (FreeText carries its text
+        // colour in /DA, not /C — and PDFium's GetColor even reports a bogus black for a
+        // FreeText with no /C). Honour that over /C; otherwise read /C, then fall back.
+        if (a.ColorComponents is not null)
+        {
+            // keep the subtype-resolved colour (e.g. FreeText /DA)
+        }
+        else if (FPDFAnnot_GetColor(annot, FPDFANNOT_COLORTYPE_COLOR,
                 out uint r, out uint g, out uint b, out _))
         {
             a.ColorComponents = [r / 255f, g / 255f, b / 255f];
-            a.Color = $"#{r:X2}{g:X2}{b:X2}";
+            a.Color = ColorUtils.ToHexColor(r / 255f, g / 255f, b / 255f);
         }
         else
         {
+            // No /C (e.g. a baked /AP stream hides it) — fall back to a per-subtype default.
             a.Color = DefaultColorFor(a);
         }
 
@@ -262,6 +276,47 @@ public sealed class PdfAnnotationReader
         {
             try { a.InReplyTo = ReadAnnotString(parent, "NM"); }
             finally { FPDFPage_CloseAnnot(parent); }
+        }
+    }
+
+    /// <summary>
+    /// Parses a FreeText /DA (default appearance) string for its font size (<c>… Tf</c>) and
+    /// text colour (<c>… rg</c>/<c>… g</c>/<c>… k</c>), applying both to <paramref name="ft"/>.
+    /// The inverse of <c>PdfAnnotationWriter.BuildFreeTextDa</c>; tolerant of operand order
+    /// and unknown operators.
+    /// </summary>
+    private static void ApplyFreeTextDa(FreeTextAnnotation ft, string? da)
+    {
+        if (string.IsNullOrWhiteSpace(da)) return;
+        var t = da.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+
+        static bool F(string s, out float v)
+            => float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+
+        void SetColor(float r, float g, float b)
+        {
+            r = Math.Clamp(r, 0, 1); g = Math.Clamp(g, 0, 1); b = Math.Clamp(b, 0, 1);
+            ft.ColorComponents = [r, g, b];
+            ft.Color = ColorUtils.ToHexColor(r, g, b);
+        }
+
+        for (int i = 0; i < t.Length; i++)
+        {
+            switch (t[i])
+            {
+                case "Tf" when i >= 1 && F(t[i - 1], out float sz) && sz > 0:
+                    ft.FontSize = sz;
+                    break;
+                case "g" when i >= 1 && F(t[i - 1], out float gray):
+                    SetColor(gray, gray, gray);
+                    break;
+                case "rg" when i >= 3 && F(t[i - 3], out float cr) && F(t[i - 2], out float cg) && F(t[i - 1], out float cb):
+                    SetColor(cr, cg, cb);
+                    break;
+                case "k" when i >= 4 && F(t[i - 4], out float c) && F(t[i - 3], out float m) && F(t[i - 2], out float y) && F(t[i - 1], out float kk):
+                    SetColor((1 - c) * (1 - kk), (1 - m) * (1 - kk), (1 - y) * (1 - kk));
+                    break;
+            }
         }
     }
 

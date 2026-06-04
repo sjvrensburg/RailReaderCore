@@ -93,6 +93,60 @@ public class PdfAnnotationWriterTests
     }
 
     [Fact]
+    public void FreeText_RoundTripsGeometryContentsColorAndFontSize()
+    {
+        // FreeText is the subtype PDFium can't author renderably on its own — it needs a
+        // synthesised /DA. The writer emits /Helv + size + colour into /DA, and the reader
+        // parses it back, so geometry, text, colour, and font size survive a round-trip.
+        var bytes = new PdfAnnotationWriter().AddAuthoredAnnotations(PlainPdfBytes(),
+            OnePage(new FreeTextAnnotation
+            {
+                X = 100, Y = 150, W = 220, H = 40,
+                Contents = "Typewriter note",
+                Color = "#C00000",
+                FontSize = 18f,
+            }));
+
+        var ft = Assert.IsType<FreeTextAnnotation>(Assert.Single(ReadBack(bytes)));
+        Assert.Equal(100f, ft.X, Tol);
+        Assert.Equal(150f, ft.Y, Tol);
+        Assert.Equal(220f, ft.W, Tol);
+        Assert.Equal(40f, ft.H, Tol);
+        Assert.Equal("Typewriter note", ft.Contents);
+        Assert.Equal("Typewriter note", ft.EffectiveContents);
+        // Colour recovered from /DA (not /C — FreeText carries no background fill).
+        Assert.Equal("#C00000", ft.Color, ignoreCase: true);
+        Assert.Equal(18f, ft.FontSize, Tol);
+        Assert.False(string.IsNullOrEmpty(ft.NativeId)); // /NM stamped
+    }
+
+    [Fact]
+    public void FreeText_EditInPlace_UpdatesDaColorAndSize()
+    {
+        var writer = new PdfAnnotationWriter();
+
+        // Author + persist a FreeText (mints /NM, flips Source→InPdf).
+        var file = OnePage(new FreeTextAnnotation
+        {
+            X = 100, Y = 150, W = 220, H = 40, Contents = "before", Color = "#000000", FontSize = 12f,
+        });
+        var bytes1 = writer.AddAuthoredAnnotations(PlainPdfBytes(), file);
+
+        // Reload, edit colour/size/text, reconcile in place keyed by /NM.
+        var model = new PdfAnnotationReader().Read(bytes1);
+        var ft = Assert.IsType<FreeTextAnnotation>(Assert.Single(model.Pages[0]));
+        ft.Contents = "after";
+        ft.Color = "#0000FF";
+        ft.FontSize = 20f;
+        var bytes2 = writer.WriteReconciled(bytes1, model);
+
+        var reread = Assert.IsType<FreeTextAnnotation>(Assert.Single(ReadBack(bytes2)));
+        Assert.Equal("after", reread.Contents);
+        Assert.Equal("#0000FF", reread.Color, ignoreCase: true);
+        Assert.Equal(20f, reread.FontSize, Tol);
+    }
+
+    [Fact]
     public void Caret_IsNotCreatable_AndIsSkippedGracefully()
     {
         // PDFium cannot create caret annotations; the writer must skip (not crash, not

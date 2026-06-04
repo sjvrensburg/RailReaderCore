@@ -147,7 +147,9 @@ AcroForm, and signatures.
    stream, but `AnnotationApFidelityTests` renders each subtype with Poppler + MuPDF
    (independent of PDFium) and confirms highlight/underline/strikeout/squiggly/ink/square
    all render correctly in both. No Acrobat needed; see [[reference-ap-fidelity-testing]].
-   FreeText (needs `/DA`+`/AP`) is the known exception, not authored by RailReader.
+   FreeText was the one exception (it needs a `/DA` to be synthesisable) — **resolved in
+   0.18.0**: the writer now emits a minimal `/DA` and viewers synthesise the appearance from
+   `/DA` + `/Contents`, verified in the same Poppler/MuPDF harness (see PR 3 below).
 
 **PR 2 is complete** (read + write + reconcile + route + fidelity-verified).
 
@@ -186,12 +188,22 @@ Validated against a temp fork of railreader2 wired to local-packed Core
 Outcome: users can create the full academic markup set and participate in Acrobat
 review threads.
 
-1. **Renderer (`AnnotationRenderer`, Skia)** — draw Underline/StrikeOut/Squiggly/Caret/
-   FreeText; render reply threads and review-state badges in the comment panel.
-2. **Authoring + tools** (`AnnotationTool`, `AnnotationInteractionHandler`) — creation
-   gestures for the new types; reply-to-comment; set review state.
+1. ✅ **Renderer (`AnnotationRenderer`, Skia)** — already draws Underline/StrikeOut/
+   Squiggly/Caret/FreeText (`DrawTextMarkupLine` / `DrawCaret` / `DrawFreeText`). Reply
+   threads and review-state badges in the comment panel are still railreader2-side UI.
+2. ✅ **Authoring + tools (Core, 0.18.0)** (`AnnotationTool`, `AnnotationInteractionHandler`)
+   — `Underline`/`StrikeOut`/`Squiggly` reuse the Highlight selection→rects path verbatim
+   (commit routed through the subtype-parameterised `CreateTextMarkup`); `FreeText` adds a
+   drag-box gesture (`PendingFreeText` → `CommitPendingFreeText`) and a direct `AddFreeText`
+   API. **FreeText write-side `/DA` synthesis** (`PdfAnnotationWriter.BuildFreeTextDa`) makes
+   authored FreeText render via viewer-side appearance synthesis — no baked `/AP` (PDFium's
+   `FPDFAnnot_SetAP` can't attach a font `/Resources` dict, so viewer synthesis from `/DA`
+   is both simpler and more reliable; Poppler + MuPDF confirmed in `AnnotationApFidelityTests`).
+   The reader parses colour + size back out of `/DA` for a lossless round-trip. **Still
+   open (railreader2-side UI):** the text-input dialog wiring for the FreeText tool,
+   reply-to-comment, and set-review-state gestures.
 3. **`/RC` rich text** — preserve on read; minimal write (plain `/Contents` is enough
-   for Acrobat to display; `/RC` regenerated from text).
+   for Acrobat to display; `/RC` regenerated from text). *(Not started.)*
 
 ## PR 4 — Bookmarks → PDF named destinations  ❌ DEFERRED (2026-06-04)
 

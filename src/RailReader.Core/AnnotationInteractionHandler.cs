@@ -14,6 +14,14 @@ public sealed class AnnotationInteractionHandler
     public bool IsAnnotating => ActiveTool != AnnotationTool.None;
     public Annotation? SelectedAnnotation { get; set; }
     public Annotation? PreviewAnnotation { get; set; }
+
+    /// <summary>
+    /// A FreeText box drawn with the <see cref="AnnotationTool.FreeText"/> tool that is
+    /// waiting for the UI to supply its text. Set on pointer-up; the UI then collects text
+    /// (its own dialog) and calls <see cref="CommitPendingFreeText"/> or
+    /// <see cref="CancelPendingFreeText"/>. Null when no FreeText box is pending.
+    /// </summary>
+    public FreeTextAnnotation? PendingFreeText { get; private set; }
     public string ActiveAnnotationColor { get; set; } = "#FFFF00";
     public float ActiveAnnotationOpacity { get; set; } = 0.4f;
     public float ActiveStrokeWidth { get; set; } = 2f;
@@ -75,6 +83,7 @@ public sealed class AnnotationInteractionHandler
         ActiveTool = tool;
         SelectedAnnotation = null;
         PreviewAnnotation = null;
+        PendingFreeText = null;
         _freehandPoints = null;
         _highlightCharStart = -1;
 
@@ -92,6 +101,17 @@ public sealed class AnnotationInteractionHandler
                 ActiveAnnotationColor = hc.Color;
                 ActiveAnnotationOpacity = hc.Opacity;
                 break;
+            // Underline/StrikeOut/Squiggly are line markups (not translucent fills), so
+            // they default to a solid colour at full opacity rather than a highlight wash.
+            case AnnotationTool.Underline:
+            case AnnotationTool.Squiggly:
+                ActiveAnnotationColor = "#00A000"; // green
+                ActiveAnnotationOpacity = 1.0f;
+                break;
+            case AnnotationTool.StrikeOut:
+                ActiveAnnotationColor = "#FF0000"; // red
+                ActiveAnnotationOpacity = 1.0f;
+                break;
             case AnnotationTool.Pen:
                 var pc = PenColors[_penColorIndex];
                 ActiveAnnotationColor = pc.Color;
@@ -107,6 +127,10 @@ public sealed class AnnotationInteractionHandler
             case AnnotationTool.TextNote:
                 ActiveAnnotationColor = "#FFCC00";
                 ActiveAnnotationOpacity = 0.9f;
+                break;
+            case AnnotationTool.FreeText:
+                ActiveAnnotationColor = "#000000"; // black typewriter text
+                ActiveAnnotationOpacity = 1.0f;
                 break;
             case AnnotationTool.Eraser:
             case AnnotationTool.None:
@@ -170,6 +194,14 @@ public sealed class AnnotationInteractionHandler
     {
         if (doc is null) return default;
 
+        // The drag-over-text markup tools share one path; the set lives in IsTextMarkupTool
+        // so adding a tool can't drift out of sync across the three pointer handlers.
+        if (IsTextMarkupTool(ActiveTool))
+        {
+            _highlightCharStart = FindNearestCharIndex(doc, (float)pageX, (float)pageY);
+            return default;
+        }
+
         switch (ActiveTool)
         {
             case AnnotationTool.TextSelect:
@@ -177,15 +209,14 @@ public sealed class AnnotationInteractionHandler
                 SelectedText = null;
                 TextSelectionRects = null;
                 break;
-            case AnnotationTool.Highlight:
-                _highlightCharStart = FindNearestCharIndex(doc, (float)pageX, (float)pageY);
-                break;
             case AnnotationTool.Pen:
                 _freehandPoints = [new PointF((float)pageX, (float)pageY)];
                 break;
             case AnnotationTool.Rectangle:
+            case AnnotationTool.FreeText:
                 _rectStartX = (float)pageX;
                 _rectStartY = (float)pageY;
+                PendingFreeText = null;
                 break;
             case AnnotationTool.TextNote:
                 var hitNote = FindTextNoteAtPoint(doc, (float)pageX, (float)pageY);
@@ -229,6 +260,25 @@ public sealed class AnnotationInteractionHandler
         if (doc is null) return false;
         bool changed = false;
 
+        if (IsTextMarkupTool(ActiveTool))
+        {
+            if (_highlightCharStart >= 0)
+            {
+                int endChar = FindNearestCharIndex(doc, (float)pageX, (float)pageY);
+                if (endChar >= 0)
+                {
+                    int start = Math.Min(_highlightCharStart, endChar);
+                    int end = Math.Max(_highlightCharStart, endChar);
+                    var pageText = doc.GetOrExtractText(doc.CurrentPage);
+                    var rects = BuildHighlightRects(pageText, start, end - start + 1);
+                    PreviewAnnotation = CreateTextMarkup(ActiveTool, rects,
+                        ActiveAnnotationColor, ActiveAnnotationOpacity);
+                    changed = true;
+                }
+            }
+            return changed;
+        }
+
         switch (ActiveTool)
         {
             case AnnotationTool.TextSelect when _textSelectCharStart >= 0:
@@ -243,23 +293,6 @@ public sealed class AnnotationInteractionHandler
                     SelectedText = tsStart < pageText.Text.Length
                         ? pageText.Text[tsStart..textEnd]
                         : null;
-                    changed = true;
-                }
-                break;
-            case AnnotationTool.Highlight when _highlightCharStart >= 0:
-                int endChar = FindNearestCharIndex(doc, (float)pageX, (float)pageY);
-                if (endChar >= 0)
-                {
-                    int start = Math.Min(_highlightCharStart, endChar);
-                    int end = Math.Max(_highlightCharStart, endChar);
-                    var pageText = doc.GetOrExtractText(doc.CurrentPage);
-                    var rects = BuildHighlightRects(pageText, start, end - start + 1);
-                    PreviewAnnotation = new HighlightAnnotation
-                    {
-                        Rects = rects,
-                        Color = ActiveAnnotationColor,
-                        Opacity = ActiveAnnotationOpacity,
-                    };
                     changed = true;
                 }
                 break;
@@ -278,16 +311,23 @@ public sealed class AnnotationInteractionHandler
                 changed = true;
                 break;
             case AnnotationTool.Rectangle:
-                float rx = Math.Min(_rectStartX, (float)pageX);
-                float ry = Math.Min(_rectStartY, (float)pageY);
-                float rw = Math.Abs((float)pageX - _rectStartX);
-                float rh = Math.Abs((float)pageY - _rectStartY);
+                var (rx, ry, rw, rh) = NormalizeBox(_rectStartX, _rectStartY, (float)pageX, (float)pageY);
                 PreviewAnnotation = new RectAnnotation
                 {
                     X = rx, Y = ry, W = rw, H = rh,
                     Color = ActiveAnnotationColor,
                     Opacity = ActiveAnnotationOpacity,
                     StrokeWidth = ActiveStrokeWidth,
+                };
+                changed = true;
+                break;
+            case AnnotationTool.FreeText:
+                var (px, py, pw, ph) = NormalizeBox(_rectStartX, _rectStartY, (float)pageX, (float)pageY);
+                PreviewAnnotation = new FreeTextAnnotation
+                {
+                    X = px, Y = py, W = pw, H = ph,
+                    Color = ActiveAnnotationColor,
+                    Opacity = ActiveAnnotationOpacity,
                 };
                 changed = true;
                 break;
@@ -300,16 +340,22 @@ public sealed class AnnotationInteractionHandler
         if (doc is null) return false;
         bool changed = false;
 
+        if (IsTextMarkupTool(ActiveTool))
+        {
+            if (PreviewAnnotation is TextMarkupAnnotation tm)
+            {
+                doc.AddAnnotation(doc.CurrentPage, tm);
+                PreviewAnnotation = null;
+                _highlightCharStart = -1;
+                changed = true;
+            }
+            return changed;
+        }
+
         switch (ActiveTool)
         {
             case AnnotationTool.TextSelect:
                 _textSelectCharStart = -1;
-                break;
-            case AnnotationTool.Highlight when PreviewAnnotation is HighlightAnnotation h:
-                doc.AddAnnotation(doc.CurrentPage, h);
-                PreviewAnnotation = null;
-                _highlightCharStart = -1;
-                changed = true;
                 break;
             case AnnotationTool.Pen when PreviewAnnotation is FreehandAnnotation f:
                 doc.AddAnnotation(doc.CurrentPage, f);
@@ -323,8 +369,62 @@ public sealed class AnnotationInteractionHandler
                 PreviewAnnotation = null;
                 changed = true;
                 break;
+            case AnnotationTool.FreeText:
+                // Finalise the box geometry; a too-small drag (or a plain click) falls back
+                // to a default-sized box anchored at the press point. The text itself is
+                // supplied later by the UI via CommitPendingFreeText.
+                var (fx, fy, fw, fh) = NormalizeBox(_rectStartX, _rectStartY, (float)pageX, (float)pageY);
+                if (fw < 8f || fh < 8f) { fx = _rectStartX; fy = _rectStartY; fw = 200f; fh = 48f; }
+                PendingFreeText = new FreeTextAnnotation
+                {
+                    X = fx, Y = fy, W = fw, H = fh,
+                    Color = ActiveAnnotationColor,
+                    Opacity = ActiveAnnotationOpacity,
+                };
+                PreviewAnnotation = null;
+                changed = true;
+                break;
         }
         return changed;
+    }
+
+    /// <summary>
+    /// Finalises a pending FreeText box (drawn with the FreeText tool) once the UI has
+    /// collected its text. Empty/whitespace text — or a cancelled dialog — discards the box.
+    /// Returns the committed annotation, or null when nothing was added.
+    /// </summary>
+    public FreeTextAnnotation? CommitPendingFreeText(DocumentState? doc, string? text)
+    {
+        var pending = PendingFreeText;
+        PendingFreeText = null;
+        if (doc is null || pending is null || string.IsNullOrWhiteSpace(text)) return null;
+        pending.Contents = text;
+        doc.AddAnnotation(doc.CurrentPage, pending);
+        return pending;
+    }
+
+    /// <summary>Discards a pending FreeText box (e.g. the UI's text dialog was cancelled).</summary>
+    public void CancelPendingFreeText() => PendingFreeText = null;
+
+    /// <summary>
+    /// Creates a FreeText ("typewriter") annotation directly, for a consumer that collects the
+    /// text up front (or for headless/programmatic creation) rather than via the drag gesture.
+    /// Uses the tool's active colour/opacity as the text appearance. No-op for empty text.
+    /// </summary>
+    public FreeTextAnnotation? AddFreeText(DocumentState? doc,
+        float x, float y, float w, float h, string text, float fontSize = 12f)
+    {
+        if (doc is null || string.IsNullOrWhiteSpace(text)) return null;
+        var ft = new FreeTextAnnotation
+        {
+            X = x, Y = y, W = w, H = h,
+            Color = ActiveAnnotationColor,
+            Opacity = ActiveAnnotationOpacity,
+            FontSize = fontSize,
+            Contents = text,
+        };
+        doc.AddAnnotation(doc.CurrentPage, ft);
+        return ft;
     }
 
     private void EraseAtPoint(DocumentState doc, float pageX, float pageY)
@@ -596,6 +696,37 @@ public sealed class AnnotationInteractionHandler
         }
         return bestIdx;
     }
+
+    /// <summary>True for the drag-over-text markup tools that share the Highlight
+    /// selection→rects pipeline (Highlight/Underline/StrikeOut/Squiggly).</summary>
+    public static bool IsTextMarkupTool(AnnotationTool tool) => tool is
+        AnnotationTool.Highlight or AnnotationTool.Underline or
+        AnnotationTool.StrikeOut or AnnotationTool.Squiggly;
+
+    /// <summary>
+    /// Builds the concrete <see cref="TextMarkupAnnotation"/> for a markup tool over the
+    /// given selection rects. The four drag-over-text tools differ only in the subtype
+    /// instantiated here — geometry, colour, and opacity are shared.
+    /// </summary>
+    public static TextMarkupAnnotation CreateTextMarkup(
+        AnnotationTool tool, List<HighlightRect> rects, string color, float opacity)
+    {
+        TextMarkupAnnotation markup = tool switch
+        {
+            AnnotationTool.Underline => new UnderlineAnnotation(),
+            AnnotationTool.StrikeOut => new StrikeOutAnnotation(),
+            AnnotationTool.Squiggly => new SquigglyAnnotation(),
+            _ => new HighlightAnnotation(),
+        };
+        markup.Rects = rects;
+        markup.Color = color;
+        markup.Opacity = opacity;
+        return markup;
+    }
+
+    /// <summary>Normalises a drag (anchor → current pointer) into a top-left box (X, Y, W, H).</summary>
+    private static (float X, float Y, float W, float H) NormalizeBox(float ax, float ay, float bx, float by)
+        => (Math.Min(ax, bx), Math.Min(ay, by), Math.Abs(bx - ax), Math.Abs(by - ay));
 
     public static List<HighlightRect> BuildHighlightRects(PageText pageText, int charStart, int charLength)
     {

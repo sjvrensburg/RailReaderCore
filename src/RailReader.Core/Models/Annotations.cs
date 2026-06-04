@@ -181,7 +181,9 @@ public class CaretAnnotation : Annotation
 
 /// <summary>
 /// Free-text ("typewriter") annotation drawn directly on the page. PDF /FreeText.
-/// The displayed text lives in <see cref="Annotation.Contents"/>.
+/// The displayed text lives in <see cref="Annotation.Contents"/>; <see cref="Color"/> is
+/// the text colour and <see cref="FontSize"/> its point size — both synthesised into the
+/// PDF /DA (default appearance) on write so strict viewers can render the text.
 /// </summary>
 public class FreeTextAnnotation : Annotation
 {
@@ -189,6 +191,9 @@ public class FreeTextAnnotation : Annotation
     public float Y { get; set; }
     public float W { get; set; }
     public float H { get; set; }
+
+    /// <summary>Text point size, written into /DA. Defaults to 12.</summary>
+    public float FontSize { get; set; } = 12f;
 }
 
 public interface IUndoAction

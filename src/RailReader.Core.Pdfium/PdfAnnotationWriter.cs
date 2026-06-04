@@ -271,9 +271,18 @@ public sealed class PdfAnnotationWriter
         };
         FPDFAnnot_SetRect(annot, ref rect);
 
-        // Re-apply colour so a colour edit isn't dropped on an in-place edit.
-        var color = ResolveColor(ann);
-        FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_COLOR, color.R, color.G, color.B, color.A);
+        // Re-apply appearance so a colour/size edit isn't dropped. FreeText's colour and
+        // size live in /DA (setting /C would paint an opaque background box); every other
+        // rect-based subtype carries its colour in /C.
+        if (ann is FreeTextAnnotation ft2)
+        {
+            SetString(annot, "DA", BuildFreeTextDa(ft2));
+        }
+        else
+        {
+            var color = ResolveColor(ann);
+            FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_COLOR, color.R, color.G, color.B, color.A);
+        }
 
         SetString(annot, "Contents", AnnotationEquivalence.EffectiveContents(ann));
         SetString(annot, "M", FormatPdfDate(DateTimeOffset.Now));
@@ -321,7 +330,7 @@ public sealed class PdfAnnotationWriter
                 RailReaderLogging.Logger.Debug("[PdfAnnotationWriter] Skipping Caret: PDFium cannot create caret annotations");
                 return false;
             case FreeTextAnnotation ft:
-                return WriteRectShaped(page, ft, FPDF_ANNOT_FREETEXT, ft.X, ft.Y, ft.W, ft.H, cropLeft, cropBottom, visibleHeight);
+                return WriteFreeText(page, ft, cropLeft, cropBottom, visibleHeight);
             default:
                 return false;
         }
@@ -449,28 +458,55 @@ public sealed class PdfAnnotationWriter
         }
     }
 
-    /// <summary>Writes a simple rect-bounded annotation (FreeText).</summary>
-    private static bool WriteRectShaped(IntPtr page, Annotation ann, int subtype,
-        float x, float y, float w, float h, float cropLeft, float cropBottom, double visibleHeight)
+    private const float DefaultFreeTextFontSize = 12f;
+
+    /// <summary>
+    /// Writes a FreeText ("typewriter") annotation. Unlike the rect/quad subtypes,
+    /// FreeText carries no geometry a viewer can synthesise an appearance from — it needs a
+    /// <c>/DA</c> (default appearance: font, size, colour) so a viewer can lay out the
+    /// <c>/Contents</c> text. PDFium creates the <c>/FreeText</c> object but never generates
+    /// the <c>/DA</c> (nor an <c>/AP</c>), which is why an authored FreeText was previously
+    /// invisible. We synthesise a minimal <c>/DA</c> referencing the standard Helvetica
+    /// (<c>/Helv</c>); the text colour lives there, not in <c>/C</c> (which would paint an
+    /// opaque background box). Viewers (Poppler, MuPDF, Acrobat) then synthesise the
+    /// appearance from <c>/DA</c> + <c>/Contents</c> — the same viewer-side-synthesis
+    /// contract the markup subtypes rely on (see <see cref="WriteTextMarkup"/>).
+    /// </summary>
+    private static bool WriteFreeText(IntPtr page, FreeTextAnnotation ft,
+        float cropLeft, float cropBottom, double visibleHeight)
     {
-        var annot = FPDFPage_CreateAnnot(page, subtype);
+        var annot = FPDFPage_CreateAnnot(page, FPDF_ANNOT_FREETEXT);
         if (annot == IntPtr.Zero) return false;
         try
         {
-            var color = ResolveColor(ann);
-            FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_COLOR, color.R, color.G, color.B, color.A);
-
-            var (lx, by) = PagePointToPdf(x, y + h, cropLeft, cropBottom, visibleHeight);
-            var (rx, ty) = PagePointToPdf(x + w, y, cropLeft, cropBottom, visibleHeight);
+            var (lx, by) = PagePointToPdf(ft.X, ft.Y + ft.H, cropLeft, cropBottom, visibleHeight);
+            var (rx, ty) = PagePointToPdf(ft.X + ft.W, ft.Y, cropLeft, cropBottom, visibleHeight);
             var rect = new FsRectF { Left = lx, Bottom = by, Right = rx, Top = ty };
             FPDFAnnot_SetRect(annot, ref rect);
-            ApplyCommonMetadata(annot, ann);
+
+            SetString(annot, "DA", BuildFreeTextDa(ft));
+
+            ApplyCommonMetadata(annot, ft);
             return true;
         }
         finally
         {
             FPDFPage_CloseAnnot(annot);
         }
+    }
+
+    /// <summary>
+    /// Builds a minimal FreeText <c>/DA</c> string: <c>/Helv &lt;size&gt; Tf &lt;r g b&gt; rg</c>.
+    /// The named font <c>/Helv</c> is a PDF standard font; viewers fall back to built-in
+    /// Helvetica when no AcroForm <c>/DR</c> resource is present, so no font embedding is needed.
+    /// </summary>
+    private static string BuildFreeTextDa(FreeTextAnnotation ft)
+    {
+        var c = ColorUtils.ParseHexColor(ft.Color, 255);
+        float r = c.R / 255f, g = c.G / 255f, b = c.B / 255f;
+        float size = ft.FontSize > 0 ? ft.FontSize : DefaultFreeTextFontSize;
+        return string.Create(CultureInfo.InvariantCulture,
+            $"/Helv {size:0.##} Tf {r:0.###} {g:0.###} {b:0.###} rg");
     }
 
     /// <summary>Applies a rect annotation's colour, fill, and border — shared by create and in-place edit.</summary>
