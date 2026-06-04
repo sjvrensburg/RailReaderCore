@@ -10,8 +10,11 @@ persistence model.
   solely for non-writable PDFs (read-only / signed / no write-permission) and as the
   migration source for existing users' sidecars. Never two parallel stores for a
   writable PDF.
-- **Bookmarks:** RailReader named bookmarks move into the PDF **name tree / outline**
-  (named destinations) so they travel with the file and appear in Acrobat.
+- **Bookmarks:** ~~move into the PDF name tree / outline~~ → **revised 2026-06-04: kept in a
+  thin bookmarks-only sidecar; PR 4 deferred.** PDFium has no write API for bookmarks /
+  named destinations / catalog (read-only `FPDFBookmark_*` / `FPDF_GetNamedDest` only), so
+  this would require fragile hand-rolled PDF surgery — and named destinations don't even
+  show in Acrobat's Bookmarks panel. Not worth the risk; the sidecar already works.
 - **Fidelity scope — academic markup set:** Highlight, Underline, StrikeOut, Squiggly,
   Caret, Text (sticky), FreeText, Ink, Square — plus reply threads (`/IRT`) and review
   states (Accepted/Rejected/Cancelled/Completed via `/State`+`/StateModel`). Any other
@@ -190,16 +193,20 @@ review threads.
 3. **`/RC` rich text** — preserve on read; minimal write (plain `/Contents` is enough
    for Acrobat to display; `/RC` regenerated from text).
 
-## PR 4 — Bookmarks → PDF named destinations
+## PR 4 — Bookmarks → PDF named destinations  ❌ DEFERRED (2026-06-04)
 
-Outcome: named bookmarks travel with the PDF and show in Acrobat; removes the last
-reason for a parallel sidecar on writable PDFs.
+**Deferred / descoped.** Bookmarks stay in the thin bookmarks-only sidecar that PR 2's
+`CompositeAnnotationStore` already writes (writable case: annots→PDF, bookmarks→sidecar;
+fallback case: both→sidecar). No code change needed — the design is already in place.
 
-1. Bind `FPDF_GetNamedDest*` (read) + a name-tree/outline writer (PDFium's bookmark
-   write surface is thin — may require manipulating the catalog `/Names`/`/Outlines`).
-2. Map `BookmarkEntry` ↔ named destination; migrate sidecar bookmarks on first open.
-3. Fallback: if the PDF isn't writable, bookmarks stay in the (now bookmarks-only)
-   sidecar.
+**Why deferred:** PDFium exposes **no write API** for bookmarks, named destinations, or the
+catalog — `nm -D libpdfium.so` shows only read APIs (`FPDFBookmark_*`, `FPDF_GetNamedDest`,
+`FPDFDest_*`) plus `FPDFCatalog_SetLanguage`. Putting bookmarks in the PDF would require
+hand-rolled PDF byte surgery (build a name tree / `/Outlines` + patch the catalog + append
+an xref, resolving page-object refs ourselves). And named destinations don't appear in
+Acrobat's Bookmarks panel anyway; the visible `/Outlines` would collide with the document
+TOC that `PdfOutlineService` already reads. Cost/benefit doesn't justify it — revisit only
+if a managed writer (e.g. PdfPig outline support) makes it cheap and safe.
 
 ## PR 5 — Migration + cleanup
 
