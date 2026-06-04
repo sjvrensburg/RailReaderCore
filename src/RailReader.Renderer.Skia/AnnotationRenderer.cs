@@ -34,7 +34,7 @@ public static class AnnotationRenderer
     [ThreadStatic] private static SKPath? s_previewFreehandPath;
 
     // Cached text note popup layout per thread — avoids WrapText + MeasureText every frame.
-    private sealed record NoteLayoutCache(TextNoteAnnotation Owner, string Text, List<string> Lines, float PopupW, float PopupH);
+    private sealed record NoteLayoutCache(TextNoteAnnotation Owner, string Body, List<string> Lines, float PopupW, float PopupH);
     [ThreadStatic] private static NoteLayoutCache? s_noteLayout;
 
     // Shared unit-size icon path for text notes — translated per note, never rebuilt.
@@ -332,8 +332,10 @@ public static class AnnotationRenderer
 
         canvas.Restore();
 
-        // Expanded popup
-        if ((note.IsExpanded || forceExpand) && !string.IsNullOrEmpty(note.Text))
+        // Expanded popup. Use the effective body (Contents for notes read from the PDF,
+        // the legacy Text field for RailReader-authored ones) — not Text alone, which is
+        // empty for Source.InPdf notes.
+        if ((note.IsExpanded || forceExpand) && !string.IsNullOrEmpty(note.EffectiveContents))
         {
             var font = s_noteFont ??= new SKFont(SKTypeface.Default, 9);
             var textPaint = s_noteTextPaint ??= new SKPaint { Color = new SKColor(0, 0, 0, 220), IsAntialias = true };
@@ -415,10 +417,11 @@ public static class AnnotationRenderer
     private static (List<string> Lines, float PopupW, float PopupH) GetOrComputeNoteLayout(
         TextNoteAnnotation note, SKFont font)
     {
-        if (s_noteLayout is { } cached && cached.Owner == note && cached.Text == note.Text)
+        string body = note.EffectiveContents;
+        if (s_noteLayout is { } cached && cached.Owner == note && cached.Body == body)
             return (cached.Lines, cached.PopupW, cached.PopupH);
 
-        var lines = WrapText(note.Text, font, PopupMaxWidth - PopupPadding * 2);
+        var lines = WrapText(body, font, PopupMaxWidth - PopupPadding * 2);
         float lineHeight = font.Size * 1.4f;
         float popupW = PopupPadding * 2;
         foreach (var line in lines)
@@ -429,7 +432,7 @@ public static class AnnotationRenderer
         popupW = Math.Min(popupW, PopupMaxWidth);
         float popupH = lines.Count * lineHeight + PopupPadding * 2;
 
-        s_noteLayout = new(note, note.Text, lines, popupW, popupH);
+        s_noteLayout = new(note, body, lines, popupW, popupH);
         return (lines, popupW, popupH);
     }
 

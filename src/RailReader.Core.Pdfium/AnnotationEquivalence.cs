@@ -13,9 +13,10 @@ internal static class AnnotationEquivalence
     private const float GeometryTolerance = 0.75f;
 
     /// <summary>The note/body text, treating a <see cref="TextNoteAnnotation"/>'s legacy
-    /// <c>Text</c> field as equivalent to <see cref="Annotation.Contents"/>.</summary>
-    internal static string EffectiveContents(Annotation ann)
-        => ann.Contents ?? (ann as TextNoteAnnotation)?.Text ?? "";
+    /// <c>Text</c> field as equivalent to <see cref="Annotation.Contents"/>. Delegates to
+    /// <see cref="Annotation.EffectiveContents"/> so the writer, equivalence, and renderer
+    /// share one definition.</summary>
+    internal static string EffectiveContents(Annotation ann) => ann.EffectiveContents;
 
     /// <summary>True when two annotations share colour, opacity, and (where applicable) fill
     /// and stroke width. Compares the display hex colour (consistent in read and write paths),

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.17.1 — sticky-note popup fix
+
+### Fixed
+
+- **Native PDF sticky notes rendered an empty popup (#34).** A `Text`
+  (sticky-note) annotation read from a PDF carries its comment in
+  `Annotation.Contents`, but `AnnotationRenderer.DrawTextNote` keyed entirely off
+  the legacy `TextNoteAnnotation.Text` field — empty for `Source.InPdf` notes — so
+  the on-canvas popup drew nothing even though the data was present. The render path
+  now uses the same effective-contents notion as the writer and equivalence checks.
+
+### Added
+
+- **`Annotation.EffectiveContents`** (virtual, `[JsonIgnore]`) — the single
+  cross-assembly definition of an annotation's display/round-trip body:
+  `Contents`, with `TextNoteAnnotation` falling back to its legacy `Text` field.
+  `AnnotationEquivalence.EffectiveContents` now delegates to it.
+
 ## 0.17.0 — native PDF annotations
 
 Annotations can now live **inside the PDF** (the document's own `/Annots`), so

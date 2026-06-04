@@ -103,6 +103,17 @@ public abstract class Annotation
     /// Print so RailReader-authored annotations remain printable.
     /// </summary>
     public int Flags { get; set; }
+
+    /// <summary>
+    /// The note/comment body to display and round-trip — <see cref="Contents"/>, or empty
+    /// string when unset. <see cref="TextNoteAnnotation"/> overrides this to fall back to its
+    /// legacy <see cref="TextNoteAnnotation.Text"/> field, so the read path (which fills
+    /// <see cref="Contents"/>) and the author path (which fills <c>Text</c>) present a single
+    /// body string to renderers, the writer, and equivalence checks. The single source of
+    /// truth for "effective contents" across all assemblies.
+    /// </summary>
+    [JsonIgnore]
+    public virtual string EffectiveContents => Contents ?? "";
 }
 
 /// <summary>Text-markup annotation anchored to one or more text quads (PDF QuadPoints).</summary>
@@ -131,6 +142,13 @@ public class TextNoteAnnotation : Annotation
     public float X { get; set; }
     public float Y { get; set; }
     public string Text { get; set; } = "";
+
+    /// <inheritdoc/>
+    /// <remarks>Falls back to the legacy <see cref="Text"/> field when <see cref="Annotation.Contents"/>
+    /// is null — notes read from a PDF carry the body in <c>/Contents</c>, while RailReader-authored
+    /// notes carry it in <c>Text</c>.</remarks>
+    [JsonIgnore]
+    public override string EffectiveContents => Contents ?? Text;
 
     [JsonIgnore]
     public bool IsExpanded { get; set; }
