@@ -140,13 +140,14 @@ AcroForm, and signatures.
    bookmarks to a thin sidecar until PR 4); read-only/signed/no-permission → authored annots
    + bookmarks to the sidecar with a one-time `OnSidecarFallback` signal. Signatures detected
    via `FPDF_GetSignatureCount` (cached); write-permission via a non-mutating open probe.
-   - **Remaining (verification, not a feature):** `/AP` fidelity — render a written highlight
-     and confirm it *shows* in Acrobat/external viewers, not just that it round-trips
-     structurally. RailReader's own viewer draws annots from the model, so this only affects
-     interop fidelity.
+4. ✅ **`/AP` fidelity verification** (commit a58bed4) — written annots carry no `/AP`
+   stream, but `AnnotationApFidelityTests` renders each subtype with Poppler + MuPDF
+   (independent of PDFium) and confirms highlight/underline/strikeout/squiggly/ink/square
+   all render correctly in both. No Acrobat needed; see [[reference-ap-fidelity-testing]].
+   FreeText (needs `/DA`+`/AP`) is the known exception, not authored by RailReader.
 
-**PR 2 is functionally complete** (read + write + reconcile + route). Next: a railreader2
-integration pass to confirm edits persist into the PDF end-to-end, then the `/AP` render check.
+**PR 2 is complete** (read + write + reconcile + route + fidelity-verified). Next: a railreader2
+integration pass to confirm edits persist into the PDF end-to-end.
 
 2. **Edit/delete semantics keyed on `/NM`** — update rewrites the matching annot in
    place; delete via `FPDFPage_RemoveAnnot`. New annots get a fresh UUID `/NM`.
