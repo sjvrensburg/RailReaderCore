@@ -14,8 +14,9 @@ public static class AnnotationGeometry
     {
         switch (annotation)
         {
-            case HighlightAnnotation h when h.Rects.Count > 0:
-                return ComputeRectsBounds(h.Rects);
+            // Highlight + Underline/StrikeOut/Squiggly all share QuadPoint rects.
+            case TextMarkupAnnotation m when m.Rects.Count > 0:
+                return ComputeRectsBounds(m.Rects);
             case FreehandAnnotation f when f.Points.Count > 0:
                 return ComputePointsBounds(f.Points);
             case TextNoteAnnotation t:
@@ -23,6 +24,10 @@ public static class AnnotationGeometry
                 return new RectF(t.X - half, t.Y - half, t.X + half, t.Y + half);
             case RectAnnotation r:
                 return new RectF(r.X, r.Y, r.X + r.W, r.Y + r.H);
+            case CaretAnnotation c:
+                return new RectF(c.X, c.Y, c.X + c.W, c.Y + c.H);
+            case FreeTextAnnotation ft:
+                return new RectF(ft.X, ft.Y, ft.X + ft.W, ft.Y + ft.H);
             default:
                 return null;
         }

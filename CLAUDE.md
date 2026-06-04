@@ -65,7 +65,7 @@ Before publishing, test against the desktop app (`railreader2`) since public API
 ```
 RailReaderCore.slnx
 ├── src/RailReader.Core/             ← Portable abstractions: models, controllers, interfaces. No PDFium, no ONNX, no filesystem, no non-system NuGet deps.
-├── src/RailReader.Core.Pdfium/      ← Desktop PDFium impls of IPdfTextService/IPdfLinkService/IPdfOutlineService + filesystem-backed AppConfig/AnnotationService/ConsoleLogger/LayoutModelLocator
+├── src/RailReader.Core.Pdfium/      ← Desktop PDFium impls of IPdfTextService/IPdfLinkService/IPdfOutlineService + filesystem-backed AppConfig/AnnotationService/ConsoleLogger/LayoutModelLocator + native PDF annotation read/write (PdfAnnotationReader/Writer/Store, CompositeAnnotationStore)
 ├── src/RailReader.Core.Analysis/    ← ONNX-backed ILayoutAnalyzer (PP-DocLayoutV3, PP-DocLayout-S, Docling Heron)
 ├── src/RailReader.Core.Vlm.OpenAI/  ← IVlmService impl for OpenAI-compatible chat-completions endpoints
 ├── src/RailReader.Renderer.Skia/    ← SkiaSharp rasterisation + IPdfServiceFactory (PDFium-backed)
@@ -98,7 +98,9 @@ Everything that touches the local filesystem or the PDFium native binary lives h
 
 **Invariant:** every PDFium call must happen inside `lock (PdfiumGate.Lock)`. The P/Invoke surface (`PdfiumNative` / `PdfiumGate` / `PdfiumResolver`) enforces serialization across threads — there is no other way to get safe concurrent rendering.
 
-`AppConfig` is the file-backed mutable config (`~/.config/railreader2/config.json`) and exposes `ToCoreSettings()` to bridge into Core. `RailReaderJsonContext` is the source-generated `JsonSerializerContext` for the only two types Core.Pdfium serialises (`AppConfig`, `AnnotationFile`).
+`AppConfig` is the file-backed mutable config (`~/.config/railreader2/config.json`) and exposes `ToCoreSettings()` to bridge into Core. `RailReaderJsonContext` is the source-generated `JsonSerializerContext` for the types Core.Pdfium serialises (`AppConfig` and `AnnotationFile`, the latter covering the polymorphic `Annotation` hierarchy).
+
+**Annotation storage.** `AnnotationService` is the JSON-sidecar `IAnnotationStore` (annotations in `~/.config/railreader2/annotations/`, keyed by PDF-path hash). For Acrobat-style interop, `CompositeAnnotationStore` instead makes the PDF's own `/Annots` the canonical store with the sidecar as a read-only/signed fallback: `PdfAnnotationReader` maps `/Annots` → Core models, `PdfAnnotationWriter` reconciles edits back in keyed by `/NM` (full `FPDF_SaveAsCopy` rewrite — *not* incremental, which corrupts the xref on linearised PDFs), and `PdfAnnotationStore` wraps both. Consumers opt in by injecting `CompositeAnnotationStore.Default` as their `IAnnotationStore` instead of `AnnotationService.Default`; the default `DocumentController` wiring is otherwise unchanged. **PDFium has no API to write bookmarks/named-destinations or generate appearance streams** — bookmarks stay in the sidecar, and written markup relies on viewer-side appearance synthesis (verified to render in Poppler/MuPDF; FreeText is the exception). Carets are read-only (PDFium can't create them).
 
 ### RailReader.Core.Analysis (ONNX-backed inference)
 
@@ -124,7 +126,7 @@ The only project that imports both `Core` and `Core.Pdfium`. `SkiaPdfServiceFact
 
 - Set `RailReaderLogging.Logger` once at startup (or accept the `NullLogger` default).
 - Construct `CoreSettings` from your config layer and pass it into `DocumentController`; on change, build a new `CoreSettings` and call `OnConfigChanged`.
-- Supply `IPdfServiceFactory`, `IAnnotationStore`, `IRecentFilesStore`. Desktop wires `SkiaPdfServiceFactory` + `AnnotationService` + `AppConfig`; a Lite/mobile consumer would substitute its own.
+- Supply `IPdfServiceFactory`, `IAnnotationStore`, `IRecentFilesStore`. Desktop wires `SkiaPdfServiceFactory` + `AppConfig` and either `AnnotationService` (sidecar) or `CompositeAnnotationStore.Default` (native PDF annotations); a Lite/mobile consumer would substitute its own.
 
 ## Key Concepts
 

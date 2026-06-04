@@ -9,11 +9,18 @@ internal static class PdfiumNative
 {
     private const string Lib = "pdfium";
 
+    // Library lifecycle. FPDF_InitLibrary is idempotent in PDFium (guarded by a
+    // global flag), so calling it is safe even when PDFtoImage has already
+    // initialised the library.
+    [DllImport(Lib)] internal static extern void FPDF_InitLibrary();
+
     // Document
     [DllImport(Lib)] internal static extern IntPtr FPDF_LoadMemDocument(IntPtr data, int size, string? password);
     [DllImport(Lib)] internal static extern void FPDF_CloseDocument(IntPtr document);
+    [DllImport(Lib)] internal static extern int FPDF_GetSignatureCount(IntPtr document);
 
     // Pages
+    [DllImport(Lib)] internal static extern int FPDF_GetPageCount(IntPtr document);
     [DllImport(Lib)] internal static extern IntPtr FPDF_LoadPage(IntPtr document, int pageIndex);
     [DllImport(Lib)] internal static extern void FPDF_ClosePage(IntPtr page);
     [DllImport(Lib)] internal static extern double FPDF_GetPageHeight(IntPtr page);
@@ -78,6 +85,12 @@ internal static class PdfiumNative
         [MarshalAs(UnmanagedType.LPStr)] string? pageRange, int insertIndex);
     [DllImport(Lib)] internal static extern bool FPDF_SaveAsCopy(
         IntPtr document, ref FpdfFileWrite fileWrite, uint flags);
+    [DllImport(Lib)] internal static extern bool FPDFPage_RemoveAnnot(IntPtr page, int index);
+
+    // FPDF_SaveAsCopy flags
+    internal const uint FPDF_INCREMENTAL = 1;
+    internal const uint FPDF_NO_INCREMENTAL = 2;
+    internal const uint FPDF_REMOVE_SECURITY = 3;
 
     // Annotation creation
     [DllImport(Lib)] internal static extern IntPtr FPDFPage_CreateAnnot(IntPtr page, int subtype);
@@ -95,11 +108,67 @@ internal static class PdfiumNative
     [DllImport(Lib)] internal static extern int FPDFAnnot_AddInkStroke(
         IntPtr annot, FsPointF[] points, nuint pointCount);
 
-    // Annotation subtype constants
+    // Annotation reading (PR 1 — view native annotations)
+    [DllImport(Lib)] internal static extern int FPDFPage_GetAnnotCount(IntPtr page);
+    [DllImport(Lib)] internal static extern IntPtr FPDFPage_GetAnnot(IntPtr page, int index);
+    [DllImport(Lib)] internal static extern int FPDFPage_GetAnnotIndex(IntPtr page, IntPtr annot);
+    [DllImport(Lib)] internal static extern int FPDFAnnot_GetSubtype(IntPtr annot);
+    [DllImport(Lib)] internal static extern int FPDFAnnot_GetFlags(IntPtr annot);
+    [DllImport(Lib)] internal static extern bool FPDFAnnot_GetRect(IntPtr annot, out FsRectF rect);
+    [DllImport(Lib)] internal static extern bool FPDFAnnot_GetColor(IntPtr annot, int colorType,
+        out uint r, out uint g, out uint b, out uint a);
+    [DllImport(Lib)] internal static extern bool FPDFAnnot_GetBorder(IntPtr annot,
+        out float horizontalRadius, out float verticalRadius, out float borderWidth);
+    [DllImport(Lib)] internal static extern nuint FPDFAnnot_CountAttachmentPoints(IntPtr annot);
+    [DllImport(Lib)] internal static extern bool FPDFAnnot_GetAttachmentPoints(IntPtr annot,
+        nuint quadIndex, out FsQuadPointsF quadPoints);
+    [DllImport(Lib)] internal static extern bool FPDFAnnot_HasKey(IntPtr annot,
+        [MarshalAs(UnmanagedType.LPStr)] string key);
+    [DllImport(Lib)] internal static extern uint FPDFAnnot_GetStringValue(IntPtr annot,
+        [MarshalAs(UnmanagedType.LPStr)] string key, IntPtr buffer, uint buflen);
+    [DllImport(Lib)] internal static extern bool FPDFAnnot_GetNumberValue(IntPtr annot,
+        [MarshalAs(UnmanagedType.LPStr)] string key, out float value);
+    [DllImport(Lib)] internal static extern int FPDFAnnot_GetInkListCount(IntPtr annot);
+    [DllImport(Lib)] internal static extern uint FPDFAnnot_GetInkListPath(IntPtr annot,
+        uint pathIndex, [Out] FsPointF[]? buffer, uint length);
+    [DllImport(Lib)] internal static extern IntPtr FPDFAnnot_GetLinkedAnnot(IntPtr annot,
+        [MarshalAs(UnmanagedType.LPStr)] string key);
+
+    /// <summary>
+    /// Reads a string-valued annotation entry (e.g. /Contents, /T, /M, /NM, /Subj)
+    /// and decodes PDFium's UTF-16LE buffer. Returns null when the key is absent or empty.
+    /// </summary>
+    internal static string? ReadAnnotString(IntPtr annot, string key)
+    {
+        // First call with a null buffer to learn the required length (UTF-16LE bytes,
+        // including the 2-byte NUL terminator).
+        uint len = FPDFAnnot_GetStringValue(annot, key, IntPtr.Zero, 0);
+        if (len <= 2) return null; // empty string is just the terminator
+
+        var buffer = Marshal.AllocHGlobal((int)len);
+        try
+        {
+            FPDFAnnot_GetStringValue(annot, key, buffer, len);
+            return Marshal.PtrToStringUni(buffer, (int)(len / 2) - 1);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    // Annotation subtype constants (PDFium FPDF_ANNOTATION_SUBTYPE)
     internal const int FPDF_ANNOT_TEXT = 1;
+    internal const int FPDF_ANNOT_LINK = 2;
+    internal const int FPDF_ANNOT_FREETEXT = 3;
     internal const int FPDF_ANNOT_SQUARE = 5;
     internal const int FPDF_ANNOT_HIGHLIGHT = 9;
+    internal const int FPDF_ANNOT_UNDERLINE = 10;
+    internal const int FPDF_ANNOT_SQUIGGLY = 11;
+    internal const int FPDF_ANNOT_STRIKEOUT = 12;
+    internal const int FPDF_ANNOT_CARET = 14;
     internal const int FPDF_ANNOT_INK = 15;
+    internal const int FPDF_ANNOT_POPUP = 16;
     internal const int FPDF_ANNOT_FLAG_PRINT = 4;
     internal const int FPDFANNOT_COLORTYPE_COLOR = 0;
     internal const int FPDFANNOT_COLORTYPE_INTERIOR = 1;
@@ -131,6 +200,17 @@ internal static class PdfiumNative
         float pointX, float pointY, float cropLeft, float cropBottom, double visibleHeight)
     {
         return (pointX + cropLeft, (float)(visibleHeight - pointY) + cropBottom);
+    }
+
+    /// <summary>
+    /// Inverse of <see cref="PagePointToPdf"/>: converts a point from PDF user space
+    /// (bottom-left origin, Y-up) back to page-point space (top-left origin, Y-down),
+    /// accounting for CropBox offset. Used when reading native annotation geometry.
+    /// </summary>
+    internal static (float PointX, float PointY) PdfPointToPage(
+        float pdfX, float pdfY, float cropLeft, float cropBottom, double visibleHeight)
+    {
+        return (pdfX - cropLeft, (float)(visibleHeight - (pdfY - cropBottom)));
     }
 
     // Text

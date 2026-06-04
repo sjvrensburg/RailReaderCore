@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Text;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
 using static RailReader.Core.Services.PdfiumNative;
@@ -7,14 +6,18 @@ using static RailReader.Core.Services.PdfiumNative;
 namespace RailReader.Renderer.Skia;
 
 /// <summary>
-/// Exports a PDF with annotations as native PDF annotation objects.
-/// Copies original pages verbatim (preserving vector content) and overlays
-/// highlights, ink strokes, rectangles, and text notes as proper PDF annotations.
+/// Exports a PDF with annotations baked into a flattened <b>new</b> document:
+/// copies the original pages verbatim (preserving vector content) and overlays the
+/// annotations as native PDF annotation objects. Per-annotation writing is delegated
+/// to <see cref="PdfAnnotationWriter"/> so geometry/metadata mapping has a single
+/// source of truth.
+///
+/// <para>For editing annotations <i>in place</i> (preserving the source document's own
+/// /Annots and AcroForm), use <see cref="PdfAnnotationWriter.AddAuthoredAnnotations"/>
+/// instead — this export path intentionally produces a separate, self-contained copy.</para>
 /// </summary>
 public static class AnnotationExportService
 {
-    private const float StickyNoteSize = 24f;
-
     public static void Export(
         IPdfService pdf,
         AnnotationFile annotations,
@@ -58,8 +61,12 @@ public static class AnnotationExportService
                         {
                             var (cropLeft, cropBottom, visibleHeight) = GetCropBoxTransform(page);
 
+                            // FPDF_ImportPages already copied the source page's native /Annots, so
+                            // only write the RailReader-authored ones — writing the InPdf ones too
+                            // would duplicate every native annotation in the exported file.
                             foreach (var ann in pageAnns)
-                                WriteAnnotation(page, ann, cropLeft, cropBottom, visibleHeight);
+                                if (ann.Source != AnnotationSource.InPdf)
+                                    PdfAnnotationWriter.WriteAnnotationToPage(page, ann, cropLeft, cropBottom, visibleHeight);
                         }
                         finally
                         {
@@ -79,193 +86,6 @@ public static class AnnotationExportService
             {
                 pinnedSrc.Free();
             }
-        }
-    }
-
-    private static void WriteAnnotation(IntPtr page, Annotation ann,
-        float cropLeft, float cropBottom, double visibleHeight)
-    {
-        switch (ann)
-        {
-            case HighlightAnnotation h:
-                WriteHighlight(page, h, cropLeft, cropBottom, visibleHeight);
-                break;
-            case FreehandAnnotation f:
-                WriteInk(page, f, cropLeft, cropBottom, visibleHeight);
-                break;
-            case RectAnnotation r:
-                WriteRect(page, r, cropLeft, cropBottom, visibleHeight);
-                break;
-            case TextNoteAnnotation tn:
-                WriteTextNote(page, tn, cropLeft, cropBottom, visibleHeight);
-                break;
-        }
-    }
-
-    private static void WriteHighlight(IntPtr page, HighlightAnnotation h,
-        float cropLeft, float cropBottom, double visibleHeight)
-    {
-        if (h.Rects.Count == 0) return;
-
-        var annot = FPDFPage_CreateAnnot(page, FPDF_ANNOT_HIGHLIGHT);
-        if (annot == IntPtr.Zero) return;
-
-        try
-        {
-            var color = ColorUtils.ParseHexColor(h.Color, (byte)(h.Opacity * 255));
-            FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_COLOR, color.R, color.G, color.B, color.A);
-            FPDFAnnot_SetFlags(annot, FPDF_ANNOT_FLAG_PRINT);
-
-            float minX = float.MaxValue, minY = float.MaxValue;
-            float maxX = float.MinValue, maxY = float.MinValue;
-
-            foreach (var rect in h.Rects)
-            {
-                var (lx, by) = PagePointToPdf(rect.X, rect.Y + rect.H, cropLeft, cropBottom, visibleHeight);
-                var (rx, ty) = PagePointToPdf(rect.X + rect.W, rect.Y, cropLeft, cropBottom, visibleHeight);
-
-                var quad = new FsQuadPointsF
-                {
-                    X1 = lx, Y1 = by,  // lower-left
-                    X2 = rx, Y2 = by,  // lower-right
-                    X3 = lx, Y3 = ty,  // upper-left
-                    X4 = rx, Y4 = ty,  // upper-right
-                };
-                FPDFAnnot_AppendAttachmentPoints(annot, ref quad);
-
-                minX = Math.Min(minX, lx);
-                minY = Math.Min(minY, by);
-                maxX = Math.Max(maxX, rx);
-                maxY = Math.Max(maxY, ty);
-            }
-
-            var boundingRect = new FsRectF { Left = minX, Bottom = minY, Right = maxX, Top = maxY };
-            FPDFAnnot_SetRect(annot, ref boundingRect);
-        }
-        finally
-        {
-            FPDFPage_CloseAnnot(annot);
-        }
-    }
-
-    private static void WriteInk(IntPtr page, FreehandAnnotation f,
-        float cropLeft, float cropBottom, double visibleHeight)
-    {
-        if (f.Points.Count < 2) return;
-
-        var annot = FPDFPage_CreateAnnot(page, FPDF_ANNOT_INK);
-        if (annot == IntPtr.Zero) return;
-
-        try
-        {
-            var color = ColorUtils.ParseHexColor(f.Color, (byte)(f.Opacity * 255));
-            FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_COLOR, color.R, color.G, color.B, color.A);
-            FPDFAnnot_SetBorder(annot, 0, 0, f.StrokeWidth);
-            FPDFAnnot_SetFlags(annot, FPDF_ANNOT_FLAG_PRINT);
-
-            var pdfPoints = new FsPointF[f.Points.Count];
-            float minX = float.MaxValue, minY = float.MaxValue;
-            float maxX = float.MinValue, maxY = float.MinValue;
-
-            for (int i = 0; i < f.Points.Count; i++)
-            {
-                var (px, py) = PagePointToPdf(f.Points[i].X, f.Points[i].Y, cropLeft, cropBottom, visibleHeight);
-                pdfPoints[i] = new FsPointF { X = px, Y = py };
-                minX = Math.Min(minX, px);
-                minY = Math.Min(minY, py);
-                maxX = Math.Max(maxX, px);
-                maxY = Math.Max(maxY, py);
-            }
-
-            FPDFAnnot_AddInkStroke(annot, pdfPoints, (nuint)pdfPoints.Length);
-
-            float pad = f.StrokeWidth / 2f;
-            var boundingRect = new FsRectF
-            {
-                Left = minX - pad, Bottom = minY - pad,
-                Right = maxX + pad, Top = maxY + pad,
-            };
-            FPDFAnnot_SetRect(annot, ref boundingRect);
-        }
-        finally
-        {
-            FPDFPage_CloseAnnot(annot);
-        }
-    }
-
-    private static void WriteRect(IntPtr page, RectAnnotation ra,
-        float cropLeft, float cropBottom, double visibleHeight)
-    {
-        var annot = FPDFPage_CreateAnnot(page, FPDF_ANNOT_SQUARE);
-        if (annot == IntPtr.Zero) return;
-
-        try
-        {
-            var color = ColorUtils.ParseHexColor(ra.Color, (byte)(ra.Opacity * 255));
-
-            if (ra.Filled)
-            {
-                FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_INTERIOR, color.R, color.G, color.B, color.A);
-                FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_COLOR, color.R, color.G, color.B, color.A);
-            }
-            else
-            {
-                FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_COLOR, color.R, color.G, color.B, 255);
-            }
-
-            FPDFAnnot_SetBorder(annot, 0, 0, ra.StrokeWidth);
-            FPDFAnnot_SetFlags(annot, FPDF_ANNOT_FLAG_PRINT);
-
-            var (lx, by) = PagePointToPdf(ra.X, ra.Y + ra.H, cropLeft, cropBottom, visibleHeight);
-            var (rx, ty) = PagePointToPdf(ra.X + ra.W, ra.Y, cropLeft, cropBottom, visibleHeight);
-
-            var rect = new FsRectF { Left = lx, Bottom = by, Right = rx, Top = ty };
-            FPDFAnnot_SetRect(annot, ref rect);
-        }
-        finally
-        {
-            FPDFPage_CloseAnnot(annot);
-        }
-    }
-
-    private static void WriteTextNote(IntPtr page, TextNoteAnnotation tn,
-        float cropLeft, float cropBottom, double visibleHeight)
-    {
-        var annot = FPDFPage_CreateAnnot(page, FPDF_ANNOT_TEXT);
-        if (annot == IntPtr.Zero) return;
-
-        try
-        {
-            var color = ColorUtils.ParseHexColor(tn.Color, (byte)(tn.Opacity * 255));
-            FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_COLOR, color.R, color.G, color.B, color.A);
-            FPDFAnnot_SetFlags(annot, FPDF_ANNOT_FLAG_PRINT);
-
-            var (px, py) = PagePointToPdf(tn.X, tn.Y, cropLeft, cropBottom, visibleHeight);
-
-            var rect = new FsRectF
-            {
-                Left = px, Bottom = py - StickyNoteSize,
-                Right = px + StickyNoteSize, Top = py,
-            };
-            FPDFAnnot_SetRect(annot, ref rect);
-
-            if (!string.IsNullOrEmpty(tn.Text))
-            {
-                var utf16Bytes = Encoding.Unicode.GetBytes(tn.Text + "\0");
-                var pinnedText = GCHandle.Alloc(utf16Bytes, GCHandleType.Pinned);
-                try
-                {
-                    FPDFAnnot_SetStringValue(annot, "Contents", pinnedText.AddrOfPinnedObject());
-                }
-                finally
-                {
-                    pinnedText.Free();
-                }
-            }
-        }
-        finally
-        {
-            FPDFPage_CloseAnnot(annot);
         }
     }
 

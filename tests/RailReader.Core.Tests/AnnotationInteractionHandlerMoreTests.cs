@@ -137,6 +137,25 @@ public class AnnotationInteractionHandlerMoreTests : IDisposable
     }
 
     [Fact]
+    public void BrowseDrag_UnderlineMarkup_MovesRects()
+    {
+        // #15: text-markup subtypes (Underline/StrikeOut/Squiggly) must be movable.
+        var underline = new UnderlineAnnotation { Rects = [new HighlightRect(100, 100, 60, 14)], Color = "#FF0000" };
+        _doc.AddAnnotation(0, underline);
+        _doc.UndoStack.Clear();
+
+        Assert.True(_handler.HandleBrowsePointerDown(_doc, 120, 107)); // inside the markup rect
+        Assert.Same(underline, _handler.SelectedAnnotation);
+
+        _handler.HandleBrowsePointerMove(140, 127);
+        _handler.HandleBrowsePointerUp(_doc, 140, 127);
+
+        Assert.True(underline.Rects[0].X > 100f);
+        Assert.True(underline.Rects[0].Y > 100f);
+        Assert.NotEmpty(_doc.UndoStack);
+    }
+
+    [Fact]
     public void BrowsePointerDown_MissesAnnotation_ReturnsFalse()
     {
         AddRect(100, 100, 50, 40);

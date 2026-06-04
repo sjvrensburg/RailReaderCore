@@ -510,16 +510,24 @@ public sealed class AnnotationInteractionHandler
                 for (int i = 0; i < f.Points.Count && i < original.Points.Count; i++)
                     f.Points[i] = new PointF(original.Points[i].X + dx, original.Points[i].Y + dy);
                 break;
-            case HighlightAnnotation h when original.Rects is not null:
-                for (int i = 0; i < h.Rects.Count && i < original.Rects.Count; i++)
+            case TextMarkupAnnotation m when original.Rects is not null:
+                for (int i = 0; i < m.Rects.Count && i < original.Rects.Count; i++)
                 {
                     var or = original.Rects[i];
-                    h.Rects[i] = new HighlightRect(or.X + dx, or.Y + dy, or.W, or.H);
+                    m.Rects[i] = new HighlightRect(or.X + dx, or.Y + dy, or.W, or.H);
                 }
                 break;
             case RectAnnotation r:
                 r.X = original.X + dx;
                 r.Y = original.Y + dy;
+                break;
+            case CaretAnnotation c:
+                c.X = original.X + dx;
+                c.Y = original.Y + dy;
+                break;
+            case FreeTextAnnotation ft:
+                ft.X = original.X + dx;
+                ft.Y = original.Y + dy;
                 break;
         }
     }
