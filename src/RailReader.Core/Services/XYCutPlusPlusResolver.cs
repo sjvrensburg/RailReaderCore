@@ -171,6 +171,18 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     /// </summary>
     public const float MergeBarrierWidthFraction = 0.55f;
 
+    /// <summary>
+    /// A block whose width is at least this fraction of its <i>region</i> width,
+    /// and which vertically overlaps nothing else in the region, is a full-width
+    /// horizontal divider (title, figure, caption). When such a block sits at the
+    /// top extreme of a region that is about to be column-split, it is peeled into
+    /// the reading stream first — a divider straddles the gutter, so the column
+    /// split would otherwise assign it to whichever column its centre falls in
+    /// (e.g. a figure caption landing mid-stream between the two columns instead
+    /// of with the figure above them).
+    /// </summary>
+    public const float DividerWidthFraction = 0.55f;
+
     private readonly ReadingDirection _direction;
     private readonly bool _mergeAdjacent;
 
@@ -453,6 +465,27 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         var splitX = FindColumnSplit(blocks);
         if (splitX is float sx)
         {
+            // A full-width horizontal divider at the TOP extreme (title / figure /
+            // caption) straddles the gutter, so the centre-partition below would
+            // assign it to whichever column its centre falls in — stranding e.g. a
+            // figure caption between the two columns instead of keeping it with
+            // the figure above. Peel it into the stream by its Y position first,
+            // then column-split the rest. Scoped to the column-split branch so
+            // single-column and figure-grid pages (which never reach here) are
+            // untouched. Only the top is peeled: a bottom divider (footnote band)
+            // already reads last via the large horizontal gap above it, and
+            // peeling it can remove that gap and destabilise the sub-region.
+            float regWidth = blocks.Max(b => b.BBox.X + b.BBox.W) - blocks.Min(b => b.BBox.X);
+            var topMost = blocks[0];
+            foreach (var b in blocks)
+                if (b.BBox.Y < topMost.BBox.Y) topMost = b;
+            if (IsFullWidthDivider(topMost, blocks, regWidth))
+            {
+                output.Add(topMost);
+                Cut(Except(blocks, topMost), output, charBoxes);
+                return;
+            }
+
             // Partition by block centre: for a clean (straddler-validated) split
             // no block crosses sx so this matches edge-based partition exactly;
             // for a projection split a crosser is assigned to its majority side.
@@ -550,6 +583,32 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
                 if (YOverlap(blocks[i].BBox, blocks[j].BBox) && !XOverlap(blocks[i].BBox, blocks[j].BBox))
                     return true;
         return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="b"/> spans at least <see cref="DividerWidthFraction"/>
+    /// of the region width and vertically overlaps no other block in the region —
+    /// i.e. it occupies its own horizontal band and therefore divides the region
+    /// rather than belonging to a column. See <see cref="DividerWidthFraction"/>.
+    /// </summary>
+    private static bool IsFullWidthDivider(LayoutBlock b, List<LayoutBlock> blocks, float regWidth)
+    {
+        if (regWidth <= 0 || b.BBox.W < DividerWidthFraction * regWidth) return false;
+        foreach (var c in blocks)
+        {
+            if (ReferenceEquals(c, b)) continue;
+            if (YOverlap(b.BBox, c.BBox)) return false;
+        }
+        return true;
+    }
+
+    /// <summary>All blocks except <paramref name="exclude"/> (reference equality), order preserved.</summary>
+    private static List<LayoutBlock> Except(List<LayoutBlock> blocks, LayoutBlock exclude)
+    {
+        var rest = new List<LayoutBlock>(blocks.Count - 1);
+        foreach (var b in blocks)
+            if (!ReferenceEquals(b, exclude)) rest.Add(b);
+        return rest;
     }
 
     // ---------------------------------------------------------------------

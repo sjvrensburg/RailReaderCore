@@ -162,8 +162,11 @@ public class XYCutPlusPlusResolverTests
         var order = blocks.Select(Id).ToList();
         int Pos(string tag) => order.IndexOf(tag.GetHashCode());
 
-        // Figure is full-width top matter — it reads first.
+        // Full-width top matter reads first, in top-to-bottom order: the figure
+        // then its caption (the divider peel keeps the caption with the figure
+        // rather than stranding it at the column boundary).
         Assert.Equal(0, Pos("FIG"));
+        Assert.Equal(1, Pos("CAP"));
         // Each column reads strictly top-to-bottom (no zig-zag within a column).
         Assert.True(Pos("L0") < Pos("L1") && Pos("L1") < Pos("L2") && Pos("L2") < Pos("L3"));
         Assert.True(Pos("R0") < Pos("R1") && Pos("R1") < Pos("R2") && Pos("R2") < Pos("R3"));
