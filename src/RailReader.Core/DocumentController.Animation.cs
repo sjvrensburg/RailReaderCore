@@ -142,6 +142,8 @@ public sealed partial class DocumentController
         }
         overlayChanged = true;
         cameraChanged = true;
+        if (adv is LineAdvanceResult.LineAdvanced or LineAdvanceResult.PageChanged)
+            FireReadingPositionChanged();
     }
 
     /// <summary>Auto-scroll tick: advance along the current line, then advance to the next line/page.</summary>
@@ -199,6 +201,7 @@ public sealed partial class DocumentController
                         bool enteredNewBlock = doc.Rail.CurrentBlock != prevBlock;
                         doc.Rail.PauseAutoScroll(enteredNewChunk ? GetBlockEntryPause(doc) : 0,
                             resetDwell: enteredNewBlock);
+                        FireReadingPositionChanged();
                         break;
                 }
                 overlayChanged = true;
@@ -237,8 +240,7 @@ public sealed partial class DocumentController
                 if (doc.IsDisposed || doc.FilePath != result.FilePath) continue;
 
                 doc.SetAnalysis(result.Page, result.Analysis);
-
-                if (doc.CurrentPage != result.Page)
+                AnalysisPageReady?.Invoke(result.Page);
                     continue;
 
                 if (doc.PendingRailSetup)

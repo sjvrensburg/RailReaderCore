@@ -1,3 +1,4 @@
+using RailReader.Core.Commands;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
 using Xunit;
@@ -129,6 +130,26 @@ public class DocumentControllerTests : IDisposable
     {
         var (ww, wh) = _controller.GetViewportSize();
         TestFixtures.SetupRailMode(doc, _controller.Config, ww, wh);
+    }
+
+    private void SetupMultiBlockRailMode(DocumentState doc, params (BlockRole Role, BBox BBox)[] blocks)
+    {
+        var analysis = new PageAnalysis();
+        for (int i = 0; i < blocks.Length; i++)
+        {
+            var (role, bbox) = blocks[i];
+            var block = new LayoutBlock
+            {
+                Role = role, BBox = bbox, Confidence = 0.9f, Order = i,
+            };
+            block.Lines.Add(new LineInfo(bbox.Y + 10, 16, bbox.X, bbox.W));
+            analysis.Blocks.Add(block);
+        }
+        doc.SetAnalysis(doc.CurrentPage, analysis);
+        var (ww, wh) = _controller.GetViewportSize();
+        doc.Rail.SetAnalysis(analysis, _controller.Config.NavigableRoles);
+        doc.Camera.Zoom = _controller.Config.RailZoomThreshold + 1;
+        doc.Rail.UpdateZoom(doc.Camera.Zoom, doc.Camera.OffsetX, doc.Camera.OffsetY, ww, wh);
     }
 
     // --- New tests ---
@@ -510,5 +531,245 @@ public class DocumentControllerTests : IDisposable
 
         var (handled, _) = _controller.HandleClick(500, 500);
         Assert.False(handled);
+    }
+
+    // --- Agent API: GetReadingPosition ---
+
+    [Fact]
+    public void GetReadingPosition_NoDocument_ReturnsNull()
+    {
+        Assert.Null(_controller.GetReadingPosition());
+    }
+
+    [Fact]
+    public void GetReadingPosition_NoRailMode_ReturnsNull()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+
+        // Zoom is below rail threshold — no rail mode
+        Assert.Null(_controller.GetReadingPosition());
+    }
+
+    [Fact]
+    public void GetReadingPosition_WithRailMode_ReturnsPosition()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupRailMode(state);
+
+        var pos = _controller.GetReadingPosition();
+        Assert.NotNull(pos);
+        Assert.Equal(0, pos.Page);
+        Assert.Equal(0, pos.BlockIndex);
+        Assert.Equal(0, pos.LineIndex);
+        Assert.Equal(BlockRole.Text, pos.Role);
+        Assert.NotEqual(default, pos.BlockBBox);
+    }
+
+    [Fact]
+    public void GetReadingPosition_AfterArrowDown_AdvancesLine()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupRailMode(state);
+
+        Assert.Equal(0, _controller.GetReadingPosition()!.LineIndex);
+
+        _controller.HandleArrowDown();
+        Assert.Equal(1, _controller.GetReadingPosition()!.LineIndex);
+    }
+
+    // --- Agent API: GetPageDescription ---
+
+    [Fact]
+    public void GetPageDescription_NoDocument_ReturnsNull()
+    {
+        Assert.Null(_controller.GetPageDescription());
+    }
+
+    [Fact]
+    public void GetPageDescription_NoAnalysis_ReturnsNull()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+
+        // No analysis injected — should return null
+        Assert.Null(_controller.GetPageDescription());
+    }
+
+    [Fact]
+    public void GetPageDescription_WithAnalysis_ReturnsBlocks()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupRailMode(state);
+
+        var desc = _controller.GetPageDescription();
+        Assert.NotNull(desc);
+        Assert.Equal(0, desc.Page);
+        Assert.Equal(1, desc.TotalBlocks);
+        Assert.Single(desc.Blocks);
+        Assert.Equal(BlockRole.Text, desc.Blocks[0].Role);
+        Assert.Equal(0, desc.Blocks[0].ReadingOrder);
+    }
+
+    // --- Agent API: NavigateToRole ---
+
+    [Fact]
+    public void NavigateToRole_NoDocument_ReturnsFalse()
+    {
+        Assert.False(_controller.NavigateToRole(BlockRole.Text));
+    }
+
+    [Fact]
+    public void NavigateToRole_NoRailMode_ReturnsFalse()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+
+        Assert.False(_controller.NavigateToRole(BlockRole.Text));
+    }
+
+    [Fact]
+    public void NavigateToRole_TargetNotFound_ReturnsFalse()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupRailMode(state);
+
+        // Only block is Text; searching for Heading should fail
+        Assert.False(_controller.NavigateToRole(BlockRole.Heading));
+    }
+
+    [Fact]
+    public void NavigateToRole_TargetFound_NavigatesAndSnaps()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupMultiBlockRailMode(state,
+            (BlockRole.Text, new BBox(72, 72, 468, 200)),
+            (BlockRole.Heading, new BBox(72, 300, 468, 100)),
+            (BlockRole.Text, new BBox(72, 420, 468, 200)));
+
+        // Start at first block (Text, index 0)
+        Assert.Equal(BlockRole.Text, _controller.GetReadingPosition()!.Role);
+
+        // Navigate to next Heading
+        bool found = _controller.NavigateToRole(BlockRole.Heading);
+        Assert.True(found);
+
+        var pos = _controller.GetReadingPosition();
+        Assert.NotNull(pos);
+        Assert.Equal(BlockRole.Heading, pos.Role);
+    }
+
+    [Fact]
+    public void NavigateToRole_Backward_NavigatesBackward()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupMultiBlockRailMode(state,
+            (BlockRole.Text, new BBox(72, 72, 468, 200)),
+            (BlockRole.Heading, new BBox(72, 300, 468, 100)),
+            (BlockRole.Text, new BBox(72, 420, 468, 200)));
+
+        // Navigate forward to Heading
+        _controller.NavigateToRole(BlockRole.Heading);
+        Assert.Equal(BlockRole.Heading, _controller.GetReadingPosition()!.Role);
+
+        // Navigate backward to Text
+        bool found = _controller.NavigateToRole(BlockRole.Text, forward: false);
+        Assert.True(found);
+        Assert.Equal(BlockRole.Text, _controller.GetReadingPosition()!.Role);
+    }
+
+    // --- Agent API: Events ---
+
+    [Fact]
+    public void PageChanged_FiredOnGoToPage()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+
+        int? receivedPage = null;
+        _controller.PageChanged = page => receivedPage = page;
+
+        _controller.GoToPage(1);
+        Assert.Equal(1, receivedPage);
+    }
+
+    [Fact]
+    public void ReadingPositionChanged_FiredOnArrowDown()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupRailMode(state);
+
+        ReadingPosition? received = null;
+        _controller.ReadingPositionChanged = pos => received = pos;
+
+        _controller.HandleArrowDown();
+
+        Assert.NotNull(received);
+        Assert.Equal(1, received.LineIndex);
+        Assert.Equal(BlockRole.Text, received.Role);
+    }
+
+    [Fact]
+    public void ReadingPositionChanged_FiredOnClick()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupRailMode(state);
+
+        var block = state.Rail.CurrentNavigableBlock;
+        double pageX = block.BBox.X + block.BBox.W / 2;
+        double pageY = block.BBox.Y + block.BBox.H / 2;
+        double canvasX = pageX * state.Camera.Zoom + state.Camera.OffsetX;
+        double canvasY = pageY * state.Camera.Zoom + state.Camera.OffsetY;
+
+        ReadingPosition? received = null;
+        _controller.ReadingPositionChanged = pos => received = pos;
+
+        _controller.HandleClick(canvasX, canvasY);
+
+        Assert.NotNull(received);
+        Assert.Equal(BlockRole.Text, received.Role);
+    }
+
+    [Fact]
+    public void AnalysisPageReady_CanBeSubscribed()
+    {
+        int? receivedPage = null;
+        _controller.AnalysisPageReady = page => receivedPage = page;
+
+        // Worker is null in tests, so PollAnalysisResults is a no-op
+        _controller.PollAnalysisResults();
+        Assert.Null(receivedPage);
     }
 }

@@ -74,6 +74,15 @@ public sealed partial class DocumentController : IDisposable
     /// </summary>
     public Action<string>? StatusMessage;
 
+    /// <summary>Fired when the active document's page changes. Parameter = new page index.</summary>
+    public Action<int>? PageChanged;
+
+    /// <summary>Fired when the reading position (block/line) changes in rail mode.</summary>
+    public Action<ReadingPosition>? ReadingPositionChanged;
+
+    /// <summary>Fired when analysis completes for a page. Parameter = page index.</summary>
+    public Action<int>? AnalysisPageReady;
+
     public DocumentController(CoreSettings config, IRecentFilesStore recentFiles,
         IAnnotationStore annotationStore, IThreadMarshaller marshaller,
         IPdfServiceFactory pdfFactory, ILogger? logger = null)
@@ -331,6 +340,7 @@ public sealed partial class DocumentController : IDisposable
         }
         doc.QueueLookahead(_config.AnalysisLookaheadPages);
         Search.UpdateCurrentPageMatches();
+        PageChanged?.Invoke(doc.CurrentPage);
     }
 
     private void NotifyRenderFailed(int page)
@@ -508,6 +518,11 @@ public sealed partial class DocumentController : IDisposable
 
     // --- Query methods (for agent / headless use) ---
 
+    private DocumentState? ResolveDocument(int? index) =>
+        index.HasValue && index.Value >= 0 && index.Value < Documents.Count
+            ? Documents[index.Value]
+            : ActiveDocument;
+
     public DocumentList ListDocuments()
     {
         var summaries = Documents.Select((d, i) => new DocumentSummary(
@@ -517,9 +532,7 @@ public sealed partial class DocumentController : IDisposable
 
     public DocumentInfo? GetDocumentInfo(int? index = null)
     {
-        var doc = index.HasValue && index.Value >= 0 && index.Value < Documents.Count
-            ? Documents[index.Value]
-            : ActiveDocument;
+        var doc = ResolveDocument(index);
         if (doc is null) return null;
 
         return new DocumentInfo(
@@ -531,5 +544,101 @@ public sealed partial class DocumentController : IDisposable
 
     public SearchResult GetSearchState() => Search.GetSearchState();
 
+    /// <summary>
+    /// Returns the current reading position (page, block, line, text, geometry)
+    /// for the active or specified document. Returns null if no document or rail
+    /// mode is not active.
+    /// </summary>
+    public ReadingPosition? GetReadingPosition(int? index = null)
+    {
+        var doc = ResolveDocument(index);
+        if (doc is null || !doc.Rail.Active || !doc.Rail.HasAnalysis) return null;
 
+        var block = doc.Rail.CurrentNavigableBlock;
+        var line = doc.Rail.CurrentLineInfo;
+        string blockText = "";
+        string lineText = "";
+        if (doc.TextCache.TryGetValue(doc.CurrentPage, out var pageText))
+        {
+            blockText = pageText.ExtractBlockText(block);
+            lineText = pageText.ExtractTextInRect(
+                line.X, line.Y, line.X + line.Width, line.Y + line.Height) ?? "";
+        }
+        return new ReadingPosition(
+            doc.CurrentPage, doc.Rail.CurrentBlock, doc.Rail.CurrentLine,
+            block.Role, blockText, lineText, block.BBox);
+    }
+
+    /// <summary>
+    /// Returns an accessible description of a page's layout: all blocks with
+    /// semantic roles, text previews, and reading order. Uses the current page
+    /// if <paramref name="page"/> is null.
+    /// </summary>
+    public PageDescription? GetPageDescription(int? page = null)
+    {
+        if (ActiveDocument is not { } doc) return null;
+        int targetPage = page ?? doc.CurrentPage;
+        if (targetPage < 0 || targetPage >= doc.PageCount) return null;
+        if (!doc.AnalysisCache.TryGetValue(targetPage, out var analysis)) return null;
+
+        PageText? pageText = doc.TextCache.TryGetValue(targetPage, out var pt) ? pt : null;
+        var blocks = new List<BlockSummary>(analysis.Blocks.Count);
+        for (int i = 0; i < analysis.Blocks.Count; i++)
+        {
+            var block = analysis.Blocks[i];
+            string preview = "";
+            if (pageText is not null)
+            {
+                var full = pageText.ExtractBlockText(block);
+                preview = full.Length > 200 ? full[..200] + "…" : full;
+            }
+            blocks.Add(new BlockSummary(i, block.Role, preview, block.BBox, block.Order));
+        }
+        return new PageDescription(targetPage, analysis.Blocks.Count, blocks);
+    }
+
+    /// <summary>
+    /// Navigates to the next (or previous) navigable block with the given
+    /// <paramref name="target"/> role on the current page. Returns true if found.
+    /// </summary>
+    public bool NavigateToRole(BlockRole target, bool forward = true)
+    {
+        if (ActiveDocument is not { } doc) return false;
+        if (!doc.Rail.Active || !doc.Rail.HasAnalysis) return false;
+        if (!_config.NavigableRoles.Contains(target)) return false;
+
+        var analysis = doc.Rail.Analysis;
+        if (analysis is null) return false;
+
+        var current = doc.Rail.CurrentNavigableBlock;
+        var navigable = analysis.Blocks
+            .Where(b => _config.NavigableRoles.Contains(b.Role))
+            .OrderBy(b => b.Order)
+            .ToList();
+
+        int currentIdx = navigable.FindIndex(b => ReferenceEquals(b, current));
+        if (currentIdx < 0) return false;
+
+        int step = forward ? 1 : -1;
+        for (int i = currentIdx + step; forward ? i < navigable.Count : i >= 0; i += step)
+        {
+            if (navigable[i].Role != target) continue;
+            var tb = navigable[i];
+            double px = tb.BBox.X + tb.BBox.W / 2.0;
+            double py = tb.BBox.Y + tb.BBox.H / 2.0;
+            doc.Rail.FindBlockNearPoint(px, py);
+            var (ww, wh) = GetViewportSize();
+            doc.StartSnap(ww, wh);
+            FireReadingPositionChanged();
+            return true;
+        }
+        return false;
+    }
+
+    private void FireReadingPositionChanged()
+    {
+        if (ReadingPositionChanged is null) return;
+        var pos = GetReadingPosition();
+        if (pos is { } p) ReadingPositionChanged(p);
+    }
 }

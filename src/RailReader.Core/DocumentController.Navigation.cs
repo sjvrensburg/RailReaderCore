@@ -137,6 +137,11 @@ public sealed partial class DocumentController
                 // During autoscroll: pause until snap completes + line pause, then resume
                 if (AutoScrollActive)
                     doc.Rail.PauseAutoScroll(_config.AutoScrollLinePauseMs);
+                FireReadingPositionChanged();
+            }
+            else if (adv == LineAdvanceResult.PageChanged)
+            {
+                FireReadingPositionChanged();
             }
         }
         else
@@ -273,6 +278,7 @@ public sealed partial class DocumentController
         doc.Rail.FindBlockNearPoint(pageX, pageY);
         var (ww2, wh2) = GetViewportSize();
         doc.StartSnap(ww2, wh2);
+        FireReadingPositionChanged();
         return (true, null);
     }
 
