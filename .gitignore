@@ -1,6 +1,9 @@
 # .NET build artifacts
 bin/
 obj/
+
+# NuGet pack output (dotnet pack -o dist/)
+dist/
 *.user
 *.suo
 .vs/
