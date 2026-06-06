@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.19.0 — agent / automation API surface
+
+Adds a headless, agent-drivable surface to `DocumentController`: structured query
+methods, observable navigation events, and an accessible page description. Mostly
+**additive**, with one breaking signature change called out below.
+
+### Added
+
+- **Query methods** for agents / screen readers: `GetReadingPosition(int? index)`
+  → `ReadingPosition` (page, block index, line index, role, block/line text,
+  geometry), `GetPageDescription(int? index, int? page)` → `PageDescription` (all
+  blocks with roles, text previews, reading order), and the supporting records
+  `ReadingPosition` / `BlockSummary` / `PageDescription` in `RailReader.Core.Commands`.
+  `ReadingPosition.BlockIndex` is the page-level block index, so it correlates
+  directly with `BlockSummary.Index`.
+- **`NavigateToRole(BlockRole, bool forward = true)`** — jumps the rail cursor to the
+  next/previous navigable block of a given role on the current page, landing on the
+  block's first line. Backed by the new `RailNav.TryNavigateToRole`.
+- **Observable events** `PageChanged` (`Action<int>`), `ReadingPositionChanged`
+  (`Action<ReadingPosition>`, payload carries position/geometry only — text fields
+  are empty by design; call `GetReadingPosition()` for text), and `AnalysisPageReady`
+  (`Action<int>`, fires once per completed page of an open document).
+- **`PageText.ExtractBlockText(LayoutBlock, int maxChars, out bool truncated)`** — a
+  bounded preview extractor; `truncated` reflects the real content length, not the
+  trimmed preview length.
+- `docs/agent-api.md` documents the surface.
+
+### Breaking
+
+- **`DocumentController.PollAnalysisResults()`** return type changed from
+  `(bool GotResults, bool NeedsAnimation)` to
+  `(bool GotResults, bool NeedsAnimation, bool PageChanged)`. Consumers that
+  destructured the 2-tuple must add the third element.
+
 ## 0.18.1 — straight markup baselines
 
 ### Fixed

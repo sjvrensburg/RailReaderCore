@@ -333,6 +333,7 @@ public sealed partial class DocumentController : IDisposable
         _zoom.Cancel();
         if (ActiveDocument is not { } doc) return;
         var (ww, wh) = GetViewportSize();
+        int prevPage = doc.CurrentPage;
         if (!doc.GoToPage(page, _worker, _config.NavigableRoles, ww, wh))
         {
             NotifyRenderFailed(page);
@@ -340,7 +341,10 @@ public sealed partial class DocumentController : IDisposable
         }
         doc.QueueLookahead(_config.AnalysisLookaheadPages);
         Search.UpdateCurrentPageMatches();
-        PageChanged?.Invoke(doc.CurrentPage);
+        // DocumentState.GoToPage returns true without changing anything when the
+        // target clamps to the current page; only announce a real transition.
+        if (doc.CurrentPage != prevPage)
+            PageChanged?.Invoke(doc.CurrentPage);
     }
 
     private void NotifyRenderFailed(int page)
@@ -518,10 +522,12 @@ public sealed partial class DocumentController : IDisposable
 
     // --- Query methods (for agent / headless use) ---
 
-    private DocumentState? ResolveDocument(int? index) =>
-        index.HasValue && index.Value >= 0 && index.Value < Documents.Count
-            ? Documents[index.Value]
-            : ActiveDocument;
+    private DocumentState? ResolveDocument(int? index)
+    {
+        if (!index.HasValue) return ActiveDocument;
+        if (index.Value < 0 || index.Value >= Documents.Count) return null;
+        return Documents[index.Value];
+    }
 
     public DocumentList ListDocuments()
     {
@@ -552,20 +558,43 @@ public sealed partial class DocumentController : IDisposable
     public ReadingPosition? GetReadingPosition(int? index = null)
     {
         var doc = ResolveDocument(index);
-        if (doc is null || !doc.Rail.Active || !doc.Rail.HasAnalysis) return null;
+        return doc is null ? null : BuildReadingPosition(doc, withText: true);
+    }
+
+    /// <summary>
+    /// Builds a <see cref="ReadingPosition"/> for the given document's current rail
+    /// position, or null if rail mode is inactive / has no navigable block / the
+    /// block has no lines. When <paramref name="withText"/> is false the text
+    /// fields are left empty (the push path skips text extraction for performance);
+    /// callers that need text use <see cref="GetReadingPosition"/>. This is the
+    /// single source of truth shared by the pull query and the push event so the
+    /// two cannot drift.
+    /// </summary>
+    private ReadingPosition? BuildReadingPosition(DocumentState doc, bool withText)
+    {
+        if (!doc.Rail.Active || !doc.Rail.HasAnalysis) return null;
 
         var block = doc.Rail.CurrentNavigableBlock;
-        var line = doc.Rail.CurrentLineInfo;
+        if (block.Lines.Count == 0) return null;
+
+        // Report the line index actually described (CurrentLine clamped to the
+        // block's lines), matching the line CurrentLineInfo extracts text from.
+        int lineIndex = Math.Min(doc.Rail.CurrentLine, block.Lines.Count - 1);
         string blockText = "";
         string lineText = "";
-        if (doc.TextCache.TryGetValue(doc.CurrentPage, out var pageText))
+        if (withText && doc.TextCache.TryGetValue(doc.CurrentPage, out var pageText))
         {
             blockText = pageText.ExtractBlockText(block);
+            var line = doc.Rail.CurrentLineInfo;
+            float top = line.Y - line.Height / 2f;
             lineText = pageText.ExtractTextInRect(
-                line.X, line.Y, line.X + line.Width, line.Y + line.Height) ?? "";
+                line.X, top, line.X + line.Width, top + line.Height) ?? "";
         }
+        // BlockIndex is the page-level block index (matches BlockSummary.Index from
+        // GetPageDescription), NOT the navigable-subset index, so agents can
+        // correlate the two even when the page has non-navigable blocks.
         return new ReadingPosition(
-            doc.CurrentPage, doc.Rail.CurrentBlock, doc.Rail.CurrentLine,
+            doc.CurrentPage, doc.Rail.CurrentNavigableArrayIndex, lineIndex,
             block.Role, blockText, lineText, block.BBox);
     }
 
@@ -585,14 +614,15 @@ public sealed partial class DocumentController : IDisposable
 
         PageText? pageText = doc.TextCache.TryGetValue(targetPage, out var pt) ? pt : null;
         var blocks = new List<BlockSummary>(analysis.Blocks.Count);
+        const int maxChars = 200;
         for (int i = 0; i < analysis.Blocks.Count; i++)
         {
             var block = analysis.Blocks[i];
             string preview = "";
             if (pageText is not null)
             {
-                var full = pageText.ExtractBlockText(block);
-                preview = full.Length > 200 ? full[..200] + "…" : full;
+                preview = pageText.ExtractBlockText(block, maxChars, out bool more);
+                if (more) preview += "…";
             }
             blocks.Add(new BlockSummary(i, block.Role, preview, block.BBox, block.Order));
         }
@@ -608,39 +638,32 @@ public sealed partial class DocumentController : IDisposable
         if (ActiveDocument is not { } doc) return false;
         if (!doc.Rail.Active || !doc.Rail.HasAnalysis) return false;
         if (!_config.NavigableRoles.Contains(target)) return false;
+        if (!doc.Rail.TryNavigateToRole(target, forward)) return false;
 
-        var analysis = doc.Rail.Analysis;
-        if (analysis is null) return false;
+        var (ww, wh) = GetViewportSize();
+        doc.StartSnap(ww, wh);
+        FireReadingPositionChanged();
+        return true;
+    }
 
-        var current = doc.Rail.CurrentNavigableBlock;
-        var navigable = analysis.Blocks
-            .Where(b => _config.NavigableRoles.Contains(b.Role))
-            .OrderBy(b => b.Order)
-            .ToList();
-
-        int currentIdx = navigable.FindIndex(b => b.Order == current.Order);
-        if (currentIdx < 0) return false;
-
-        int step = forward ? 1 : -1;
-        for (int i = currentIdx + step; forward ? i < navigable.Count : i >= 0; i += step)
-        {
-            if (navigable[i].Role != target) continue;
-            var tb = navigable[i];
-            double px = tb.BBox.X + tb.BBox.W / 2.0;
-            double py = tb.BBox.Y + tb.BBox.H / 2.0;
-            doc.Rail.FindBlockNearPoint(px, py);
-            var (ww, wh) = GetViewportSize();
-            doc.StartSnap(ww, wh);
-            FireReadingPositionChanged();
-            return true;
-        }
-        return false;
+    /// <summary>
+    /// Sets the pageChanged flag and fires the PageChanged event in one call.
+    /// Use this instead of setting the flag + invoking the event separately,
+    /// so new code paths can't forget one or the other.
+    /// </summary>
+    private void FirePageChanged(ref bool pageChanged, int newPage)
+    {
+        pageChanged = true;
+        PageChanged?.Invoke(newPage);
     }
 
     private void FireReadingPositionChanged()
     {
-        if (ReadingPositionChanged is null) return;
-        var pos = GetReadingPosition();
-        if (pos is { } p) ReadingPositionChanged(p);
+        // Capture once: avoids a null-deref if the last subscriber unsubscribes
+        // between the check and the invoke.
+        var handler = ReadingPositionChanged;
+        if (handler is null) return;
+        if (ActiveDocument is { } doc && BuildReadingPosition(doc, withText: false) is { } pos)
+            handler(pos);
     }
 }

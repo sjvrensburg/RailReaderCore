@@ -55,9 +55,10 @@ public sealed partial class DocumentController
         }
 
         // Poll analysis results
-        var (gotResults, needsAnim) = PollAnalysisResults();
+        var (gotResults, needsAnim, gotPageChange) = PollAnalysisResults();
         animating |= needsAnim;
         overlayChanged |= gotResults;
+        pageChanged |= gotPageChange;
 
         if (!animating)
         {
@@ -131,8 +132,7 @@ public sealed partial class DocumentController
         var adv = AdvanceLine(doc, forward, ww, wh);
         if (adv is LineAdvanceResult.PageChanged or LineAdvanceResult.PageChangedRailLost)
         {
-            pageChanged = true;
-            PageChanged?.Invoke(doc.CurrentPage);
+            FirePageChanged(ref pageChanged, doc.CurrentPage);
             if (!forward && adv == LineAdvanceResult.PageChanged)
                 doc.StartSnapToEnd(ww, wh);
         }
@@ -178,15 +178,13 @@ public sealed partial class DocumentController
                 switch (adv)
                 {
                     case LineAdvanceResult.PageChanged:
-                        pageChanged = true;
-                        PageChanged?.Invoke(doc.CurrentPage);
+                        FirePageChanged(ref pageChanged, doc.CurrentPage);
                         FireReadingPositionChanged();
                         doc.Rail.StartAutoScroll(_autoScroll.AutoScrollSpeed);
                         doc.Rail.PauseAutoScroll(GetBlockEntryPause(doc));
                         break;
                     case LineAdvanceResult.PageChangedRailLost:
-                        pageChanged = true;
-                        PageChanged?.Invoke(doc.CurrentPage);
+                        FirePageChanged(ref pageChanged, doc.CurrentPage);
                         StopAutoScroll();
                         break;
                     case LineAdvanceResult.LineAdvanced:
@@ -229,57 +227,85 @@ public sealed partial class DocumentController
     /// Poll the analysis worker for completed results. Can also be called
     /// from a low-frequency timer when not animating.
     /// </summary>
-    public (bool GotResults, bool NeedsAnimation) PollAnalysisResults()
+    public (bool GotResults, bool NeedsAnimation, bool PageChanged) PollAnalysisResults()
     {
         bool got = false;
         bool needsAnim = false;
-        if (_worker is null) return (false, false);
+        bool pageChanged = false;
+        if (_worker is null) return (false, false, false);
         var (ww, wh) = GetViewportSize();
         while (_worker.Poll() is { } result)
         {
             got = true;
             _logger.Debug($"[Analysis] Got result for {Path.GetFileName(result.FilePath)} page {result.Page}: {result.Analysis.Blocks.Count} blocks");
+            bool matchedLiveDoc = false;
             foreach (var doc in Documents)
             {
                 if (doc.IsDisposed || doc.FilePath != result.FilePath) continue;
+                matchedLiveDoc = true;
 
                 doc.SetAnalysis(result.Page, result.Analysis);
-                AnalysisPageReady?.Invoke(result.Page);
 
                 if (doc.CurrentPage != result.Page)
                     continue;
 
-                if (doc.PendingRailSetup)
+                if (!doc.PendingRailSetup)
+                    continue;
+
+                // Visual side effects (event fires, page-change / needs-animation
+                // flags) must only reflect the ACTIVE document — a background tab's
+                // analysis completing must not fire events for, or repaint, the tab
+                // the user is actually looking at.
+                bool isActive = doc == ActiveDocument;
+                int prevPage = doc.CurrentPage;
+
+                doc.Rail.SetAnalysis(result.Analysis, _config.NavigableRoles);
+                doc.PendingRailSetup = false;
+                doc.UpdateRailZoom(ww, wh);
+                _logger.Debug($"[Analysis] Rail has {doc.Rail.NavigableCount} navigable blocks, Active={doc.Rail.Active}");
+                if (doc.Rail.Active)
                 {
-                    doc.Rail.SetAnalysis(result.Analysis, _config.NavigableRoles);
-                    doc.PendingRailSetup = false;
-                    doc.UpdateRailZoom(ww, wh);
-                    _logger.Debug($"[Analysis] Rail has {doc.Rail.NavigableCount} navigable blocks, Active={doc.Rail.Active}");
-                    if (doc.Rail.Active)
+                    if (doc.PendingSkip is { } pendingSkip)
+                        ApplySkipLanding(doc, pendingSkip.Forward, pendingSkip.SavedVerticalBias);
+                    doc.PendingSkip = null;
+                    doc.StartSnap(ww, wh);
+                    if (isActive)
                     {
-                        if (doc.PendingSkip is { } pendingSkip)
-                            ApplySkipLanding(doc, pendingSkip.Forward, pendingSkip.SavedVerticalBias);
-                        doc.PendingSkip = null;
-                        doc.StartSnap(ww, wh);
                         needsAnim = true;
-                    }
-                    else if (doc.PendingSkip is not null)
-                    {
-                        if (doc == ActiveDocument)
-                        {
-                            if (TryResumeSkip(doc, ww, wh))
-                            {
-                                needsAnim = true;
-                                PageChanged?.Invoke(doc.CurrentPage);
-                            }
-                        }
-                        else
-                            doc.PendingSkip = null;
+                        FireReadingPositionChanged();
                     }
                 }
+                else if (doc.PendingSkip is not null)
+                {
+                    if (isActive)
+                    {
+                        if (TryResumeSkip(doc, ww, wh))
+                        {
+                            needsAnim = true;
+                            FireReadingPositionChanged();
+                        }
+                    }
+                    else
+                        doc.PendingSkip = null;
+                }
+
+                // Single chokepoint for the PageChanged event: announce a transition
+                // exactly once, and only if the active document's page actually moved
+                // during this resolution (a deferred skip advancing to a navigable
+                // page — including via re-deferral inside TryResumeSkip, which calls
+                // doc.GoToPage without firing the event). ApplySkipLanding does not
+                // change the page, so a same-page completion (already announced when
+                // the skip first deferred) does not fire again.
+                if (isActive && doc.CurrentPage != prevPage)
+                    FirePageChanged(ref pageChanged, doc.CurrentPage);
             }
+
+            // Fire once per result, but only when a live document actually owns it
+            // (a result for a closed/disposed document must not notify subscribers).
+            if (matchedLiveDoc)
+                AnalysisPageReady?.Invoke(result.Page);
         }
-        return (got, needsAnim);
+        return (got, needsAnim, pageChanged);
     }
 
     /// <summary>

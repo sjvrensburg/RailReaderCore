@@ -214,7 +214,7 @@ public sealed partial class RailNav : ICameraClamp
         int bestLine = 0;
         for (int j = 0; j < block.Lines.Count; j++)
         {
-            double lineMid = block.Lines[j].Y + block.Lines[j].Height / 2.0;
+            double lineMid = block.Lines[j].Y; // LineInfo.Y is the line centre
             double d = Math.Abs(lineMid - pageY);
             if (d < bestDist) { bestDist = d; bestLine = j; }
         }
@@ -517,6 +517,40 @@ public sealed partial class RailNav : ICameraClamp
             int idx = Math.Min(CurrentBlock, _navigableIndices.Count - 1);
             return _analysis!.Blocks[_navigableIndices[idx]];
         }
+    }
+
+    /// <summary>
+    /// Index of the current block within the page's full block list
+    /// (<see cref="PageAnalysis.Blocks"/>), as opposed to <see cref="CurrentBlock"/>
+    /// which indexes only the navigable subset. This is the value that lines up
+    /// with the block indices reported by page-description queries.
+    /// </summary>
+    public int CurrentNavigableArrayIndex =>
+        _navigableIndices.Count == 0
+            ? 0
+            : _navigableIndices[Math.Min(CurrentBlock, _navigableIndices.Count - 1)];
+
+    /// <summary>
+    /// Moves the cursor to the next (forward) or previous block whose role equals
+    /// <paramref name="role"/>, starting from the current block, and lands on its
+    /// first line. Walks the navigable subset directly (which is already in reading
+    /// order), so navigation is exact — it does not geometrically hit-test, which
+    /// could otherwise land on an overlapping block. Returns true if a matching
+    /// block exists in the given direction on this page; false otherwise (and the
+    /// cursor is left unchanged).
+    /// </summary>
+    public bool TryNavigateToRole(BlockRole role, bool forward)
+    {
+        if (_analysis is null || _navigableIndices.Count == 0) return false;
+        int step = forward ? 1 : -1;
+        for (int i = CurrentBlock + step; i >= 0 && i < _navigableIndices.Count; i += step)
+        {
+            if (_analysis.Blocks[_navigableIndices[i]].Role != role) continue;
+            CurrentBlock = i;
+            CurrentLine = 0;
+            return true;
+        }
+        return false;
     }
 
     public LineInfo CurrentLineInfo

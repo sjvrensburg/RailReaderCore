@@ -56,6 +56,8 @@ Console.WriteLine($"Page {info.CurrentPage + 1}/{info.PageCount}, Rail={info.Rai
 
 Current reading position in rail mode: page, block index, line index, block role, block text, line text, block bounding box. Returns `null` if rail mode is not active. Pass `index` to target a non-active tab.
 
+`ReadingPosition.BlockIndex` is the block's index in the page's full block list, so it lines up directly with `BlockSummary.Index` from `GetPageDescription()` (i.e. `GetPageDescription().Blocks[pos.BlockIndex]` is the block being read) — even when the page contains non-navigable blocks.
+
 ```csharp
 var pos = controller.GetReadingPosition();
 if (pos is not null)
@@ -132,24 +134,28 @@ Subscribe to events for reactive state observation. All events fire on the calli
 
 | Event | Type | When |
 |-------|------|------|
-| `PageChanged` | `Action<int>` | Active document's page changes — fires from explicit navigation (`GoToPage`), rail-driven page transitions (arrow keys, edge-hold, auto-scroll, deferred skip resume), and link clicks |
-| `ReadingPositionChanged` | `Action<ReadingPosition>` | Rail block or line changes — fires from arrow keys, click-to-block, `NavigateToRole`, auto-scroll, edge-hold advances, and Ctrl+drag resume |
-| `AnalysisPageReady` | `Action<int>` | Layout analysis completes for any page (not just the current page — parameter = page index) |
+| `PageChanged` | `Action<int>` | Active document's page changes — fires from explicit navigation (`GoToPage`), rail-driven page transitions (arrow keys, edge-hold, auto-scroll, deferred skip resume), and link clicks. Fires only when the page index actually changes |
+| `ReadingPositionChanged` | `Action<ReadingPosition>` | Rail block or line changes — fires from arrow keys, click-to-block, `NavigateToRole`, auto-scroll, edge-hold advances, and Ctrl+drag resume. **The event payload carries position + geometry only — its `BlockText`/`LineText` are always empty** (text extraction is skipped on this hot path); call `GetReadingPosition()` in the handler if you need the text |
+| `AnalysisPageReady` | `Action<int>` | Layout analysis completes for a page of an open document (parameter = page index; includes background/lookahead pages) |
 | `StateChanged` | `Action<string>` | Property changed (legacy; parameter = property name) |
 | `StatusMessage` | `Action<string>` | Transient status message for display |
 
 ```csharp
 controller.PageChanged += page => Console.WriteLine($"Now on page {page + 1}");
 controller.ReadingPositionChanged += pos =>
-    Console.WriteLine($"Reading {pos.Role} at line {pos.LineIndex}: {pos.LineText}");
+{
+    // The event payload has no text (BlockText/LineText are empty) — pull it on demand.
+    var full = controller.GetReadingPosition();
+    Console.WriteLine($"Reading {pos.Role} at line {pos.LineIndex}: {full?.LineText}");
+};
 controller.AnalysisPageReady += page =>
     Console.WriteLine($"Analysis ready for page {page + 1}");
 ```
 
 Notes:
-- `PageChanged` fires for all page transitions: explicit (`GoToPage`), rail-driven (arrow-key page boundary, edge-hold advance, auto-scroll page change, deferred skip resume after async analysis), and link clicks. It does **not** fire during initial document loading (`AddDocument`).
-- `ReadingPositionChanged` fires only when rail mode is active. If a page transition loses rail mode (no navigable blocks on the new page), the event does not fire — subscribe to `PageChanged` to detect that case.
-- `AnalysisPageReady` fires for every page that completes analysis, including background/lookahead pages the user is not currently viewing.
+- `PageChanged` fires for all page transitions: explicit (`GoToPage`), rail-driven (arrow-key page boundary, edge-hold advance, auto-scroll page change, deferred skip resume after async analysis), and link clicks. It fires **only when the page index actually changes** — re-navigating to the current page (e.g. `GoToPage(CurrentPage)` or a link whose destination is the current page) does not fire it — and it does **not** fire during initial document loading (`AddDocument`).
+- `ReadingPositionChanged` fires only when rail mode is active. Its payload's `BlockText`/`LineText` are always empty by design; use `GetReadingPosition()` to read the text. If a page transition loses rail mode (no navigable blocks on the new page), the event does not fire — subscribe to `PageChanged` to detect that case.
+- `AnalysisPageReady` fires once per completed page that belongs to an open document, including background/lookahead pages the user is not currently viewing. It does not fire for results whose document was closed before analysis finished. The parameter is a page index only; if you have several documents open over different files, correlate it with `ListDocuments()`/`GetDocumentInfo()` to learn which document it refers to.
 
 ## Block Roles
 

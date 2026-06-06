@@ -237,17 +237,21 @@ public class AgentApiPerfBenchmarks : IDisposable
         var state = SetupDocWithMultiBlock(50);
         const int iterations = 10_000;
 
-        // Warmup
+        // Warmup (alternating forward/backward to exercise the actual navigation path)
         for (int i = 0; i < 100; i++)
-            _controller.NavigateToRole(BlockRole.Heading);
+            _controller.NavigateToRole(BlockRole.Heading, forward: i % 2 == 0);
+
+        // Reset to first block so the timed loop has room to navigate forward
+        state.Rail.CurrentBlock = 0;
+        state.Rail.CurrentLine = 0;
 
         var sw = Stopwatch.StartNew();
         for (int i = 0; i < iterations; i++)
-            _controller.NavigateToRole(BlockRole.Heading);
+            _controller.NavigateToRole(BlockRole.Heading, forward: i % 2 == 0);
         sw.Stop();
 
         var usPerCall = sw.Elapsed.TotalMicroseconds / iterations;
-        _output.WriteLine($"NavigateToRole (50 blocks, forward to Heading): {usPerCall:F1} µs/call over {iterations:N0} iterations ({sw.ElapsedMilliseconds} ms total)");
+        _output.WriteLine($"NavigateToRole (50 blocks, alternating forward/backward to Heading): {usPerCall:F1} µs/call over {iterations:N0} iterations ({sw.ElapsedMilliseconds} ms total)");
 
         // User-initiated, should be well under 1ms
         Assert.True(usPerCall < 1000, $"Too slow: {usPerCall:F1} µs/call");
