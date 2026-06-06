@@ -456,7 +456,6 @@ public sealed partial class DocumentController : IDisposable
         if (!doc.Rail.Active && AutoScrollActive) StopAutoScroll();
     }
 
-
     // --- Auto-scroll (delegated to AutoScrollController) ---
 
     public void ToggleAutoScroll() => _autoScroll.ToggleAutoScroll(ActiveDocument);

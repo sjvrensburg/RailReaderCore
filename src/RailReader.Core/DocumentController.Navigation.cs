@@ -137,14 +137,14 @@ public sealed partial class DocumentController
                 // During autoscroll: pause until snap completes + line pause, then resume
                 if (AutoScrollActive)
                     doc.Rail.PauseAutoScroll(_config.AutoScrollLinePauseMs);
-                FireReadingPositionChanged();
             }
             else if (adv is LineAdvanceResult.PageChanged or LineAdvanceResult.PageChangedRailLost)
             {
                 PageChanged?.Invoke(doc.CurrentPage);
-                if (adv == LineAdvanceResult.PageChanged)
-                    FireReadingPositionChanged();
             }
+
+            if (adv is LineAdvanceResult.LineAdvanced or LineAdvanceResult.PageChanged)
+                FireReadingPositionChanged();
         }
         else
         {

@@ -46,7 +46,6 @@ public static class TestFixtures
     public static void SetupRailMode(DocumentState doc, CoreSettings config,
         double vpWidth = 800, double vpHeight = 600)
     {
-        var analysis = new PageAnalysis();
         var block = new LayoutBlock
         {
             Role = BlockRole.Text, BBox = new BBox(72, 72, 468, 200),
@@ -54,7 +53,37 @@ public static class TestFixtures
         };
         for (int i = 0; i < 5; i++)
             block.Lines.Add(new LineInfo(72 + i * 20, 16, 72, 468));
+        var analysis = new PageAnalysis();
         analysis.Blocks.Add(block);
+        ActivateRailMode(doc, config, analysis, vpWidth, vpHeight);
+    }
+
+    /// <summary>
+    /// Configures a DocumentState for rail mode testing with multiple blocks of
+    /// different roles. Creates one line per block — suitable for block-level
+    /// navigation tests only; do not use for line-advance or snap-behaviour tests,
+    /// which need multiple lines per block like the single-block overload provides.
+    /// </summary>
+    public static void SetupRailMode(DocumentState doc, CoreSettings config,
+        double vpWidth, double vpHeight, params (BlockRole Role, BBox BBox)[] blocks)
+    {
+        var analysis = new PageAnalysis();
+        for (int i = 0; i < blocks.Length; i++)
+        {
+            var (role, bbox) = blocks[i];
+            var block = new LayoutBlock
+            {
+                Role = role, BBox = bbox, Confidence = 0.9f, Order = i,
+            };
+            block.Lines.Add(new LineInfo(bbox.Y + 10, 16, bbox.X, bbox.W));
+            analysis.Blocks.Add(block);
+        }
+        ActivateRailMode(doc, config, analysis, vpWidth, vpHeight);
+    }
+
+    private static void ActivateRailMode(DocumentState doc, CoreSettings config,
+        PageAnalysis analysis, double vpWidth, double vpHeight)
+    {
         doc.SetAnalysis(doc.CurrentPage, analysis);
         doc.Rail.SetAnalysis(analysis, config.NavigableRoles);
         doc.Camera.Zoom = config.RailZoomThreshold + 1;

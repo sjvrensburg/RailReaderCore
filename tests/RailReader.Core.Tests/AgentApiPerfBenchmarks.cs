@@ -46,23 +46,11 @@ public class AgentApiPerfBenchmarks : IDisposable
         _controller.AddDocument(state);
         _controller.SetViewportSize(800, 600);
 
-        var analysis = new PageAnalysis();
+        var blocks = new (BlockRole Role, BBox BBox)[blockCount];
         for (int i = 0; i < blockCount; i++)
-        {
-            var role = i % 4 == 0 ? BlockRole.Heading : BlockRole.Text;
-            var bbox = new BBox(72, 72 + i * 30, 468, 25);
-            var block = new LayoutBlock
-            {
-                Role = role, BBox = bbox, Confidence = 0.9f, Order = i,
-            };
-            block.Lines.Add(new LineInfo(bbox.Y + 10, 16, bbox.X, bbox.W));
-            analysis.Blocks.Add(block);
-        }
-        state.SetAnalysis(state.CurrentPage, analysis);
+            blocks[i] = (i % 4 == 0 ? BlockRole.Heading : BlockRole.Text, new BBox(72, 72 + i * 30, 468, 25));
         var (ww, wh) = _controller.GetViewportSize();
-        state.Rail.SetAnalysis(analysis, _controller.Config.NavigableRoles);
-        state.Camera.Zoom = _controller.Config.RailZoomThreshold + 1;
-        state.Rail.UpdateZoom(state.Camera.Zoom, state.Camera.OffsetX, state.Camera.OffsetY, ww, wh);
+        TestFixtures.SetupRailMode(state, _controller.Config, ww, wh, blocks);
         return state;
     }
 
