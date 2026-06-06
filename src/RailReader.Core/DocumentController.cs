@@ -572,11 +572,12 @@ public sealed partial class DocumentController : IDisposable
     /// <summary>
     /// Returns an accessible description of a page's layout: all blocks with
     /// semantic roles, text previews, and reading order. Uses the current page
-    /// if <paramref name="page"/> is null.
+    /// of the active or specified document if <paramref name="page"/> is null.
     /// </summary>
-    public PageDescription? GetPageDescription(int? page = null)
+    public PageDescription? GetPageDescription(int? index = null, int? page = null)
     {
-        if (ActiveDocument is not { } doc) return null;
+        var doc = ResolveDocument(index);
+        if (doc is null) return null;
         int targetPage = page ?? doc.CurrentPage;
         if (targetPage < 0 || targetPage >= doc.PageCount) return null;
         if (!doc.AnalysisCache.TryGetValue(targetPage, out var analysis)) return null;
@@ -616,7 +617,7 @@ public sealed partial class DocumentController : IDisposable
             .OrderBy(b => b.Order)
             .ToList();
 
-        int currentIdx = navigable.FindIndex(b => ReferenceEquals(b, current));
+        int currentIdx = navigable.FindIndex(b => b.Order == current.Order);
         if (currentIdx < 0) return false;
 
         int step = forward ? 1 : -1;

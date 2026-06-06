@@ -132,6 +132,7 @@ public sealed partial class DocumentController
         if (adv is LineAdvanceResult.PageChanged or LineAdvanceResult.PageChangedRailLost)
         {
             pageChanged = true;
+            PageChanged?.Invoke(doc.CurrentPage);
             if (!forward && adv == LineAdvanceResult.PageChanged)
                 doc.StartSnapToEnd(ww, wh);
         }
@@ -178,11 +179,13 @@ public sealed partial class DocumentController
                 {
                     case LineAdvanceResult.PageChanged:
                         pageChanged = true;
+                        PageChanged?.Invoke(doc.CurrentPage);
                         doc.Rail.StartAutoScroll(_autoScroll.AutoScrollSpeed);
                         doc.Rail.PauseAutoScroll(GetBlockEntryPause(doc));
                         break;
                     case LineAdvanceResult.PageChangedRailLost:
                         pageChanged = true;
+                        PageChanged?.Invoke(doc.CurrentPage);
                         StopAutoScroll();
                         break;
                     case LineAdvanceResult.LineAdvanced:
@@ -241,6 +244,8 @@ public sealed partial class DocumentController
 
                 doc.SetAnalysis(result.Page, result.Analysis);
                 AnalysisPageReady?.Invoke(result.Page);
+
+                if (doc.CurrentPage != result.Page)
                     continue;
 
                 if (doc.PendingRailSetup)

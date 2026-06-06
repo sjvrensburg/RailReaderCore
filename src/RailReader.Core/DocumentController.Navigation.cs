@@ -139,9 +139,11 @@ public sealed partial class DocumentController
                     doc.Rail.PauseAutoScroll(_config.AutoScrollLinePauseMs);
                 FireReadingPositionChanged();
             }
-            else if (adv == LineAdvanceResult.PageChanged)
+            else if (adv is LineAdvanceResult.PageChanged or LineAdvanceResult.PageChangedRailLost)
             {
-                FireReadingPositionChanged();
+                PageChanged?.Invoke(doc.CurrentPage);
+                if (adv == LineAdvanceResult.PageChanged)
+                    FireReadingPositionChanged();
             }
         }
         else

@@ -21,8 +21,7 @@ public class DocumentControllerTests : IDisposable
 
     public void Dispose()
     {
-        foreach (var doc in _controller.Documents.ToList())
-            doc.Dispose();
+        _controller.Dispose();
     }
 
     [Fact]
@@ -696,10 +695,14 @@ public class DocumentControllerTests : IDisposable
         _controller.NavigateToRole(BlockRole.Heading);
         Assert.Equal(BlockRole.Heading, _controller.GetReadingPosition()!.Role);
 
-        // Navigate backward to Text
+        // Navigate backward to Text — must land on Text(0), not Text(2)
         bool found = _controller.NavigateToRole(BlockRole.Text, forward: false);
         Assert.True(found);
-        Assert.Equal(BlockRole.Text, _controller.GetReadingPosition()!.Role);
+        var pos = _controller.GetReadingPosition();
+        Assert.NotNull(pos);
+        Assert.Equal(BlockRole.Text, pos.Role);
+        // Heading is at Order=1, so backward from Heading lands on the Text block at Order=0
+        Assert.Equal(0, pos.BlockIndex);
     }
 
     // --- Agent API: Events ---
