@@ -438,6 +438,7 @@ public sealed partial class DocumentController : IDisposable
         doc.Rail.VerticalBias = pause.VerticalBias;
 
         doc.StartSnap(ww, wh);
+        FireReadingPositionChanged();
         StatusMessage?.Invoke("");
     }
 
@@ -571,8 +572,9 @@ public sealed partial class DocumentController : IDisposable
 
     /// <summary>
     /// Returns an accessible description of a page's layout: all blocks with
-    /// semantic roles, text previews, and reading order. Uses the current page
-    /// of the active or specified document if <paramref name="page"/> is null.
+    /// semantic roles, text previews, and reading order. Targets the active
+    /// document unless <paramref name="index"/> specifies a different tab.
+    /// Uses the current page unless <paramref name="page"/> specifies a page.
     /// </summary>
     public PageDescription? GetPageDescription(int? index = null, int? page = null)
     {

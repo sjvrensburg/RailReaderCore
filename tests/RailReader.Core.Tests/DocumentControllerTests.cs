@@ -131,6 +131,12 @@ public class DocumentControllerTests : IDisposable
         TestFixtures.SetupRailMode(doc, _controller.Config, ww, wh);
     }
 
+    /// <summary>
+    /// Sets up rail mode with multiple blocks of different roles. Creates one
+    /// line per block (suitable for block-level navigation tests only — do not
+    /// use for line-advance or snap-behaviour tests, which need multiple lines
+    /// per block like <see cref="TestFixtures.SetupRailMode"/> provides).
+    /// </summary>
     private void SetupMultiBlockRailMode(DocumentState doc, params (BlockRole Role, BBox BBox)[] blocks)
     {
         var analysis = new PageAnalysis();

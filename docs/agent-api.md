@@ -45,7 +45,7 @@ var list = controller.ListDocuments();
 
 ### `GetDocumentInfo(int? index = null) → DocumentInfo?`
 
-Full state snapshot of one document: file path, title, page count, current page, zoom, camera offsets, rail mode status, analysis status, navigable block count, auto-scroll state.
+Full state snapshot of one document: file path, title, page count, current page, zoom, camera offsets, rail mode status, analysis status, navigable block count, auto-scroll state. Pass `index` to target a non-active tab.
 
 ```csharp
 var info = controller.GetDocumentInfo();
@@ -54,7 +54,7 @@ Console.WriteLine($"Page {info.CurrentPage + 1}/{info.PageCount}, Rail={info.Rai
 
 ### `GetReadingPosition(int? index = null) → ReadingPosition?`
 
-Current reading position in rail mode: page, block index, line index, block role, block text, line text, block bounding box. Returns `null` if rail mode is not active.
+Current reading position in rail mode: page, block index, line index, block role, block text, line text, block bounding box. Returns `null` if rail mode is not active. Pass `index` to target a non-active tab.
 
 ```csharp
 var pos = controller.GetReadingPosition();
@@ -62,15 +62,17 @@ if (pos is not null)
     Console.WriteLine($"Reading: {pos.Role} block at line {pos.LineIndex}");
 ```
 
-### `GetPageDescription(int? page = null) → PageDescription?`
+### `GetPageDescription(int? index = null, int? page = null) → PageDescription?`
 
-Accessible description of a page's layout: all detected blocks with semantic roles, text previews (up to 200 characters), bounding boxes, and reading order. Useful for building an accessibility tree or giving an agent a page overview.
+Accessible description of a page's layout: all detected blocks with semantic roles, text previews (up to 200 characters), bounding boxes, and reading order. Targets the active document unless `index` specifies a different tab. Uses the current page unless `page` specifies a page number.
 
 ```csharp
 var desc = controller.GetPageDescription();
 foreach (var block in desc.Blocks)
     Console.WriteLine($"  [{block.ReadingOrder}] {block.Role}: {block.TextPreview}");
 ```
+
+Note: returns ALL blocks on the page (including non-navigable roles like Figure, Chart, Header), not just rail-navigable ones. Use the `BlockSummary.Role` field to filter if needed.
 
 ### `GetSearchState() → SearchResult`
 
@@ -96,7 +98,7 @@ Current search state: total matches, active match index, matches per page.
 | `HandleLineEnd()` | Snap to end of current line |
 | `NavigateToRole(BlockRole, bool forward)` | Jump to the next block of a given role (Heading, Table, etc.) |
 
-`NavigateToRole` scans the current page's analysis in reading order and snaps to the next (or previous) navigable block matching the target role. Returns `true` if found.
+`NavigateToRole` scans the current page's analysis in reading order and snaps to the next (or previous) navigable block matching the target role. Returns `true` if found, `false` if no matching block exists on the current page in the given direction (does not cross page boundaries). Returns `false` immediately if the target role is not in `NavigableRoles`.
 
 ```csharp
 // Jump to the next heading
@@ -130,9 +132,9 @@ Subscribe to events for reactive state observation. All events fire on the calli
 
 | Event | Type | When |
 |-------|------|------|
-| `PageChanged` | `Action<int>` | Active document's page changes (parameter = new page index) |
-| `ReadingPositionChanged` | `Action<ReadingPosition>` | Rail block or line changes (parameter = new position) |
-| `AnalysisPageReady` | `Action<int>` | Layout analysis completes for a page (parameter = page index) |
+| `PageChanged` | `Action<int>` | Active document's page changes — fires from explicit navigation (`GoToPage`), rail-driven page transitions (arrow keys, edge-hold, auto-scroll, deferred skip resume), and link clicks |
+| `ReadingPositionChanged` | `Action<ReadingPosition>` | Rail block or line changes — fires from arrow keys, click-to-block, `NavigateToRole`, auto-scroll, edge-hold advances, and Ctrl+drag resume |
+| `AnalysisPageReady` | `Action<int>` | Layout analysis completes for any page (not just the current page — parameter = page index) |
 | `StateChanged` | `Action<string>` | Property changed (legacy; parameter = property name) |
 | `StatusMessage` | `Action<string>` | Transient status message for display |
 
@@ -144,7 +146,10 @@ controller.AnalysisPageReady += page =>
     Console.WriteLine($"Analysis ready for page {page + 1}");
 ```
 
-Note: `ReadingPositionChanged` fires from explicit navigation commands (arrow keys, click, `NavigateToRole`, auto-scroll) and edge-hold advances. It does not fire from direct `RailNav` property mutations.
+Notes:
+- `PageChanged` fires for all page transitions: explicit (`GoToPage`), rail-driven (arrow-key page boundary, edge-hold advance, auto-scroll page change, deferred skip resume after async analysis), and link clicks. It does **not** fire during initial document loading (`AddDocument`).
+- `ReadingPositionChanged` fires only when rail mode is active. If a page transition loses rail mode (no navigable blocks on the new page), the event does not fire — subscribe to `PageChanged` to detect that case.
+- `AnalysisPageReady` fires for every page that completes analysis, including background/lookahead pages the user is not currently viewing.
 
 ## Block Roles
 
@@ -169,7 +174,7 @@ Note: `ReadingPositionChanged` fires from explicit navigation commands (arrow ke
 | `Footnote` | Footnote |
 | `Reference` | Bibliography entry |
 
-Not all roles are navigable — `NavigableRoles` (from `CoreSettings`) controls which roles the rail system locks onto. By default, text-like roles are navigable; visual roles (Figure, Chart, Table) are not.
+Not all roles are navigable — `NavigableRoles` (from `CoreSettings`) controls which roles the rail system locks onto. By default, text-like roles are navigable; visual roles (Figure, Chart, Table) are not. `NavigateToRole` returns `false` immediately for non-navigable roles.
 
 ## Tick Loop
 
