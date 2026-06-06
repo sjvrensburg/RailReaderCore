@@ -128,6 +128,54 @@ public class XYCutPlusPlusResolverTests
     }
 
     [Fact]
+    public void TwoColumns_WithTallFigureAndCaptionAtop_ColumnsDoNotInterleave()
+    {
+        // Regression (TimeGMM.pdf p.2): a TALL full-width figure plus its
+        // full-width caption stacked above two columns. The combined height of
+        // that top matter spanning the gutter pushes the gutter's vertical
+        // coverage above the projection-split threshold, so no column gutter is
+        // found for the whole-page region. Before the IsDenseSingleColumn fix,
+        // the dense-column guard then suppressed the horizontal cut that would
+        // peel the top matter, and the page fell through to row-banding — which
+        // interleaved the columns (left-pair, right-pair, left, right, …).
+        // The columns must each read contiguously, top-to-bottom.
+        var figure = Block(40, 30, 520, 210, role: BlockRole.Figure, tag: "FIG");
+        var caption = Block(40, 250, 520, 36, role: BlockRole.Caption, tag: "CAP");
+        // Body rows are 12pt apart — above the 6pt super-block merge threshold,
+        // so each block stays separate (as in the real page, where paragraph
+        // gaps, headings and equations break a column into several blocks). The
+        // caption→body gap (24pt) stays the widest horizontal gap so the fix
+        // peels the top matter first, then column-splits the body.
+        var l0 = Block(40, 310, 240, 40, tag: "L0");
+        var l1 = Block(40, 362, 240, 40, tag: "L1");
+        var l2 = Block(40, 414, 240, 40, tag: "L2");
+        var l3 = Block(40, 466, 240, 40, tag: "L3");
+        var r0 = Block(320, 310, 240, 40, tag: "R0");
+        var r1 = Block(320, 362, 240, 40, tag: "R1");
+        var r2 = Block(320, 414, 240, 40, tag: "R2");
+        var r3 = Block(320, 466, 240, 40, tag: "R3");
+
+        // Interleaved input order.
+        var blocks = new List<LayoutBlock> { figure, l0, r0, l1, r1, caption, l2, r2, l3, r3 };
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 600, 800);
+
+        var order = blocks.Select(Id).ToList();
+        int Pos(string tag) => order.IndexOf(tag.GetHashCode());
+
+        // Figure is full-width top matter — it reads first.
+        Assert.Equal(0, Pos("FIG"));
+        // Each column reads strictly top-to-bottom (no zig-zag within a column).
+        Assert.True(Pos("L0") < Pos("L1") && Pos("L1") < Pos("L2") && Pos("L2") < Pos("L3"));
+        Assert.True(Pos("R0") < Pos("R1") && Pos("R1") < Pos("R2") && Pos("R2") < Pos("R3"));
+        // The columns do not interleave: the whole left column precedes the
+        // whole right column.
+        int leftLast = new[] { "L0", "L1", "L2", "L3" }.Max(Pos);
+        int rightFirst = new[] { "R0", "R1", "R2", "R3" }.Min(Pos);
+        Assert.True(leftLast < rightFirst,
+            $"columns interleave: last left block at {leftLast}, first right block at {rightFirst}");
+    }
+
+    [Fact]
     public void ThreeColumns_OrderedLeftToRight()
     {
         // Three 160pt-wide columns at x=40,240,440 separated by 40pt gutters.

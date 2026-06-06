@@ -505,6 +505,22 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     /// True when the candidate horizontal gap is small relative to the region's
     /// vertical content density — i.e. the region reads as one continuous column
     /// and the gap is just inter-paragraph leading, not a structural break.
+    ///
+    /// <para>
+    /// The guard only applies to an <b>actual single column</b>. If any two blocks
+    /// sit side by side (vertically overlapping but horizontally disjoint) the
+    /// region is multi-column, and the summed-height density below would
+    /// double-count the stacked columns — for two full-height columns it is always
+    /// ≳1.3, so the guard would fire on every dense two-column page. Suppressing
+    /// the horizontal cut there is harmful: when the column gutter could not be
+    /// found (e.g. a full-width figure + caption straddling it at the top of the
+    /// page), the only way to recover the columns is to peel that top matter off
+    /// with a horizontal cut first and let the sub-regions find their gutter.
+    /// Without this guard the region falls through to <see cref="OrderLeaf"/>'s
+    /// row-banding, which interleaves the columns. Splitting an honest single
+    /// column horizontally is harmless (top-to-bottom order is preserved either
+    /// way), so this exclusion only ever helps.
+    /// </para>
     /// </summary>
     private static bool IsDenseSingleColumn(List<LayoutBlock> blocks, HGap gap)
     {
@@ -513,11 +529,27 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         float extent = bottom - top;
         if (extent <= 0) return false;
 
+        if (HasSideBySideBlocks(blocks)) return false;
+
         float covered = blocks.Sum(b => b.BBox.H);
         float density = covered / extent;
         // Dense column (little whitespace) AND the gap is a minor fraction of the
         // extent → treat as paragraph leading, not a cut.
         return density > 0.8f && gap.Height < extent * 0.1f;
+    }
+
+    /// <summary>
+    /// True when any two blocks sit side by side — vertically overlapping but
+    /// horizontally disjoint — which is the geometric signature of more than one
+    /// column in the region.
+    /// </summary>
+    private static bool HasSideBySideBlocks(List<LayoutBlock> blocks)
+    {
+        for (int i = 0; i < blocks.Count; i++)
+            for (int j = i + 1; j < blocks.Count; j++)
+                if (YOverlap(blocks[i].BBox, blocks[j].BBox) && !XOverlap(blocks[i].BBox, blocks[j].BBox))
+                    return true;
+        return false;
     }
 
     // ---------------------------------------------------------------------
