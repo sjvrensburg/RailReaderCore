@@ -180,6 +180,7 @@ public sealed partial class DocumentController
                     case LineAdvanceResult.PageChanged:
                         pageChanged = true;
                         PageChanged?.Invoke(doc.CurrentPage);
+                        FireReadingPositionChanged();
                         doc.Rail.StartAutoScroll(_autoScroll.AutoScrollSpeed);
                         doc.Rail.PauseAutoScroll(GetBlockEntryPause(doc));
                         break;
@@ -265,7 +266,13 @@ public sealed partial class DocumentController
                     else if (doc.PendingSkip is not null)
                     {
                         if (doc == ActiveDocument)
-                            needsAnim |= TryResumeSkip(doc, ww, wh);
+                        {
+                            if (TryResumeSkip(doc, ww, wh))
+                            {
+                                needsAnim = true;
+                                PageChanged?.Invoke(doc.CurrentPage);
+                            }
+                        }
                         else
                             doc.PendingSkip = null;
                     }

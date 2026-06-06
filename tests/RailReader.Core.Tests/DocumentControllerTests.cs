@@ -775,4 +775,127 @@ public class DocumentControllerTests : IDisposable
         _controller.PollAnalysisResults();
         Assert.Null(receivedPage);
     }
+
+    // --- Agent API: text content verification ---
+
+    [Fact]
+    public void GetReadingPosition_WithTextCache_ReturnsNonEmptyText()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupRailMode(state);
+
+        // Inject text into the cache so GetReadingPosition can extract it
+        var block = state.Rail.CurrentNavigableBlock;
+        var bbox = block.BBox;
+        // Create CharBoxes that fall within the block
+        var chars = "Hello world".Select((c, i) => new CharBox(i, bbox.X + i * 10, bbox.Y + 5, bbox.X + i * 10 + 10, bbox.Y + 20)).ToList();
+        state.SetText(0, new PageText("Hello world and more text here", chars));
+
+        var pos = _controller.GetReadingPosition();
+        Assert.NotNull(pos);
+        Assert.NotEmpty(pos.BlockText);
+    }
+
+    // --- Agent API: NavigateToRole boundary cases ---
+
+    [Fact]
+    public void NavigateToRole_ForwardFromLastBlock_ReturnsFalse()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupMultiBlockRailMode(state,
+            (BlockRole.Text, new BBox(72, 72, 468, 200)),
+            (BlockRole.Heading, new BBox(72, 300, 468, 100)),
+            (BlockRole.Text, new BBox(72, 420, 468, 200)));
+
+        // Navigate forward to the last Text block (index 2)
+        _controller.NavigateToRole(BlockRole.Heading);
+        _controller.NavigateToRole(BlockRole.Text); // lands on Text(2)
+        Assert.Equal(2, _controller.GetReadingPosition()!.BlockIndex);
+
+        // Forward from last Text — no more Text blocks ahead
+        Assert.False(_controller.NavigateToRole(BlockRole.Text, forward: true));
+    }
+
+    [Fact]
+    public void NavigateToRole_BackwardFromFirstBlock_ReturnsFalse()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupMultiBlockRailMode(state,
+            (BlockRole.Text, new BBox(72, 72, 468, 200)),
+            (BlockRole.Heading, new BBox(72, 300, 468, 100)));
+
+        // Start at first block (Text, index 0)
+        Assert.Equal(0, _controller.GetReadingPosition()!.BlockIndex);
+
+        // Backward from first block — no Text blocks behind
+        Assert.False(_controller.NavigateToRole(BlockRole.Text, forward: false));
+    }
+
+    [Fact]
+    public void NavigateToRole_NonNavigableRole_ReturnsFalse()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupRailMode(state);
+
+        // Figure is not in default NavigableRoles
+        Assert.False(_controller.NavigateToRole(BlockRole.Figure));
+    }
+
+    // --- Agent API: event negative tests ---
+
+    [Fact]
+    public void ReadingPositionChanged_NotFiredWithoutRailMode()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        // No rail mode — zoom is below threshold
+
+        ReadingPosition? received = null;
+        _controller.ReadingPositionChanged = pos => received = pos;
+
+        _controller.HandleArrowDown();
+        Assert.Null(received);
+    }
+
+    [Fact]
+    public void PageChanged_FiredOnLinkClickNavigation()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+
+        // Inject a link at page-point (100, 100) → page 2
+        state.SetLinks(0,
+        [
+            new PdfLink
+            {
+                Rect = new RectF(50, 50, 200, 200),
+                Destination = new PageDestination { PageIndex = 2 }
+            }
+        ]);
+
+        double canvasX = 100 * state.Camera.Zoom + state.Camera.OffsetX;
+        double canvasY = 100 * state.Camera.Zoom + state.Camera.OffsetY;
+
+        int? receivedPage = null;
+        _controller.PageChanged = page => receivedPage = page;
+
+        _controller.HandleClick(canvasX, canvasY);
+        Assert.Equal(2, receivedPage);
+    }
 }
