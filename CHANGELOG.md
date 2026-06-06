@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.19.1 — reading-order: two-column pages with full-width top matter
+
+Fixes column **interleaving** in `XYCutPlusPlusResolver` (the resolver used for
+model-less detectors — Heron, PP-DocLayout-S) on two-column pages that carry a
+tall full-width figure + caption above the columns (e.g. an academic page whose
+"Fig. N" block and its caption sit above the body). No public API change; the
+reading order these detectors produce simply improves. Behavioural only —
+no consumer code changes required.
+
+### Fixed
+
+- **Columns interleaved when a tall full-width figure + caption sat atop the
+  page.** The stacked top matter spans the column gutter, so its vertical
+  coverage at the gutter exceeds the projection-split threshold and no column
+  gutter is found for the whole page. `IsDenseSingleColumn` then suppressed the
+  horizontal cut that would have peeled the top matter off, because its density
+  metric (`Σ block heights / region height`) double-counts stacked columns — it
+  is always ≳1.3 on a dense two-column region, so the guard fired on every such
+  page. The page fell through to leaf row-banding, which reads left-pair,
+  right-pair, left-pair … instead of whole-left-then-whole-right. The guard is
+  now restricted to an actual single column: it bails out when any two blocks sit
+  side by side (vertically overlapping but horizontally disjoint).
+- **Figure caption stranded between the columns.** Once the columns were
+  recovered, a full-width caption straddling the gutter was still assigned to a
+  column by its centre, landing mid-stream between left and right. Before a column
+  split, a full-width horizontal divider (≥55% of the region width, overlapping
+  nothing vertically) at the top extreme is now peeled into the reading stream by
+  its Y position first, so a caption stays with the figure above it.
+
+Validated with `tools/order-eval` (PP-DocLayout-V3 reading order as reference,
+732 corpus pages): column-interleaving pages 15 → 1, mean body Kendall-τ distance
+0.0546 → 0.0489, perfectly-ordered pages 155 → 161.
+
 ## 0.19.0 — agent / automation API surface
 
 Adds a headless, agent-drivable surface to `DocumentController`: structured query

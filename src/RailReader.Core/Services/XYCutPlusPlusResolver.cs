@@ -171,6 +171,18 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     /// </summary>
     public const float MergeBarrierWidthFraction = 0.55f;
 
+    /// <summary>
+    /// A block whose width is at least this fraction of its <i>region</i> width,
+    /// and which vertically overlaps nothing else in the region, is a full-width
+    /// horizontal divider (title, figure, caption). When such a block sits at the
+    /// top extreme of a region that is about to be column-split, it is peeled into
+    /// the reading stream first — a divider straddles the gutter, so the column
+    /// split would otherwise assign it to whichever column its centre falls in
+    /// (e.g. a figure caption landing mid-stream between the two columns instead
+    /// of with the figure above them).
+    /// </summary>
+    public const float DividerWidthFraction = 0.55f;
+
     private readonly ReadingDirection _direction;
     private readonly bool _mergeAdjacent;
 
@@ -453,6 +465,27 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         var splitX = FindColumnSplit(blocks);
         if (splitX is float sx)
         {
+            // A full-width horizontal divider at the TOP extreme (title / figure /
+            // caption) straddles the gutter, so the centre-partition below would
+            // assign it to whichever column its centre falls in — stranding e.g. a
+            // figure caption between the two columns instead of keeping it with
+            // the figure above. Peel it into the stream by its Y position first,
+            // then column-split the rest. Scoped to the column-split branch so
+            // single-column and figure-grid pages (which never reach here) are
+            // untouched. Only the top is peeled: a bottom divider (footnote band)
+            // already reads last via the large horizontal gap above it, and
+            // peeling it can remove that gap and destabilise the sub-region.
+            float regWidth = blocks.Max(b => b.BBox.X + b.BBox.W) - blocks.Min(b => b.BBox.X);
+            var topMost = blocks[0];
+            foreach (var b in blocks)
+                if (b.BBox.Y < topMost.BBox.Y) topMost = b;
+            if (IsFullWidthDivider(topMost, blocks, regWidth))
+            {
+                output.Add(topMost);
+                Cut(Except(blocks, topMost), output, charBoxes);
+                return;
+            }
+
             // Partition by block centre: for a clean (straddler-validated) split
             // no block crosses sx so this matches edge-based partition exactly;
             // for a projection split a crosser is assigned to its majority side.
@@ -505,6 +538,22 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     /// True when the candidate horizontal gap is small relative to the region's
     /// vertical content density — i.e. the region reads as one continuous column
     /// and the gap is just inter-paragraph leading, not a structural break.
+    ///
+    /// <para>
+    /// The guard only applies to an <b>actual single column</b>. If any two blocks
+    /// sit side by side (vertically overlapping but horizontally disjoint) the
+    /// region is multi-column, and the summed-height density below would
+    /// double-count the stacked columns — for two full-height columns it is always
+    /// ≳1.3, so the guard would fire on every dense two-column page. Suppressing
+    /// the horizontal cut there is harmful: when the column gutter could not be
+    /// found (e.g. a full-width figure + caption straddling it at the top of the
+    /// page), the only way to recover the columns is to peel that top matter off
+    /// with a horizontal cut first and let the sub-regions find their gutter.
+    /// Without this guard the region falls through to <see cref="OrderLeaf"/>'s
+    /// row-banding, which interleaves the columns. Splitting an honest single
+    /// column horizontally is harmless (top-to-bottom order is preserved either
+    /// way), so this exclusion only ever helps.
+    /// </para>
     /// </summary>
     private static bool IsDenseSingleColumn(List<LayoutBlock> blocks, HGap gap)
     {
@@ -513,11 +562,53 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         float extent = bottom - top;
         if (extent <= 0) return false;
 
+        if (HasSideBySideBlocks(blocks)) return false;
+
         float covered = blocks.Sum(b => b.BBox.H);
         float density = covered / extent;
         // Dense column (little whitespace) AND the gap is a minor fraction of the
         // extent → treat as paragraph leading, not a cut.
         return density > 0.8f && gap.Height < extent * 0.1f;
+    }
+
+    /// <summary>
+    /// True when any two blocks sit side by side — vertically overlapping but
+    /// horizontally disjoint — which is the geometric signature of more than one
+    /// column in the region.
+    /// </summary>
+    private static bool HasSideBySideBlocks(List<LayoutBlock> blocks)
+    {
+        for (int i = 0; i < blocks.Count; i++)
+            for (int j = i + 1; j < blocks.Count; j++)
+                if (YOverlap(blocks[i].BBox, blocks[j].BBox) && !XOverlap(blocks[i].BBox, blocks[j].BBox))
+                    return true;
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="b"/> spans at least <see cref="DividerWidthFraction"/>
+    /// of the region width and vertically overlaps no other block in the region —
+    /// i.e. it occupies its own horizontal band and therefore divides the region
+    /// rather than belonging to a column. See <see cref="DividerWidthFraction"/>.
+    /// </summary>
+    private static bool IsFullWidthDivider(LayoutBlock b, List<LayoutBlock> blocks, float regWidth)
+    {
+        if (regWidth <= 0 || b.BBox.W < DividerWidthFraction * regWidth) return false;
+        foreach (var c in blocks)
+        {
+            if (ReferenceEquals(c, b)) continue;
+            if (YOverlap(b.BBox, c.BBox)) return false;
+        }
+        return true;
+    }
+
+    /// <summary>All blocks except <paramref name="exclude"/> (reference equality), order preserved.</summary>
+    private static List<LayoutBlock> Except(List<LayoutBlock> blocks, LayoutBlock exclude)
+    {
+        var rest = new List<LayoutBlock>(blocks.Count - 1);
+        foreach (var b in blocks)
+            if (!ReferenceEquals(b, exclude)) rest.Add(b);
+        return rest;
     }
 
     // ---------------------------------------------------------------------
