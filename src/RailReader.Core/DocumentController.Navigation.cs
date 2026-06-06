@@ -138,6 +138,13 @@ public sealed partial class DocumentController
                 if (AutoScrollActive)
                     doc.Rail.PauseAutoScroll(_config.AutoScrollLinePauseMs);
             }
+            else if (adv is LineAdvanceResult.PageChanged or LineAdvanceResult.PageChangedRailLost)
+            {
+                PageChanged?.Invoke(doc.CurrentPage);
+            }
+
+            if (adv is LineAdvanceResult.LineAdvanced or LineAdvanceResult.PageChanged)
+                FireReadingPositionChanged();
         }
         else
         {
@@ -273,6 +280,7 @@ public sealed partial class DocumentController
         doc.Rail.FindBlockNearPoint(pageX, pageY);
         var (ww2, wh2) = GetViewportSize();
         doc.StartSnap(ww2, wh2);
+        FireReadingPositionChanged();
         return (true, null);
     }
 

@@ -46,7 +46,6 @@ public static class TestFixtures
     public static void SetupRailMode(DocumentState doc, CoreSettings config,
         double vpWidth = 800, double vpHeight = 600)
     {
-        var analysis = new PageAnalysis();
         var block = new LayoutBlock
         {
             Role = BlockRole.Text, BBox = new BBox(72, 72, 468, 200),
@@ -54,7 +53,64 @@ public static class TestFixtures
         };
         for (int i = 0; i < 5; i++)
             block.Lines.Add(new LineInfo(72 + i * 20, 16, 72, 468));
+        var analysis = new PageAnalysis();
         analysis.Blocks.Add(block);
+        ActivateRailMode(doc, config, analysis, vpWidth, vpHeight);
+    }
+
+    /// <summary>
+    /// Configures a DocumentState for rail mode testing with multiple blocks of
+    /// different roles. Creates one line per block — suitable for block-level
+    /// navigation tests only; do not use for line-advance or snap-behaviour tests,
+    /// which need multiple lines per block like the single-block overload provides.
+    /// </summary>
+    public static void SetupRailMode(DocumentState doc, CoreSettings config,
+        double vpWidth, double vpHeight, params (BlockRole Role, BBox BBox)[] blocks)
+    {
+        var analysis = new PageAnalysis();
+        for (int i = 0; i < blocks.Length; i++)
+        {
+            var (role, bbox) = blocks[i];
+            var block = new LayoutBlock
+            {
+                Role = role, BBox = bbox, Confidence = 0.9f, Order = i,
+            };
+            block.Lines.Add(new LineInfo(bbox.Y + 10, 16, bbox.X, bbox.W));
+            analysis.Blocks.Add(block);
+        }
+        ActivateRailMode(doc, config, analysis, vpWidth, vpHeight);
+    }
+
+    /// <summary>
+    /// Configures rail mode with multiple blocks of differing roles AND a chosen
+    /// number of lines per block. Use this for tests that must distinguish line
+    /// indices within a block, mix navigable and non-navigable roles, or otherwise
+    /// need realistic geometry that the one-line-per-block overload cannot express.
+    /// Each block's lines are evenly stacked within its bbox (LineInfo.Y = centre).
+    /// </summary>
+    public static void SetupRailMode(DocumentState doc, CoreSettings config,
+        double vpWidth, double vpHeight, params (BlockRole Role, BBox BBox, int LineCount)[] blocks)
+    {
+        var analysis = new PageAnalysis();
+        for (int i = 0; i < blocks.Length; i++)
+        {
+            var (role, bbox, lineCount) = blocks[i];
+            var block = new LayoutBlock
+            {
+                Role = role, BBox = bbox, Confidence = 0.9f, Order = i,
+            };
+            int n = Math.Max(1, lineCount);
+            float lineH = bbox.H / n;
+            for (int j = 0; j < n; j++)
+                block.Lines.Add(new LineInfo(bbox.Y + lineH * (j + 0.5f), lineH, bbox.X, bbox.W));
+            analysis.Blocks.Add(block);
+        }
+        ActivateRailMode(doc, config, analysis, vpWidth, vpHeight);
+    }
+
+    private static void ActivateRailMode(DocumentState doc, CoreSettings config,
+        PageAnalysis analysis, double vpWidth, double vpHeight)
+    {
         doc.SetAnalysis(doc.CurrentPage, analysis);
         doc.Rail.SetAnalysis(analysis, config.NavigableRoles);
         doc.Camera.Zoom = config.RailZoomThreshold + 1;
@@ -80,4 +136,33 @@ public static class TestFixtures
 
         doc.Close();
     }
+}
+
+/// <summary>
+/// A controllable <see cref="ILayoutAnalyzer"/> for driving the real analysis
+/// worker pipeline in tests without an ONNX model. <c>RunAnalysis</c> returns
+/// whatever the supplied factory builds (default: an empty <see cref="PageAnalysis"/>).
+/// </summary>
+public sealed class FakeLayoutAnalyzer : ILayoutAnalyzer
+{
+    public static LayoutModelCapabilities DefaultCapabilities { get; } =
+        new(800, new List<LayoutClassDescriptor>(), ProvidesReadingOrder: true);
+
+    private readonly Func<PageAnalysis> _factory;
+
+    public FakeLayoutAnalyzer(Func<PageAnalysis>? factory = null)
+        => _factory = factory ?? (() => new PageAnalysis());
+
+    public LayoutModelCapabilities Capabilities => DefaultCapabilities;
+
+    public PageAnalysis RunAnalysis(byte[] rgbBytes, int pxW, int pxH, double pageW, double pageH,
+        IReadOnlyList<CharBox>? charBoxes = null, CancellationToken ct = default)
+    {
+        var analysis = _factory();
+        analysis.PageWidth = pageW;
+        analysis.PageHeight = pageH;
+        return analysis;
+    }
+
+    public void Dispose() { }
 }

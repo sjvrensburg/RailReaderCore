@@ -1,3 +1,4 @@
+using RailReader.Core.Commands;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
 using Xunit;
@@ -20,8 +21,7 @@ public class DocumentControllerTests : IDisposable
 
     public void Dispose()
     {
-        foreach (var doc in _controller.Documents.ToList())
-            doc.Dispose();
+        _controller.Dispose();
     }
 
     [Fact]
@@ -129,6 +129,25 @@ public class DocumentControllerTests : IDisposable
     {
         var (ww, wh) = _controller.GetViewportSize();
         TestFixtures.SetupRailMode(doc, _controller.Config, ww, wh);
+    }
+
+    private void SetupMultiBlockRailMode(DocumentState doc, params (BlockRole Role, BBox BBox)[] blocks)
+    {
+        var (ww, wh) = _controller.GetViewportSize();
+        TestFixtures.SetupRailMode(doc, _controller.Config, ww, wh, blocks);
+    }
+
+    /// <summary>
+    /// Creates, loads, adds, and sets viewport for a standard test document.
+    /// Returns the DocumentState ready for further setup (e.g., <see cref="SetupRailMode"/>).
+    /// </summary>
+    private DocumentState CreateAndAddDocument()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        return state;
     }
 
     // --- New tests ---
@@ -510,5 +529,506 @@ public class DocumentControllerTests : IDisposable
 
         var (handled, _) = _controller.HandleClick(500, 500);
         Assert.False(handled);
+    }
+
+    // --- Agent API: GetReadingPosition ---
+
+    [Fact]
+    public void GetReadingPosition_NoDocument_ReturnsNull()
+    {
+        Assert.Null(_controller.GetReadingPosition());
+    }
+
+    [Fact]
+    public void GetReadingPosition_NoRailMode_ReturnsNull()
+    {
+        CreateAndAddDocument();
+
+        // Zoom is below rail threshold — no rail mode
+        Assert.Null(_controller.GetReadingPosition());
+    }
+
+    [Fact]
+    public void GetReadingPosition_WithRailMode_ReturnsPosition()
+    {
+        var state = CreateAndAddDocument();
+        SetupRailMode(state);
+
+        var pos = _controller.GetReadingPosition();
+        Assert.NotNull(pos);
+        Assert.Equal(0, pos.Page);
+        Assert.Equal(0, pos.BlockIndex);
+        Assert.Equal(0, pos.LineIndex);
+        Assert.Equal(BlockRole.Text, pos.Role);
+        Assert.NotEqual(default, pos.BlockBBox);
+    }
+
+    [Fact]
+    public void GetReadingPosition_AfterArrowDown_AdvancesLine()
+    {
+        var state = CreateAndAddDocument();
+        SetupRailMode(state);
+
+        Assert.Equal(0, _controller.GetReadingPosition()!.LineIndex);
+
+        _controller.HandleArrowDown();
+        Assert.Equal(1, _controller.GetReadingPosition()!.LineIndex);
+    }
+
+    // --- Agent API: GetPageDescription ---
+
+    [Fact]
+    public void GetPageDescription_NoDocument_ReturnsNull()
+    {
+        Assert.Null(_controller.GetPageDescription());
+    }
+
+    [Fact]
+    public void GetPageDescription_NoAnalysis_ReturnsNull()
+    {
+        CreateAndAddDocument();
+
+        // No analysis injected — should return null
+        Assert.Null(_controller.GetPageDescription());
+    }
+
+    [Fact]
+    public void GetPageDescription_WithAnalysis_ReturnsBlocks()
+    {
+        var state = CreateAndAddDocument();
+        SetupRailMode(state);
+
+        var desc = _controller.GetPageDescription();
+        Assert.NotNull(desc);
+        Assert.Equal(0, desc.Page);
+        Assert.Equal(1, desc.TotalBlocks);
+        Assert.Single(desc.Blocks);
+        Assert.Equal(BlockRole.Text, desc.Blocks[0].Role);
+        Assert.Equal(0, desc.Blocks[0].ReadingOrder);
+    }
+
+    // --- Agent API: NavigateToRole ---
+
+    [Fact]
+    public void NavigateToRole_NoDocument_ReturnsFalse()
+    {
+        Assert.False(_controller.NavigateToRole(BlockRole.Text));
+    }
+
+    [Fact]
+    public void NavigateToRole_NoRailMode_ReturnsFalse()
+    {
+        CreateAndAddDocument();
+
+        Assert.False(_controller.NavigateToRole(BlockRole.Text));
+    }
+
+    [Fact]
+    public void NavigateToRole_TargetNotFound_ReturnsFalse()
+    {
+        var state = CreateAndAddDocument();
+        SetupRailMode(state);
+
+        // Only block is Text; searching for Heading should fail
+        Assert.False(_controller.NavigateToRole(BlockRole.Heading));
+    }
+
+    [Fact]
+    public void NavigateToRole_TargetFound_NavigatesAndSnaps()
+    {
+        var state = CreateAndAddDocument();
+        SetupMultiBlockRailMode(state,
+            (BlockRole.Text, new BBox(72, 72, 468, 200)),
+            (BlockRole.Heading, new BBox(72, 300, 468, 100)),
+            (BlockRole.Text, new BBox(72, 420, 468, 200)));
+
+        // Start at first block (Text, index 0)
+        Assert.Equal(BlockRole.Text, _controller.GetReadingPosition()!.Role);
+
+        // Navigate to next Heading
+        bool found = _controller.NavigateToRole(BlockRole.Heading);
+        Assert.True(found);
+
+        var pos = _controller.GetReadingPosition();
+        Assert.NotNull(pos);
+        Assert.Equal(BlockRole.Heading, pos.Role);
+    }
+
+    [Fact]
+    public void NavigateToRole_Backward_NavigatesBackward()
+    {
+        var state = CreateAndAddDocument();
+        SetupMultiBlockRailMode(state,
+            (BlockRole.Text, new BBox(72, 72, 468, 200)),
+            (BlockRole.Heading, new BBox(72, 300, 468, 100)),
+            (BlockRole.Text, new BBox(72, 420, 468, 200)));
+
+        // Navigate forward to Heading
+        _controller.NavigateToRole(BlockRole.Heading);
+        Assert.Equal(BlockRole.Heading, _controller.GetReadingPosition()!.Role);
+
+        // Navigate backward to Text — must land on Text(0), not Text(2)
+        bool found = _controller.NavigateToRole(BlockRole.Text, forward: false);
+        Assert.True(found);
+        var pos = _controller.GetReadingPosition();
+        Assert.NotNull(pos);
+        Assert.Equal(BlockRole.Text, pos.Role);
+        // Heading is at Order=1, so backward from Heading lands on the Text block at Order=0
+        Assert.Equal(0, pos.BlockIndex);
+    }
+
+    // --- Agent API: Events ---
+
+    [Fact]
+    public void PageChanged_FiredOnGoToPage()
+    {
+        CreateAndAddDocument();
+
+        int? receivedPage = null;
+        _controller.PageChanged = page => receivedPage = page;
+
+        _controller.GoToPage(1);
+        Assert.Equal(1, receivedPage);
+    }
+
+    [Fact]
+    public void ReadingPositionChanged_FiredOnArrowDown()
+    {
+        var state = CreateAndAddDocument();
+        SetupRailMode(state);
+
+        ReadingPosition? received = null;
+        _controller.ReadingPositionChanged = pos => received = pos;
+
+        _controller.HandleArrowDown();
+
+        Assert.NotNull(received);
+        Assert.Equal(1, received.LineIndex);
+        Assert.Equal(BlockRole.Text, received.Role);
+    }
+
+    [Fact]
+    public void ReadingPositionChanged_FiredOnClick()
+    {
+        var state = CreateAndAddDocument();
+        SetupRailMode(state);
+
+        var block = state.Rail.CurrentNavigableBlock;
+        double pageX = block.BBox.X + block.BBox.W / 2;
+        double pageY = block.BBox.Y + block.BBox.H / 2;
+        double canvasX = pageX * state.Camera.Zoom + state.Camera.OffsetX;
+        double canvasY = pageY * state.Camera.Zoom + state.Camera.OffsetY;
+
+        ReadingPosition? received = null;
+        _controller.ReadingPositionChanged = pos => received = pos;
+
+        _controller.HandleClick(canvasX, canvasY);
+
+        Assert.NotNull(received);
+        Assert.Equal(BlockRole.Text, received.Role);
+    }
+
+    [Fact]
+    public void AnalysisPageReady_CanBeSubscribed()
+    {
+        int? receivedPage = null;
+        _controller.AnalysisPageReady = page => receivedPage = page;
+
+        // Worker is null in tests, so PollAnalysisResults is a no-op
+        _controller.PollAnalysisResults();
+        Assert.Null(receivedPage);
+    }
+
+    // --- Agent API: text content verification ---
+
+    [Fact]
+    public void GetReadingPosition_WithTextCache_ReturnsNonEmptyText()
+    {
+        var state = CreateAndAddDocument();
+        SetupRailMode(state);
+
+        // Inject text into the cache so GetReadingPosition can extract it
+        var block = state.Rail.CurrentNavigableBlock;
+        var bbox = block.BBox;
+        // Create CharBoxes that fall within the block
+        var chars = "Hello world".Select((c, i) => new CharBox(i, bbox.X + i * 10, bbox.Y + 5, bbox.X + i * 10 + 10, bbox.Y + 20)).ToList();
+        state.SetText(0, new PageText("Hello world and more text here", chars));
+
+        var pos = _controller.GetReadingPosition();
+        Assert.NotNull(pos);
+        Assert.NotEmpty(pos.BlockText);
+    }
+
+    // --- Agent API: NavigateToRole boundary cases ---
+
+    [Fact]
+    public void NavigateToRole_ForwardFromLastBlock_ReturnsFalse()
+    {
+        var state = CreateAndAddDocument();
+        SetupMultiBlockRailMode(state,
+            (BlockRole.Text, new BBox(72, 72, 468, 200)),
+            (BlockRole.Heading, new BBox(72, 300, 468, 100)),
+            (BlockRole.Text, new BBox(72, 420, 468, 200)));
+
+        // Navigate forward to the last Text block (index 2)
+        _controller.NavigateToRole(BlockRole.Heading);
+        _controller.NavigateToRole(BlockRole.Text); // lands on Text(2)
+        Assert.Equal(2, _controller.GetReadingPosition()!.BlockIndex);
+
+        // Forward from last Text — no more Text blocks ahead
+        Assert.False(_controller.NavigateToRole(BlockRole.Text, forward: true));
+    }
+
+    [Fact]
+    public void NavigateToRole_BackwardFromFirstBlock_ReturnsFalse()
+    {
+        var state = CreateAndAddDocument();
+        SetupMultiBlockRailMode(state,
+            (BlockRole.Text, new BBox(72, 72, 468, 200)),
+            (BlockRole.Heading, new BBox(72, 300, 468, 100)));
+
+        // Start at first block (Text, index 0)
+        Assert.Equal(0, _controller.GetReadingPosition()!.BlockIndex);
+
+        // Backward from first block — no Text blocks behind
+        Assert.False(_controller.NavigateToRole(BlockRole.Text, forward: false));
+    }
+
+    [Fact]
+    public void NavigateToRole_NonNavigableRole_ReturnsFalse()
+    {
+        var state = CreateAndAddDocument();
+        SetupRailMode(state);
+
+        // Figure is not in default NavigableRoles
+        Assert.False(_controller.NavigateToRole(BlockRole.Figure));
+    }
+
+    // --- Agent API: event negative tests ---
+
+    [Fact]
+    public void ReadingPositionChanged_NotFiredWithoutRailMode()
+    {
+        CreateAndAddDocument();
+        // No rail mode — zoom is below threshold
+
+        ReadingPosition? received = null;
+        _controller.ReadingPositionChanged = pos => received = pos;
+
+        _controller.HandleArrowDown();
+        Assert.Null(received);
+    }
+
+    [Fact]
+    public void PageChanged_FiredOnLinkClickNavigation()
+    {
+        var state = CreateAndAddDocument();
+
+        // Inject a link at page-point (100, 100) → page 2
+        state.SetLinks(0,
+        [
+            new PdfLink
+            {
+                Rect = new RectF(50, 50, 200, 200),
+                Destination = new PageDestination { PageIndex = 2 }
+            }
+        ]);
+
+        double canvasX = 100 * state.Camera.Zoom + state.Camera.OffsetX;
+        double canvasY = 100 * state.Camera.Zoom + state.Camera.OffsetY;
+
+        int? receivedPage = null;
+        _controller.PageChanged = page => receivedPage = page;
+
+        _controller.HandleClick(canvasX, canvasY);
+        Assert.Equal(2, receivedPage);
+    }
+
+    // --- Agent API: regression tests for the code-review fixes ---
+
+    [Fact]
+    public void NavigateToRole_MultiLineTarget_LandsOnFirstLine()
+    {
+        var state = CreateAndAddDocument();
+        // Heading (1 line) followed by a 5-line Text block.
+        TestFixtures.SetupRailMode(state, _controller.Config, 800, 600,
+            (BlockRole.Heading, new BBox(72, 72, 468, 30), 1),
+            (BlockRole.Text, new BBox(72, 150, 468, 250), 5));
+        state.Rail.CurrentBlock = 0; // start on the Heading
+        state.Rail.CurrentLine = 0;
+
+        Assert.True(_controller.NavigateToRole(BlockRole.Text));
+
+        var pos = _controller.GetReadingPosition();
+        Assert.NotNull(pos);
+        Assert.Equal(BlockRole.Text, pos.Role);
+        // Regression: NavigateToRole used to snap via the block's geometric centre,
+        // landing on the line nearest the centre (~line 2 of 5). It must start at
+        // the first line so an agent reads the block top-to-bottom.
+        Assert.Equal(0, pos.LineIndex);
+    }
+
+    [Fact]
+    public void NavigateToRole_OverlappingBlocks_LandsOnRoleMatchedBlock()
+    {
+        var state = CreateAndAddDocument();
+        // A Heading nested inside a larger Text block (its centre lies within Text).
+        TestFixtures.SetupRailMode(state, _controller.Config, 800, 600,
+            (BlockRole.Text, new BBox(72, 72, 468, 400), 1),
+            (BlockRole.Heading, new BBox(150, 200, 168, 40), 1));
+        state.Rail.CurrentBlock = 0; // start on the enclosing Text block
+        state.Rail.CurrentLine = 0;
+
+        Assert.True(_controller.NavigateToRole(BlockRole.Heading));
+
+        // Regression: snapping by the Heading's centre point used to hit-test into
+        // the enclosing Text block (first navigable block containing the point) and
+        // land there while still returning true. It must land on the Heading.
+        Assert.Equal(BlockRole.Heading, _controller.GetReadingPosition()!.Role);
+    }
+
+    [Fact]
+    public void GetReadingPosition_BlockIndex_AlignsWithPageDescription_WhenNonNavigableBlocksPrecede()
+    {
+        var state = CreateAndAddDocument();
+        // A non-navigable Figure precedes the navigable blocks, so the navigable-
+        // subset index (Rail.CurrentBlock) and the page-level array index diverge.
+        TestFixtures.SetupRailMode(state, _controller.Config, 800, 600,
+            (BlockRole.Figure, new BBox(72, 72, 468, 100), 1),    // array 0, non-navigable
+            (BlockRole.Text, new BBox(72, 200, 468, 100), 1),     // array 1, navigable
+            (BlockRole.Heading, new BBox(72, 320, 468, 40), 1));  // array 2, navigable
+        state.Rail.CurrentBlock = 0; // first navigable block = the Text block
+        state.Rail.CurrentLine = 0;
+
+        var pos = _controller.GetReadingPosition();
+        Assert.NotNull(pos);
+        Assert.Equal(BlockRole.Text, pos.Role);
+        // BlockIndex is the page-level index (Text is the 2nd block), not the
+        // navigable-subset index (0).
+        Assert.Equal(1, pos.BlockIndex);
+
+        // It indexes directly into GetPageDescription().Blocks.
+        var desc = _controller.GetPageDescription();
+        Assert.NotNull(desc);
+        Assert.Equal(pos.Role, desc.Blocks[pos.BlockIndex].Role);
+        Assert.Equal(pos.BlockBBox, desc.Blocks[pos.BlockIndex].BBox);
+    }
+
+    [Fact]
+    public void GoToPage_SamePageOrClamped_DoesNotFirePageChanged()
+    {
+        CreateAndAddDocument(); // 3-page PDF, starts on page 0
+
+        int fireCount = 0;
+        int lastPage = -1;
+        _controller.PageChanged = page => { fireCount++; lastPage = page; };
+
+        _controller.GoToPage(0); // no-op (already on page 0)
+        Assert.Equal(0, fireCount);
+
+        _controller.GoToPage(1); // real change
+        Assert.Equal(1, fireCount);
+        Assert.Equal(1, lastPage);
+
+        _controller.GoToPage(1); // no-op (already on page 1)
+        Assert.Equal(1, fireCount);
+
+        _controller.GoToPage(999); // clamps to last page (2) — real change
+        Assert.Equal(2, fireCount);
+        Assert.Equal(2, lastPage);
+
+        _controller.GoToPage(999); // clamps to 2 == current — no-op
+        Assert.Equal(2, fireCount);
+    }
+
+    [Fact]
+    public void ReadingPositionChanged_EventPayloadHasNoText_PullApiHasText()
+    {
+        var state = CreateAndAddDocument();
+        SetupRailMode(state);
+
+        // Inject text so the pull API can extract it.
+        var bbox = state.Rail.CurrentNavigableBlock.BBox;
+        var chars = "Hello world"
+            .Select((_, i) => new CharBox(i, bbox.X + i * 10, bbox.Y + 5, bbox.X + i * 10 + 10, bbox.Y + 20))
+            .ToList();
+        state.SetText(0, new PageText("Hello world and more", chars));
+
+        ReadingPosition? evt = null;
+        _controller.ReadingPositionChanged = p => evt = p;
+        _controller.HandleArrowDown(); // fires ReadingPositionChanged
+
+        Assert.NotNull(evt);
+        // The push payload deliberately carries no text (hot path).
+        Assert.Equal("", evt.BlockText);
+        Assert.Equal("", evt.LineText);
+        // The pull API does extract text.
+        Assert.NotEmpty(_controller.GetReadingPosition()!.BlockText);
+    }
+
+    [Fact]
+    public void GetPageDescription_TruncatedPreview_KeepsEllipsisDespiteLeadingWhitespace()
+    {
+        var state = CreateAndAddDocument();
+        SetupRailMode(state); // single Text block, BBox(72,72,468,200)
+
+        var bbox = state.Rail.CurrentNavigableBlock.BBox;
+        // 5 leading spaces + 300 letters: trimming the 200-char window would drop
+        // the length below 200, which used to suppress the ellipsis.
+        var text = new string(' ', 5) + new string('A', 300);
+        var chars = new List<CharBox>(text.Length);
+        for (int i = 0; i < text.Length; i++)
+        {
+            float x = bbox.X + (i % 80) * 5;
+            float y = bbox.Y + (i / 80) * 12;
+            chars.Add(new CharBox(i, x, y, x + 5, y + 12));
+        }
+        state.SetText(0, new PageText(text, chars));
+
+        var preview = _controller.GetPageDescription()!.Blocks[0].TextPreview;
+        Assert.EndsWith("…", preview);          // truncation is still signalled
+        Assert.DoesNotContain(" ", preview);     // leading whitespace was trimmed
+    }
+
+    [Fact]
+    public void GetPageDescription_ShortBlock_NoEllipsis()
+    {
+        var state = CreateAndAddDocument();
+        SetupRailMode(state);
+
+        var bbox = state.Rail.CurrentNavigableBlock.BBox;
+        const string text = "Short block text.";
+        var chars = text
+            .Select((_, i) => new CharBox(i, bbox.X + i * 5, bbox.Y + 5, bbox.X + i * 5 + 5, bbox.Y + 18))
+            .ToList();
+        state.SetText(0, new PageText(text, chars));
+
+        var preview = _controller.GetPageDescription()!.Blocks[0].TextPreview;
+        Assert.Equal(text, preview);
+        Assert.DoesNotContain("…", preview);
+    }
+
+    [Fact]
+    public void AnalysisPageReady_FiresForOpenDocument_ViaWorker()
+    {
+        // Drive the real analysis worker with a fake analyzer (no ONNX model).
+        _controller.InitializeWorker(
+            FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer());
+
+        var received = new List<int>();
+        _controller.AnalysisPageReady = page => received.Add(page);
+
+        CreateAndAddDocument(); // submits page-0 analysis on a background thread
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (!received.Contains(0) && sw.ElapsedMilliseconds < 5000)
+        {
+            _controller.PollAnalysisResults();
+            System.Threading.Thread.Sleep(10);
+        }
+
+        // The result belongs to an open document, so it must be announced.
+        Assert.Contains(0, received);
     }
 }

@@ -68,3 +68,34 @@ public sealed record ScreenshotOptions
     public int ViewportHeight { get; init; } = 900;
 }
 
+/// <summary>
+/// Current reading position in a document for agent/screen-reader consumption.
+/// </summary>
+public sealed record ReadingPosition(
+    int Page,
+    int BlockIndex,
+    int LineIndex,
+    BlockRole Role,
+    string BlockText,
+    string LineText,
+    BBox BlockBBox);
+
+/// <summary>
+/// Summary of a single layout block for accessible page descriptions.
+/// </summary>
+public sealed record BlockSummary(
+    int Index,
+    BlockRole Role,
+    string TextPreview,
+    BBox BBox,
+    int ReadingOrder);
+
+/// <summary>
+/// Accessible description of a page's layout and content for screen readers
+/// and AI agents.
+/// </summary>
+public sealed record PageDescription(
+    int Page,
+    int TotalBlocks,
+    IReadOnlyList<BlockSummary> Blocks);
+
