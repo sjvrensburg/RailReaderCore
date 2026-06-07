@@ -46,13 +46,17 @@ public sealed partial class RailNav
     {
         if (!_autoScrollState.IsActive || _navigableIndices.Count == 0) return false;
 
-        var (_, blockRight, _) = GetBlockBounds(zoom);
+        // Advance at the current LINE's right extent (not the block/chunk right edge) so a
+        // short line in a wide block doesn't auto-scroll through trailing empty space —
+        // matching the manual edge-hold trigger (IsAtHardEdge). The dwell decision below
+        // still uses the raw BLOCK width (whether the block needs horizontal scrolling).
+        var (_, lineRight, _) = GetLineBounds(zoom);
         var block = CurrentNavigableBlock;
 
         var ctx = new AutoScrollContext
         {
             SnapInProgress = _snap is not null,
-            BlockRight = blockRight,
+            LineRight = lineRight,
             RawBlockWidthPx = block.BBox.W * zoom,
             CurrentLine = CurrentLine,
             BlockLineCount = block.Lines.Count,

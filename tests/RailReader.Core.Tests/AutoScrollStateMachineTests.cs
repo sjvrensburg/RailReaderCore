@@ -24,7 +24,7 @@ public class AutoScrollStateMachineTests
         return new AutoScrollContext
         {
             SnapInProgress = snapInProgress,
-            BlockRight = blockRight,
+            LineRight = blockRight, // helper param feeds the advance boundary (now the line's right edge)
             RawBlockWidthPx = rawBlockWidthPx,
             CurrentLine = currentLine,
             BlockLineCount = blockLineCount,

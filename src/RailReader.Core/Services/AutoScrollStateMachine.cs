@@ -20,8 +20,8 @@ internal interface ICameraClamp { double ClampX(double cameraX, double zoom, dou
 internal readonly struct AutoScrollContext
 {
     public required bool SnapInProgress { get; init; }
-    /// <summary>Right edge of the current block (with margin).</summary>
-    public required double BlockRight { get; init; }
+    /// <summary>Right edge of the current line (with margin) — the auto-scroll line-end.</summary>
+    public required double LineRight { get; init; }
     /// <summary>Raw block width in pixels (without margin).</summary>
     public required double RawBlockWidthPx { get; init; }
     public required int CurrentLine { get; init; }
@@ -233,7 +233,7 @@ internal sealed class AutoScrollStateMachine
 
         // Check if we've reached the right edge of the line
         double visibleRight = (-cameraX + ctx.WindowWidth) / ctx.Zoom;
-        if (visibleRight < ctx.BlockRight)
+        if (visibleRight < ctx.LineRight)
             return false; // still scrolling
 
         // Reached right edge -- determine next action

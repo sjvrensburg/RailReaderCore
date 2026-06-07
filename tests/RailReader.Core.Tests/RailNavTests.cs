@@ -788,4 +788,39 @@ public class RailNavTests
         Assert.True(_nav.IsAtHardEdge(blockEndCamX, zoom, WindowWidth, ScrollDirection.Forward));
         Assert.False(_nav.IsAtHardEdge(blockEndCamX + 200, zoom, WindowWidth, ScrollDirection.Forward));
     }
+
+    [Fact]
+    public void AutoScroll_ReachesEndAtLineExtent_NotBlockExtent_ForShortLine()
+    {
+        // Single-line wide block; the line's width is the only thing that should decide
+        // when auto-scroll has reached the end (mirrors the manual edge-hold fix).
+        PageAnalysis Wide(float lineWidth)
+        {
+            var b = new LayoutBlock
+            {
+                BBox = new BBox(72, 72, 468, 20), Role = BlockRole.Text, Confidence = 0.9f, Order = 0,
+            };
+            b.Lines.Add(new LineInfo(82, 16, 72, lineWidth));
+            return new PageAnalysis { Blocks = [b], PageWidth = 612, PageHeight = 792 };
+        }
+
+        // SHORT line (150pt): fully visible at the framed leftmost camera, so auto-scroll
+        // immediately reaches the line end and signals advance.
+        _nav.SetAnalysis(Wide(150), new HashSet<BlockRole> { BlockRole.Text });
+        _nav.Active = true;
+        _nav.AutoScrollElapsedSecondsOverride = () => 0.0;
+        _nav.StartAutoScroll(20.0);
+        double camX = 0;
+        Assert.True(_nav.TickAutoScroll(ref camX, 0.016, Zoom, WindowWidth));
+
+        // FULL-WIDTH line (468pt) in the same wide block: still off-screen to the right at
+        // the framed position, so auto-scroll keeps scrolling (does NOT advance yet).
+        var nav2 = new RailNav(_config.ToCoreSettings());
+        nav2.SetAnalysis(Wide(468), new HashSet<BlockRole> { BlockRole.Text });
+        nav2.Active = true;
+        nav2.AutoScrollElapsedSecondsOverride = () => 0.0;
+        nav2.StartAutoScroll(20.0);
+        double camX2 = 0;
+        Assert.False(nav2.TickAutoScroll(ref camX2, 0.016, Zoom, WindowWidth));
+    }
 }

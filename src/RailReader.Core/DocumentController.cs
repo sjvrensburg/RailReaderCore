@@ -478,7 +478,10 @@ public sealed partial class DocumentController : IDisposable
     /// <summary>
     /// Smoothly frame the page-level block <paramref name="pageBlockIndex"/> on the
     /// current page using rail's exact framing: eased zoom+pan to it (auto-fit when
-    /// <paramref name="targetZoom"/> is null). Returns false if no document / no
+    /// <paramref name="targetZoom"/> is null). The zoom is floored at the rail threshold
+    /// so rail engages and the completion snap frames the block — below the threshold
+    /// rail stays inactive and ClampCamera re-centres the whole page, leaving the block
+    /// unframed (e.g. flush at the page top). Returns false if no document / no
     /// current-page analysis / index out of range / block is not navigable.
     /// </summary>
     public bool SmoothlyFrameBlock(int pageBlockIndex, double? targetZoom = null)
@@ -487,17 +490,22 @@ public sealed partial class DocumentController : IDisposable
         if (!doc.AnalysisCache.TryGetValue(doc.CurrentPage, out var analysis)) return false;
         if (pageBlockIndex < 0 || pageBlockIndex >= analysis.Blocks.Count) return false;
 
-        // Sync RailNav to THIS page's analysis (builds chunks; ReferenceEquals-guarded so
-        // it preserves position when already loaded), so the index space + chunk framing
-        // below refer to the current page.
-        doc.ReapplyNavigableRoles(_config.NavigableRoles);
+        // Sync RailNav to THIS page's analysis so the index space + chunk framing below
+        // refer to the current page. Skip the rebuild when it already holds this exact
+        // analysis (the common case) — ReapplyNavigableRoles itself always rebuilds.
+        if (!ReferenceEquals(doc.Rail.Analysis, analysis))
+            doc.ReapplyNavigableRoles(_config.NavigableRoles);
 
         if (!doc.Rail.TrySetCurrentByPageIndex(pageBlockIndex)) return false; // non-navigable role
+        // Keep THIS block seated when the zoom crosses the rail threshold mid-flight,
+        // regardless of overlapping block geometry under the focus point.
+        doc.Rail.PinCurrentBlockForActivation();
 
         var (ww, wh) = GetViewportSize();
         var box = analysis.Blocks[pageBlockIndex].BBox;
+        // Floor at the rail threshold (not ZoomMin) so rail framing actually applies.
         double z = Math.Clamp(targetZoom ?? doc.ComputeBlockFitZoom(box, ww, wh),
-            Camera.ZoomMin, Camera.ZoomMax);
+            _config.RailZoomThreshold, Camera.ZoomMax);
 
         var (ox, oy) = doc.Rail.ComputeSnapTarget(z, ww, wh);
         var line = doc.Rail.CurrentLineInfo; // seated block's first line
