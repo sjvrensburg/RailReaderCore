@@ -641,6 +641,23 @@ public sealed class DocumentState : IDisposable
         return Math.Clamp(z, Camera.ZoomMin, Camera.ZoomMax);
     }
 
+    /// <summary>
+    /// Camera target (zoom + offsets) that centres <paramref name="box"/> in the viewport,
+    /// fitting it via <see cref="ComputeBlockFitZoom"/> unless <paramref name="targetZoom"/> is
+    /// given. Unlike rail framing this does NOT floor at the rail threshold — a large figure can
+    /// be shown whole below 3×. Used by geometric centred framing for non-navigable blocks
+    /// (figures/tables/charts) that the rail index can't seat.
+    /// </summary>
+    public (double Zoom, double OffsetX, double OffsetY) ComputeCenteredFrame(
+        BBox box, double viewportW, double viewportH, double? targetZoom = null)
+    {
+        double z = Math.Clamp(targetZoom ?? ComputeBlockFitZoom(box, viewportW, viewportH),
+            Camera.ZoomMin, Camera.ZoomMax);
+        double ox = (viewportW - box.W * z) / 2.0 - box.X * z;
+        double oy = (viewportH - box.H * z) / 2.0 - box.Y * z;
+        return (z, ox, oy);
+    }
+
     public void CenterPage(double windowWidth, double windowHeight)
     {
         if (PageWidth <= 0 || PageHeight <= 0 || windowWidth <= 0 || windowHeight <= 0) return;

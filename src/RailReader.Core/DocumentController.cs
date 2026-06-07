@@ -477,12 +477,12 @@ public sealed partial class DocumentController : IDisposable
 
     /// <summary>
     /// Smoothly frame the page-level block <paramref name="pageBlockIndex"/> on the
-    /// current page using rail's exact framing: eased zoom+pan to it (auto-fit when
-    /// <paramref name="targetZoom"/> is null). The zoom is floored at the rail threshold
-    /// so rail engages and the completion snap frames the block — below the threshold
-    /// rail stays inactive and ClampCamera re-centres the whole page, leaving the block
-    /// unframed (e.g. flush at the page top). Returns false if no document / no
-    /// current-page analysis / index out of range / block is not navigable.
+    /// current page (auto-fit when <paramref name="targetZoom"/> is null). Navigable blocks
+    /// use rail's exact framing: the zoom is floored at the rail threshold so rail engages and
+    /// the completion snap frames the block. Non-navigable blocks (figures/tables/charts) — which
+    /// the rail index can't seat — fall back to a geometric centred frame instead of failing, so
+    /// callers can frame any detected block. Returns false only if there's no document / no
+    /// current-page analysis / the index is out of range.
     /// </summary>
     public bool SmoothlyFrameBlock(int pageBlockIndex, double? targetZoom = null)
     {
@@ -496,13 +496,17 @@ public sealed partial class DocumentController : IDisposable
         if (!ReferenceEquals(doc.Rail.Analysis, analysis))
             doc.ReapplyNavigableRoles(_config.NavigableRoles);
 
-        if (!doc.Rail.TrySetCurrentByPageIndex(pageBlockIndex)) return false; // non-navigable role
+        var box = analysis.Blocks[pageBlockIndex].BBox;
+
+        // Non-navigable role (figure/table/chart): centre it geometrically instead of failing.
+        if (!doc.Rail.TrySetCurrentByPageIndex(pageBlockIndex))
+            return CenterBlockGeometric(doc, box, targetZoom);
+
         // Keep THIS block seated when the zoom crosses the rail threshold mid-flight,
         // regardless of overlapping block geometry under the focus point.
         doc.Rail.PinCurrentBlockForActivation();
 
         var (ww, wh) = GetViewportSize();
-        var box = analysis.Blocks[pageBlockIndex].BBox;
         // Floor at the rail threshold (not ZoomMin) so rail framing actually applies.
         double z = Math.Clamp(targetZoom ?? doc.ComputeBlockFitZoom(box, ww, wh),
             _config.RailZoomThreshold, Camera.ZoomMax);
@@ -517,20 +521,66 @@ public sealed partial class DocumentController : IDisposable
 
     /// <summary>
     /// Frame the <paramref name="occurrence"/>-th (0-based, reading order) block of
-    /// <paramref name="role"/> on the current page.
+    /// <paramref name="role"/> on the current page. Non-navigable roles are centred geometrically
+    /// (see <see cref="SmoothlyFrameBlock"/>).
     /// </summary>
     public bool SmoothlyFrameRole(BlockRole role, int occurrence = 0, double? targetZoom = null)
     {
-        if (occurrence < 0) return false;
         if (ActiveDocument is not { } doc) return false;
         if (!doc.AnalysisCache.TryGetValue(doc.CurrentPage, out var analysis)) return false;
+        int idx = FindRoleOccurrence(analysis, role, occurrence);
+        return idx >= 0 && SmoothlyFrameBlock(idx, targetZoom);
+    }
 
+    /// <summary>
+    /// Geometrically frame ANY block on the current page — including non-navigable
+    /// figures/tables/charts — by easing zoom-to-fit and centring it in the viewport, without
+    /// engaging rail. Unlike <see cref="SmoothlyFrameBlock"/> this never seats a rail line, so it
+    /// frames a block whole even below the rail threshold. Returns false only if there's no
+    /// document / no current-page analysis / the index is out of range.
+    /// </summary>
+    public bool SmoothlyCenterBlock(int pageBlockIndex, double? targetZoom = null)
+    {
+        if (ActiveDocument is not { } doc) return false;
+        if (!doc.AnalysisCache.TryGetValue(doc.CurrentPage, out var analysis)) return false;
+        if (pageBlockIndex < 0 || pageBlockIndex >= analysis.Blocks.Count) return false;
+        return CenterBlockGeometric(doc, analysis.Blocks[pageBlockIndex].BBox, targetZoom);
+    }
+
+    /// <summary>Geometric centred-frame counterpart to <see cref="SmoothlyFrameRole"/>: centre the
+    /// <paramref name="occurrence"/>-th block of <paramref name="role"/> in reading order.</summary>
+    public bool SmoothlyCenterRole(BlockRole role, int occurrence = 0, double? targetZoom = null)
+    {
+        if (ActiveDocument is not { } doc) return false;
+        if (!doc.AnalysisCache.TryGetValue(doc.CurrentPage, out var analysis)) return false;
+        int idx = FindRoleOccurrence(analysis, role, occurrence);
+        return idx >= 0 && SmoothlyCenterBlock(idx, targetZoom);
+    }
+
+    /// <summary>Page-block index of the <paramref name="occurrence"/>-th block of
+    /// <paramref name="role"/> in reading order on <paramref name="analysis"/>, or -1.</summary>
+    private static int FindRoleOccurrence(PageAnalysis analysis, BlockRole role, int occurrence)
+    {
+        if (occurrence < 0) return -1;
         var matches = new List<int>();
         for (int i = 0; i < analysis.Blocks.Count; i++)
             if (analysis.Blocks[i].Role == role) matches.Add(i);
-        if (occurrence >= matches.Count) return false;
-        matches.Sort((a, b) => analysis.Blocks[a].Order.CompareTo(analysis.Blocks[b].Order)); // reading order
-        return SmoothlyFrameBlock(matches[occurrence], targetZoom);
+        if (occurrence >= matches.Count) return -1;
+        matches.Sort((a, b) => analysis.Blocks[a].Order.CompareTo(analysis.Blocks[b].Order));
+        return matches[occurrence];
+    }
+
+    /// <summary>Shared geometric centred-frame: ease the camera to fit + centre <paramref name="box"/>
+    /// without engaging rail. Always returns true.</summary>
+    private bool CenterBlockGeometric(DocumentState doc, BBox box, double? targetZoom)
+    {
+        var (ww, wh) = GetViewportSize();
+        var (z, ox, oy) = doc.ComputeCenteredFrame(box, ww, wh, targetZoom);
+        if (AutoScrollActive) StopAutoScroll();
+        doc.Rail.Deactivate(); // drive the camera directly; no rail seat/snap
+        _zoom.StartCameraOnly(doc, z, ox, oy);
+        FireReadingPositionChanged(); // rail now inactive → reading position cleared
+        return true;
     }
 
     /// <summary>

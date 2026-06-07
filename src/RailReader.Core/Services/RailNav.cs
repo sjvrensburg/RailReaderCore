@@ -178,6 +178,18 @@ public sealed partial class RailNav : ICameraClamp
     /// instead of running geometric nearest-block selection.</summary>
     public void PinCurrentBlockForActivation() => _pinnedActivationBlock = CurrentBlock;
 
+    /// <summary>Force rail out of active mode. Mirrors the deactivate branch of
+    /// <see cref="UpdateZoom"/>; used by geometric centred framing, which drives the camera
+    /// directly (no rail) and must not leave a stale snap/scroll running.</summary>
+    public void Deactivate()
+    {
+        Active = false;
+        _snap = null;
+        _scroll.Stop();
+        ScrollSpeed = 0.0;
+        _pinnedActivationBlock = null;
+    }
+
     /// <summary>
     /// Scale VerticalBias proportionally so the active line stays at the
     /// same screen position when zoom changes incrementally.
