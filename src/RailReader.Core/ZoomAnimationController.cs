@@ -79,6 +79,35 @@ internal sealed class ZoomAnimationController
         };
     }
 
+    /// <summary>
+    /// Starts a smooth zoom animation to an EXPLICIT camera target (zoom + offsets),
+    /// rather than zooming around a focus point. Identical cubic ease-out curve and
+    /// duration (<see cref="CoreTuning.ZoomAnimationDurationMs"/>) as <see cref="Start"/>;
+    /// only the target is supplied directly. <paramref name="cursorPageX"/>/<paramref
+    /// name="cursorPageY"/> is the page-space point used for per-frame rail
+    /// re-evaluation (<c>UpdateRailZoom</c>) and — when zoom crosses the rail threshold
+    /// mid-animation — the point <c>FindBlockNearPoint</c> uses to pick the active
+    /// block. Pass the target block's line centre so activation lands on it.
+    /// </summary>
+    public void StartTo(DocumentState doc,
+        double targetZoom, double targetOffsetX, double targetOffsetY,
+        double cursorPageX, double cursorPageY)
+    {
+        _zoomAnim = new ZoomAnimation
+        {
+            StartZoom = doc.Camera.Zoom,
+            TargetZoom = targetZoom,
+            StartOffsetX = doc.Camera.OffsetX,
+            StartOffsetY = doc.Camera.OffsetY,
+            TargetOffsetX = targetOffsetX,
+            TargetOffsetY = targetOffsetY,
+            CursorPageX = cursorPageX,
+            CursorPageY = cursorPageY,
+            HorizontalFraction = -1, // not preserving a prior rail position → completion takes the StartSnap branch
+            LineScreenY = 0,
+        };
+    }
+
     /// <summary>Smooth zoom animation step.</summary>
     public void Tick(DocumentState doc, double ww, double wh,
         ref bool cameraChanged, ref bool animating)

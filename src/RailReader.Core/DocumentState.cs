@@ -627,6 +627,20 @@ public sealed class DocumentState : IDisposable
     /// </summary>
     private const double RailThresholdEpsilon = 0.001;
 
+    /// <summary>
+    /// Zoom that fits <paramref name="box"/> within the viewport with a uniform margin,
+    /// clamped to the camera range. The limiting dimension wins so the whole block shows.
+    /// </summary>
+    public double ComputeBlockFitZoom(BBox box, double viewportW, double viewportH,
+        double marginFraction = 0.08)
+    {
+        double padW = box.W * (1.0 + 2.0 * marginFraction);
+        double padH = box.H * (1.0 + 2.0 * marginFraction);
+        if (padW <= 0 || padH <= 0 || viewportW <= 0 || viewportH <= 0) return Camera.Zoom;
+        double z = Math.Min(viewportW / padW, viewportH / padH);
+        return Math.Clamp(z, Camera.ZoomMin, Camera.ZoomMax);
+    }
+
     public void CenterPage(double windowWidth, double windowHeight)
     {
         if (PageWidth <= 0 || PageHeight <= 0 || windowWidth <= 0 || windowHeight <= 0) return;

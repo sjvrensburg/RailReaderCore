@@ -658,4 +658,84 @@ public class RailNavTests
         double reclamped = ((ICameraClamp)_nav).ClampX(camX, Zoom, WindowWidth);
         Assert.Equal(reclamped, camX, precision: 2); // re-clamping must not move it
     }
+
+    // ===== Smooth frame-block support (TrySetCurrentByPageIndex / ComputeSnapTarget) =====
+
+    [Fact]
+    public void TrySetCurrentByPageIndex_SeatsNavigableBlock_ResetsLineAndBias()
+    {
+        // Page blocks [Text, Figure, Text] → navigable subset = page indices {0, 2}.
+        var analysis = CreateMixedAnalysis(3, 3, BlockRole.Text, BlockRole.Figure, BlockRole.Text);
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { BlockRole.Text });
+        _nav.CurrentLine = 2;
+        _nav.VerticalBias = 17;
+
+        bool ok = _nav.TrySetCurrentByPageIndex(2); // page index 2 → navigable position 1
+
+        Assert.True(ok);
+        Assert.Equal(1, _nav.CurrentBlock);
+        Assert.Equal(2, _nav.CurrentNavigableArrayIndex); // page-level index round-trips
+        Assert.Equal(0, _nav.CurrentLine);
+        Assert.Equal(0, _nav.VerticalBias);
+    }
+
+    [Fact]
+    public void TrySetCurrentByPageIndex_NonNavigableBlock_ReturnsFalse_LeavesStateUnchanged()
+    {
+        var analysis = CreateMixedAnalysis(3, 3, BlockRole.Text, BlockRole.Figure, BlockRole.Text);
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { BlockRole.Text });
+        Assert.True(_nav.TrySetCurrentByPageIndex(0));
+        _nav.CurrentLine = 1;
+
+        bool ok = _nav.TrySetCurrentByPageIndex(1); // page index 1 is a Figure (non-navigable)
+
+        Assert.False(ok);
+        Assert.Equal(0, _nav.CurrentBlock); // unchanged
+        Assert.Equal(1, _nav.CurrentLine);  // unchanged
+    }
+
+    [Fact]
+    public void ComputeSnapTarget_CentersCurrentLineVertically()
+    {
+        var analysis = CreateAnalysis(2, 3); // two stacked 468-wide text blocks, 3 lines each
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { BlockRole.Text });
+        Assert.True(_nav.TrySetCurrentByPageIndex(1)); // second block
+
+        var line = _nav.CurrentLineInfo; // first line of block 1
+        var (_, y) = _nav.ComputeSnapTarget(Zoom, WindowWidth, WindowHeight);
+
+        // Vertical target centers the current line: y = wh/2 - lineY*zoom (bias 0, no pixel snap).
+        Assert.Equal(WindowHeight / 2.0 - line.Y * Zoom, y, precision: 3);
+    }
+
+    [Fact]
+    public void ComputeSnapTarget_ReflectsSeatedBlock()
+    {
+        var analysis = CreateAnalysis(2, 3);
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { BlockRole.Text });
+
+        _nav.TrySetCurrentByPageIndex(0);
+        var (_, y0) = _nav.ComputeSnapTarget(Zoom, WindowWidth, WindowHeight);
+        _nav.TrySetCurrentByPageIndex(1);
+        var (_, y1) = _nav.ComputeSnapTarget(Zoom, WindowWidth, WindowHeight);
+
+        Assert.NotEqual(y0, y1); // different blocks → different vertical frame
+    }
+
+    [Fact]
+    public void ComputeSnapTarget_NarrowBlockCentered_WideBlockLeftAligned()
+    {
+        var analysis = CreateAnalysis(1, 3); // single 468-wide text block at x=72
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { BlockRole.Text });
+        _nav.TrySetCurrentByPageIndex(0);
+        const double blockCenterX = 72 + 468 / 2.0;
+
+        // Narrow: 468*1 ≤ 0.75*800 → centered, so the block centre maps to viewport centre.
+        var (xNarrow, _) = _nav.ComputeSnapTarget(1.0, WindowWidth, WindowHeight);
+        Assert.Equal(WindowWidth / 2.0, blockCenterX * 1.0 + xNarrow, precision: 1);
+
+        // Wide: 468*4 > 0.75*800 → left-aligned, so the block centre sits right of viewport centre.
+        var (xWide, _) = _nav.ComputeSnapTarget(4.0, WindowWidth, WindowHeight);
+        Assert.True(blockCenterX * 4.0 + xWide > WindowWidth / 2.0);
+    }
 }

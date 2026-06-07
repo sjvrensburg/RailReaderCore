@@ -531,6 +531,24 @@ public sealed partial class RailNav : ICameraClamp
             : _navigableIndices[Math.Min(CurrentBlock, _navigableIndices.Count - 1)];
 
     /// <summary>
+    /// Seats the rail cursor on the block whose page-level index (into
+    /// <see cref="PageAnalysis.Blocks"/>) is <paramref name="pageBlockIndex"/> — the
+    /// same index space as <see cref="CurrentNavigableArrayIndex"/> and page-description
+    /// queries — landing on its first line and clearing vertical bias. Returns false if
+    /// that block is not in the navigable subset (e.g. a non-navigable role), leaving
+    /// the cursor unchanged.
+    /// </summary>
+    public bool TrySetCurrentByPageIndex(int pageBlockIndex)
+    {
+        int navPos = _navigableIndices.IndexOf(pageBlockIndex);
+        if (navPos < 0) return false;
+        CurrentBlock = navPos;
+        CurrentLine = 0;
+        VerticalBias = 0;
+        return true;
+    }
+
+    /// <summary>
     /// Moves the cursor to the next (forward) or previous block whose role equals
     /// <paramref name="role"/>, starting from the current block, and lands on its
     /// first line. Walks the navigable subset directly (which is already in reading
