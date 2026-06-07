@@ -738,4 +738,54 @@ public class RailNavTests
         var (xWide, _) = _nav.ComputeSnapTarget(4.0, WindowWidth, WindowHeight);
         Assert.True(blockCenterX * 4.0 + xWide > WindowWidth / 2.0);
     }
+
+    // ===== Forward line-advance trigger fires at the line end, not the block edge =====
+
+    /// <summary>Single wide block whose only line has the given (short) width at x=72.</summary>
+    private static PageAnalysis ShortLineAnalysis(float blockWidth, float lineWidth)
+    {
+        var block = new LayoutBlock
+        {
+            BBox = new BBox(72, 72, blockWidth, 20), Role = BlockRole.Text, Confidence = 0.9f, Order = 0,
+        };
+        block.Lines.Add(new LineInfo(82, 16, 72, lineWidth)); // single line, x=72
+        return new PageAnalysis { Blocks = [block], PageWidth = 612, PageHeight = 792 };
+    }
+
+    [Fact]
+    public void IsAtHardEdge_Forward_TriggersAtLineEnd_NotBlockEnd()
+    {
+        // 468pt-wide block, but the current line is only 150pt wide.
+        _nav.SetAnalysis(ShortLineAnalysis(blockWidth: 468, lineWidth: 150),
+            new HashSet<BlockRole> { BlockRole.Text });
+        _nav.Active = true;
+
+        const double zoom = 4.0;
+        // Line right (5% margin): 72 + 150 + 7.5 = 229.5 → camera at line end = 800 - 229.5*4 = -118.
+        double lineEndCamX = WindowWidth - (72 + 150 + 150 * 0.05) * zoom;
+
+        // At the line end the forward advance can fire.
+        Assert.True(_nav.IsAtHardEdge(lineEndCamX, zoom, WindowWidth, ScrollDirection.Forward));
+        // Scrolled a little past the line end but FAR from the block's right edge: the old
+        // block-edge rule would still be false here; the line-edge rule fires.
+        Assert.True(_nav.IsAtHardEdge(lineEndCamX - 100, zoom, WindowWidth, ScrollDirection.Forward));
+        // Before the line end is on screen → not yet at the edge.
+        Assert.False(_nav.IsAtHardEdge(lineEndCamX + 100, zoom, WindowWidth, ScrollDirection.Forward));
+    }
+
+    [Fact]
+    public void IsAtHardEdge_Forward_FullWidthLine_StillTriggersAtBlockExtent()
+    {
+        // Regression guard: a line spanning the full block width must still require
+        // scrolling to the block's right extent (no premature advance).
+        _nav.SetAnalysis(ShortLineAnalysis(blockWidth: 468, lineWidth: 468),
+            new HashSet<BlockRole> { BlockRole.Text });
+        _nav.Active = true;
+
+        const double zoom = 4.0;
+        double blockEndCamX = WindowWidth - (72 + 468 + 468 * 0.05) * zoom;
+
+        Assert.True(_nav.IsAtHardEdge(blockEndCamX, zoom, WindowWidth, ScrollDirection.Forward));
+        Assert.False(_nav.IsAtHardEdge(blockEndCamX + 200, zoom, WindowWidth, ScrollDirection.Forward));
+    }
 }
