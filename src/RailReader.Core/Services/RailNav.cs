@@ -145,10 +145,19 @@ public sealed partial class RailNav : ICameraClamp
         if (shouldBeActive && !Active)
         {
             Active = true;
-            if (cursorPageX.HasValue && cursorPageY.HasValue)
+            if (_pinnedActivationBlock is { } pinned)
+            {
+                // An explicit framing (e.g. SmoothlyFrameBlock) pinned the target block;
+                // honour it instead of geometric nearest-block selection, so overlapping
+                // bboxes under the focus point can't redirect to a different block.
+                CurrentBlock = Math.Min(pinned, Math.Max(0, _navigableIndices.Count - 1));
+                CurrentLine = 0;
+            }
+            else if (cursorPageX.HasValue && cursorPageY.HasValue)
                 FindBlockNearPoint(cursorPageX.Value, cursorPageY.Value);
             else
                 FindNearestBlock(cameraX, cameraY, zoom, windowWidth, windowHeight);
+            _pinnedActivationBlock = null;
         }
         else if (!shouldBeActive && Active)
         {
@@ -156,8 +165,18 @@ public sealed partial class RailNav : ICameraClamp
             _snap = null;
             _scroll.Stop();
             ScrollSpeed = 0.0;
+            _pinnedActivationBlock = null;
         }
     }
+
+    // Navigable-subset index to honour on the next rail activation, set by an explicit
+    // framing (SmoothlyFrameBlock) so the seated block survives the threshold crossing.
+    // Consumed on the next activate; cleared on deactivate so it can't go stale.
+    private int? _pinnedActivationBlock;
+
+    /// <summary>Pin the current block so the next rail activation keeps it seated
+    /// instead of running geometric nearest-block selection.</summary>
+    public void PinCurrentBlockForActivation() => _pinnedActivationBlock = CurrentBlock;
 
     /// <summary>
     /// Scale VerticalBias proportionally so the active line stays at the

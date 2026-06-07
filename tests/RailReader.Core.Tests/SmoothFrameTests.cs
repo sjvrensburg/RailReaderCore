@@ -101,17 +101,20 @@ public class SmoothFrameTests : IDisposable
     }
 
     [Fact]
-    public void SmoothlyFrameBlock_AutoFitZoom_LandsOnRailFrame()
+    public void SmoothlyFrameBlock_AutoFitZoom_FloorsAtRailThresholdAndFrames()
     {
         var state = OpenWithAnalysis();
 
-        // Frame the lower text block (index 2): a top block can't be vertically
-        // centred at the sub-threshold auto-fit zoom because ClampCamera pins the
-        // page top, so its landing wouldn't equal the (unclamped) rail frame.
-        Assert.True(_controller.SmoothlyFrameBlock(2)); // null targetZoom → auto-fit
+        // Block 0 is a wide block at the page TOP. Its raw fit zoom (~1.47) is below the
+        // rail threshold; without the floor, rail would stay inactive and ClampCamera
+        // would pin the page top, leaving the block unframed. The floor (fix) keeps it at
+        // >= threshold so rail engages and the completion snap frames the block exactly.
+        Assert.True(_controller.SmoothlyFrameBlock(0)); // null targetZoom → auto-fit
         Settle();
 
-        Assert.True(state.Camera.Zoom > 1.0); // zoomed in to fit the block
+        Assert.True(state.Rail.Active);                              // floored to >= threshold
+        Assert.True(state.Camera.Zoom >= _config.ToCoreSettings().RailZoomThreshold);
+        Assert.Equal(0, state.Rail.CurrentNavigableArrayIndex);
         var (ex, ey) = state.Rail.ComputeSnapTarget(state.Camera.Zoom, Vw, Vh);
         Assert.Equal(ex, state.Camera.OffsetX, precision: 1);
         Assert.Equal(ey, state.Camera.OffsetY, precision: 1);
@@ -170,5 +173,33 @@ public class SmoothFrameTests : IDisposable
         Assert.True(_controller.IsAnimating);
         Settle();
         Assert.False(_controller.IsAnimating);
+    }
+
+    [Fact]
+    public void SmoothlyFrameBlock_OverlappingBlocks_KeepsSeatedBlockThroughActivation()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(Vw, Vh);
+
+        // Block 0 is a large text block; block 1 is a small text block that sits INSIDE
+        // block 0's bbox. Both navigable. Framing block 1: its focus point also lies in
+        // block 0, so the geometric activation pick (FindBlockNearPoint, first bbox hit in
+        // reading order) would select block 0 without the activation pin.
+        var a = new PageAnalysis { PageWidth = 612, PageHeight = 792 };
+        var big = new LayoutBlock { BBox = new BBox(72, 72, 468, 500), Role = BlockRole.Text, Confidence = 0.9f, Order = 0 };
+        for (int i = 0; i < 5; i++) big.Lines.Add(new LineInfo(120 + i * 80, 16, 72, 468));
+        var small = new LayoutBlock { BBox = new BBox(72, 300, 200, 48), Role = BlockRole.Text, Confidence = 0.9f, Order = 1 };
+        small.Lines.Add(new LineInfo(308, 16, 72, 200));
+        a.Blocks.Add(big);   // page index 0
+        a.Blocks.Add(small); // page index 1, inside block 0
+        state.SetAnalysis(state.CurrentPage, a);
+
+        Assert.True(_controller.SmoothlyFrameBlock(1, targetZoom: 5.0));
+        Settle();
+
+        Assert.True(state.Rail.Active);
+        Assert.Equal(1, state.Rail.CurrentNavigableArrayIndex); // stayed on the seated block, not the enclosing one
     }
 }
