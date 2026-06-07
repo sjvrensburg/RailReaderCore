@@ -122,6 +122,19 @@ public sealed partial class RailNav
 
     private double SnapY(double y) => _config.PixelSnapping ? Math.Round(y) : y;
 
+    /// <summary>
+    /// Public wrapper over <see cref="ComputeTargetCamera"/>: the camera offset that
+    /// frames the currently-seated block/line at <paramref name="zoom"/> using the exact
+    /// rail framing (centre narrow chunks, left-align wide ones with the 5% inset).
+    /// Works regardless of <see cref="Active"/> as long as analysis is loaded, so a
+    /// caller can compute the landing frame before zoom crosses the rail threshold.
+    /// </summary>
+    public (double X, double Y) ComputeSnapTarget(double zoom, double windowWidth, double windowHeight)
+    {
+        if (!HasAnalysis) return (0, 0); // caller guarantees HasAnalysis; defensive only
+        return ComputeTargetCamera(zoom, windowWidth, windowHeight);
+    }
+
     private (double X, double Y) ComputeTargetCamera(double zoom, double windowWidth, double windowHeight)
     {
         var line = CurrentLineInfo;

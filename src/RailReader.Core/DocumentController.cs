@@ -460,6 +460,81 @@ public sealed partial class DocumentController : IDisposable
         if (!doc.Rail.Active && AutoScrollActive) StopAutoScroll();
     }
 
+    /// <summary>
+    /// Smoothly animate zoom AND pan to an explicit camera target (native 180 ms cubic
+    /// ease-out). Works in browse or rail mode.
+    /// </summary>
+    public void AnimateCameraTo(double targetZoom, double targetOffsetX, double targetOffsetY)
+    {
+        if (AutoScrollActive) StopAutoScroll();
+        if (ActiveDocument is not { } doc) return;
+        var (ww, wh) = GetViewportSize();
+        double z = Math.Clamp(targetZoom, Camera.ZoomMin, Camera.ZoomMax);
+        double cpx = (ww / 2.0 - targetOffsetX) / z; // target viewport-centre in page space
+        double cpy = (wh / 2.0 - targetOffsetY) / z;
+        _zoom.StartTo(doc, z, targetOffsetX, targetOffsetY, cpx, cpy);
+    }
+
+    /// <summary>
+    /// Smoothly frame the page-level block <paramref name="pageBlockIndex"/> on the
+    /// current page using rail's exact framing: eased zoom+pan to it (auto-fit when
+    /// <paramref name="targetZoom"/> is null). Returns false if no document / no
+    /// current-page analysis / index out of range / block is not navigable.
+    /// </summary>
+    public bool SmoothlyFrameBlock(int pageBlockIndex, double? targetZoom = null)
+    {
+        if (ActiveDocument is not { } doc) return false;
+        if (!doc.AnalysisCache.TryGetValue(doc.CurrentPage, out var analysis)) return false;
+        if (pageBlockIndex < 0 || pageBlockIndex >= analysis.Blocks.Count) return false;
+
+        // Sync RailNav to THIS page's analysis (builds chunks; ReferenceEquals-guarded so
+        // it preserves position when already loaded), so the index space + chunk framing
+        // below refer to the current page.
+        doc.ReapplyNavigableRoles(_config.NavigableRoles);
+
+        if (!doc.Rail.TrySetCurrentByPageIndex(pageBlockIndex)) return false; // non-navigable role
+
+        var (ww, wh) = GetViewportSize();
+        var box = analysis.Blocks[pageBlockIndex].BBox;
+        double z = Math.Clamp(targetZoom ?? doc.ComputeBlockFitZoom(box, ww, wh),
+            Camera.ZoomMin, Camera.ZoomMax);
+
+        var (ox, oy) = doc.Rail.ComputeSnapTarget(z, ww, wh);
+        var line = doc.Rail.CurrentLineInfo; // seated block's first line
+        if (AutoScrollActive) StopAutoScroll();
+        _zoom.StartTo(doc, z, ox, oy, line.X + line.Width / 2.0, line.Y);
+        FireReadingPositionChanged();
+        return true;
+    }
+
+    /// <summary>
+    /// Frame the <paramref name="occurrence"/>-th (0-based, reading order) block of
+    /// <paramref name="role"/> on the current page.
+    /// </summary>
+    public bool SmoothlyFrameRole(BlockRole role, int occurrence = 0, double? targetZoom = null)
+    {
+        if (occurrence < 0) return false;
+        if (ActiveDocument is not { } doc) return false;
+        if (!doc.AnalysisCache.TryGetValue(doc.CurrentPage, out var analysis)) return false;
+
+        var matches = new List<int>();
+        for (int i = 0; i < analysis.Blocks.Count; i++)
+            if (analysis.Blocks[i].Role == role) matches.Add(i);
+        if (occurrence >= matches.Count) return false;
+        matches.Sort((a, b) => analysis.Blocks[a].Order.CompareTo(analysis.Blocks[b].Order)); // reading order
+        return SmoothlyFrameBlock(matches[occurrence], targetZoom);
+    }
+
+    /// <summary>
+    /// True while any camera animation (zoom, rail snap) or auto-scroll is running — the
+    /// D-Bus control layer derives its "Settled" signal from the true→false transition
+    /// of this across <see cref="Tick"/>.
+    /// </summary>
+    public bool IsAnimating =>
+        _zoom.IsAnimating
+        || (ActiveDocument is { } d && d.Rail.SnapProgress < 1.0)
+        || AutoScrollActive;
+
     // --- Auto-scroll (delegated to AutoScrollController) ---
 
     public void ToggleAutoScroll() => _autoScroll.ToggleAutoScroll(ActiveDocument);

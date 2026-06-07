@@ -309,23 +309,35 @@ public sealed partial class RailNav : ICameraClamp
 
     /// <summary>
     /// Returns true when the camera is effectively at the hard scroll boundary for the
-    /// given direction (i.e. there is nowhere left to scroll that way).
+    /// given direction, i.e. the trigger point for an edge-hold line advance.
+    ///
+    /// Forward (next line) fires at the END OF THE CURRENT LINE, not the block/chunk
+    /// right edge: a short line sits well left of the block's right margin, and gating
+    /// on the block edge forced the user to scroll through trailing empty space before
+    /// the next line would trigger. Backward (previous line) still uses the chunk's
+    /// left edge. Horizontal panning of wide content is unaffected — <see cref="ClampX"/>
+    /// keeps using the chunk bounds so over-scroll is still bounded by the column.
+    /// <c>internal</c> for direct boundary testing.
     /// </summary>
-    private bool IsAtHardEdge(double cameraX, double zoom, double windowWidth, ScrollDirection dir)
+    internal bool IsAtHardEdge(double cameraX, double zoom, double windowWidth, ScrollDirection dir)
     {
         if (_navigableIndices.Count == 0) return false;
-        var (blockLeft, blockRight, blockWidthPx) = GetChunkBounds(zoom);
+        var (blockLeft, _, blockWidthPx) = GetChunkBounds(zoom);
 
         // If the whole chunk fits in the window it is centred and cannot scroll at all.
         if (blockWidthPx <= windowWidth) return true;
 
         const double epsilon = 2.0; // pixels of tolerance
-        double maxX = -blockLeft * zoom;          // left boundary (scrolled all the way left)
-        double minX = windowWidth - blockRight * zoom; // right boundary (scrolled all the way right)
 
-        return dir == ScrollDirection.Forward
-            ? cameraX <= minX + epsilon   // can't scroll further right (content end)
-            : cameraX >= maxX - epsilon;  // can't scroll further left (content start)
+        if (dir == ScrollDirection.Forward)
+        {
+            var (_, lineRight, _) = GetLineBounds(zoom);
+            double lineMinX = windowWidth - lineRight * zoom; // camera X with the line's end at the right edge
+            return cameraX <= lineMinX + epsilon;             // line end reached → can advance
+        }
+
+        double maxX = -blockLeft * zoom;     // left boundary (scrolled all the way left)
+        return cameraX >= maxX - epsilon;    // can't scroll further left (content start)
     }
 
     /// <summary>
@@ -445,6 +457,20 @@ public sealed partial class RailNav : ICameraClamp
         return (left, right, (right - left) * zoom);
     }
 
+    /// <summary>
+    /// Horizontal bounds (page points, 5% margin) of the CURRENT LINE. Used to fire the
+    /// forward line-advance at the line's actual right extent, which for a short line is
+    /// well left of the block/chunk right edge.
+    /// </summary>
+    private (double Left, double Right, double WidthPx) GetLineBounds(double zoom)
+    {
+        var line = CurrentLineInfo;
+        double margin = line.Width * 0.05;
+        double left = line.X - margin;
+        double right = line.X + line.Width + margin;
+        return (left, right, (right - left) * zoom);
+    }
+
     /// <summary>Asymptotic ease: approaches <paramref name="limit"/> as overshoot grows.</summary>
     private static double SoftEase(double overshoot, double limit)
         => overshoot * limit / (limit + overshoot);
@@ -529,6 +555,24 @@ public sealed partial class RailNav : ICameraClamp
         _navigableIndices.Count == 0
             ? 0
             : _navigableIndices[Math.Min(CurrentBlock, _navigableIndices.Count - 1)];
+
+    /// <summary>
+    /// Seats the rail cursor on the block whose page-level index (into
+    /// <see cref="PageAnalysis.Blocks"/>) is <paramref name="pageBlockIndex"/> — the
+    /// same index space as <see cref="CurrentNavigableArrayIndex"/> and page-description
+    /// queries — landing on its first line and clearing vertical bias. Returns false if
+    /// that block is not in the navigable subset (e.g. a non-navigable role), leaving
+    /// the cursor unchanged.
+    /// </summary>
+    public bool TrySetCurrentByPageIndex(int pageBlockIndex)
+    {
+        int navPos = _navigableIndices.IndexOf(pageBlockIndex);
+        if (navPos < 0) return false;
+        CurrentBlock = navPos;
+        CurrentLine = 0;
+        VerticalBias = 0;
+        return true;
+    }
 
     /// <summary>
     /// Moves the cursor to the next (forward) or previous block whose role equals

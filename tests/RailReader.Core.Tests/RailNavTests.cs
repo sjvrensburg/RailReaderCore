@@ -658,4 +658,134 @@ public class RailNavTests
         double reclamped = ((ICameraClamp)_nav).ClampX(camX, Zoom, WindowWidth);
         Assert.Equal(reclamped, camX, precision: 2); // re-clamping must not move it
     }
+
+    // ===== Smooth frame-block support (TrySetCurrentByPageIndex / ComputeSnapTarget) =====
+
+    [Fact]
+    public void TrySetCurrentByPageIndex_SeatsNavigableBlock_ResetsLineAndBias()
+    {
+        // Page blocks [Text, Figure, Text] → navigable subset = page indices {0, 2}.
+        var analysis = CreateMixedAnalysis(3, 3, BlockRole.Text, BlockRole.Figure, BlockRole.Text);
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { BlockRole.Text });
+        _nav.CurrentLine = 2;
+        _nav.VerticalBias = 17;
+
+        bool ok = _nav.TrySetCurrentByPageIndex(2); // page index 2 → navigable position 1
+
+        Assert.True(ok);
+        Assert.Equal(1, _nav.CurrentBlock);
+        Assert.Equal(2, _nav.CurrentNavigableArrayIndex); // page-level index round-trips
+        Assert.Equal(0, _nav.CurrentLine);
+        Assert.Equal(0, _nav.VerticalBias);
+    }
+
+    [Fact]
+    public void TrySetCurrentByPageIndex_NonNavigableBlock_ReturnsFalse_LeavesStateUnchanged()
+    {
+        var analysis = CreateMixedAnalysis(3, 3, BlockRole.Text, BlockRole.Figure, BlockRole.Text);
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { BlockRole.Text });
+        Assert.True(_nav.TrySetCurrentByPageIndex(0));
+        _nav.CurrentLine = 1;
+
+        bool ok = _nav.TrySetCurrentByPageIndex(1); // page index 1 is a Figure (non-navigable)
+
+        Assert.False(ok);
+        Assert.Equal(0, _nav.CurrentBlock); // unchanged
+        Assert.Equal(1, _nav.CurrentLine);  // unchanged
+    }
+
+    [Fact]
+    public void ComputeSnapTarget_CentersCurrentLineVertically()
+    {
+        var analysis = CreateAnalysis(2, 3); // two stacked 468-wide text blocks, 3 lines each
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { BlockRole.Text });
+        Assert.True(_nav.TrySetCurrentByPageIndex(1)); // second block
+
+        var line = _nav.CurrentLineInfo; // first line of block 1
+        var (_, y) = _nav.ComputeSnapTarget(Zoom, WindowWidth, WindowHeight);
+
+        // Vertical target centers the current line: y = wh/2 - lineY*zoom (bias 0, no pixel snap).
+        Assert.Equal(WindowHeight / 2.0 - line.Y * Zoom, y, precision: 3);
+    }
+
+    [Fact]
+    public void ComputeSnapTarget_ReflectsSeatedBlock()
+    {
+        var analysis = CreateAnalysis(2, 3);
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { BlockRole.Text });
+
+        _nav.TrySetCurrentByPageIndex(0);
+        var (_, y0) = _nav.ComputeSnapTarget(Zoom, WindowWidth, WindowHeight);
+        _nav.TrySetCurrentByPageIndex(1);
+        var (_, y1) = _nav.ComputeSnapTarget(Zoom, WindowWidth, WindowHeight);
+
+        Assert.NotEqual(y0, y1); // different blocks → different vertical frame
+    }
+
+    [Fact]
+    public void ComputeSnapTarget_NarrowBlockCentered_WideBlockLeftAligned()
+    {
+        var analysis = CreateAnalysis(1, 3); // single 468-wide text block at x=72
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { BlockRole.Text });
+        _nav.TrySetCurrentByPageIndex(0);
+        const double blockCenterX = 72 + 468 / 2.0;
+
+        // Narrow: 468*1 ≤ 0.75*800 → centered, so the block centre maps to viewport centre.
+        var (xNarrow, _) = _nav.ComputeSnapTarget(1.0, WindowWidth, WindowHeight);
+        Assert.Equal(WindowWidth / 2.0, blockCenterX * 1.0 + xNarrow, precision: 1);
+
+        // Wide: 468*4 > 0.75*800 → left-aligned, so the block centre sits right of viewport centre.
+        var (xWide, _) = _nav.ComputeSnapTarget(4.0, WindowWidth, WindowHeight);
+        Assert.True(blockCenterX * 4.0 + xWide > WindowWidth / 2.0);
+    }
+
+    // ===== Forward line-advance trigger fires at the line end, not the block edge =====
+
+    /// <summary>Single wide block whose only line has the given (short) width at x=72.</summary>
+    private static PageAnalysis ShortLineAnalysis(float blockWidth, float lineWidth)
+    {
+        var block = new LayoutBlock
+        {
+            BBox = new BBox(72, 72, blockWidth, 20), Role = BlockRole.Text, Confidence = 0.9f, Order = 0,
+        };
+        block.Lines.Add(new LineInfo(82, 16, 72, lineWidth)); // single line, x=72
+        return new PageAnalysis { Blocks = [block], PageWidth = 612, PageHeight = 792 };
+    }
+
+    [Fact]
+    public void IsAtHardEdge_Forward_TriggersAtLineEnd_NotBlockEnd()
+    {
+        // 468pt-wide block, but the current line is only 150pt wide.
+        _nav.SetAnalysis(ShortLineAnalysis(blockWidth: 468, lineWidth: 150),
+            new HashSet<BlockRole> { BlockRole.Text });
+        _nav.Active = true;
+
+        const double zoom = 4.0;
+        // Line right (5% margin): 72 + 150 + 7.5 = 229.5 → camera at line end = 800 - 229.5*4 = -118.
+        double lineEndCamX = WindowWidth - (72 + 150 + 150 * 0.05) * zoom;
+
+        // At the line end the forward advance can fire.
+        Assert.True(_nav.IsAtHardEdge(lineEndCamX, zoom, WindowWidth, ScrollDirection.Forward));
+        // Scrolled a little past the line end but FAR from the block's right edge: the old
+        // block-edge rule would still be false here; the line-edge rule fires.
+        Assert.True(_nav.IsAtHardEdge(lineEndCamX - 100, zoom, WindowWidth, ScrollDirection.Forward));
+        // Before the line end is on screen → not yet at the edge.
+        Assert.False(_nav.IsAtHardEdge(lineEndCamX + 100, zoom, WindowWidth, ScrollDirection.Forward));
+    }
+
+    [Fact]
+    public void IsAtHardEdge_Forward_FullWidthLine_StillTriggersAtBlockExtent()
+    {
+        // Regression guard: a line spanning the full block width must still require
+        // scrolling to the block's right extent (no premature advance).
+        _nav.SetAnalysis(ShortLineAnalysis(blockWidth: 468, lineWidth: 468),
+            new HashSet<BlockRole> { BlockRole.Text });
+        _nav.Active = true;
+
+        const double zoom = 4.0;
+        double blockEndCamX = WindowWidth - (72 + 468 + 468 * 0.05) * zoom;
+
+        Assert.True(_nav.IsAtHardEdge(blockEndCamX, zoom, WindowWidth, ScrollDirection.Forward));
+        Assert.False(_nav.IsAtHardEdge(blockEndCamX + 200, zoom, WindowWidth, ScrollDirection.Forward));
+    }
 }
