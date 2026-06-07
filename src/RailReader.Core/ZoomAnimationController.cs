@@ -20,6 +20,10 @@ internal sealed class ZoomAnimationController
         // Rail position preservation: captured when zoom starts in rail mode
         public double HorizontalFraction = -1; // 0=line start, 1=line end; <0 means not in rail
         public double LineScreenY;              // Y position of active line on screen
+        // Pure camera move (geometric centred framing): drive the camera to an explicit target
+        // WITHOUT any rail re-evaluation — no per-frame UpdateRailZoom (so rail can't re-engage
+        // mid-flight) and no completion snap. Used to frame non-navigable blocks (figures/tables).
+        public bool PureCameraMove;
     }
 
     private ZoomAnimation? _zoomAnim;
@@ -108,6 +112,32 @@ internal sealed class ZoomAnimationController
         };
     }
 
+    /// <summary>
+    /// Starts a smooth, EXPLICIT camera move (zoom + offsets) that bypasses rail entirely:
+    /// no per-frame rail re-evaluation and no completion snap — the camera simply eases to the
+    /// target. Same cubic ease-out and duration as <see cref="StartTo"/>. Used for geometric
+    /// centred framing of non-navigable blocks (figures/tables/charts) that the rail index can't
+    /// seat. The caller is responsible for deactivating rail first.
+    /// </summary>
+    public void StartCameraOnly(DocumentState doc,
+        double targetZoom, double targetOffsetX, double targetOffsetY)
+    {
+        _zoomAnim = new ZoomAnimation
+        {
+            StartZoom = doc.Camera.Zoom,
+            TargetZoom = targetZoom,
+            StartOffsetX = doc.Camera.OffsetX,
+            StartOffsetY = doc.Camera.OffsetY,
+            TargetOffsetX = targetOffsetX,
+            TargetOffsetY = targetOffsetY,
+            CursorPageX = 0,
+            CursorPageY = 0,
+            HorizontalFraction = -1,
+            LineScreenY = 0,
+            PureCameraMove = true,
+        };
+    }
+
     /// <summary>Smooth zoom animation step.</summary>
     public void Tick(DocumentState doc, double ww, double wh,
         ref bool cameraChanged, ref bool animating)
@@ -124,17 +154,23 @@ internal sealed class ZoomAnimationController
             doc.Camera.OffsetX = za.StartOffsetX + (za.TargetOffsetX - za.StartOffsetX) * ease;
             doc.Camera.OffsetY = za.StartOffsetY + (za.TargetOffsetY - za.StartOffsetY) * ease;
             doc.Camera.NotifyZoomChange();
-            doc.Rail.ScaleVerticalBias(prevZoom, doc.Camera.Zoom);
-            doc.UpdateRailZoom(ww, wh, za.CursorPageX, za.CursorPageY);
+            // Pure camera moves drive the camera directly — no rail bias scaling and no per-frame
+            // rail re-evaluation, so rail can't re-engage and hijack a figure/table frame.
+            if (!za.PureCameraMove)
+            {
+                doc.Rail.ScaleVerticalBias(prevZoom, doc.Camera.Zoom);
+                doc.UpdateRailZoom(ww, wh, za.CursorPageX, za.CursorPageY);
+            }
             cameraChanged = true;
 
             if (t >= 1.0)
             {
                 double hFrac = za.HorizontalFraction;
                 double lineY = za.LineScreenY;
+                bool pure = za.PureCameraMove;
                 _zoomAnim = null;
                 doc.ClampCamera(ww, wh);
-                if (doc.Rail.Active)
+                if (!pure && doc.Rail.Active)
                 {
                     if (hFrac >= 0)
                         doc.StartSnapPreservingPosition(ww, wh, hFrac, lineY);
