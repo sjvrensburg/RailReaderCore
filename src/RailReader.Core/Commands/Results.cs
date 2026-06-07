@@ -71,6 +71,10 @@ public sealed record ScreenshotOptions
 /// <summary>
 /// Current reading position in a document for agent/screen-reader consumption.
 /// </summary>
+/// <param name="LineCount">Number of lines in the current block (so callers can show "line 3 of 7"
+/// and detect end-of-block).</param>
+/// <param name="HorizontalFraction">How far the camera is across the current line's scrollable
+/// width, 0 (start) to 1 (end); 0 when the column fits and nothing scrolls horizontally.</param>
 public sealed record ReadingPosition(
     int Page,
     int BlockIndex,
@@ -78,7 +82,9 @@ public sealed record ReadingPosition(
     BlockRole Role,
     string BlockText,
     string LineText,
-    BBox BlockBBox);
+    BBox BlockBBox,
+    int LineCount,
+    double HorizontalFraction);
 
 /// <summary>
 /// Summary of a single layout block for accessible page descriptions.

@@ -200,6 +200,19 @@ public class SmoothFrameTests : IDisposable
     }
 
     [Fact]
+    public void GetReadingPosition_ReportsLineCountAndHorizontalFraction()
+    {
+        OpenWithAnalysis();
+        Assert.True(_controller.SmoothlyFrameBlock(2, targetZoom: 5.0));
+        Settle();
+
+        var rp = _controller.GetReadingPosition();
+        Assert.NotNull(rp);
+        Assert.Equal(3, rp!.LineCount);                  // SampleAnalysis blocks have 3 lines
+        Assert.InRange(rp.HorizontalFraction, 0.0, 1.0); // 0 = line start … 1 = line end
+    }
+
+    [Fact]
     public void SmoothlyFrameBlock_OverlappingBlocks_KeepsSeatedBlockThroughActivation()
     {
         var state = _controller.CreateDocument(_pdfPath);

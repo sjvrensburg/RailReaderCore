@@ -701,9 +701,12 @@ public sealed partial class DocumentController : IDisposable
         // BlockIndex is the page-level block index (matches BlockSummary.Index from
         // GetPageDescription), NOT the navigable-subset index, so agents can
         // correlate the two even when the page has non-navigable blocks.
+        var (vpW, _) = GetViewportSize();
+        double hFraction = doc.Rail.ComputeHorizontalFraction(doc.Camera.OffsetX, doc.Camera.Zoom, vpW);
         return new ReadingPosition(
             doc.CurrentPage, doc.Rail.CurrentNavigableArrayIndex, lineIndex,
-            block.Role, blockText, lineText, block.BBox);
+            block.Role, blockText, lineText, block.BBox,
+            block.Lines.Count, hFraction);
     }
 
     /// <summary>
