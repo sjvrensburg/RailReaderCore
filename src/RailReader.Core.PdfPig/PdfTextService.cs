@@ -155,14 +155,21 @@ public sealed class PdfTextService : IPdfTextService
             float wRight  = (float)wbox.Right;
             float wTop    = (float)(pageH - wbox.Top);
             float wBottom = (float)(pageH - wbox.Bottom);
-            float wHeight = wBottom - wTop;
 
             if (!float.IsNaN(prevWordRight))
             {
-                float midY     = (wTop + wBottom) / 2f;
-                float prevMidY = (prevWordTop + prevWordBottom) / 2f;
-                float refLineH = Math.Max(1f, Math.Max(wHeight, prevWordBottom - prevWordTop));
-                bool sameLine = Math.Abs(midY - prevMidY) <= refLineH * 0.5f;
+                // Same visual line ⇔ the two words' vertical extents overlap. Use range
+                // overlap rather than a midpoint-distance heuristic: some producers
+                // (e.g. SkiaSharp) emit explicit space glyphs whose box is zero-height
+                // and anchored at the baseline. Such a box's midpoint sits ~half a
+                // glyph-height below adjacent glyph centres, so a midpoint test
+                // mis-reads the space boundary as a line break and fragments words
+                // ("Page\n \n1\n of 3" instead of "Page 1 of 3"). A small tolerance
+                // absorbs the baseline touch and sub-pixel jitter.
+                const float lineTol = 2f;
+                float overlapTop    = Math.Max(wTop, prevWordTop);
+                float overlapBottom = Math.Min(wBottom, prevWordBottom);
+                bool sameLine = overlapTop <= overlapBottom + lineTol;
 
                 // PDFs that encode spacing as explicit ' ' chars in the
                 // content stream produce Words whose Letters already
