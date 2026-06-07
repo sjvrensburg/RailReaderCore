@@ -140,41 +140,6 @@ public class SmoothFrameTests : IDisposable
         AssertBlockCentredInViewport(state, box);
     }
 
-    [Fact]
-    public void SmoothlyCenterBlock_CentersEvenNavigableBlock_WithoutRail()
-    {
-        var state = OpenWithAnalysis();
-
-        // Explicit centred frame works on any block, including a navigable Text one, and never
-        // engages rail (unlike SmoothlyFrameBlock on a navigable block).
-        Assert.True(_controller.SmoothlyCenterBlock(0, targetZoom: 5.0));
-        Settle();
-
-        Assert.False(state.Rail.Active);
-        Assert.Equal(5.0, state.Camera.Zoom, precision: 2);
-        AssertBlockCentredInViewport(state, SampleAnalysis().Blocks[0].BBox);
-    }
-
-    [Fact]
-    public void SmoothlyCenterRole_CentersFigureOccurrence()
-    {
-        var state = OpenWithAnalysis();
-
-        Assert.True(_controller.SmoothlyCenterRole(BlockRole.Figure, occurrence: 0));
-        Settle();
-
-        Assert.False(state.Rail.Active);
-        AssertBlockCentredInViewport(state, SampleAnalysis().Blocks[1].BBox);
-    }
-
-    [Fact]
-    public void SmoothlyCenterBlock_IndexOutOfRange_ReturnsFalse()
-    {
-        OpenWithAnalysis();
-        Assert.False(_controller.SmoothlyCenterBlock(99));
-        Assert.False(_controller.SmoothlyCenterBlock(-1));
-    }
-
     /// <summary>Assert the block's page-space centre maps to the viewport centre under the
     /// current camera (post-settle), i.e. screen = offset + pageCentre * zoom == (Vw/2, Vh/2).</summary>
     private static void AssertBlockCentredInViewport(DocumentState state, BBox box)

@@ -532,31 +532,6 @@ public sealed partial class DocumentController : IDisposable
         return idx >= 0 && SmoothlyFrameBlock(idx, targetZoom);
     }
 
-    /// <summary>
-    /// Geometrically frame ANY block on the current page — including non-navigable
-    /// figures/tables/charts — by easing zoom-to-fit and centring it in the viewport, without
-    /// engaging rail. Unlike <see cref="SmoothlyFrameBlock"/> this never seats a rail line, so it
-    /// frames a block whole even below the rail threshold. Returns false only if there's no
-    /// document / no current-page analysis / the index is out of range.
-    /// </summary>
-    public bool SmoothlyCenterBlock(int pageBlockIndex, double? targetZoom = null)
-    {
-        if (ActiveDocument is not { } doc) return false;
-        if (!doc.AnalysisCache.TryGetValue(doc.CurrentPage, out var analysis)) return false;
-        if (pageBlockIndex < 0 || pageBlockIndex >= analysis.Blocks.Count) return false;
-        return CenterBlockGeometric(doc, analysis.Blocks[pageBlockIndex].BBox, targetZoom);
-    }
-
-    /// <summary>Geometric centred-frame counterpart to <see cref="SmoothlyFrameRole"/>: centre the
-    /// <paramref name="occurrence"/>-th block of <paramref name="role"/> in reading order.</summary>
-    public bool SmoothlyCenterRole(BlockRole role, int occurrence = 0, double? targetZoom = null)
-    {
-        if (ActiveDocument is not { } doc) return false;
-        if (!doc.AnalysisCache.TryGetValue(doc.CurrentPage, out var analysis)) return false;
-        int idx = FindRoleOccurrence(analysis, role, occurrence);
-        return idx >= 0 && SmoothlyCenterBlock(idx, targetZoom);
-    }
-
     /// <summary>Page-block index of the <paramref name="occurrence"/>-th block of
     /// <paramref name="role"/> in reading order on <paramref name="analysis"/>, or -1.</summary>
     private static int FindRoleOccurrence(PageAnalysis analysis, BlockRole role, int occurrence)
