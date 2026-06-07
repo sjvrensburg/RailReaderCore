@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.20.0 — smooth zoom-to-block primitives; line-end advance; PdfPig spacing
+
+Adds Core primitives for smoothly framing a specific detected layout block —
+intended for scripted, faithful control of the real GUI (e.g. demonstration
+videos) — reusing the existing eased zoom controller and rail's exact framing.
+Also fixes the rail line-advance trigger and PdfPig text reconstruction.
+
+### Added
+
+- **Smooth, identity-addressed zoom-to-block.** `DocumentController.SmoothlyFrameBlock`
+  / `SmoothlyFrameRole` animate an eased zoom+pan onto a page-level block (auto-fit
+  or explicit zoom, floored at the rail threshold so rail framing applies);
+  `AnimateCameraTo` moves the camera to an explicit target; `IsAnimating` reports
+  whether any camera animation is in flight. Backed by `ZoomAnimationController.StartTo`
+  (explicit-target start, native 180 ms cubic ease-out), `RailNav.TrySetCurrentByPageIndex`
+  / `ComputeSnapTarget` / `PinCurrentBlockForActivation`, and
+  `DocumentState.ComputeBlockFitZoom`.
+
+### Fixed
+
+- **Rail line advance fired at the block edge, not the line end.** Holding forward
+  scroll on a short line inside a wide block forced scrolling through trailing empty
+  space before advancing. `IsAtHardEdge` (and the auto-scroll line-end check) now use
+  the current line's right extent. Horizontal panning of wide content is unchanged
+  (`ClampX` still bounds by the column/chunk).
+- **PdfPig fragmented same-line words into separate lines.** Same-line detection used
+  a word-midpoint heuristic that mis-classified zero-height baseline-anchored space
+  glyphs (emitted by some producers, e.g. SkiaSharp) as line breaks — yielding
+  `Page\n \n1\n of 3`. It now uses vertical-range overlap. PdfPig backend only.
+
 ## 0.19.1 — reading-order: two-column pages with full-width top matter
 
 Fixes column **interleaving** in `XYCutPlusPlusResolver` (the resolver used for
