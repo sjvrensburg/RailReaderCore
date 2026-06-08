@@ -829,6 +829,28 @@ public class RailNavTests
     }
 
     [Fact]
+    public void AutoScroll_MediumFinalLine_SettlesForBlockEndDwell_NotFlashPast()
+    {
+        // A medium final line (wider than the viewport, so no reading beat) used to advance
+        // immediately at block end — the gap between short (beat) and long (scroll) lines.
+        // The uniform block-end dwell (AutoScrollBlockPauseMs, default 600) now holds it.
+        var b = new LayoutBlock
+        {
+            BBox = new BBox(72, 72, 468, 20), Role = BlockRole.Text, Confidence = 0.9f, Order = 0,
+        };
+        b.Lines.Add(new LineInfo(82, 16, 72, 250)); // 250pt: 250*1.1*4 = 1100px > 800 window
+        var analysis = new PageAnalysis { Blocks = [b], PageWidth = 612, PageHeight = 792 };
+
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { BlockRole.Text });
+        _nav.Active = true;
+        _nav.AutoScrollElapsedSecondsOverride = () => 100.0; // scrolled fully to the line end
+        _nav.StartAutoScroll(20.0);
+        double camX = 0;
+        Assert.False(_nav.TickAutoScroll(ref camX, 0.016, Zoom, WindowWidth)); // settles, no advance
+        Assert.Equal(0.0, _nav.ScrollSpeed); // holding the block-end dwell
+    }
+
+    [Fact]
     public void LineReadBudgetMs_IsClampedAndZoomIndependent()
     {
         // 468pt-wide block, current line 90pt wide.

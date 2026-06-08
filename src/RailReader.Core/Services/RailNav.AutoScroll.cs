@@ -64,6 +64,7 @@ public sealed partial class RailNav
             // zoom rises (W/zoom falls) — at high zoom even moderate lines scroll.
             LineFitsWindow = lineWidthPx <= windowWidth,
             LineReadBudgetMs = LineReadBudgetMs(_autoScrollState.BaseSpeed),
+            BlockEndPauseMs = _config.AutoScrollBlockPauseMs,
             RawBlockWidthPx = block.BBox.W * zoom,
             CurrentLine = CurrentLine,
             BlockLineCount = block.Lines.Count,

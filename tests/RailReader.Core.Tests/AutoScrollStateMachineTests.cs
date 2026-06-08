@@ -21,7 +21,8 @@ public class AutoScrollStateMachineTests
         double zoom = 1.0,
         double maxSpeed = 5.0,
         bool lineFitsWindow = false,
-        double lineReadBudgetMs = 0)
+        double lineReadBudgetMs = 0,
+        double blockEndPauseMs = 0)
     {
         return new AutoScrollContext
         {
@@ -29,6 +30,7 @@ public class AutoScrollStateMachineTests
             LineRight = blockRight, // helper param feeds the advance boundary (now the line's right edge)
             LineFitsWindow = lineFitsWindow,
             LineReadBudgetMs = lineReadBudgetMs,
+            BlockEndPauseMs = blockEndPauseMs,
             RawBlockWidthPx = rawBlockWidthPx,
             CurrentLine = currentLine,
             BlockLineCount = blockLineCount,
@@ -161,15 +163,36 @@ public class AutoScrollStateMachineTests
     }
 
     [Fact]
-    public void Tick_BlockEndWideLine_StillAdvancesImmediately()
+    public void Tick_BlockEnd_SettlesForBlockEndPause_AcrossLineWidths()
     {
-        // Regression guard: a wide block-end line earned its reading time by scrolling, so
-        // it must still advance the instant it reaches the end (no added beat).
+        // The end-of-block settle is uniform across the final line's width — a medium/wide
+        // last line (which earns no reading beat) must still hold the block-end dwell so a
+        // paragraph end feels consistent, not flash past.
+        foreach (bool fits in new[] { false, true })
+        {
+            var sm = new AutoScrollStateMachine(new NoOpClamp());
+            sm.Start(1.0);
+            double cameraX = 0;
+            var ctx = MakeContext(blockRight: 100, currentLine: 9, blockLineCount: 10,
+                linePauseMs: 0, rawBlockWidthPx: 2000, lineFitsWindow: fits,
+                lineReadBudgetMs: 0, blockEndPauseMs: 600);
+
+            Assert.False(sm.Tick(ref cameraX, 0.016, in ctx)); // settles, does not advance now
+            Assert.Equal(AutoScrollState.Paused, sm.CurrentState);
+        }
+    }
+
+    [Fact]
+    public void Tick_BlockEnd_NoPauseConfigured_AdvancesImmediately()
+    {
+        // With neither a reading beat nor a block-end pause, a block end still advances at
+        // once (preserves the original no-pause path).
         var sm = new AutoScrollStateMachine(new NoOpClamp());
         sm.Start(1.0);
         double cameraX = 0;
         var ctx = MakeContext(blockRight: 100, currentLine: 9, blockLineCount: 10,
-            linePauseMs: 200, rawBlockWidthPx: 2000, lineFitsWindow: false, lineReadBudgetMs: 500);
+            linePauseMs: 0, rawBlockWidthPx: 2000, lineFitsWindow: false,
+            lineReadBudgetMs: 0, blockEndPauseMs: 0);
 
         Assert.True(sm.Tick(ref cameraX, 0.016, in ctx));
     }
