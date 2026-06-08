@@ -611,6 +611,7 @@ public sealed partial class DocumentController : IDisposable
             doc.Rail.UpdateConfig(_config);
             doc.ReapplyNavigableRoles(_config.NavigableRoles);
             doc.UpdateBackgroundSettings(_config);
+            doc.OnRenderQualityChanged(_config.RenderDpi);
         }
     }
 
@@ -624,7 +625,13 @@ public sealed partial class DocumentController : IDisposable
         _config = newConfig;
         _autoScroll.UpdateConfig(newConfig);
         foreach (var doc in Documents)
+        {
             doc.Rail.UpdateConfig(_config);
+            // Keep per-document render-DPI in sync with _config on this path too,
+            // so the two can't diverge. OnRenderQualityChanged no-ops unless the
+            // resolved tuning actually changed, so a normal slider drag is free.
+            doc.OnRenderQualityChanged(_config.RenderDpi);
+        }
     }
 
 

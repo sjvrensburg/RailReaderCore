@@ -119,6 +119,14 @@ public sealed class DocumentState : IDisposable
     // Pages farther than this from CurrentPage are dropped from the text/link
     // caches; <= 0 disables eviction. See CoreSettings.PageCacheRadius.
     private int _pageCacheRadius;
+
+    // Active render-quality tuning (DPI cap / tier step / floor / pixel-area
+    // ceiling / hysteresis). Updated at runtime via OnRenderQualityChanged.
+    private RenderDpiSettings _renderDpi = RenderDpiSettings.Default;
+
+    // Set when a render-quality change arrives while PDFium is busy, so the
+    // forced re-render is retried from the animation tick once it frees.
+    private bool _renderDpiDirty;
     public Queue<int> PendingAnalysis { get; } = new();
     internal BackgroundAnalysisQueue BackgroundQueue { get; private set; } = null!;
 
@@ -192,6 +200,7 @@ public sealed class DocumentState : IDisposable
         Rail = new RailNav(config);
         Outline = _pdf.Outline;
         _pageCacheRadius = config.PageCacheRadius;
+        _renderDpi = config.RenderDpi;
         BackgroundQueue = new BackgroundAnalysisQueue(PageCount, config.BackgroundAnalysisWindowPages);
     }
 
@@ -260,7 +269,7 @@ public sealed class DocumentState : IDisposable
             }
 
             var (w, h) = _pdf.GetPageSize(CurrentPage);
-            int dpi = CalculateRenderDpi(Camera.Zoom);
+            int dpi = CalculateRenderDpi(Camera.Zoom, w, h, _renderDpi);
             var newPage = _pdf.RenderPage(CurrentPage, dpi);
             var newMinimap = _pdf.RenderThumbnail(CurrentPage);
 
@@ -296,7 +305,11 @@ public sealed class DocumentState : IDisposable
         if (_prefetched?.PageIndex == pageIndex) return;
 
         _prefetchPending = true;
-        int dpi = CalculateRenderDpi(Camera.Zoom);
+        // Capture UI-thread state; the page's own dimensions (needed for the
+        // pixel-area ceiling) are fetched inside the task to keep PDFium off the
+        // UI thread, so DPI is computed there too.
+        double zoom = Camera.Zoom;
+        var dpiSettings = _renderDpi;
         var ct = _cts.Token;
 
         Task.Run(() =>
@@ -306,8 +319,9 @@ public sealed class DocumentState : IDisposable
             try
             {
                 ct.ThrowIfCancellationRequested();
-                _logger.Debug($"[PDFium] prefetch pg {pageIndex} @ {dpi}dpi tid={Environment.CurrentManagedThreadId} file={Path.GetFileName(FilePath)}");
                 var (w, h) = _pdf.GetPageSize(pageIndex);
+                int dpi = CalculateRenderDpi(zoom, w, h, dpiSettings);
+                _logger.Debug($"[PDFium] prefetch pg {pageIndex} @ {dpi}dpi tid={Environment.CurrentManagedThreadId} file={Path.GetFileName(FilePath)}");
                 var page = _pdf.RenderPage(pageIndex, dpi);
                 var minimap = _pdf.RenderThumbnail(pageIndex);
                 prepared = new(pageIndex, dpi, page, minimap, w, h);
@@ -362,22 +376,46 @@ public sealed class DocumentState : IDisposable
 
     /// <summary>
     /// Checks if the current zoom demands a different DPI and schedules an
-    /// async re-render on a background thread.
+    /// async re-render on a background thread. A render-quality change sets a
+    /// pending "dirty" flag (see <see cref="OnRenderQualityChanged"/>) that is
+    /// treated as a forced re-render: it bypasses the hysteresis band so the new
+    /// DPI takes effect on any change, not just large ones. It still respects the
+    /// scroll-skip guard below — a forced re-render is deferred (stays dirty)
+    /// while scrolling and retried from the animation tick (which polls
+    /// <see cref="RenderDpiPending"/>) the moment scrolling stops.
     /// </summary>
     public bool UpdateRenderDpiIfNeeded()
     {
-        // Serialize with prefetch to avoid concurrent PDFium access.
+        // Serialize with prefetch to avoid concurrent PDFium access. If a
+        // render-quality change is pending it stays dirty and retries once the
+        // gate frees (from the animation tick or the in-flight render's completion).
         if (_dpiRenderPending || _prefetchPending) return false;
+
+        bool force = _renderDpiDirty;
 
         // Skip DPI re-renders while the user is actively scrolling. PDFium runs
         // under a process-wide gate; a 100-200ms re-render at high zoom blocks
         // any subsequent text/link extraction the scroll path may need and the
-        // bitmap-swap defers a frame. Re-attempt fires from the animation tick
-        // once scroll velocity drops to zero.
+        // bitmap-swap defers a frame. This applies to forced (preset-change)
+        // re-renders too: jumping the gate mid-scroll would stutter the scroll,
+        // so the change stays dirty and the animation tick retries it the moment
+        // scroll velocity drops to zero.
         if (Rail.ScrollSpeed > 0.1 || Rail.AutoScrolling) return false;
 
-        int neededDpi = CalculateRenderDpi(Camera.Zoom);
-        if (neededDpi > CachedDpi * 1.5 || (neededDpi < CachedDpi * 0.5 && CachedDpi > 150))
+        int neededDpi = CalculateRenderDpi(Camera.Zoom, PageWidth, PageHeight, _renderDpi);
+        bool trigger = force
+            ? neededDpi != CachedDpi
+            : neededDpi > CachedDpi * _renderDpi.UpscaleHysteresis
+              || (neededDpi < CachedDpi * _renderDpi.DownscaleHysteresis && CachedDpi > _renderDpi.MinDpi);
+
+        // Optimistically mark a forced (preset-change) pass as satisfied now that
+        // it's about to render (or needs no render). If the scheduled re-render
+        // later FAILS, the completion handler re-arms the flag so the tick retries
+        // — without this, a thrown RenderPage would silently strand the page at
+        // the old DPI (the flag was already cleared).
+        if (force) _renderDpiDirty = false;
+
+        if (trigger)
         {
             _dpiRenderPending = true;
             int page = CurrentPage;
@@ -404,6 +442,13 @@ public sealed class DocumentState : IDisposable
                         if (IsDisposed || CurrentPage != page || newPage is null)
                         {
                             newPage?.Dispose();
+                            // Re-arm a forced re-render that FAILED (RenderPage threw →
+                            // error set) so the pending preset change is retried, not
+                            // lost. A page-navigation abort or cancellation leaves error
+                            // null, and GoToPage's LoadPageBitmap already rendered the new
+                            // page at the new DPI, so neither needs a re-arm.
+                            if (force && !IsDisposed && error is not null)
+                                _renderDpiDirty = true;
                             return;
                         }
                         var oldPage = CachedPage;
@@ -418,7 +463,45 @@ public sealed class DocumentState : IDisposable
             }, ct);
             return true;
         }
+
         return false;
+    }
+
+    /// <summary>True while a render-quality change is queued but not yet applied
+    /// (PDFium was busy, or the user is scrolling). Polled every frame by the
+    /// animation tick so the deferred re-render fires as soon as the gate and
+    /// scroll allow, even while another animation is still running.</summary>
+    internal bool RenderDpiPending => _renderDpiDirty;
+
+    /// <summary>
+    /// Applies a new render-quality preset at runtime and invalidates the page
+    /// cache so already-rasterised pages re-render at the new DPI — no restart.
+    /// Called from the controller's config-changed path for every open document.
+    /// No-op unless the resolved DPI tuning actually changed, so unrelated config
+    /// changes (dark mode, scroll speed, …) don't needlessly drop the prefetch
+    /// buffer or schedule a render. When it does change, the prefetched page
+    /// (rasterised at the old DPI) is dropped and the current page is forced to
+    /// re-render — deferred via the dirty flag while PDFium is busy or scrolling.
+    /// </summary>
+    internal void OnRenderQualityChanged(in RenderDpiSettings settings)
+    {
+        _marshaller.AssertUIThread();
+
+        // Gate on the actual DPI tuning, not "some setting changed" — OnConfigChanged
+        // funnels every settings change here. RenderDpiSettings is a record struct
+        // with value equality, so this is a cheap, correct comparison.
+        if (settings == _renderDpi) return;
+
+        _renderDpi = settings;
+
+        // Drop the prefetch buffer — it was rasterised at the previous DPI.
+        _prefetched?.Dispose();
+        _prefetched = null;
+
+        // Force the current page to re-render at the new DPI band; if PDFium is
+        // busy or the user is scrolling, mark dirty so the tick retries.
+        _renderDpiDirty = true;
+        UpdateRenderDpiIfNeeded();
     }
 
     public void SubmitAnalysis(AnalysisWorker? worker, IReadOnlySet<BlockRole> navigableRoles)
@@ -963,14 +1046,49 @@ public sealed class DocumentState : IDisposable
     }
 
     /// <summary>
-    /// Calculates the appropriate render DPI for a zoom level.
-    /// Pure math — no rendering-library dependency.
+    /// Base render DPI at zoom 1.0 (before the tier-step quantisation and
+    /// clamping). A PDF point is 1/72", so 150 is ~2.08× oversampling — headroom
+    /// that keeps the rasterised page sharp through the compositor's display-scale
+    /// upscale on HiDPI screens without the renderer needing to know the scale.
     /// </summary>
-    public static int CalculateRenderDpi(double zoom)
+    private const double BaseDpiPerZoom = 150.0;
+
+    /// <summary>
+    /// Calculates the appropriate render DPI for a zoom level, quantised to the
+    /// preset's tier step, clamped to the preset's [MinDpi, MaxDpi] band, and
+    /// finally lowered if a full-page bitmap at that DPI would exceed the preset's
+    /// pixel-area ceiling. Pure math — no rendering-library dependency.
+    /// </summary>
+    /// <param name="zoom">Camera zoom factor.</param>
+    /// <param name="pageWidthPts">Page width in PDF points (1/72"). <c>&lt;= 0</c> skips the area ceiling.</param>
+    /// <param name="pageHeightPts">Page height in PDF points. <c>&lt;= 0</c> skips the area ceiling.</param>
+    /// <param name="settings">Resolved render-quality tuning (see <see cref="RenderDpiSettings"/>).</param>
+    public static int CalculateRenderDpi(double zoom, double pageWidthPts, double pageHeightPts, in RenderDpiSettings settings)
     {
-        int raw = (int)(zoom * 150);
-        int rounded = ((raw + 37) / 75) * 75;
-        return Math.Clamp(rounded, 150, 600);
+        // Defensively normalise the bounds: ForPreset always yields valid values,
+        // but this is a public entry point and `in` settings could be a default
+        // (all-zero) or hand-built struct. Guarantee step >= 1, a positive floor
+        // (never return 0 DPI to RenderPage), and MaxDpi >= MinDpi (Math.Clamp
+        // throws on an inverted range). Valid presets are unaffected.
+        int step = Math.Max(1, settings.TierStep);
+        int minDpi = Math.Max(1, settings.MinDpi);
+        int maxDpi = Math.Max(minDpi, settings.MaxDpi);
+        int raw = (int)(zoom * BaseDpiPerZoom);
+        int rounded = ((raw + step / 2) / step) * step;
+        int dpi = Math.Clamp(rounded, minDpi, maxDpi);
+
+        // Pixel-area ceiling: a full page rendered at `dpi` is
+        // (w/72 · dpi) × (h/72 · dpi) px. If that exceeds the megapixel budget,
+        // drop to the largest DPI that fits — but never below the readability
+        // floor, even for a pathologically large page.
+        if (settings.MaxMegapixels > 0 && pageWidthPts > 0 && pageHeightPts > 0)
+        {
+            double pageAreaSqInches = (pageWidthPts / 72.0) * (pageHeightPts / 72.0);
+            double maxDpiByArea = Math.Sqrt(settings.MaxMegapixels * 1_000_000.0 / pageAreaSqInches);
+            if (maxDpiByArea < dpi)
+                dpi = Math.Max(minDpi, (int)maxDpiByArea);
+        }
+        return dpi;
     }
 
     public void Dispose()
