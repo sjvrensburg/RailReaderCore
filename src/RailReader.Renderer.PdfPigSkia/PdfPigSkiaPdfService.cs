@@ -140,9 +140,14 @@ public sealed class PdfPigSkiaPdfService : IPdfService, IDisposable
     /// </summary>
     private SKBitmap RenderAtPixelSize(int pageIndex, int pixW, int pixH)
     {
-        var (pageW, pageH) = GetPageSize(pageIndex);
-        double scale = Math.Min(pixW / pageW, pixH / pageH);
-        return RenderAt(pageIndex, (float)scale);
+        // Take the gate once: GetPageSize + RenderAt would otherwise acquire it
+        // twice and resolve the page twice for a single render.
+        lock (PdfPigGate.Lock)
+        {
+            var page = _doc.GetPage(pageIndex + 1);
+            double scale = Math.Min(pixW / page.Width, pixH / page.Height);
+            return _doc.GetPageAsSKBitmap(pageIndex + 1, (float)scale, SKColors.White);
+        }
     }
 
     public void Dispose()
