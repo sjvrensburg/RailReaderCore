@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.25.0 — natural line-end pacing in rail mode
+
+Forward advancing in rail mode (manual edge-hold and auto-scroll) no longer
+flashes past lines that earn little or no horizontal scroll travel. This is a
+behaviour-only release — no public API changes — but rail-navigation pacing
+changes, and the previously-inert `AutoScrollBlockPauseMs` setting now takes
+effect.
+
+### Changed
+
+- **Short-line reading beat.** The forward line-advance fires at a line's right
+  *extent*, so a line narrower than the viewport reaches the edge the instant it
+  is framed and earns almost no reading time — worst at a paragraph's short
+  final line, which flashed straight into the next chunk. Such lines now hold a
+  reading beat first, sized in **page space** (zoom-independent) from the line's
+  text width over the reading pace, then floored and capped
+  (`CoreTuning.MinLineReadMs` 350 ms / `MaxLineReadMs` 1200 ms). Whether a line
+  is "short" is judged in screen pixels (`lineWidthPx ≤ windowWidth`), so the
+  gate is correctly zoom-aware. Applies to both auto-scroll and the manual
+  edge-hold; wide lines and backward navigation are unaffected.
+- **Uniform end-of-block settling dwell.** Auto-scroll now holds a settling
+  dwell at the end of *every* block before advancing, independent of the final
+  line's width, so short / medium / long paragraph ends pace alike. Previously a
+  medium final line — too wide for the reading beat, too short to earn scroll
+  time — advanced immediately.
+- **`AutoScrollBlockPauseMs` is now consumed.** This setting (default 600 ms,
+  already present in `CoreSettings` / `AppConfig`) drives the end-of-block dwell
+  above. It previously had no effect on Core behaviour.
+
 ## 0.24.0 — configurable render-quality presets
 
 Render DPI tuning is now driven by a 7-preset schema instead of hardcoded
