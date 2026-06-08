@@ -419,7 +419,6 @@ public sealed class DocumentState : IDisposable
         {
             _dpiRenderPending = true;
             int page = CurrentPage;
-            bool wasForced = force;
             var ct = _cts.Token;
             Task.Run(() =>
             {
@@ -443,11 +442,12 @@ public sealed class DocumentState : IDisposable
                         if (IsDisposed || CurrentPage != page || newPage is null)
                         {
                             newPage?.Dispose();
-                            // Re-arm a forced re-render that FAILED (RenderPage threw)
-                            // so the pending preset change is retried, not lost. A
-                            // page-navigation abort needs no re-arm — GoToPage's
-                            // LoadPageBitmap already rendered the new page at the new DPI.
-                            if (wasForced && !IsDisposed && newPage is null && error is not null)
+                            // Re-arm a forced re-render that FAILED (RenderPage threw →
+                            // error set) so the pending preset change is retried, not
+                            // lost. A page-navigation abort or cancellation leaves error
+                            // null, and GoToPage's LoadPageBitmap already rendered the new
+                            // page at the new DPI, so neither needs a re-arm.
+                            if (force && !IsDisposed && error is not null)
                                 _renderDpiDirty = true;
                             return;
                         }

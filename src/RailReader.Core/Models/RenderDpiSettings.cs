@@ -46,7 +46,7 @@ public readonly record struct RenderDpiSettings
     internal const double DefaultDownscaleHysteresis = 0.5;
 
     /// <summary>The settings used when no preset is specified — equivalent to <see cref="RenderQuality.Quality"/>.</summary>
-    public static RenderDpiSettings Default => ForPreset(RenderQuality.Quality);
+    public static readonly RenderDpiSettings Default = ForPreset(RenderQuality.Quality);
 
     /// <summary>
     /// Resolve a preset to concrete DPI parameters. <paramref name="customMaxDpi"/>
