@@ -26,6 +26,22 @@ public sealed class AppConfig : IRecentFilesStore
     public int AnalysisLookaheadPages { get; set; } = 2;
     public int BackgroundAnalysisWindowPages { get; set; } = 12;
     public int PageCacheRadius { get; set; } = 24;
+
+    /// <summary>
+    /// Render-fidelity preset. Maps to a max-DPI / tier-step pair via
+    /// <see cref="RenderDpiSettings.ForPreset"/> in <see cref="ToCoreSettings"/>.
+    /// Defaults to <see cref="RenderQuality.Quality"/> — the pre-preset behaviour
+    /// (cap 600, tier step 75). Persisted as an integer (mirroring
+    /// <see cref="ColourEffect"/>).
+    /// </summary>
+    public RenderQuality RenderQuality { get; set; } = RenderQuality.Quality;
+
+    /// <summary>Max render DPI used only when <see cref="RenderQuality"/> is <see cref="RenderQuality.Custom"/>.</summary>
+    public int CustomMaxRenderDpi { get; set; } = 600;
+
+    /// <summary>Render tier step used only when <see cref="RenderQuality"/> is <see cref="RenderQuality.Custom"/>.</summary>
+    public int CustomRenderTierStep { get; set; } = 75;
+
     public float UiFontScale { get; set; } = 1.25f;
     public ColourEffect ColourEffect { get; set; } = ColourEffect.None;
     public double ColourEffectIntensity { get; set; } = 1.0;
@@ -81,6 +97,7 @@ public sealed class AppConfig : IRecentFilesStore
         AnalysisLookaheadPages = AnalysisLookaheadPages,
         BackgroundAnalysisWindowPages = BackgroundAnalysisWindowPages,
         PageCacheRadius = PageCacheRadius,
+        RenderDpi = RenderDpiSettings.ForPreset(RenderQuality, CustomMaxRenderDpi, CustomRenderTierStep),
         LinePadding = LinePadding,
         AutoScrollLinePauseMs = AutoScrollLinePauseMs,
         AutoScrollBlockPauseMs = AutoScrollBlockPauseMs,

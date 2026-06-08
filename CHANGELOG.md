@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased — configurable render-quality presets
+
+Render DPI tuning is now driven by a 7-preset schema instead of hardcoded
+constants. Additive and backward-compatible: the new `Quality` default
+reproduces the previous behaviour (DPI cap 600, tier step 75) exactly, so
+existing configs and output are unchanged.
+
+### Added
+
+- **`RenderQuality` enum** (`RailReader.Core.Models`) with presets `Ultra`
+  (800 DPI / 50 step), `Quality` (600 / 75, default), `High` (525 / 85),
+  `Balanced` (450 / 100), `Medium` (400 / 125), `Performance` (350 / 150), and
+  `Custom` (user-defined max-DPI / tier-step). Persisted as an integer in
+  `AppConfig`, so member order is part of the on-disk contract — append, never
+  reorder.
+- **`RenderDpiSettings` record struct** (`RailReader.Core.Models`) carrying the
+  resolved DPI cap, tier step, floor, pixel-area ceiling, and hysteresis
+  factors. `RenderDpiSettings.ForPreset(quality, customMaxDpi, customTierStep)`
+  maps a preset to concrete parameters; `RenderDpiSettings.Default` equals the
+  `Quality` preset.
+- **`CoreSettings.RenderDpi`** carries the resolved `RenderDpiSettings` into
+  Core. **`AppConfig.RenderQuality` / `CustomMaxRenderDpi` /
+  `CustomRenderTierStep`** are the persisted user choice; `ToCoreSettings()`
+  resolves them into `RenderDpi`.
+- **Pixel-area ceiling** in `DocumentState.CalculateRenderDpi`: a full-page
+  bitmap is capped at `RenderDpiSettings.MaxMegapixels` (default 64 MP) by
+  lowering the effective DPI on large-format pages, never below the readability
+  floor. Guards high presets (e.g. Ultra @ 800 DPI) from runaway allocations.
+
+### Changed
+
+- **`DocumentState.CalculateRenderDpi` signature** is now
+  `CalculateRenderDpi(double zoom, double pageWidthPts, double pageHeightPts, in RenderDpiSettings settings)`
+  (was `CalculateRenderDpi(double zoom)`). The DPI cap, tier step, floor, and
+  hysteresis factors — previously hardcoded literals — are read from the passed
+  settings. Breaking for direct callers of this static method (there were none
+  in-tree).
+- **Changing the render-quality preset invalidates the page cache at runtime.**
+  `OnConfigChanged` propagates the new settings to each open document, which
+  drops its prefetched bitmap and forces the current page to re-render at the
+  new DPI (deferred via a dirty flag and retried from the animation tick if
+  PDFium is busy) — no application restart required.
+
+> Note: display-scale-factor DPI scaling was deliberately **not** implemented.
+> The desktop consumer's compositor already applies the display scale to the
+> rendered bitmap, and the renderer carries ~2× oversampling headroom plus
+> adaptive mipmaps for HiDPI; multiplying DPI by the display scale in Core would
+> double-count and risk OOM with no fidelity gain.
+
 ## 0.23.0 — faster page text queries
 
 Performance pass over `PageText` geometric extraction. No public API or

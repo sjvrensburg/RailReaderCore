@@ -54,6 +54,15 @@ public sealed record CoreSettings
     /// hold and expensive (an ONNX inference) to recompute.
     /// </summary>
     public int PageCacheRadius { get; init; } = 24;
+
+    /// <summary>
+    /// Zoom-driven rasterisation tuning (DPI cap, tier step, floor, pixel-area
+    /// ceiling, hysteresis). Resolved from a <see cref="RenderQuality"/> preset
+    /// by the consumer's config layer. Defaults to the
+    /// <see cref="RenderQuality.Quality"/> preset, which reproduces the
+    /// pre-preset hardcoded behaviour (cap 600, tier step 75).
+    /// </summary>
+    public RenderDpiSettings RenderDpi { get; init; } = RenderDpiSettings.Default;
     public IReadOnlySet<BlockRole> NavigableRoles { get; init; } = Services.DefaultRoleSets.Navigable;
     public IReadOnlySet<BlockRole> CenteringRoles { get; init; } = Services.DefaultRoleSets.Centering;
 
