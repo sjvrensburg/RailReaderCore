@@ -24,6 +24,9 @@ internal sealed class ZoomAnimationController
         // WITHOUT any rail re-evaluation — no per-frame UpdateRailZoom (so rail can't re-engage
         // mid-flight) and no completion snap. Used to frame non-navigable blocks (figures/tables).
         public bool PureCameraMove;
+        // Per-animation duration. Defaults to the native zoom duration so wheel/keyboard/demo
+        // zooms are unchanged; a deliberate framing gesture (double-click) can request a gentler ease.
+        public double DurationMs = CoreTuning.ZoomAnimationDurationMs;
     }
 
     private ZoomAnimation? _zoomAnim;
@@ -95,7 +98,7 @@ internal sealed class ZoomAnimationController
     /// </summary>
     public void StartTo(DocumentState doc,
         double targetZoom, double targetOffsetX, double targetOffsetY,
-        double cursorPageX, double cursorPageY)
+        double cursorPageX, double cursorPageY, double? durationMs = null)
     {
         _zoomAnim = new ZoomAnimation
         {
@@ -109,6 +112,7 @@ internal sealed class ZoomAnimationController
             CursorPageY = cursorPageY,
             HorizontalFraction = -1, // not preserving a prior rail position → completion takes the StartSnap branch
             LineScreenY = 0,
+            DurationMs = durationMs ?? CoreTuning.ZoomAnimationDurationMs,
         };
     }
 
@@ -120,7 +124,7 @@ internal sealed class ZoomAnimationController
     /// seat. The caller is responsible for deactivating rail first.
     /// </summary>
     public void StartCameraOnly(DocumentState doc,
-        double targetZoom, double targetOffsetX, double targetOffsetY)
+        double targetZoom, double targetOffsetX, double targetOffsetY, double? durationMs = null)
     {
         _zoomAnim = new ZoomAnimation
         {
@@ -135,6 +139,7 @@ internal sealed class ZoomAnimationController
             HorizontalFraction = -1,
             LineScreenY = 0,
             PureCameraMove = true,
+            DurationMs = durationMs ?? CoreTuning.ZoomAnimationDurationMs,
         };
     }
 
@@ -145,7 +150,7 @@ internal sealed class ZoomAnimationController
         if (_zoomAnim is { } za)
         {
             double elapsed = za.Timer.Elapsed.TotalMilliseconds;
-            double t = Math.Clamp(elapsed / CoreTuning.ZoomAnimationDurationMs, 0, 1);
+            double t = Math.Clamp(elapsed / za.DurationMs, 0, 1);
             // Cubic ease-out: 1 - (1-t)^3
             double ease = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
 
