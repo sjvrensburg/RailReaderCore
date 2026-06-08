@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.23.0 — faster page text queries
+
+Performance pass over `PageText` geometric extraction. No public API or
+behavioural changes.
+
+### Changed
+
+- **Y-band spatial index for `PageText` geometric queries.**
+  `ExtractTextInRect` / `ExtractBlockText` previously scanned every `CharBox`
+  on the page per call, making `GetPageDescription` O(blocks × chars)
+  (~4.6 ms for a 50-block / 5000-char page). They now use a lazily-built,
+  cached index of char boxes sorted by vertical midpoint (built once per
+  `PageText`, which is cached per page) and binary-search the relevant Y-band,
+  with an index-order linear fallback when the rect covers most of the page so
+  large-rect extraction never regresses. Measured ~2.4× faster on
+  `GetPageDescription`; small-rect (per-line) queries ~7× faster. Output is
+  identical to the previous implementation.
+- **`PdfPigSkiaPdfService.RenderAtPixelSize`** now takes `PdfPigGate.Lock` once
+  and resolves the page once per render, instead of locking and resolving twice
+  (via a separate `GetPageSize` call).
+
 ## 0.20.0 — smooth zoom-to-block primitives; line-end advance; PdfPig spacing
 
 Adds Core primitives for smoothly framing a specific detected layout block —
