@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — configurable render-quality presets
+## 0.24.0 — configurable render-quality presets
 
 Render DPI tuning is now driven by a 7-preset schema instead of hardcoded
 constants. Additive and backward-compatible: the new `Quality` default
