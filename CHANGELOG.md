@@ -40,8 +40,13 @@ existing configs and output are unchanged.
 - **Changing the render-quality preset invalidates the page cache at runtime.**
   `OnConfigChanged` propagates the new settings to each open document, which
   drops its prefetched bitmap and forces the current page to re-render at the
-  new DPI (deferred via a dirty flag and retried from the animation tick if
-  PDFium is busy) — no application restart required.
+  new DPI — no application restart required. The invalidation is gated on the
+  resolved DPI tuning actually changing (`RenderDpiSettings` value equality), so
+  unrelated settings that funnel through `OnConfigChanged` (dark mode, scroll
+  speed, …) don't drop the prefetch buffer. The forced re-render respects the
+  scroll-skip guard: it is deferred (kept dirty) while scrolling and applied
+  from the animation tick — which polls the pending flag every frame — the
+  moment the PDFium gate and scroll allow.
 
 > Note: display-scale-factor DPI scaling was deliberately **not** implemented.
 > The desktop consumer's compositor already applies the display scale to the

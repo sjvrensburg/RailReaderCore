@@ -378,9 +378,11 @@ public sealed class DocumentState : IDisposable
     /// Checks if the current zoom demands a different DPI and schedules an
     /// async re-render on a background thread. A render-quality change sets a
     /// pending "dirty" flag (see <see cref="OnRenderQualityChanged"/>) that is
-    /// treated as a forced re-render: it bypasses the hysteresis band and the
-    /// scroll-skip guard so the new DPI takes effect immediately, re-rendering
-    /// on any DPI change rather than only large ones.
+    /// treated as a forced re-render: it bypasses the hysteresis band so the new
+    /// DPI takes effect on any change, not just large ones. It still respects the
+    /// scroll-skip guard below — a forced re-render is deferred (stays dirty)
+    /// while scrolling and retried from the animation tick (which polls
+    /// <see cref="RenderDpiPending"/>) the moment scrolling stops.
     /// </summary>
     public bool UpdateRenderDpiIfNeeded()
     {
@@ -394,10 +396,11 @@ public sealed class DocumentState : IDisposable
         // Skip DPI re-renders while the user is actively scrolling. PDFium runs
         // under a process-wide gate; a 100-200ms re-render at high zoom blocks
         // any subsequent text/link extraction the scroll path may need and the
-        // bitmap-swap defers a frame. Re-attempt fires from the animation tick
-        // once scroll velocity drops to zero. A forced (preset-change) re-render
-        // is deliberate and one-off, so it bypasses this guard.
-        if (!force && (Rail.ScrollSpeed > 0.1 || Rail.AutoScrolling)) return false;
+        // bitmap-swap defers a frame. This applies to forced (preset-change)
+        // re-renders too: jumping the gate mid-scroll would stutter the scroll,
+        // so the change stays dirty and the animation tick retries it the moment
+        // scroll velocity drops to zero.
+        if (Rail.ScrollSpeed > 0.1 || Rail.AutoScrolling) return false;
 
         int neededDpi = CalculateRenderDpi(Camera.Zoom, PageWidth, PageHeight, _renderDpi);
         bool trigger = force
@@ -453,26 +456,39 @@ public sealed class DocumentState : IDisposable
         return false;
     }
 
+    /// <summary>True while a render-quality change is queued but not yet applied
+    /// (PDFium was busy, or the user is scrolling). Polled every frame by the
+    /// animation tick so the deferred re-render fires as soon as the gate and
+    /// scroll allow, even while another animation is still running.</summary>
+    internal bool RenderDpiPending => _renderDpiDirty;
+
     /// <summary>
     /// Applies a new render-quality preset at runtime and invalidates the page
     /// cache so already-rasterised pages re-render at the new DPI — no restart.
-    /// Called from the controller's config-changed path. The prefetched page
-    /// (rasterised at the old DPI) is dropped, and the current page is forced to
-    /// re-render. If PDFium is busy the re-render is deferred via a dirty flag and
-    /// retried from the animation tick. A no-op when the resolved settings are
-    /// unchanged (the forced re-render simply finds the DPI already correct).
+    /// Called from the controller's config-changed path for every open document.
+    /// No-op unless the resolved DPI tuning actually changed, so unrelated config
+    /// changes (dark mode, scroll speed, …) don't needlessly drop the prefetch
+    /// buffer or schedule a render. When it does change, the prefetched page
+    /// (rasterised at the old DPI) is dropped and the current page is forced to
+    /// re-render — deferred via the dirty flag while PDFium is busy or scrolling.
     /// </summary>
     internal void OnRenderQualityChanged(in RenderDpiSettings settings)
     {
         _marshaller.AssertUIThread();
+
+        // Gate on the actual DPI tuning, not "some setting changed" — OnConfigChanged
+        // funnels every settings change here. RenderDpiSettings is a record struct
+        // with value equality, so this is a cheap, correct comparison.
+        if (settings == _renderDpi) return;
+
         _renderDpi = settings;
 
         // Drop the prefetch buffer — it was rasterised at the previous DPI.
         _prefetched?.Dispose();
         _prefetched = null;
 
-        // Force the current page to re-render at the new DPI band immediately;
-        // if PDFium is busy, mark dirty so the tick retries when it frees.
+        // Force the current page to re-render at the new DPI band; if PDFium is
+        // busy or the user is scrolling, mark dirty so the tick retries.
         _renderDpiDirty = true;
         UpdateRenderDpiIfNeeded();
     }

@@ -78,8 +78,11 @@ public sealed partial class DocumentController
         // Retry any DPI re-render that was skipped because scroll was active.
         // UpdateRenderDpiIfNeeded gates on Rail.ScrollSpeed/AutoScrolling and
         // does nothing if the cached DPI is already within hysteresis, so this
-        // poll is cheap.
-        if (!animating)
+        // poll is cheap. Also poll while a render-quality change is pending
+        // (RenderDpiPending) even mid-animation — otherwise a preset change made
+        // during auto-scroll (which keeps `animating` true) would never apply to
+        // the current page until scrolling stopped entirely.
+        if (!animating || doc.RenderDpiPending)
             doc.UpdateRenderDpiIfNeeded();
 
         return new TickResult(cameraChanged, pageChanged, overlayChanged, false, false, animating);
