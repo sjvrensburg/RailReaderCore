@@ -19,12 +19,18 @@ public class AutoScrollStateMachineTests
         double linePauseMs = 200,
         double windowWidth = 600,
         double zoom = 1.0,
-        double maxSpeed = 5.0)
+        double maxSpeed = 5.0,
+        bool lineFitsWindow = false,
+        double lineReadBudgetMs = 0,
+        double blockEndPauseMs = 0)
     {
         return new AutoScrollContext
         {
             SnapInProgress = snapInProgress,
             LineRight = blockRight, // helper param feeds the advance boundary (now the line's right edge)
+            LineFitsWindow = lineFitsWindow,
+            LineReadBudgetMs = lineReadBudgetMs,
+            BlockEndPauseMs = blockEndPauseMs,
             RawBlockWidthPx = rawBlockWidthPx,
             CurrentLine = currentLine,
             BlockLineCount = blockLineCount,
@@ -120,6 +126,75 @@ public class AutoScrollStateMachineTests
         bool result = sm.Tick(ref cameraX, 0.016, in ctx);
         Assert.False(result);
         Assert.Equal(AutoScrollState.Paused, sm.CurrentState);
+    }
+
+    [Fact]
+    public void Tick_BlockEndShortLine_HoldsReadingBeat_InsteadOfFlashingPast()
+    {
+        // A short final line of a wide block (block doesn't fit, so no whole-block dwell;
+        // line fits, so it reached its end with no scrolling). Previously this advanced
+        // immediately (return true) — a paragraph's short last line flashing into the next
+        // chunk. Now it holds the reading beat first.
+        var sm = new AutoScrollStateMachine(new NoOpClamp());
+        sm.Start(1.0);
+        double cameraX = 0;
+        var ctx = MakeContext(blockRight: 100, currentLine: 9, blockLineCount: 10,
+            linePauseMs: 200, rawBlockWidthPx: 2000, lineFitsWindow: true, lineReadBudgetMs: 500);
+
+        bool result = sm.Tick(ref cameraX, 0.016, in ctx);
+        Assert.False(result); // did NOT advance immediately
+        Assert.Equal(AutoScrollState.Paused, sm.CurrentState); // holding the reading beat
+    }
+
+    [Fact]
+    public void Tick_ShortLine_AdvancesAfterReadingBeatElapses()
+    {
+        var sm = new AutoScrollStateMachine(new NoOpClamp());
+        sm.Start(1.0);
+        double cameraX = 0;
+        // Tiny beat so the test stays fast.
+        var ctx = MakeContext(blockRight: 100, currentLine: 9, blockLineCount: 10,
+            linePauseMs: 1, rawBlockWidthPx: 2000, lineFitsWindow: true, lineReadBudgetMs: 1);
+
+        Assert.False(sm.Tick(ref cameraX, 0.016, in ctx)); // enters reading-beat pause
+        Assert.Equal(AutoScrollState.Paused, sm.CurrentState);
+        Thread.Sleep(5);
+        Assert.True(sm.Tick(ref cameraX, 0.016, in ctx)); // beat done → advance
+    }
+
+    [Fact]
+    public void Tick_BlockEnd_SettlesForBlockEndPause_AcrossLineWidths()
+    {
+        // The end-of-block settle is uniform across the final line's width — a medium/wide
+        // last line (which earns no reading beat) must still hold the block-end dwell so a
+        // paragraph end feels consistent, not flash past.
+        foreach (bool fits in new[] { false, true })
+        {
+            var sm = new AutoScrollStateMachine(new NoOpClamp());
+            sm.Start(1.0);
+            double cameraX = 0;
+            var ctx = MakeContext(blockRight: 100, currentLine: 9, blockLineCount: 10,
+                linePauseMs: 0, rawBlockWidthPx: 2000, lineFitsWindow: fits,
+                lineReadBudgetMs: 0, blockEndPauseMs: 600);
+
+            Assert.False(sm.Tick(ref cameraX, 0.016, in ctx)); // settles, does not advance now
+            Assert.Equal(AutoScrollState.Paused, sm.CurrentState);
+        }
+    }
+
+    [Fact]
+    public void Tick_BlockEnd_NoPauseConfigured_AdvancesImmediately()
+    {
+        // With neither a reading beat nor a block-end pause, a block end still advances at
+        // once (preserves the original no-pause path).
+        var sm = new AutoScrollStateMachine(new NoOpClamp());
+        sm.Start(1.0);
+        double cameraX = 0;
+        var ctx = MakeContext(blockRight: 100, currentLine: 9, blockLineCount: 10,
+            linePauseMs: 0, rawBlockWidthPx: 2000, lineFitsWindow: false,
+            lineReadBudgetMs: 0, blockEndPauseMs: 0);
+
+        Assert.True(sm.Tick(ref cameraX, 0.016, in ctx));
     }
 
     [Fact]

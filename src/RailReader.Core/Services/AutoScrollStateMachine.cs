@@ -22,6 +22,15 @@ internal readonly struct AutoScrollContext
     public required bool SnapInProgress { get; init; }
     /// <summary>Right edge of the current line (with margin) — the auto-scroll line-end.</summary>
     public required double LineRight { get; init; }
+    /// <summary>True when the current line fits within the viewport, i.e. it reaches its
+    /// right extent with little or no scrolling and so earns almost no reading time.</summary>
+    public required bool LineFitsWindow { get; init; }
+    /// <summary>Minimum reading beat (ms) for the current line — see RailNav.LineReadBudgetMs.
+    /// Only applied to lines that fit the viewport; wide lines earn their time by scrolling.</summary>
+    public required double LineReadBudgetMs { get; init; }
+    /// <summary>Settling dwell (ms) held at the END of every block before advancing, uniform
+    /// across the final line's width so short/medium/long paragraph ends feel alike.</summary>
+    public required double BlockEndPauseMs { get; init; }
     /// <summary>Raw block width in pixels (without margin).</summary>
     public required double RawBlockWidthPx { get; init; }
     public required int CurrentLine { get; init; }
@@ -58,6 +67,10 @@ internal sealed class AutoScrollStateMachine
     // Speed
     private double _speed;
     private bool _boost;
+
+    /// <summary>Base scroll speed (page-units/sec, ignoring boost) — the reading pace used
+    /// to size a short line's reading beat. See RailNav.LineReadBudgetMs.</summary>
+    public double BaseSpeed => _speed;
 
     // WaitingForSnap: deferred pause duration
     private double _pendingPauseMs;
@@ -246,16 +259,38 @@ internal sealed class AutoScrollStateMachine
             return false;
         }
 
-        // Mid-block line end: pause then advance
         bool isBlockEnd = ctx.CurrentLine + 1 >= ctx.BlockLineCount;
-        if (!isBlockEnd && ctx.LinePauseMs > 0)
+
+        // A line that fits the viewport scrolled little or nothing to reach its right
+        // extent, so it earned almost no reading time. Its reading beat is content-scaled,
+        // floored at the configured line pause so it never reads quicker than a line end.
+        double readingBeat = ctx.LineFitsWindow ? Math.Max(ctx.LinePauseMs, ctx.LineReadBudgetMs) : 0.0;
+
+        if (isBlockEnd)
         {
-            _dwelt = false; // reset for the next line
-            BeginPause(ctx.LinePauseMs, advances: true, AutoScrollState.Paused);
-            return false;
+            // Settle at the END of every block before crossing, uniformly across the final
+            // line's width (short / medium / long), so a paragraph end always feels like
+            // one — a medium last line no longer flashes past while a short one (reading
+            // beat) and a long one (scroll travel) feel natural. The short line's reading
+            // beat folds in when it is the longer of the two.
+            double pause = Math.Max(readingBeat, ctx.BlockEndPauseMs);
+            if (pause > 0)
+            {
+                BeginPause(pause, advances: true, AutoScrollState.Paused);
+                return false;
+            }
+            return true;
         }
 
-        // Block end (or no pause configured): advance immediately
+        // Mid-block line end. A fit-in-window line gets its reading beat; a wide line earned
+        // its time by scrolling and just takes the configured line pause.
+        double midPause = ctx.LineFitsWindow ? readingBeat : ctx.LinePauseMs;
+        if (midPause > 0)
+        {
+            _dwelt = false; // reset for the next line
+            BeginPause(midPause, advances: true, AutoScrollState.Paused);
+            return false;
+        }
         return true;
     }
 
