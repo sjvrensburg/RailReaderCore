@@ -408,14 +408,18 @@ public sealed class DocumentState : IDisposable
             : neededDpi > CachedDpi * _renderDpi.UpscaleHysteresis
               || (neededDpi < CachedDpi * _renderDpi.DownscaleHysteresis && CachedDpi > _renderDpi.MinDpi);
 
-        // A forced pass is satisfied whether or not it needed a re-render (e.g. a
-        // preset change that doesn't move the current zoom's DPI), so clear dirty now.
+        // Optimistically mark a forced (preset-change) pass as satisfied now that
+        // it's about to render (or needs no render). If the scheduled re-render
+        // later FAILS, the completion handler re-arms the flag so the tick retries
+        // — without this, a thrown RenderPage would silently strand the page at
+        // the old DPI (the flag was already cleared).
         if (force) _renderDpiDirty = false;
 
         if (trigger)
         {
             _dpiRenderPending = true;
             int page = CurrentPage;
+            bool wasForced = force;
             var ct = _cts.Token;
             Task.Run(() =>
             {
@@ -439,6 +443,12 @@ public sealed class DocumentState : IDisposable
                         if (IsDisposed || CurrentPage != page || newPage is null)
                         {
                             newPage?.Dispose();
+                            // Re-arm a forced re-render that FAILED (RenderPage threw)
+                            // so the pending preset change is retried, not lost. A
+                            // page-navigation abort needs no re-arm — GoToPage's
+                            // LoadPageBitmap already rendered the new page at the new DPI.
+                            if (wasForced && !IsDisposed && newPage is null && error is not null)
+                                _renderDpiDirty = true;
                             return;
                         }
                         var oldPage = CachedPage;
@@ -453,6 +463,7 @@ public sealed class DocumentState : IDisposable
             }, ct);
             return true;
         }
+
         return false;
     }
 
@@ -1054,10 +1065,17 @@ public sealed class DocumentState : IDisposable
     /// <param name="settings">Resolved render-quality tuning (see <see cref="RenderDpiSettings"/>).</param>
     public static int CalculateRenderDpi(double zoom, double pageWidthPts, double pageHeightPts, in RenderDpiSettings settings)
     {
+        // Defensively normalise the bounds: ForPreset always yields valid values,
+        // but this is a public entry point and `in` settings could be a default
+        // (all-zero) or hand-built struct. Guarantee step >= 1, a positive floor
+        // (never return 0 DPI to RenderPage), and MaxDpi >= MinDpi (Math.Clamp
+        // throws on an inverted range). Valid presets are unaffected.
         int step = Math.Max(1, settings.TierStep);
+        int minDpi = Math.Max(1, settings.MinDpi);
+        int maxDpi = Math.Max(minDpi, settings.MaxDpi);
         int raw = (int)(zoom * BaseDpiPerZoom);
         int rounded = ((raw + step / 2) / step) * step;
-        int dpi = Math.Clamp(rounded, settings.MinDpi, settings.MaxDpi);
+        int dpi = Math.Clamp(rounded, minDpi, maxDpi);
 
         // Pixel-area ceiling: a full page rendered at `dpi` is
         // (w/72 · dpi) × (h/72 · dpi) px. If that exceeds the megapixel budget,
@@ -1068,7 +1086,7 @@ public sealed class DocumentState : IDisposable
             double pageAreaSqInches = (pageWidthPts / 72.0) * (pageHeightPts / 72.0);
             double maxDpiByArea = Math.Sqrt(settings.MaxMegapixels * 1_000_000.0 / pageAreaSqInches);
             if (maxDpiByArea < dpi)
-                dpi = Math.Max(settings.MinDpi, (int)maxDpiByArea);
+                dpi = Math.Max(minDpi, (int)maxDpiByArea);
         }
         return dpi;
     }

@@ -81,4 +81,17 @@ public class RenderQualityRuntimeTests : IDisposable
         _doc.OnRenderQualityChanged(RenderDpiSettings.ForPreset(RenderQuality.Performance));
         Assert.True(_doc.RenderDpiPending);
     }
+
+    [Fact]
+    public void OnSliderChanged_PropagatesRenderDpiToDocuments()
+    {
+        // #6: OnSliderChanged must keep each document's render-DPI in sync with
+        // _config (not just _config itself). Pushing a config whose RenderDpi
+        // differs, while scrolling, must leave the change pending on the document
+        // — proving it propagated through OnRenderQualityChanged rather than
+        // updating _config alone.
+        var newConfig = _controller.Config with { RenderDpi = RenderDpiSettings.ForPreset(RenderQuality.Ultra) };
+        _controller.OnSliderChanged(newConfig);
+        Assert.True(_doc.RenderDpiPending);
+    }
 }

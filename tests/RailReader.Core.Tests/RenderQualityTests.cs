@@ -123,6 +123,29 @@ public class RenderQualityTests
         Assert.Equal(800, dpi); // no dims → ceiling can't be computed → cap applies
     }
 
+    [Fact]
+    public void CalculateRenderDpi_DefaultSettings_ReturnsPositiveDpiNeverZero()
+    {
+        // A default(RenderDpiSettings) has all-zero fields. The public entry point
+        // must not return 0 (which would be passed to RenderPage) — it clamps to a
+        // positive floor instead.
+        int dpi = DocumentState.CalculateRenderDpi(zoom: 2.0, LetterW, LetterH, default);
+        Assert.True(dpi >= 1, $"expected positive DPI, got {dpi}");
+    }
+
+    [Fact]
+    public void CalculateRenderDpi_InvertedBounds_DoesNotThrow()
+    {
+        // MinDpi > MaxDpi would make Math.Clamp throw; the method must normalise.
+        var inverted = new RenderDpiSettings
+        {
+            MinDpi = 200, MaxDpi = 100, TierStep = 75, MaxMegapixels = 0,
+            UpscaleHysteresis = 1.5, DownscaleHysteresis = 0.5,
+        };
+        var ex = Record.Exception(() => DocumentState.CalculateRenderDpi(2.0, LetterW, LetterH, inverted));
+        Assert.Null(ex);
+    }
+
     // --- AppConfig → CoreSettings bridge ---
 
     [Fact]
