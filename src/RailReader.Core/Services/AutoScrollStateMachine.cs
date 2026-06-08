@@ -22,6 +22,12 @@ internal readonly struct AutoScrollContext
     public required bool SnapInProgress { get; init; }
     /// <summary>Right edge of the current line (with margin) — the auto-scroll line-end.</summary>
     public required double LineRight { get; init; }
+    /// <summary>True when the current line fits within the viewport, i.e. it reaches its
+    /// right extent with little or no scrolling and so earns almost no reading time.</summary>
+    public required bool LineFitsWindow { get; init; }
+    /// <summary>Minimum reading beat (ms) for the current line — see RailNav.LineReadBudgetMs.
+    /// Only applied to lines that fit the viewport; wide lines earn their time by scrolling.</summary>
+    public required double LineReadBudgetMs { get; init; }
     /// <summary>Raw block width in pixels (without margin).</summary>
     public required double RawBlockWidthPx { get; init; }
     public required int CurrentLine { get; init; }
@@ -58,6 +64,10 @@ internal sealed class AutoScrollStateMachine
     // Speed
     private double _speed;
     private bool _boost;
+
+    /// <summary>Base scroll speed (page-units/sec, ignoring boost) — the reading pace used
+    /// to size a short line's reading beat. See RailNav.LineReadBudgetMs.</summary>
+    public double BaseSpeed => _speed;
 
     // WaitingForSnap: deferred pause duration
     private double _pendingPauseMs;
@@ -246,8 +256,26 @@ internal sealed class AutoScrollStateMachine
             return false;
         }
 
-        // Mid-block line end: pause then advance
         bool isBlockEnd = ctx.CurrentLine + 1 >= ctx.BlockLineCount;
+
+        // A line that fits the viewport scrolled little or nothing to reach its right
+        // extent, so it earned almost no reading time. Give it a content-scaled reading
+        // beat — INCLUDING at block end, where we'd otherwise advance with no pause and
+        // flash a paragraph's short final line straight into the next chunk. Floored at the
+        // configured line pause so this never reads as quicker than a normal line end.
+        if (ctx.LineFitsWindow)
+        {
+            double beat = Math.Max(ctx.LinePauseMs, ctx.LineReadBudgetMs);
+            if (beat > 0)
+            {
+                if (!isBlockEnd) _dwelt = false; // reset for the next line
+                BeginPause(beat, advances: true, AutoScrollState.Paused);
+                return false;
+            }
+            return true;
+        }
+
+        // Wide line, mid-block: pause then advance
         if (!isBlockEnd && ctx.LinePauseMs > 0)
         {
             _dwelt = false; // reset for the next line
@@ -255,7 +283,7 @@ internal sealed class AutoScrollStateMachine
             return false;
         }
 
-        // Block end (or no pause configured): advance immediately
+        // Wide line at block end (already read while scrolling), or no pause: advance now
         return true;
     }
 

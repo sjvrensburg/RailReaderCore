@@ -19,12 +19,16 @@ public class AutoScrollStateMachineTests
         double linePauseMs = 200,
         double windowWidth = 600,
         double zoom = 1.0,
-        double maxSpeed = 5.0)
+        double maxSpeed = 5.0,
+        bool lineFitsWindow = false,
+        double lineReadBudgetMs = 0)
     {
         return new AutoScrollContext
         {
             SnapInProgress = snapInProgress,
             LineRight = blockRight, // helper param feeds the advance boundary (now the line's right edge)
+            LineFitsWindow = lineFitsWindow,
+            LineReadBudgetMs = lineReadBudgetMs,
             RawBlockWidthPx = rawBlockWidthPx,
             CurrentLine = currentLine,
             BlockLineCount = blockLineCount,
@@ -120,6 +124,54 @@ public class AutoScrollStateMachineTests
         bool result = sm.Tick(ref cameraX, 0.016, in ctx);
         Assert.False(result);
         Assert.Equal(AutoScrollState.Paused, sm.CurrentState);
+    }
+
+    [Fact]
+    public void Tick_BlockEndShortLine_HoldsReadingBeat_InsteadOfFlashingPast()
+    {
+        // A short final line of a wide block (block doesn't fit, so no whole-block dwell;
+        // line fits, so it reached its end with no scrolling). Previously this advanced
+        // immediately (return true) — a paragraph's short last line flashing into the next
+        // chunk. Now it holds the reading beat first.
+        var sm = new AutoScrollStateMachine(new NoOpClamp());
+        sm.Start(1.0);
+        double cameraX = 0;
+        var ctx = MakeContext(blockRight: 100, currentLine: 9, blockLineCount: 10,
+            linePauseMs: 200, rawBlockWidthPx: 2000, lineFitsWindow: true, lineReadBudgetMs: 500);
+
+        bool result = sm.Tick(ref cameraX, 0.016, in ctx);
+        Assert.False(result); // did NOT advance immediately
+        Assert.Equal(AutoScrollState.Paused, sm.CurrentState); // holding the reading beat
+    }
+
+    [Fact]
+    public void Tick_ShortLine_AdvancesAfterReadingBeatElapses()
+    {
+        var sm = new AutoScrollStateMachine(new NoOpClamp());
+        sm.Start(1.0);
+        double cameraX = 0;
+        // Tiny beat so the test stays fast.
+        var ctx = MakeContext(blockRight: 100, currentLine: 9, blockLineCount: 10,
+            linePauseMs: 1, rawBlockWidthPx: 2000, lineFitsWindow: true, lineReadBudgetMs: 1);
+
+        Assert.False(sm.Tick(ref cameraX, 0.016, in ctx)); // enters reading-beat pause
+        Assert.Equal(AutoScrollState.Paused, sm.CurrentState);
+        Thread.Sleep(5);
+        Assert.True(sm.Tick(ref cameraX, 0.016, in ctx)); // beat done → advance
+    }
+
+    [Fact]
+    public void Tick_BlockEndWideLine_StillAdvancesImmediately()
+    {
+        // Regression guard: a wide block-end line earned its reading time by scrolling, so
+        // it must still advance the instant it reaches the end (no added beat).
+        var sm = new AutoScrollStateMachine(new NoOpClamp());
+        sm.Start(1.0);
+        double cameraX = 0;
+        var ctx = MakeContext(blockRight: 100, currentLine: 9, blockLineCount: 10,
+            linePauseMs: 200, rawBlockWidthPx: 2000, lineFitsWindow: false, lineReadBudgetMs: 500);
+
+        Assert.True(sm.Tick(ref cameraX, 0.016, in ctx));
     }
 
     [Fact]

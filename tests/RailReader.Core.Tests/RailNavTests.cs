@@ -790,10 +790,12 @@ public class RailNavTests
     }
 
     [Fact]
-    public void AutoScroll_ReachesEndAtLineExtent_NotBlockExtent_ForShortLine()
+    public void AutoScroll_ShortLine_HoldsReadingBeat_While_WideLine_KeepsScrolling()
     {
-        // Single-line wide block; the line's width is the only thing that should decide
-        // when auto-scroll has reached the end (mirrors the manual edge-hold fix).
+        // Single-line wide block; the line's width decides when auto-scroll reaches the end
+        // (line extent, not block extent). A SHORT line reaches its end with no scrolling,
+        // so instead of flashing past it now holds a reading beat (stops scrolling); a
+        // FULL-WIDTH line is still off-screen to the right, so it keeps scrolling.
         PageAnalysis Wide(float lineWidth)
         {
             var b = new LayoutBlock
@@ -804,14 +806,15 @@ public class RailNavTests
             return new PageAnalysis { Blocks = [b], PageWidth = 612, PageHeight = 792 };
         }
 
-        // SHORT line (150pt): fully visible at the framed leftmost camera, so auto-scroll
-        // immediately reaches the line end and signals advance.
+        // SHORT line (150pt): reaches the line end immediately, then holds the beat rather
+        // than advancing — TickAutoScroll returns false and the scroll speed drops to 0.
         _nav.SetAnalysis(Wide(150), new HashSet<BlockRole> { BlockRole.Text });
         _nav.Active = true;
         _nav.AutoScrollElapsedSecondsOverride = () => 0.0;
         _nav.StartAutoScroll(20.0);
         double camX = 0;
-        Assert.True(_nav.TickAutoScroll(ref camX, 0.016, Zoom, WindowWidth));
+        Assert.False(_nav.TickAutoScroll(ref camX, 0.016, Zoom, WindowWidth));
+        Assert.Equal(0.0, _nav.ScrollSpeed); // paused on the reading beat, not flashing past
 
         // FULL-WIDTH line (468pt) in the same wide block: still off-screen to the right at
         // the framed position, so auto-scroll keeps scrolling (does NOT advance yet).
@@ -822,5 +825,58 @@ public class RailNavTests
         nav2.StartAutoScroll(20.0);
         double camX2 = 0;
         Assert.False(nav2.TickAutoScroll(ref camX2, 0.016, Zoom, WindowWidth));
+        Assert.True(nav2.ScrollSpeed > 0.0); // still scrolling across the full line
+    }
+
+    [Fact]
+    public void LineReadBudgetMs_IsClampedAndZoomIndependent()
+    {
+        // 468pt-wide block, current line 90pt wide.
+        _nav.SetAnalysis(ShortLineAnalysis(blockWidth: 468, lineWidth: 90),
+            new HashSet<BlockRole> { BlockRole.Text });
+        _nav.Active = true;
+
+        // Budget is page-space (line.Width / pace): no zoom argument, so it is identical at
+        // any magnification — the same text reads for the same time. 90pt / 30pt-per-sec
+        // = 3000ms, clamped to the [Min, Max] reading-beat window.
+        double budget = _nav.LineReadBudgetMs(30.0);
+        Assert.Equal(1200.0, budget); // MaxLineReadMs cap
+
+        // A fast pace shrinks the beat but never below the floor.
+        Assert.Equal(350.0, _nav.LineReadBudgetMs(100000.0)); // MinLineReadMs floor
+
+        // A proportional middle: 90pt / 0.18pt-per-ms... pick a pace landing inside the band.
+        double mid = _nav.LineReadBudgetMs(90.0 / 0.6); // 90 / 150 *1000 = 600ms
+        Assert.Equal(600.0, mid, precision: 1);
+    }
+
+    [Fact]
+    public void ForwardAdvance_ShortLine_GatedUntilReadingBeatElapses()
+    {
+        // Short line (90pt) in a wide block: at the hard edge the instant it is framed, so a
+        // forward advance must be held until the line has been read for its beat.
+        _nav.SetAnalysis(ShortLineAnalysis(blockWidth: 468, lineWidth: 90),
+            new HashSet<BlockRole> { BlockRole.Text });
+        _nav.Active = true;
+
+        _nav.LineDwellElapsedMsOverride = () => 0.0; // just arrived
+        Assert.True(_nav.ForwardAdvanceHeldForReadingBeat(Zoom, WindowWidth));
+
+        _nav.LineDwellElapsedMsOverride = () => 5000.0; // read long enough
+        Assert.False(_nav.ForwardAdvanceHeldForReadingBeat(Zoom, WindowWidth));
+    }
+
+    [Fact]
+    public void ForwardAdvance_FullWidthLine_NeverGated()
+    {
+        // A full-width line is only at the edge after the user scrolls across it, which
+        // already provides the reading time — so the beat gate must never apply to it,
+        // even immediately on arrival.
+        _nav.SetAnalysis(ShortLineAnalysis(blockWidth: 468, lineWidth: 468),
+            new HashSet<BlockRole> { BlockRole.Text });
+        _nav.Active = true;
+
+        _nav.LineDwellElapsedMsOverride = () => 0.0;
+        Assert.False(_nav.ForwardAdvanceHeldForReadingBeat(Zoom, WindowWidth));
     }
 }
