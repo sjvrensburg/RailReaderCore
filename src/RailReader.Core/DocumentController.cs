@@ -484,7 +484,7 @@ public sealed partial class DocumentController : IDisposable
     /// callers can frame any detected block. Returns false only if there's no document / no
     /// current-page analysis / the index is out of range.
     /// </summary>
-    public bool SmoothlyFrameBlock(int pageBlockIndex, double? targetZoom = null)
+    public bool SmoothlyFrameBlock(int pageBlockIndex, double? targetZoom = null, double? durationMs = null)
     {
         if (ActiveDocument is not { } doc) return false;
         if (!doc.AnalysisCache.TryGetValue(doc.CurrentPage, out var analysis)) return false;
@@ -500,7 +500,7 @@ public sealed partial class DocumentController : IDisposable
 
         // Non-navigable role (figure/table/chart): centre it geometrically instead of failing.
         if (!doc.Rail.TrySetCurrentByPageIndex(pageBlockIndex))
-            return CenterBlockGeometric(doc, box, targetZoom);
+            return CenterBlockGeometric(doc, box, targetZoom, durationMs);
 
         // Keep THIS block seated when the zoom crosses the rail threshold mid-flight,
         // regardless of overlapping block geometry under the focus point.
@@ -514,7 +514,7 @@ public sealed partial class DocumentController : IDisposable
         var (ox, oy) = doc.Rail.ComputeSnapTarget(z, ww, wh);
         var line = doc.Rail.CurrentLineInfo; // seated block's first line
         if (AutoScrollActive) StopAutoScroll();
-        _zoom.StartTo(doc, z, ox, oy, line.X + line.Width / 2.0, line.Y);
+        _zoom.StartTo(doc, z, ox, oy, line.X + line.Width / 2.0, line.Y, durationMs);
         FireReadingPositionChanged();
         return true;
     }
@@ -547,13 +547,13 @@ public sealed partial class DocumentController : IDisposable
 
     /// <summary>Shared geometric centred-frame: ease the camera to fit + centre <paramref name="box"/>
     /// without engaging rail. Always returns true.</summary>
-    private bool CenterBlockGeometric(DocumentState doc, BBox box, double? targetZoom)
+    private bool CenterBlockGeometric(DocumentState doc, BBox box, double? targetZoom, double? durationMs = null)
     {
         var (ww, wh) = GetViewportSize();
         var (z, ox, oy) = doc.ComputeCenteredFrame(box, ww, wh, targetZoom);
         if (AutoScrollActive) StopAutoScroll();
         doc.Rail.Deactivate(); // drive the camera directly; no rail seat/snap
-        _zoom.StartCameraOnly(doc, z, ox, oy);
+        _zoom.StartCameraOnly(doc, z, ox, oy, durationMs);
         FireReadingPositionChanged(); // rail now inactive → reading position cleared
         return true;
     }
