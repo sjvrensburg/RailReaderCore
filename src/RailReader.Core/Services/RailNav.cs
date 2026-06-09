@@ -189,9 +189,11 @@ public sealed partial class RailNav : ICameraClamp
             {
                 // An explicit framing (e.g. SmoothlyFrameBlock) pinned the target block;
                 // honour it instead of geometric nearest-block selection, so overlapping
-                // bboxes under the focus point can't redirect to a different block.
+                // bboxes under the focus point can't redirect to a different block. Keep
+                // the pinned line too (clamped to the block) so a framing aimed at a
+                // specific line lands there rather than snapping back to line 0.
                 CurrentBlock = Math.Min(pinned, Math.Max(0, _navigableIndices.Count - 1));
-                CurrentLine = 0;
+                CurrentLine = Math.Clamp(_pinnedActivationLine, 0, Math.Max(0, CurrentNavigableBlock.Lines.Count - 1));
             }
             else if (cursorPageX.HasValue && cursorPageY.HasValue)
                 FindBlockNearPoint(cursorPageX.Value, cursorPageY.Value);
@@ -214,9 +216,18 @@ public sealed partial class RailNav : ICameraClamp
     // Consumed on the next activate; cleared on deactivate so it can't go stale.
     private int? _pinnedActivationBlock;
 
-    /// <summary>Pin the current block so the next rail activation keeps it seated
-    /// instead of running geometric nearest-block selection.</summary>
-    public void PinCurrentBlockForActivation() => _pinnedActivationBlock = CurrentBlock;
+    // Line within the pinned block to seat on activation. Captured alongside
+    // _pinnedActivationBlock so a framing that targets a specific line (not just line 0)
+    // keeps that line through the threshold crossing. Only read when the block pin is set.
+    private int _pinnedActivationLine;
+
+    /// <summary>Pin the current block and line so the next rail activation keeps them
+    /// seated instead of running geometric nearest-block selection.</summary>
+    public void PinCurrentBlockForActivation()
+    {
+        _pinnedActivationBlock = CurrentBlock;
+        _pinnedActivationLine = CurrentLine;
+    }
 
     /// <summary>Force rail out of active mode. Mirrors the deactivate branch of
     /// <see cref="UpdateZoom"/>; used by geometric centred framing, which drives the camera
@@ -653,16 +664,17 @@ public sealed partial class RailNav : ICameraClamp
     /// Seats the rail cursor on the block whose page-level index (into
     /// <see cref="PageAnalysis.Blocks"/>) is <paramref name="pageBlockIndex"/> — the
     /// same index space as <see cref="CurrentNavigableArrayIndex"/> and page-description
-    /// queries — landing on its first line and clearing vertical bias. Returns false if
+    /// queries — landing on line <paramref name="line"/> (clamped to the block's line
+    /// range; defaults to the first line) and clearing vertical bias. Returns false if
     /// that block is not in the navigable subset (e.g. a non-navigable role), leaving
     /// the cursor unchanged.
     /// </summary>
-    public bool TrySetCurrentByPageIndex(int pageBlockIndex)
+    public bool TrySetCurrentByPageIndex(int pageBlockIndex, int line = 0)
     {
         int navPos = _navigableIndices.IndexOf(pageBlockIndex);
         if (navPos < 0) return false;
         CurrentBlock = navPos;
-        CurrentLine = 0;
+        CurrentLine = Math.Clamp(line, 0, Math.Max(0, CurrentNavigableBlock.Lines.Count - 1));
         VerticalBias = 0;
         return true;
     }

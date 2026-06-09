@@ -479,12 +479,15 @@ public sealed partial class DocumentController : IDisposable
     /// Smoothly frame the page-level block <paramref name="pageBlockIndex"/> on the
     /// current page (auto-fit when <paramref name="targetZoom"/> is null). Navigable blocks
     /// use rail's exact framing: the zoom is floored at the rail threshold so rail engages and
-    /// the completion snap frames the block. Non-navigable blocks (figures/tables/charts) — which
-    /// the rail index can't seat — fall back to a geometric centred frame instead of failing, so
-    /// callers can frame any detected block. Returns false only if there's no document / no
-    /// current-page analysis / the index is out of range.
+    /// the completion snap frames the block. <paramref name="line"/> (clamped to the block's
+    /// line range; defaults to the first line) seats the rail on a specific line and is honoured
+    /// through both the framing and the rail-activation reset, so callers can land on an arbitrary
+    /// line in one smooth motion. Non-navigable blocks (figures/tables/charts) — which the rail
+    /// index can't seat — fall back to a geometric centred frame instead of failing (and ignore
+    /// <paramref name="line"/>), so callers can frame any detected block. Returns false only if
+    /// there's no document / no current-page analysis / the index is out of range.
     /// </summary>
-    public bool SmoothlyFrameBlock(int pageBlockIndex, double? targetZoom = null, double? durationMs = null)
+    public bool SmoothlyFrameBlock(int pageBlockIndex, double? targetZoom = null, double? durationMs = null, int line = 0)
     {
         if (ActiveDocument is not { } doc) return false;
         if (!doc.AnalysisCache.TryGetValue(doc.CurrentPage, out var analysis)) return false;
@@ -499,11 +502,11 @@ public sealed partial class DocumentController : IDisposable
         var box = analysis.Blocks[pageBlockIndex].BBox;
 
         // Non-navigable role (figure/table/chart): centre it geometrically instead of failing.
-        if (!doc.Rail.TrySetCurrentByPageIndex(pageBlockIndex))
+        if (!doc.Rail.TrySetCurrentByPageIndex(pageBlockIndex, line))
             return CenterBlockGeometric(doc, box, targetZoom, durationMs);
 
-        // Keep THIS block seated when the zoom crosses the rail threshold mid-flight,
-        // regardless of overlapping block geometry under the focus point.
+        // Keep THIS block (and seated line) when the zoom crosses the rail threshold
+        // mid-flight, regardless of overlapping block geometry under the focus point.
         doc.Rail.PinCurrentBlockForActivation();
 
         var (ww, wh) = GetViewportSize();
@@ -512,9 +515,9 @@ public sealed partial class DocumentController : IDisposable
             _config.RailZoomThreshold, Camera.ZoomMax);
 
         var (ox, oy) = doc.Rail.ComputeSnapTarget(z, ww, wh);
-        var line = doc.Rail.CurrentLineInfo; // seated block's first line
+        var lineInfo = doc.Rail.CurrentLineInfo; // seated block's target line
         if (AutoScrollActive) StopAutoScroll();
-        _zoom.StartTo(doc, z, ox, oy, line.X + line.Width / 2.0, line.Y, durationMs);
+        _zoom.StartTo(doc, z, ox, oy, lineInfo.X + lineInfo.Width / 2.0, lineInfo.Y, durationMs);
         FireReadingPositionChanged();
         return true;
     }
