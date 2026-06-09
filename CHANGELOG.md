@@ -1,9 +1,9 @@
 # Changelog
 
-## 0.26.0 — finer control over smooth framing
+## 0.27.0 — seat a specific line when framing a block
 
-Two additive, backward-compatible extensions to the smooth "frame a detected
-block" gesture. Callers that use the existing signatures are unaffected.
+Additive, backward-compatible extension to the smooth "frame a detected block"
+gesture. Callers that use the existing signatures are unaffected.
 
 ### Added
 
@@ -21,6 +21,11 @@ block" gesture. Callers that use the existing signatures are unaffected.
   it by name (`SmoothlyFrameBlock(block, line: n)`) for clarity. Unblocks the
   railreader2 Portals "Go to source" path, which can now land on the referencing
   line directly and drop its deferred-timer workaround. (#52)
+
+## 0.26.0 — per-animation zoom duration
+
+### Added
+
 - **Per-animation zoom duration.** `ZoomAnimation` gains an optional `DurationMs`
   (defaults to the native `CoreTuning.ZoomAnimationDurationMs`, 180 ms);
   `ZoomAnimationController.StartTo` / `StartCameraOnly` and
