@@ -695,6 +695,54 @@ public class RailNavTests
     }
 
     [Fact]
+    public void TrySetCurrentByPageIndex_SeatsSpecifiedLine_ClearsBias()
+    {
+        // Page blocks [Text, Figure, Text] → navigable subset = page indices {0, 2}.
+        var analysis = CreateMixedAnalysis(3, 3, BlockRole.Text, BlockRole.Figure, BlockRole.Text);
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { BlockRole.Text });
+        _nav.VerticalBias = 17;
+
+        bool ok = _nav.TrySetCurrentByPageIndex(2, line: 2); // page index 2, third line
+
+        Assert.True(ok);
+        Assert.Equal(1, _nav.CurrentBlock);
+        Assert.Equal(2, _nav.CurrentLine);  // seated the requested line, not line 0
+        Assert.Equal(0, _nav.VerticalBias); // still clears bias
+    }
+
+    [Fact]
+    public void TrySetCurrentByPageIndex_ClampsLineToBlockRange()
+    {
+        var analysis = CreateAnalysis(1, 3); // one block, valid lines 0..2
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { BlockRole.Text });
+
+        Assert.True(_nav.TrySetCurrentByPageIndex(0, line: 99)); // past the end → last line
+        Assert.Equal(2, _nav.CurrentLine);
+
+        Assert.True(_nav.TrySetCurrentByPageIndex(0, line: -5)); // negative → first line
+        Assert.Equal(0, _nav.CurrentLine);
+    }
+
+    [Fact]
+    public void Activation_PreservesPinnedLine_NotJustBlock()
+    {
+        // Two stacked text blocks, 3 lines each. Rail starts inactive (below threshold).
+        var analysis = CreateAnalysis(2, 3);
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { BlockRole.Text });
+
+        // Seat block 1 at line 2 and pin it, mirroring SmoothlyFrameBlock's pre-activation setup.
+        Assert.True(_nav.TrySetCurrentByPageIndex(1, line: 2));
+        _nav.PinCurrentBlockForActivation();
+
+        // Crossing the rail threshold consumes the pin on activation.
+        _nav.UpdateZoom(Zoom, 0, 0, WindowWidth, WindowHeight);
+
+        Assert.True(_nav.Active);
+        Assert.Equal(1, _nav.CurrentBlock);
+        Assert.Equal(2, _nav.CurrentLine); // pinned line preserved, NOT reset to 0
+    }
+
+    [Fact]
     public void ComputeSnapTarget_CentersCurrentLineVertically()
     {
         var analysis = CreateAnalysis(2, 3); // two stacked 468-wide text blocks, 3 lines each

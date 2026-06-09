@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.26.0 — finer control over smooth framing
+
+Two additive, backward-compatible extensions to the smooth "frame a detected
+block" gesture. Callers that use the existing signatures are unaffected.
+
+### Added
+
+- **`SmoothlyFrameBlock` can seat a specific line.** A new optional
+  `int line = 0` parameter on `DocumentController.SmoothlyFrameBlock` (and on the
+  underlying `RailNav.TrySetCurrentByPageIndex(int, int)`) lands the rail on an
+  arbitrary line of the target block in a single smooth motion, instead of always
+  seating line 0. The line is clamped to the block's line range, and — crucially —
+  is now honoured through the rail-**activation** reset that fires when the zoom
+  crosses the rail threshold mid-flight (previously that reset forced the line
+  back to 0, so a post-framing line set was clobbered). Non-navigable blocks
+  (figures/tables) still fall back to a geometric centred frame and ignore the
+  line argument. The parameter is appended last (`SmoothlyFrameBlock(int,
+  double?, double?, int)`) so all existing positional calls keep compiling; pass
+  it by name (`SmoothlyFrameBlock(block, line: n)`) for clarity. Unblocks the
+  railreader2 Portals "Go to source" path, which can now land on the referencing
+  line directly and drop its deferred-timer workaround. (#52)
+- **Per-animation zoom duration.** `ZoomAnimation` gains an optional `DurationMs`
+  (defaults to the native `CoreTuning.ZoomAnimationDurationMs`, 180 ms);
+  `ZoomAnimationController.StartTo` / `StartCameraOnly` and
+  `DocumentController.SmoothlyFrameBlock` take an optional `durationMs` so a
+  deliberate framing gesture can request a gentler ease while wheel/keyboard
+  zooms stay native. Backward-compatible: omitting `durationMs` keeps 180 ms.
+
 ## 0.25.0 — natural line-end pacing in rail mode
 
 Forward advancing in rail mode (manual edge-hold and auto-scroll) no longer

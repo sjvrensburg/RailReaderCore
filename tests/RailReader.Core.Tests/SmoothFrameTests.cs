@@ -101,6 +101,38 @@ public class SmoothFrameTests : IDisposable
     }
 
     [Fact]
+    public void SmoothlyFrameBlock_SeatsSpecifiedLine_SurvivesActivation()
+    {
+        var state = OpenWithAnalysis();
+
+        // Frame block 2 aimed at its third line (index 2), in one motion.
+        Assert.True(_controller.SmoothlyFrameBlock(2, targetZoom: 5.0, line: 2));
+        Settle();
+
+        Assert.Equal(5.0, state.Camera.Zoom, precision: 2);
+        Assert.True(state.Rail.Active);
+        Assert.Equal(2, state.Rail.CurrentNavigableArrayIndex); // seated block survived activation
+        Assert.Equal(2, state.Rail.CurrentLine);                // seated LINE survived too (not re-zeroed)
+
+        // Landed exactly on rail's frame for the seated line at the final zoom.
+        var (ex, ey) = state.Rail.ComputeSnapTarget(state.Camera.Zoom, Vw, Vh);
+        Assert.Equal(ex, state.Camera.OffsetX, precision: 1);
+        Assert.Equal(ey, state.Camera.OffsetY, precision: 1);
+    }
+
+    [Fact]
+    public void SmoothlyFrameBlock_DefaultLineZero_BackwardCompatible()
+    {
+        var state = OpenWithAnalysis();
+
+        // Existing 3-arg call shape (no line arg) still lands on line 0.
+        Assert.True(_controller.SmoothlyFrameBlock(2, targetZoom: 5.0));
+        Settle();
+
+        Assert.Equal(0, state.Rail.CurrentLine);
+    }
+
+    [Fact]
     public void SmoothlyFrameBlock_AutoFitZoom_FloorsAtRailThresholdAndFrames()
     {
         var state = OpenWithAnalysis();
