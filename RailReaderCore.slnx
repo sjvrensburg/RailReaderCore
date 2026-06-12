@@ -7,6 +7,7 @@
     <Project Path="src/RailReader.Core.Vlm.OpenAI/RailReader.Core.Vlm.OpenAI.csproj" />
     <Project Path="src/RailReader.Renderer.Skia/RailReader.Renderer.Skia.csproj" />
     <Project Path="src/RailReader.Renderer.PdfPigSkia/RailReader.Renderer.PdfPigSkia.csproj" />
+    <Project Path="src/RailReader.Export/RailReader.Export.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/RailReader.Core.Tests/RailReader.Core.Tests.csproj" />

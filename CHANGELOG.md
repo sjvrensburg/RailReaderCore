@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.28.0 — RailReader.Export is now a published package
+
+Relocates the PDF→Markdown export pipeline into this solution as a new,
+separately published NuGet package (`RailReader.Export`). It previously lived in
+the `railreader2` repo as an internal `ProjectReference` of `RailReader2.Cli`,
+which made the pipeline impossible to consume directly. No source-level API
+changes — the four types move verbatim.
+
+### Added
+
+- **`RailReader.Export` package.** Composes the Core primitives (layout
+  analysis, rendering, per-block VLM transcription) into a Markdown document,
+  applying heading-level heuristics and per-block formatting policy. Public
+  surface: `MarkdownExportService`, `PageMarkdownBuilder`, `HeadingLevelResolver`,
+  `LayoutAnalysisPipeline`. Depends on `RailReader.Core`, `Core.Pdfium`,
+  `Core.Analysis`, `Renderer.Skia`, and `Core.Vlm.OpenAI`.
+
+### Migration (railreader2)
+
+- Switch `RailReader2.Cli` and `RailReader.Export.Tests` from the
+  `ProjectReference` to `PackageReference RailReader.Export` (0.28.0), and remove
+  the in-repo `src/RailReader.Export/` copy.
+
 ## 0.27.0 — seat a specific line when framing a block
 
 Additive, backward-compatible extension to the smooth "frame a detected block"
