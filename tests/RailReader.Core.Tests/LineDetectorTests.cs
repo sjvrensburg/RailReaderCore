@@ -105,6 +105,68 @@ public class LineDetectorTests
     }
 
     [Fact]
+    public void CharClustering_DropCap_DoesNotCollapseSpannedLines()
+    {
+        // REGRESSION (symptom 1 of the drop-cap bug): a drop cap is a single glyph
+        // 2-3 text-lines tall, and PDFium reports it as ONE CharBox with a huge
+        // height. It must not swallow the body lines it visually overlaps.
+        //
+        // Layout: 6 body lines, pitch 14 (10px char height + 4px leading). A
+        // 3-line drop cap spans lines 0-2 at the left margin; the body text on
+        // those lines is indented to its right (as in print). Lines 3-5 are
+        // ordinary full-width body text.
+        const float charH = 10f, pitch = 14f, top = 100f, left = 100f;
+        float LineTop(int i) => top + i * pitch;
+
+        var chars = new List<CharBox>();
+        int idx = 0;
+
+        // The drop cap: one tall glyph from the top of line 0 to the bottom of line 2.
+        float capTop = LineTop(0);          // 100
+        float capBottom = LineTop(2) + charH; // 138
+        chars.Add(new CharBox(idx++, left, capTop, left + 28f, capBottom));
+
+        // Body text for all 6 lines. Lines 0-2 begin to the right of the drop cap.
+        for (int line = 0; line < 6; line++)
+        {
+            float lineTop = LineTop(line);
+            float lineBottom = lineTop + charH;
+            float startX = line <= 2 ? left + 34f : left; // indent past the drop cap
+            for (int c = 0; c < 8; c++)
+            {
+                float cl = startX + c * 8f;
+                chars.Add(new CharBox(idx++, cl, lineTop, cl + 7f, lineBottom));
+            }
+        }
+
+        float blockBottom = LineTop(5) + charH;        // 180
+        float blockRight = left + 34f + 8 * 8f + 7f;   // past the indented body
+        var block = new LayoutBlock
+        {
+            BBox = new BBox(left - 2f, top - 2f, blockRight - (left - 2f), blockBottom - (top - 2f) + 2f),
+            Role = BlockRole.Text,
+            Confidence = 0.9f,
+        };
+
+        var lines = LineDetector.DetectLines(block, chars, rgbBytes: [], imgW: 0, imgH: 0, scaleX: 1, scaleY: 1);
+
+        // Expected: 6 distinct lines.
+        //
+        // Actual (bug): the drop cap's mid-Y clusters with line 1, and MakeLine's
+        // min-top/max-bottom inflates that line's band to the full glyph height
+        // [100,138]. NormalizeLines' >50%-overlap merge then cascades, swallowing
+        // lines 0-2 into a single line — leaving 4.
+        Assert.True(lines.Count == 6,
+            $"drop cap collapsed spanned lines: expected 6, got {lines.Count} " +
+            $"(heights=[{string.Join(", ", lines.Select(l => l.Height.ToString("0")))}])");
+
+        // The mega-line is the visible artifact: no real text line is taller than
+        // ~1.5 pitches, so a band spanning multiple lines is the smoking gun.
+        Assert.All(lines, l => Assert.True(l.Height <= pitch * 1.5f,
+            $"line height {l.Height:0} spans multiple text lines (pitch {pitch:0})"));
+    }
+
+    [Fact]
     public void CharClustering_FiltersCharsOutsideBlock()
     {
         // Chars from two lines, but block only covers the first
