@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.30.0 — Staggered-column detection for rail-mode chunking
+
+Resolves the harmful half of the column-block heuristic limitation documented in
+`0.29.0`. Behaviour-only — no public API change (`BlockGeom` is internal).
+
+### Fixed
+
+- **A full-width spanner no longer frames a *staggered* column across the
+  gutter.** The `0.29.0` spanner barrier classified a block as a "column" only
+  when *some* other navigable block sat directly beside it (y-overlapping,
+  x-disjoint). A column whose body sits higher or lower than the other column —
+  so it vertically overlaps nothing across the gutter — was missed, letting a
+  full-width caption/figure/text above or beside it merge into its chunk and
+  frame the camera across the gutter. `BlockGeom.MarkColumnBlocks` now augments
+  the pairwise test with **column-band detection**: it drops near-full-width
+  straddlers, sweeps the rest for whitespace gutters, validates each band
+  (absolute width, width-balance vs. the widest band, and height coverage), and
+  flags a block when it sits in one of two or more genuine bands — recognising a
+  staggered column by its X-band rather than a pairwise overlap. Validated on a
+  119-PDF corpus (44 RailDLA + 75 ScienceDirect two-column papers, Heron INT8):
+  5 pages improved (2 of them removed a real across-the-gutter frame), 0
+  regressed, block detection and line detection byte-identical.
+
+  The band signal is **OR-ed onto** the pairwise floor — it can only *add* a
+  chunk boundary, never remove one — so it cannot regress the across-the-gutter
+  framing the barrier exists to prevent (only *removing* a boundary can do that).
+
+  **Known limitation (intentional):** an incidental narrow side-float (a caption
+  / footnote beside the body on an otherwise single-column page) still flags the
+  body via the pairwise floor, so a title above it is split into a separate
+  chunk. This is a benign over-segmentation (both framed at single-column width,
+  nothing framed across a gutter); it is left as-is because clearing the flag is
+  the same "remove a barrier" move that would risk the across-the-gutter
+  regression, and telling the two cases apart needs region-level column analysis.
+
+### Changed
+
+- **`BlockGeom.MarkColumnBlocks` now takes the page width** (needed to drop
+  full-width straddlers before gutter detection). Internal API; nothing
+  downstream sees it. The pairwise `IsSideBySide` / `AnySideBySide` predicates
+  are unchanged and still back the XY-cut density guard.
+
+### Fixed (tests)
+
+- **Stabilised the timing-dependent `AutoScrollStateMachineTests.Tick_WhenScrolling_MovesCameraLeft`.**
+  It started a real `Stopwatch` and read it on the same line, so the elapsed could
+  round to zero and leave the camera at `0` — a spurious failure that also ran in
+  the tag-publish job. It now injects a fixed elapsed-time source, like the other
+  scroll-positioning tests.
+
+### Migration (railreader2)
+
+- No API changes; bump the NuGet reference to `0.30.0` to pick up the chunking
+  fix.
+
 ## 0.29.1 — Shared side-by-side geometry helper
 
 Internal refactor only — no behaviour change and no public API change.

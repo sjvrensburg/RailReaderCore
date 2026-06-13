@@ -46,14 +46,14 @@ public sealed partial class RailNav
         if (_navigableIndices.Count == 0) return;
 
         float pageWidth = (float)(_analysis?.PageWidth ?? 0);
-        // A block is a "column block" when another navigable block sits beside it
-        // (y-overlapping, x-disjoint) — the signature of belonging to one of two+
-        // real columns. The spanner barrier fires only against these, so a wide
-        // body still chunks with its narrow heading in a single-column region.
-        // Skip the O(n^2) scan entirely when pageWidth is unknown: SameChunk's
-        // barrier (the only consumer) is gated on pageWidth > 0, so the flags would
-        // never be read.
-        bool[] isColumnBlock = pageWidth > 0 ? ComputeColumnBlocks() : new bool[_navigableIndices.Count];
+        // A block is a "column block" when it belongs to a genuine column band — a
+        // page region split into 2+ validated columns (see BlockGeom.MarkColumnBlocks).
+        // The spanner barrier fires only against these, so a wide body still chunks
+        // with its narrow heading in a single-column region. Skip the scan entirely
+        // when pageWidth is unknown: SameChunk's barrier (the only consumer) is gated
+        // on pageWidth > 0, so the flags would never be read, and band detection
+        // needs the page width to drop full-width straddlers anyway.
+        bool[] isColumnBlock = pageWidth > 0 ? ComputeColumnBlocks(pageWidth) : new bool[_navigableIndices.Count];
 
         int start = 0;
         for (int i = 1; i < _navigableIndices.Count; i++)
@@ -74,17 +74,17 @@ public sealed partial class RailNav
     }
 
     /// <summary>
-    /// For each navigable block, whether some other navigable block sits beside it
-    /// — vertically overlapping but horizontally disjoint. That is the geometric
-    /// signature of belonging to a real column (content exists in another column at
-    /// the same height), as opposed to a full-width block or a lone narrow heading.
+    /// For each navigable block, whether it belongs to a genuine column band on the
+    /// page (a region split into two or more validated columns). See
+    /// <see cref="BlockGeom.MarkColumnBlocks"/> for the band-detection contract —
+    /// including how it handles staggered columns and rejects incidental side-floats.
     /// </summary>
-    private bool[] ComputeColumnBlocks()
+    private bool[] ComputeColumnBlocks(float pageWidth)
     {
         var blocks = new LayoutBlock[_navigableIndices.Count];
         for (int i = 0; i < blocks.Length; i++)
             blocks[i] = _analysis!.Blocks[_navigableIndices[i]];
-        return BlockGeom.MarkColumnBlocks(blocks);
+        return BlockGeom.MarkColumnBlocks(blocks, pageWidth);
     }
 
     /// <summary>
