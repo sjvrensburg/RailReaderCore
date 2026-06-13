@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.29.0 — Drop-cap line detection & rail-mode column framing
+
+Two reading-experience fixes for two-column / drop-cap layouts, plus the
+code-review follow-ups. Behaviour-only — no breaking public API (one additive
+`public const`).
+
+### Fixed
+
+- **Drop caps no longer collapse the lines they span.** In char-box line
+  detection a drop cap is one oversize glyph 2–3 lines tall; it was clustered by
+  mid-Y into a neighbouring line and then inflated that line's band to the full
+  glyph height, so the overlap-merge in `NormalizeLines` swallowed every line the
+  cap spanned into one. Oversize glyphs (taller than `OversizeGlyphFactor`× the
+  block's median char height) are now lifted out before clustering and
+  re-attached: a multi-line spanner widens only the topmost line's horizontal
+  extent (never a line's height); a single-line glyph (tall operator / raised
+  cap) folds back in. Left off for math, where a tall bracket should still merge
+  stacked rows.
+- **Rail mode no longer frames a single column across both columns.** A
+  full-width block (abstract, title, full-width figure) sitting above a column
+  was merged into that column's navigation chunk — `SameChunk` merged on overlap
+  ≥ 50% of the *narrower* block, which a full-width block always satisfies — so
+  the camera framed the column across the gutter even though the line highlight
+  stayed in the column. `SameChunk` now refuses to merge a near-full-width
+  spanner (≥ `ChunkSpannerWidthFraction` of the page) with a block that belongs
+  to a real column (one with a side-by-side neighbour); a full-width body still
+  chunks with its narrow heading in a single-column region.
+
+### Added
+
+- **`RailNav.ChunkSpannerWidthFraction`** — public tuning constant for the
+  chunk-spanner barrier.
+
+### Migration (railreader2)
+
+- No API changes; bump the NuGet reference to `0.29.0` to pick up the fixes.
+
 ## 0.28.0 — RailReader.Export is now a published package
 
 Relocates the PDF→Markdown export pipeline into this solution as a new,
