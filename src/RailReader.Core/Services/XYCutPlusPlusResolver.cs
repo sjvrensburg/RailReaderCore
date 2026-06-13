@@ -871,17 +871,10 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         float regH = regBottom - regTop;
         float regW = regRight - regLeft;
 
-        var sorted = blocks.OrderBy(b => b.BBox.X).ToList();
-        float runningMaxRight = sorted[0].BBox.X + sorted[0].BBox.W;
-        var gaps = new List<VGap>();
-        for (int i = 1; i < sorted.Count; i++)
-        {
-            float xmin = sorted[i].BBox.X;
-            if (xmin > runningMaxRight)
-                gaps.Add(new VGap(runningMaxRight, xmin));
-            float xmax = sorted[i].BBox.X + sorted[i].BBox.W;
-            if (xmax > runningMaxRight) runningMaxRight = xmax;
-        }
+        var sortedBoxes = blocks.OrderBy(b => b.BBox.X).Select(b => b.BBox).ToList();
+        var gaps = BlockGeom.NonStraddledGutters(sortedBoxes)
+            .Select(g => new VGap(g.Start, g.End))
+            .ToList();
 
         foreach (var g in gaps.OrderByDescending(g => g.Width))
         {
@@ -949,21 +942,11 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     /// <summary>Union vertical extent (page points) covered by blocks spanning column X.</summary>
     private static float CoverageAtX(List<LayoutBlock> blocks, float x)
     {
-        var intervals = new List<(float S, float E)>();
+        var intervals = new List<(float Start, float End)>();
         foreach (var b in blocks)
             if (b.BBox.X <= x && x <= b.BBox.X + b.BBox.W)
                 intervals.Add((b.BBox.Y, b.BBox.Y + b.BBox.H));
-        if (intervals.Count == 0) return 0f;
-        intervals.Sort((a, b) => a.S.CompareTo(b.S));
-        float total = 0f, curS = intervals[0].S, curE = intervals[0].E;
-        for (int i = 1; i < intervals.Count; i++)
-        {
-            var (s, e) = intervals[i];
-            if (s > curE) { total += curE - curS; curS = s; curE = e; }
-            else if (e > curE) curE = e;
-        }
-        total += curE - curS;
-        return total;
+        return BlockGeom.UnionLength(intervals);
     }
 
     /// <summary>
@@ -1022,20 +1005,9 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     /// <summary>Total vertical extent covered by the union of the blocks' Y intervals.</summary>
     private static float UnionHeight(List<LayoutBlock> blocks)
     {
-        var intervals = blocks
-            .Select(b => (Start: b.BBox.Y, End: b.BBox.Y + b.BBox.H))
-            .OrderBy(t => t.Start)
-            .ToList();
-
-        float total = 0f, curStart = intervals[0].Start, curEnd = intervals[0].End;
-        for (int i = 1; i < intervals.Count; i++)
-        {
-            var (s, e) = intervals[i];
-            if (s > curEnd) { total += curEnd - curStart; curStart = s; curEnd = e; }
-            else if (e > curEnd) curEnd = e;
-        }
-        total += curEnd - curStart;
-        return total;
+        var intervals = new List<(float Start, float End)>(blocks.Count);
+        foreach (var b in blocks) intervals.Add((b.BBox.Y, b.BBox.Y + b.BBox.H));
+        return BlockGeom.UnionLength(intervals);
     }
 
     /// <summary>

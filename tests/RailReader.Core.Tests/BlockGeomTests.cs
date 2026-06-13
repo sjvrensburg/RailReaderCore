@@ -190,4 +190,57 @@ public class BlockGeomTests
     {
         Assert.Empty(BlockGeom.MarkColumnBlocks(new List<LayoutBlock>(), pageWidth: 600));
     }
+
+    // ===== Shared geometry primitives (consumed by both XYCutPlusPlusResolver and chunking) =====
+
+    [Fact]
+    public void UnionLength_EmptyIsZero() =>
+        Assert.Equal(0f, BlockGeom.UnionLength(new List<(float, float)>()));
+
+    [Fact]
+    public void UnionLength_DisjointIntervalsSum()
+    {
+        var v = new List<(float Start, float End)> { (0, 10), (20, 25) };
+        Assert.Equal(15f, BlockGeom.UnionLength(v)); // 10 + 5
+    }
+
+    [Fact]
+    public void UnionLength_OverlappingMerged()
+    {
+        var v = new List<(float Start, float End)> { (0, 10), (5, 20) };
+        Assert.Equal(20f, BlockGeom.UnionLength(v)); // 0..20
+    }
+
+    [Fact]
+    public void UnionLength_UnsortedInputHandled()
+    {
+        var v = new List<(float Start, float End)> { (20, 30), (0, 10), (8, 12) };
+        Assert.Equal(22f, BlockGeom.UnionLength(v)); // 0..12 (12) + 20..30 (10)
+    }
+
+    [Fact]
+    public void NonStraddledGutters_TwoColumns_OneGap()
+    {
+        var boxes = new List<BBox> { new(0, 0, 40, 100), new(60, 0, 40, 100) }; // sorted by X
+        var gaps = BlockGeom.NonStraddledGutters(boxes);
+        Assert.Single(gaps);
+        Assert.Equal((40f, 60f), gaps[0]);
+    }
+
+    [Fact]
+    public void NonStraddledGutters_SingleColumnStack_NoGap()
+    {
+        var boxes = new List<BBox> { new(0, 0, 100, 40), new(0, 50, 100, 40) };
+        Assert.Empty(BlockGeom.NonStraddledGutters(boxes));
+    }
+
+    [Fact]
+    public void NonStraddledGutters_StraddlingBlockHidesGap()
+    {
+        // A wide block spanning 0..100 sets runningMaxRight past the gap that would
+        // otherwise open between 0..40 and 60..100 — the documented fragility the
+        // OR-floor mitigates. Boxes must be X-sorted (caller's contract).
+        var boxes = new List<BBox> { new(0, 0, 40, 100), new(0, 0, 100, 20), new(60, 0, 40, 100) };
+        Assert.Empty(BlockGeom.NonStraddledGutters(boxes));
+    }
 }

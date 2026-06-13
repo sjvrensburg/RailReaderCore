@@ -95,7 +95,11 @@ if (Directory.Exists(target))
                     float right = g.Max(m => analysis.Blocks[m].BBox.X + analysis.Blocks[m].BBox.W);
                     return left < lo && right > hi;
                 });
-                Console.WriteLine($"{rel}|p{p}|nb={analysis.Blocks.Count}|L={lines}|SB={spanBoth}|C={chunks}");
+                // Reading-order signature: block centroids in reading-order (array)
+                // order. Any change in AssignOrder's output reorders this sequence.
+                var ord = string.Join(",", analysis.Blocks.Select(b =>
+                    $"{(int)Math.Round(b.BBox.X + b.BBox.W / 2)}.{(int)Math.Round(b.BBox.Y + b.BBox.H / 2)}"));
+                Console.WriteLine($"{rel}|p{p}|nb={analysis.Blocks.Count}|L={lines}|SB={spanBoth}|O={ord}|C={chunks}");
             }
             catch (Exception ex) { Console.Error.WriteLine($"{rel} p{p} ERR: {ex.Message}"); }
         }

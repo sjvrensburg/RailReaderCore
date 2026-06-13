@@ -41,6 +41,15 @@ Resolves the harmful half of the column-block heuristic limitation documented in
   full-width straddlers before gutter detection). Internal API; nothing
   downstream sees it. The pairwise `IsSideBySide` / `AnySideBySide` predicates
   are unchanged and still back the XY-cut density guard.
+- **Shared the column-geometry primitives into `BlockGeom`.** `BlockGeom` now
+  owns `UnionLength` (1-D interval union) and `NonStraddledGutters` (the
+  running-max-right gutter sweep); `XYCutPlusPlusResolver` (`UnionHeight`,
+  `CoverageAtX`, `FindColumnSplit`) and the chunk band detector both route through
+  them, collapsing three duplicate copies of the interval union and two of the
+  gutter sweep so the reading-order resolver and rail chunking cannot drift on
+  what a column gutter — or its height coverage — is. Behaviour-preserving:
+  verified byte-identical (block detection, line detection, reading order, and
+  chunking) across the 119-PDF corpus.
 
 ### Fixed (tests)
 
