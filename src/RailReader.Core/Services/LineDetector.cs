@@ -51,6 +51,16 @@ public static class LineDetector
     internal const float DefaultSplitMultiplier = 1.0f;
     internal const float MathSplitMultiplier = 1.3f;
 
+    /// <summary>
+    /// A char taller than this multiple of the block's median char height is
+    /// treated as an oversize glyph — typically a drop cap — and lifted out of
+    /// line clustering so it can't dominate a line's vertical band. Normal
+    /// glyph-height variation (caps and ascenders/descenders vs x-height) stays
+    /// well under this; a drop cap spanning 2–3 text lines is several times the
+    /// median, far above it. See <see cref="DetectLinesFromChars"/>.
+    /// </summary>
+    internal const float OversizeGlyphFactor = 1.8f;
+
     private static readonly HashSet<BlockRole> MathRoles =
         [BlockRole.DisplayMath, BlockRole.InlineMath, BlockRole.Algorithm];
 
@@ -64,8 +74,12 @@ public static class LineDetector
 
         if (charBoxes is { Count: > 0 })
         {
-            float mult = MathRoles.Contains(block.Role) ? MathSplitMultiplier : DefaultSplitMultiplier;
-            var charLines = DetectLinesFromChars(block.BBox, charBoxes, mult);
+            bool isMath = MathRoles.Contains(block.Role);
+            float mult = isMath ? MathSplitMultiplier : DefaultSplitMultiplier;
+            // Lift oversize spanning glyphs (drop caps) out of clustering for prose,
+            // but not for math — there a tall bracket legitimately spans, and should
+            // merge, stacked rows (matrices, large fractions).
+            var charLines = DetectLinesFromChars(block.BBox, charBoxes, mult, excludeOversizeSpanners: !isMath);
             if (charLines.Count > 0)
                 return NormalizeLines(charLines, block.BBox);
         }
@@ -127,6 +141,18 @@ public static class LineDetector
         return merged;
     }
 
+    private readonly record struct GlyphBox(float MidY, float Top, float Bottom, float Height, float Left, float Right);
+
+    // Vertical+horizontal extent of one detected line, accumulated before being
+    // converted to a LineInfo. A record struct held in a List and mutated only by
+    // full replacement (bands[i] = ...), never by in-place field assignment.
+    private record struct Band(float Top, float Bottom, float Left, float Right)
+    {
+        public readonly float CenterY => (Top + Bottom) * 0.5f;
+        public readonly bool OverlapsY(in GlyphBox g) => g.Bottom > Top && g.Top < Bottom;
+        public readonly LineInfo ToLineInfo() => new(CenterY, Bottom - Top, Left, Right - Left);
+    }
+
     /// <summary>
     /// Clusters character bounding boxes by vertical position into text lines.
     /// Returns lines in page-point space (Y measured from page top).
@@ -134,20 +160,34 @@ public static class LineDetector
     /// <remarks>
     /// Algorithm: filter chars whose midpoint falls inside the block, sort by
     /// mid-Y, then greedily split clusters when the gap between a char's mid-Y
-    /// and the current cluster's median mid-Y exceeds a fraction of the median
-    /// char height. Each cluster becomes one LineInfo whose height spans from
+    /// and the current cluster's running-mean mid-Y exceeds a fraction of the
+    /// median char height. Each cluster becomes one LineInfo whose height spans from
     /// the cluster's min-top to max-bottom — this includes ascenders, descenders,
     /// and sub/superscripts within the line.
+    ///
+    /// <para>
+    /// When <paramref name="excludeOversizeSpanners"/> is set, glyphs taller than
+    /// <see cref="OversizeGlyphFactor"/>× the median are lifted out before clustering
+    /// and re-attached afterwards, so a drop cap (one glyph 2–3 lines tall) cannot
+    /// be pulled into a line by its mid-Y and then inflate that line's band to its
+    /// full height — which would make the downstream <see cref="NormalizeLines"/>
+    /// overlap merge swallow every line the glyph spans. A lifted glyph that spans
+    /// ≥2 detected lines is decoration: it widens only the topmost line's horizontal
+    /// extent, never any line's vertical band. One that covers a single line (a tall
+    /// operator, a raised cap) is folded back in fully so its line still bounds it.
+    /// Left off for math, where a tall bracket spanning stacked rows should merge them.
+    /// </para>
     /// </remarks>
     internal static List<LineInfo> DetectLinesFromChars(
-        BBox bbox, IReadOnlyList<CharBox> charBoxes, float splitMultiplier = DefaultSplitMultiplier)
+        BBox bbox, IReadOnlyList<CharBox> charBoxes, float splitMultiplier = DefaultSplitMultiplier,
+        bool excludeOversizeSpanners = false)
     {
         float left = bbox.X;
         float right = bbox.X + bbox.W;
         float top = bbox.Y;
         float bottom = bbox.Y + bbox.H;
 
-        var chars = new List<(float MidY, float Top, float Bottom, float Height, float Left, float Right)>(charBoxes.Count);
+        var chars = new List<GlyphBox>(charBoxes.Count);
         foreach (var c in charBoxes)
         {
             float h = c.Bottom - c.Top;
@@ -158,7 +198,7 @@ public static class LineDetector
             if (midX < left || midX > right) continue;
             if (midY < top || midY > bottom) continue;
 
-            chars.Add((midY, c.Top, c.Bottom, h, c.Left, c.Right));
+            chars.Add(new GlyphBox(midY, c.Top, c.Bottom, h, c.Left, c.Right));
         }
 
         if (chars.Count == 0) return [];
@@ -167,13 +207,37 @@ public static class LineDetector
         float refHeight = heightsSorted[heightsSorted.Length / 2];
         if (refHeight <= 0) return [];
 
+        // Lift out oversize spanning glyphs (drop caps) before clustering. Only when
+        // some normal-height chars remain to define the real lines — an all-large run
+        // (e.g. a heading) has no spanner to lift and clusters as-is.
+        List<GlyphBox>? oversize = null;
+        if (excludeOversizeSpanners)
+        {
+            float oversizeThreshold = refHeight * OversizeGlyphFactor;
+            // Build the `normal` list lazily — only once the first oversize glyph is
+            // seen (back-filling the normal prefix). The common case (no drop cap)
+            // then allocates nothing and leaves `chars` untouched.
+            List<GlyphBox>? normal = null;
+            for (int i = 0; i < chars.Count; i++)
+            {
+                if (chars[i].Height > oversizeThreshold)
+                {
+                    (oversize ??= []).Add(chars[i]);
+                    normal ??= chars.GetRange(0, i);
+                }
+                else normal?.Add(chars[i]);
+            }
+            if (oversize is not null && normal is { Count: > 0 }) chars = normal;
+            else oversize = null;
+        }
+
         chars.Sort((a, b) => a.MidY.CompareTo(b.MidY));
 
         // Greedy clustering. Threshold generous (>= 1.0 × refHeight) so sub/
         // superscripts and inline math don't fragment a single visual line; math
         // blocks pass a larger multiplier to avoid splitting a stacked equation.
         float splitThreshold = refHeight * splitMultiplier;
-        var lines = new List<LineInfo>();
+        var bands = new List<Band>();
         int clusterStart = 0;
         float clusterSumMidY = chars[0].MidY;
 
@@ -183,7 +247,7 @@ public static class LineDetector
             float clusterAvgMidY = clusterSumMidY / clusterCount;
             if (chars[i].MidY - clusterAvgMidY > splitThreshold)
             {
-                lines.Add(MakeLine(chars, clusterStart, i));
+                bands.Add(BandOf(chars, clusterStart, i));
                 clusterStart = i;
                 clusterSumMidY = chars[i].MidY;
             }
@@ -192,13 +256,53 @@ public static class LineDetector
                 clusterSumMidY += chars[i].MidY;
             }
         }
-        lines.Add(MakeLine(chars, clusterStart, chars.Count));
+        bands.Add(BandOf(chars, clusterStart, chars.Count));
 
+        // Re-attach the lifted oversize glyphs. Each glyph's span and target line are
+        // decided against a SNAPSHOT of the clustered line bands, so the outcome is
+        // independent of glyph order and of mutations made while attaching earlier
+        // glyphs (record-struct copy = value semantics). Stand-alone bands appended
+        // below are deliberately excluded from the snapshot so they can't absorb a
+        // later glyph.
+        if (oversize is not null)
+        {
+            var lineBands = bands.ToArray();
+            foreach (var g in oversize)
+            {
+                // Topmost (min-Top) snapshot line the glyph overlaps, and how many it spans.
+                int topBand = -1, span = 0;
+                for (int k = 0; k < lineBands.Length; k++)
+                    if (lineBands[k].OverlapsY(g))
+                    {
+                        if (topBand < 0 || lineBands[k].Top < lineBands[topBand].Top) topBand = k;
+                        span++;
+                    }
+
+                if (span == 0)
+                {
+                    // Overlaps no detected line → a stand-alone glyph: its own line.
+                    bands.Add(new Band(g.Top, g.Bottom, g.Left, g.Right));
+                    continue;
+                }
+
+                // Always grow the topmost overlapped line's horizontal extent so its
+                // highlight reaches the glyph. Grow the vertical band only when the
+                // glyph belongs to a SINGLE line (a tall operator / raised cap); a
+                // multi-line spanner (drop cap) must not inflate any line's height.
+                var b = bands[topBand];
+                float nt = span == 1 ? Math.Min(b.Top, g.Top) : b.Top;
+                float nb = span == 1 ? Math.Max(b.Bottom, g.Bottom) : b.Bottom;
+                bands[topBand] = new Band(nt, nb, Math.Min(b.Left, g.Left), Math.Max(b.Right, g.Right));
+            }
+            bands.Sort((a, b) => a.CenterY.CompareTo(b.CenterY));
+        }
+
+        var lines = new List<LineInfo>(bands.Count);
+        foreach (var b in bands)
+            lines.Add(b.ToLineInfo());
         return lines;
 
-        static LineInfo MakeLine(
-            List<(float MidY, float Top, float Bottom, float Height, float Left, float Right)> sorted,
-            int start, int endExclusive)
+        static Band BandOf(List<GlyphBox> sorted, int start, int endExclusive)
         {
             float minTop = float.PositiveInfinity, maxBottom = float.NegativeInfinity;
             float minLeft = float.PositiveInfinity, maxRight = float.NegativeInfinity;
@@ -209,7 +313,7 @@ public static class LineDetector
                 if (sorted[i].Left < minLeft) minLeft = sorted[i].Left;
                 if (sorted[i].Right > maxRight) maxRight = sorted[i].Right;
             }
-            return new LineInfo((minTop + maxBottom) * 0.5f, maxBottom - minTop, minLeft, maxRight - minLeft);
+            return new Band(minTop, maxBottom, minLeft, maxRight);
         }
     }
 

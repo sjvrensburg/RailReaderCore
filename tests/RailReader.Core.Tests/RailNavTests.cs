@@ -620,6 +620,39 @@ public class RailNavTests
     }
 
     [Fact]
+    public void Chunks_FullWidthSpanner_DoesNotMergeWithColumn()
+    {
+        // Repro of the "rail frame spans both columns" bug (symptom 2). A
+        // full-width abstract sitting directly above the right column overlaps it
+        // by ≥50% of the (narrower) column, so the old overlap test merged them
+        // and the chunk's union spanned both columns — framing the right column
+        // across the gutter even though its lines highlight only the right column.
+        // A left-column block makes the page genuinely multi-column.
+        var a = ChunkAnalysis(
+            ChunkBlock(40, 50, 520, 30),    // 0: full-width abstract (520/600 = 0.87)
+            ChunkBlock(320, 90, 240, 40),   // 1: right-column body, directly below
+            ChunkBlock(40, 90, 240, 40));   // 2: left-column body → page is multi-column
+        _nav.SetAnalysis(a, NavRoles);
+
+        _nav.CurrentBlock = 0; int abstractChunk = _nav.CurrentChunk;
+        _nav.CurrentBlock = 1; int rightColumnChunk = _nav.CurrentChunk;
+        Assert.NotEqual(abstractChunk, rightColumnChunk);
+    }
+
+    [Fact]
+    public void Chunks_SingleColumn_WideBodyStillMergesWithHeading()
+    {
+        // The spanner barrier must NOT fire on a single-column page: a wide body
+        // there is normal and should still chunk with its narrow heading (no
+        // side-by-side block exists, so the page is not multi-column).
+        var a = ChunkAnalysis(
+            ChunkBlock(40, 50, 200, 14, BlockRole.Heading), // narrow heading
+            ChunkBlock(40, 70, 520, 60));                   // full-width body, no column beside it
+        _nav.SetAnalysis(a, NavRoles);
+        Assert.Equal(1, _nav.ChunkCount);
+    }
+
+    [Fact]
     public void CurrentChunk_StableWithinChunk_AdvancesAcrossBoundary()
     {
         var a = ChunkAnalysis(
