@@ -12,6 +12,17 @@ public sealed partial class RailNav
     /// </summary>
     public const float ChunkMaxGapPoints = 24f;
 
+    /// <summary>
+    /// A block at or above this fraction of the page width is a near-full-width
+    /// spanner (title, abstract, full-width figure/divider/equation). On a
+    /// multi-column page such a block must not share a chunk with a single
+    /// column: it horizontally contains the column, so the
+    /// 50%-of-the-narrower overlap test in <see cref="SameChunk"/> would always
+    /// pass and drag the column's camera frame across the gutter onto both
+    /// columns. Mirrors XY-Cut++'s <c>MergeBarrierWidthFraction</c>.
+    /// </summary>
+    public const float ChunkSpannerWidthFraction = 0.6f;
+
     // Navigation chunks: maximal runs of consecutive navigable blocks (in reading
     // order) that read continuously down one column. Rail mode treats a chunk as
     // one gliding unit — framing the camera on the whole run and pausing only at
@@ -32,12 +43,19 @@ public sealed partial class RailNav
         _chunkOfNav = new int[_navigableIndices.Count];
         if (_navigableIndices.Count == 0) return;
 
+        float pageWidth = (float)(_analysis?.PageWidth ?? 0);
+        // A block is a "column block" when another navigable block sits beside it
+        // (y-overlapping, x-disjoint) — the signature of belonging to one of two+
+        // real columns. The spanner barrier fires only against these, so a wide
+        // body still chunks with its narrow heading in a single-column region.
+        bool[] isColumnBlock = ComputeColumnBlocks();
+
         int start = 0;
         for (int i = 1; i < _navigableIndices.Count; i++)
         {
             var prev = _analysis!.Blocks[_navigableIndices[i - 1]].BBox;
             var cur = _analysis!.Blocks[_navigableIndices[i]].BBox;
-            if (!SameChunk(prev, cur))
+            if (!SameChunk(prev, cur, pageWidth, isColumnBlock[i - 1], isColumnBlock[i]))
             {
                 _chunks.Add((start, i - 1));
                 start = i;
@@ -51,11 +69,50 @@ public sealed partial class RailNav
     }
 
     /// <summary>
-    /// Two consecutive (reading-order) blocks share a chunk when they overlap
-    /// horizontally (same column) and the vertical gap between them is small.
+    /// For each navigable block, whether some other navigable block sits beside it
+    /// — vertically overlapping but horizontally disjoint. That is the geometric
+    /// signature of belonging to a real column (content exists in another column at
+    /// the same height), as opposed to a full-width block or a lone narrow heading.
     /// </summary>
-    private static bool SameChunk(BBox prev, BBox cur)
+    private bool[] ComputeColumnBlocks()
     {
+        int n = _navigableIndices.Count;
+        var isColumn = new bool[n];
+        for (int i = 0; i < n; i++)
+            for (int j = i + 1; j < n; j++)
+            {
+                var a = _analysis!.Blocks[_navigableIndices[i]].BBox;
+                var b = _analysis!.Blocks[_navigableIndices[j]].BBox;
+                bool yOverlap = a.Y < b.Y + b.H && b.Y < a.Y + a.H;
+                bool xOverlap = a.X < b.X + b.W && b.X < a.X + a.W;
+                if (yOverlap && !xOverlap) { isColumn[i] = true; isColumn[j] = true; }
+            }
+        return isColumn;
+    }
+
+    /// <summary>
+    /// Two consecutive (reading-order) blocks share a chunk when they overlap
+    /// horizontally (same column) and the vertical gap between them is small —
+    /// except that a near-full-width spanner (title, abstract, full-width figure)
+    /// never joins a block that belongs to a real column. The spanner horizontally
+    /// contains the column, so the 50%-of-the-narrower overlap test below would
+    /// always pass and frame the column across the gutter onto both columns. The
+    /// barrier is gated on the narrower block actually being a column block, so a
+    /// full-width body still chunks with its narrow heading in a single-column
+    /// region (see <see cref="ChunkSpannerWidthFraction"/>).
+    /// </summary>
+    private static bool SameChunk(BBox prev, BBox cur, float pageWidth, bool prevIsColumn, bool curIsColumn)
+    {
+        if (pageWidth > 0)
+        {
+            float spanW = ChunkSpannerWidthFraction * pageWidth;
+            bool prevSpanner = prev.W >= spanW, curSpanner = cur.W >= spanW;
+            // Exactly one block is a full-width spanner, and the other belongs to a
+            // real column → different structural levels; keep them in separate chunks.
+            if (prevSpanner != curSpanner && (prevSpanner ? curIsColumn : prevIsColumn))
+                return false;
+        }
+
         float ov = Math.Min(prev.X + prev.W, cur.X + cur.W) - Math.Max(prev.X, cur.X);
         float minW = Math.Min(prev.W, cur.W);
         if (minW <= 0 || ov < 0.5f * minW) return false;       // different column
