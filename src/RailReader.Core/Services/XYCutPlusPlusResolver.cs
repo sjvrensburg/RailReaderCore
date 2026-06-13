@@ -83,7 +83,9 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     /// this floor is deliberately low; the false positives a low floor would
     /// otherwise admit (ragged-text gaps, slivers) are rejected downstream by
     /// <see cref="MinColumnCoverageFraction"/> / <see cref="MinColumnWidthFraction"/>
-    /// validation, which makes the floor safe to lower.
+    /// validation, which makes the floor safe to lower. Rail-mode chunking has its
+    /// own twin, <see cref="BlockGeom.ColumnGutterPoints"/> (same value today, tuned
+    /// independently — see that field's remarks).
     /// </summary>
     public const float MinColumnGutterPoints = 7f;
 
@@ -114,13 +116,15 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     /// whitespace right of a ragged column) has a near-empty side and is rejected;
     /// a genuine column — even a sparse one with a body at top and a footnote at
     /// bottom — clears this low floor. The stronger guard against slivers is
-    /// <see cref="MinColumnWidthFraction"/>.
+    /// <see cref="MinColumnWidthFraction"/>. Chunking's twin is
+    /// <see cref="BlockGeom.MinColumnBandCoverageFraction"/> (same value, independent).
     /// </summary>
     public const float MinColumnCoverageFraction = 0.15f;
 
     /// <summary>
     /// Minimum width of each side of a column split, as a fraction of the region
-    /// width. Rejects sliver "columns" produced by phantom gutters.
+    /// width. Rejects sliver "columns" produced by phantom gutters. Chunking's twin
+    /// is <see cref="BlockGeom.MinColumnBandWidthFraction"/> (same value, independent).
     /// </summary>
     public const float MinColumnWidthFraction = 0.15f;
 
@@ -871,10 +875,9 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         float regH = regBottom - regTop;
         float regW = regRight - regLeft;
 
-        var sortedBoxes = blocks.OrderBy(b => b.BBox.X).Select(b => b.BBox).ToList();
-        var gaps = BlockGeom.NonStraddledGutters(sortedBoxes)
-            .Select(g => new VGap(g.Start, g.End))
-            .ToList();
+        // NonStraddledGutters sorts the box list by X itself, so pass it unsorted.
+        var boxes = blocks.Select(b => b.BBox).ToList();
+        var gaps = BlockGeom.NonStraddledGutters(boxes).Select(g => new VGap(g.Start, g.End));
 
         foreach (var g in gaps.OrderByDescending(g => g.Width))
         {

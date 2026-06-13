@@ -214,16 +214,15 @@ internal static class BlockGeom
             if (blocks[i].BBox.W < spannerW) cand.Add(i);
         if (cand.Count < 2) return;
 
-        // Non-straddled vertical gutters among the candidates (running-max-right
-        // sweep): a gap opens a new band when the next block starts beyond every
-        // block seen so far. By construction no candidate straddles a gutter. Keep
-        // only gutters at least ColumnGutterPoints wide; each surviving gutter's right
-        // edge is where the next band begins (ascending, since the sweep is L→R).
-        cand.Sort((a, b) => blocks[a].BBox.X.CompareTo(blocks[b].BBox.X));
-        var sortedBoxes = new List<BBox>(cand.Count);
-        foreach (int idx in cand) sortedBoxes.Add(blocks[idx].BBox);
+        // Non-straddled vertical gutters among the candidates (NonStraddledGutters
+        // sorts by X then sweeps): a gap opens a new band when the next block starts
+        // beyond every block seen so far. By construction no candidate straddles a
+        // gutter. Keep only gutters at least ColumnGutterPoints wide; each surviving
+        // gutter's right edge is where the next band begins (ascending, L→R sweep).
+        var candBoxes = new List<BBox>(cand.Count);
+        foreach (int idx in cand) candBoxes.Add(blocks[idx].BBox);
         var gutters = new List<float>(); // X at which each new band begins (ascending)
-        foreach (var (start, end) in NonStraddledGutters(sortedBoxes))
+        foreach (var (start, end) in NonStraddledGutters(candBoxes))
             if (end - start >= ColumnGutterPoints) gutters.Add(end);
         if (gutters.Count == 0) return;
 
@@ -309,24 +308,26 @@ internal static class BlockGeom
     }
 
     /// <summary>
-    /// The non-straddled vertical gutters of a set of boxes already sorted by X: a
-    /// running-max-right sweep emits one <c>(Start, End)</c> gap each time the next
-    /// box starts beyond the right edge of every box seen so far. The single
-    /// definition of "where are the column gutters", shared by
-    /// <see cref="XYCutPlusPlusResolver"/>'s column split and rail-mode chunking.
-    /// Returns the raw gaps in ascending-X order; callers apply their own
+    /// The non-straddled vertical gutters of a set of boxes: a running-max-right
+    /// sweep emits one <c>(Start, End)</c> gap each time the next box starts beyond
+    /// the right edge of every box seen so far. The single definition of "where are
+    /// the column gutters", shared by <see cref="XYCutPlusPlusResolver"/>'s column
+    /// split and rail-mode chunking. Sorts <paramref name="boxes"/> by X in place
+    /// (pass a freshly built list, as with <see cref="UnionLength"/>) so callers need
+    /// not pre-sort; returns the gaps in ascending-X order. Callers apply their own
     /// minimum-width threshold.
     /// </summary>
-    public static List<(float Start, float End)> NonStraddledGutters(IReadOnlyList<BBox> boxesSortedByX)
+    public static List<(float Start, float End)> NonStraddledGutters(List<BBox> boxes)
     {
         var gaps = new List<(float Start, float End)>();
-        if (boxesSortedByX.Count == 0) return gaps;
-        float runningMaxRight = boxesSortedByX[0].X + boxesSortedByX[0].W;
-        for (int i = 1; i < boxesSortedByX.Count; i++)
+        if (boxes.Count == 0) return gaps;
+        boxes.Sort((a, b) => a.X.CompareTo(b.X));
+        float runningMaxRight = boxes[0].X + boxes[0].W;
+        for (int i = 1; i < boxes.Count; i++)
         {
-            float xmin = boxesSortedByX[i].X;
+            float xmin = boxes[i].X;
             if (xmin > runningMaxRight) gaps.Add((runningMaxRight, xmin));
-            float xmax = boxesSortedByX[i].X + boxesSortedByX[i].W;
+            float xmax = boxes[i].X + boxes[i].W;
             if (xmax > runningMaxRight) runningMaxRight = xmax;
         }
         return gaps;

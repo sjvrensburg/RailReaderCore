@@ -219,9 +219,10 @@ public class BlockGeomTests
     }
 
     [Fact]
-    public void NonStraddledGutters_TwoColumns_OneGap()
+    public void NonStraddledGutters_TwoColumns_OneGap_SortsInput()
     {
-        var boxes = new List<BBox> { new(0, 0, 40, 100), new(60, 0, 40, 100) }; // sorted by X
+        // Passed out of X-order to confirm NonStraddledGutters sorts internally.
+        var boxes = new List<BBox> { new(60, 0, 40, 100), new(0, 0, 40, 100) };
         var gaps = BlockGeom.NonStraddledGutters(boxes);
         Assert.Single(gaps);
         Assert.Equal((40f, 60f), gaps[0]);
@@ -239,7 +240,7 @@ public class BlockGeomTests
     {
         // A wide block spanning 0..100 sets runningMaxRight past the gap that would
         // otherwise open between 0..40 and 60..100 — the documented fragility the
-        // OR-floor mitigates. Boxes must be X-sorted (caller's contract).
+        // OR-floor mitigates.
         var boxes = new List<BBox> { new(0, 0, 40, 100), new(0, 0, 100, 20), new(60, 0, 40, 100) };
         Assert.Empty(BlockGeom.NonStraddledGutters(boxes));
     }
