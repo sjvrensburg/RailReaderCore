@@ -81,18 +81,10 @@ public sealed partial class RailNav
     /// </summary>
     private bool[] ComputeColumnBlocks()
     {
-        int n = _navigableIndices.Count;
-        var isColumn = new bool[n];
-        for (int i = 0; i < n; i++)
-            for (int j = i + 1; j < n; j++)
-            {
-                var a = _analysis!.Blocks[_navigableIndices[i]].BBox;
-                var b = _analysis!.Blocks[_navigableIndices[j]].BBox;
-                bool yOverlap = a.Y < b.Y + b.H && b.Y < a.Y + a.H;
-                bool xOverlap = a.X < b.X + b.W && b.X < a.X + a.W;
-                if (yOverlap && !xOverlap) { isColumn[i] = true; isColumn[j] = true; }
-            }
-        return isColumn;
+        var blocks = new LayoutBlock[_navigableIndices.Count];
+        for (int i = 0; i < blocks.Length; i++)
+            blocks[i] = _analysis!.Blocks[_navigableIndices[i]];
+        return BlockGeom.MarkColumnBlocks(blocks);
     }
 
     /// <summary>

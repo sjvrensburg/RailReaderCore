@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.29.1 — Shared side-by-side geometry helper
+
+Internal refactor only — no behaviour change and no public API change.
+
+### Changed
+
+- **Promoted the side-by-side / overlap geometry into a shared `BlockGeom`
+  helper.** `XYCutPlusPlusResolver` (the XY-cut density guard) and `RailNav`
+  (rail-mode chunking) each carried their own copy of the same
+  y-overlap/x-disjoint "column" scan — including duplicate `XOverlap`/`YOverlap`
+  predicates and two separate O(n²) double-loops. Both now consume one internal
+  `BlockGeom` utility (`XOverlap`, `YOverlap`, `IsSideBySide`, `AnySideBySide`,
+  `MarkColumnBlocks`), so the single definition of "side-by-side" can no longer
+  drift between rail chunking and reading-order. Behaviour is identical (the
+  extracted predicates and loops match the originals verbatim).
+
+### Migration (railreader2)
+
+- No API changes; the bump to `0.29.1` is optional (no behaviour change).
+
 ## 0.29.0 — Drop-cap line detection & rail-mode column framing
 
 Two reading-experience fixes for two-column / drop-cap layouts, plus the

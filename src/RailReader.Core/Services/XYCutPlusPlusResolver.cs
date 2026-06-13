@@ -418,7 +418,7 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         foreach (var c in all)
         {
             if (ReferenceEquals(b, c)) continue;
-            if (YOverlap(b.BBox, c.BBox) && !XOverlap(b.BBox, c.BBox) && c.BBox.W > b.BBox.W * 1.5f)
+            if (BlockGeom.IsSideBySide(b.BBox, c.BBox) && c.BBox.W > b.BBox.W * 1.5f)
                 return true;
         }
         return false;
@@ -435,7 +435,7 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         foreach (var c in all)
         {
             if (ReferenceEquals(b, c)) continue;
-            if (XOverlap(b.BBox, c.BBox) && YOverlap(b.BBox, c.BBox))
+            if (BlockGeom.XOverlap(b.BBox, c.BBox) && BlockGeom.YOverlap(b.BBox, c.BBox))
                 return true;
         }
         return false;
@@ -562,27 +562,13 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         float extent = bottom - top;
         if (extent <= 0) return false;
 
-        if (HasSideBySideBlocks(blocks)) return false;
+        if (BlockGeom.AnySideBySide(blocks)) return false;
 
         float covered = blocks.Sum(b => b.BBox.H);
         float density = covered / extent;
         // Dense column (little whitespace) AND the gap is a minor fraction of the
         // extent → treat as paragraph leading, not a cut.
         return density > 0.8f && gap.Height < extent * 0.1f;
-    }
-
-    /// <summary>
-    /// True when any two blocks sit side by side — vertically overlapping but
-    /// horizontally disjoint — which is the geometric signature of more than one
-    /// column in the region.
-    /// </summary>
-    private static bool HasSideBySideBlocks(List<LayoutBlock> blocks)
-    {
-        for (int i = 0; i < blocks.Count; i++)
-            for (int j = i + 1; j < blocks.Count; j++)
-                if (YOverlap(blocks[i].BBox, blocks[j].BBox) && !XOverlap(blocks[i].BBox, blocks[j].BBox))
-                    return true;
-        return false;
     }
 
     /// <summary>
@@ -597,7 +583,7 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         foreach (var c in blocks)
         {
             if (ReferenceEquals(c, b)) continue;
-            if (YOverlap(b.BBox, c.BBox)) return false;
+            if (BlockGeom.YOverlap(b.BBox, c.BBox)) return false;
         }
         return true;
     }
@@ -718,7 +704,7 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
             if (ReferenceEquals(b, h)) continue;
             if (b.Role is BlockRole.Heading or BlockRole.Title) continue; // body is not another heading
             if (b.BBox.Y < h.BBox.Y) continue;                            // must be below the heading's top
-            if (!XOverlap(h.BBox, b.BBox)) continue;
+            if (!BlockGeom.XOverlap(h.BBox, b.BBox)) continue;
             if (Math.Abs(b.BBox.X - h.BBox.X) > h.BBox.W) continue;       // roughly the same column start
 
             float gap = b.BBox.Y - hBottom;
@@ -853,12 +839,6 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         public float Height => Max - Min;
         public float Mid => (Min + Max) * 0.5f;
     }
-
-    private static bool XOverlap(BBox a, BBox b) =>
-        a.X < b.X + b.W && b.X < a.X + a.W;
-
-    private static bool YOverlap(BBox a, BBox b) =>
-        a.Y < b.Y + b.H && b.Y < a.Y + a.H;
 
     private static float CentroidDistanceSq(BBox a, BBox b)
     {
