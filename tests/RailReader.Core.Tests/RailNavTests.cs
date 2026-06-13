@@ -653,6 +653,48 @@ public class RailNavTests
     }
 
     [Fact]
+    public void Chunks_SpannerAboveStaggeredColumns_StaysSeparate()
+    {
+        // Edge #1 (band detection): the right column is staggered below the left and so
+        // vertically overlaps no left block. A pairwise side-by-side test would flag
+        // neither as a column, letting the full-width title merge with the left column
+        // and frame the camera across the gutter. Band detection recognises both columns
+        // by their X-band, so the title is kept in its own chunk.
+        var a = ChunkAnalysis(
+            ChunkBlock(40, 40, 520, 20),    // 0: full-width title (520/600 = 0.87)
+            ChunkBlock(40, 70, 240, 60),    // 1: left column (top)
+            ChunkBlock(320, 200, 240, 60)); // 2: right column (staggered low, no y-overlap with [1])
+        _nav.SetAnalysis(a, NavRoles);
+
+        _nav.CurrentBlock = 0; int titleChunk = _nav.CurrentChunk;
+        _nav.CurrentBlock = 1; int leftColumnChunk = _nav.CurrentChunk;
+        Assert.NotEqual(titleChunk, leftColumnChunk);
+    }
+
+    [Fact]
+    public void Chunks_IncidentalSideFloat_OverArms_DocumentedLimitation()
+    {
+        // Edge #2 (intentionally NOT fixed — see BlockGeom.MarkColumnBlocks remarks):
+        // a single-column body with a narrow side-float (caption/footnote) beside it.
+        // The pairwise floor flags the body as a column (the float sits beside it), so
+        // the full-width abstract above is split from the body into a separate chunk.
+        // This is a benign over-segmentation — both frame at single-column width,
+        // nothing is framed across a gutter. It is left as-is because clearing the
+        // body's flag (to re-merge) is the same "remove a barrier" move that would let
+        // a genuine column be framed across the gutter (symptom-2). This test pins the
+        // current behaviour so any future change to it is deliberate.
+        var a = ChunkAnalysis(
+            ChunkBlock(40, 40, 520, 24),   // 0: full-width abstract (spanner)
+            ChunkBlock(40, 74, 260, 200),  // 1: single-column body, directly below
+            ChunkBlock(320, 74, 100, 80)); // 2: narrow side-float beside the body
+        _nav.SetAnalysis(a, NavRoles);
+
+        _nav.CurrentBlock = 0; int abstractChunk = _nav.CurrentChunk;
+        _nav.CurrentBlock = 1; int bodyChunk = _nav.CurrentChunk;
+        Assert.NotEqual(abstractChunk, bodyChunk); // over-armed: separate chunks
+    }
+
+    [Fact]
     public void CurrentChunk_StableWithinChunk_AdvancesAcrossBoundary()
     {
         var a = ChunkAnalysis(

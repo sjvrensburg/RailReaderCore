@@ -93,7 +93,7 @@ public class BlockGeomTests
     }
 
     [Fact]
-    public void MarkColumnBlocks_FlagsOnlyTheSideBySidePair()
+    public void MarkColumnBlocks_FlagsColumnsNotTheFullWidthSpanner()
     {
         var blocks = new List<LayoutBlock>
         {
@@ -102,16 +102,146 @@ public class BlockGeomTests
             Block(120, 40, 80, 100),// [2] right column (beside [1])
         };
 
-        var marks = BlockGeom.MarkColumnBlocks(blocks);
+        var marks = BlockGeom.MarkColumnBlocks(blocks, pageWidth: 200);
 
-        Assert.False(marks[0]); // title has nothing beside it
-        Assert.True(marks[1]);  // flanked by [2]
-        Assert.True(marks[2]);  // flanked by [1]
+        Assert.False(marks[0]); // full-width spanner is excluded, never a column
+        Assert.True(marks[1]);  // genuine left column
+        Assert.True(marks[2]);  // genuine right column
+    }
+
+    [Fact]
+    public void MarkColumnBlocks_StaggeredColumns_FlagsBothWithoutYOverlap()
+    {
+        // Edge #1: the right column's body sits LOWER than the left's and so y-overlaps
+        // no left block. A pairwise "is anything beside me?" test misses it; band
+        // detection recognises it by its X-band, with a full-height gutter between them.
+        var blocks = new List<LayoutBlock>
+        {
+            Block(40, 70, 240, 60),   // [0] left column (top)
+            Block(320, 200, 240, 60), // [1] right column (staggered low — no y-overlap)
+        };
+
+        var marks = BlockGeom.MarkColumnBlocks(blocks, pageWidth: 600);
+
+        Assert.True(marks[0]);
+        Assert.True(marks[1]); // flagged despite never vertically overlapping [0]
+    }
+
+    [Fact]
+    public void MarkColumnBlocks_IncidentalSideFloat_StaysFlagged_DocumentedLimitation()
+    {
+        // Edge #2 (intentionally NOT fixed — see MarkColumnBlocks remarks): a
+        // single-column body with a narrow caption/footnote beside it. The float
+        // y-overlaps the body and is x-disjoint, so the pairwise floor flags BOTH.
+        // This over-arms the chunk barrier (a title above is split from the body), a
+        // benign over-segmentation — both still frame at single-column width, nothing
+        // is framed across a gutter. The flag is left set on purpose: clearing it
+        // (to merge title+body) is the same "remove a barrier" move that would let a
+        // genuine column be framed across the gutter, so the floor is never cleared.
+        var blocks = new List<LayoutBlock>
+        {
+            Block(40, 70, 260, 200), // [0] body (single column)
+            Block(320, 70, 100, 80), // [1] narrow side-float beside the body
+        };
+
+        var marks = BlockGeom.MarkColumnBlocks(blocks, pageWidth: 600);
+
+        Assert.True(marks[0]); // pairwise floor flags it (documented over-arm)
+        Assert.True(marks[1]);
+    }
+
+    [Fact]
+    public void MarkColumnBlocks_TitleAboveTwoColumns_DetectsColumnsBelow()
+    {
+        // The common case: a full-width title straddles the gutter. It is excluded from
+        // gutter detection (else it would hide the gutter), so the two columns below it
+        // are still found.
+        var blocks = new List<LayoutBlock>
+        {
+            Block(40, 40, 520, 24),  // [0] full-width title (straddles the gutter)
+            Block(40, 80, 240, 200), // [1] left column
+            Block(320, 80, 240, 200),// [2] right column
+        };
+
+        var marks = BlockGeom.MarkColumnBlocks(blocks, pageWidth: 600);
+
+        Assert.False(marks[0]);
+        Assert.True(marks[1]);
+        Assert.True(marks[2]);
+    }
+
+    [Fact]
+    public void MarkColumnBlocks_SingleColumnStack_FlagsNothing()
+    {
+        var blocks = new List<LayoutBlock>
+        {
+            Block(40, 50, 240, 40),
+            Block(40, 96, 240, 40),
+            Block(40, 142, 240, 40),
+        };
+
+        var marks = BlockGeom.MarkColumnBlocks(blocks, pageWidth: 600);
+
+        Assert.All(marks, m => Assert.False(m));
     }
 
     [Fact]
     public void MarkColumnBlocks_EmptyInputIsEmpty()
     {
-        Assert.Empty(BlockGeom.MarkColumnBlocks(new List<LayoutBlock>()));
+        Assert.Empty(BlockGeom.MarkColumnBlocks(new List<LayoutBlock>(), pageWidth: 600));
+    }
+
+    // ===== Shared geometry primitives (consumed by both XYCutPlusPlusResolver and chunking) =====
+
+    [Fact]
+    public void UnionLength_EmptyIsZero() =>
+        Assert.Equal(0f, BlockGeom.UnionLength(new List<(float, float)>()));
+
+    [Fact]
+    public void UnionLength_DisjointIntervalsSum()
+    {
+        var v = new List<(float Start, float End)> { (0, 10), (20, 25) };
+        Assert.Equal(15f, BlockGeom.UnionLength(v)); // 10 + 5
+    }
+
+    [Fact]
+    public void UnionLength_OverlappingMerged()
+    {
+        var v = new List<(float Start, float End)> { (0, 10), (5, 20) };
+        Assert.Equal(20f, BlockGeom.UnionLength(v)); // 0..20
+    }
+
+    [Fact]
+    public void UnionLength_UnsortedInputHandled()
+    {
+        var v = new List<(float Start, float End)> { (20, 30), (0, 10), (8, 12) };
+        Assert.Equal(22f, BlockGeom.UnionLength(v)); // 0..12 (12) + 20..30 (10)
+    }
+
+    [Fact]
+    public void NonStraddledGutters_TwoColumns_OneGap_SortsInput()
+    {
+        // Passed out of X-order to confirm NonStraddledGutters sorts internally.
+        var boxes = new List<BBox> { new(60, 0, 40, 100), new(0, 0, 40, 100) };
+        var gaps = BlockGeom.NonStraddledGutters(boxes);
+        Assert.Single(gaps);
+        Assert.Equal((40f, 60f), gaps[0]);
+    }
+
+    [Fact]
+    public void NonStraddledGutters_SingleColumnStack_NoGap()
+    {
+        var boxes = new List<BBox> { new(0, 0, 100, 40), new(0, 50, 100, 40) };
+        Assert.Empty(BlockGeom.NonStraddledGutters(boxes));
+    }
+
+    [Fact]
+    public void NonStraddledGutters_StraddlingBlockHidesGap()
+    {
+        // A wide block spanning 0..100 sets runningMaxRight past the gap that would
+        // otherwise open between 0..40 and 60..100 — the documented fragility the
+        // OR-floor mitigates.
+        var boxes = new List<BBox> { new(0, 0, 40, 100), new(0, 0, 100, 20), new(60, 0, 40, 100) };
+        Assert.Empty(BlockGeom.NonStraddledGutters(boxes));
     }
 }

@@ -88,6 +88,11 @@ public class AutoScrollStateMachineTests
     public void Tick_WhenScrolling_MovesCameraLeft()
     {
         var sm = new AutoScrollStateMachine(new NoOpClamp());
+        // Inject a fixed elapsed-time source. Without it the first Tick starts a real
+        // Stopwatch and reads it immediately on the same line; the elapsed can round to
+        // 0, leaving cameraX at 0 and failing the "< 0" assertion intermittently (the
+        // timing-dependent flake that also runs in the tag-publish job).
+        sm.GetScrollElapsedSeconds = () => 1.0;
         sm.Start(1.0);
         double cameraX = 0;
         // blockRight far away so we don't reach the end

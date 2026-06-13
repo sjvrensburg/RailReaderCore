@@ -82,10 +82,24 @@ if (Directory.Exists(target))
         {
             try
             {
-                var (analysis, _, _) = Analyze(svc, p);
+                var (analysis, pw, _) = Analyze(svc, p);
                 var lines = string.Join(",", analysis.Blocks.Select(b => b.Lines.Count));
-                var chunks = string.Join(";", Chunks(analysis).Select(g => string.Join("+", g)));
-                Console.WriteLine($"{rel}|p{p}|nb={analysis.Blocks.Count}|L={lines}|C={chunks}");
+                var cgroups = Chunks(analysis);
+                var chunks = string.Join(";", cgroups.Select(g => string.Join("+", g)));
+                // Count chunks whose union X-extent straddles the page centre band — a
+                // chunk framing the camera across the column gutter (the symptom-2 bug).
+                double lo = pw * 0.45, hi = pw * 0.55;
+                int spanBoth = cgroups.Count(g =>
+                {
+                    float left = g.Min(m => analysis.Blocks[m].BBox.X);
+                    float right = g.Max(m => analysis.Blocks[m].BBox.X + analysis.Blocks[m].BBox.W);
+                    return left < lo && right > hi;
+                });
+                // Reading-order signature: block centroids in reading-order (array)
+                // order. Any change in AssignOrder's output reorders this sequence.
+                var ord = string.Join(",", analysis.Blocks.Select(b =>
+                    $"{(int)Math.Round(b.BBox.X + b.BBox.W / 2)}.{(int)Math.Round(b.BBox.Y + b.BBox.H / 2)}"));
+                Console.WriteLine($"{rel}|p{p}|nb={analysis.Blocks.Count}|L={lines}|SB={spanBoth}|O={ord}|C={chunks}");
             }
             catch (Exception ex) { Console.Error.WriteLine($"{rel} p{p} ERR: {ex.Message}"); }
         }
