@@ -167,6 +167,41 @@ public class LineDetectorTests
     }
 
     [Fact]
+    public void CharClustering_MultipleOversizeGlyphs_OrderIndependent()
+    {
+        // REGRESSION: with two oversize glyphs near a line boundary, each glyph's
+        // span and target line must be decided against the ORIGINAL clustered bands,
+        // so the result cannot depend on the order PDFium emitted the glyphs. (The
+        // earlier loop mutated bands mid-iteration and indexed by list position, so
+        // swapping the two glyphs' emission order changed the detected line bands.)
+        var line0 = new List<CharBox>();
+        var line1 = new List<CharBox>();
+        for (int c = 0; c < 6; c++)
+        {
+            float x = 140 + c * 8;
+            line0.Add(new CharBox(100 + c, x, 100, x + 7, 110)); // line 0: y[100,110]
+            line1.Add(new CharBox(200 + c, x, 130, x + 7, 140)); // line 1: y[130,140]
+        }
+        var g1 = new CharBox(1, 100, 100, 128, 128); // oversize; overlaps only line 0 in the originals
+        var g2 = new CharBox(2, 100, 120, 125, 145); // oversize; overlaps only line 1 in the originals
+
+        var block = new LayoutBlock { BBox = new BBox(98, 98, 200, 50), Role = BlockRole.Text, Confidence = 0.9f };
+
+        List<CharBox> WithCapOrder(CharBox first, CharBox second)
+        {
+            var cs = new List<CharBox> { first, second };
+            cs.AddRange(line0);
+            cs.AddRange(line1);
+            return cs;
+        }
+
+        var a = LineDetector.DetectLines(block, WithCapOrder(g1, g2), [], 0, 0, 1, 1);
+        var b = LineDetector.DetectLines(block, WithCapOrder(g2, g1), [], 0, 0, 1, 1);
+
+        Assert.Equal(a, b); // LineInfo is a record struct → value equality of the whole list
+    }
+
+    [Fact]
     public void CharClustering_FiltersCharsOutsideBlock()
     {
         // Chars from two lines, but block only covers the first

@@ -19,7 +19,9 @@ public sealed partial class RailNav
     /// column: it horizontally contains the column, so the
     /// 50%-of-the-narrower overlap test in <see cref="SameChunk"/> would always
     /// pass and drag the column's camera frame across the gutter onto both
-    /// columns. Mirrors XY-Cut++'s <c>MergeBarrierWidthFraction</c>.
+    /// columns. Set a touch above XY-Cut++'s <c>MergeBarrierWidthFraction</c>
+    /// (0.55) — deliberately not the same value: a chunk spanner must be
+    /// unambiguously full-width before it overrides the overlap test.
     /// </summary>
     public const float ChunkSpannerWidthFraction = 0.6f;
 
@@ -48,7 +50,10 @@ public sealed partial class RailNav
         // (y-overlapping, x-disjoint) — the signature of belonging to one of two+
         // real columns. The spanner barrier fires only against these, so a wide
         // body still chunks with its narrow heading in a single-column region.
-        bool[] isColumnBlock = ComputeColumnBlocks();
+        // Skip the O(n^2) scan entirely when pageWidth is unknown: SameChunk's
+        // barrier (the only consumer) is gated on pageWidth > 0, so the flags would
+        // never be read.
+        bool[] isColumnBlock = pageWidth > 0 ? ComputeColumnBlocks() : new bool[_navigableIndices.Count];
 
         int start = 0;
         for (int i = 1; i < _navigableIndices.Count; i++)
