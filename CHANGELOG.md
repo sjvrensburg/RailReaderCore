@@ -39,6 +39,20 @@ is needed. All additions are source-compatible (new parameters are optional).
 - `AnnotationExportService.Export` (flatten-to-new-document) **refuses** an encrypted
   source rather than emitting a plaintext copy, since a fresh PDFium document carries
   no `/Encrypt`. Annotate in place to keep encryption.
+- **Markdown export now surfaces all reader-visible annotation types**, not just
+  highlights and sticky notes: underline / strikeout / squiggly (with the text they
+  cover), FreeText (typewriter) comments, carets, and rect/freehand drawings that
+  carry a comment — emitted in document order. Text-markup annotations now also
+  include the reviewer's attached `/Contents` comment (previously dropped), which is
+  the substance of a moderation note.
+
+### Changed (Markdown export internals)
+
+- `PageMarkdownBuilder.PageAnnotations` now wraps a single ordered
+  `IReadOnlyList<Annotation>` instead of separate `Highlights`/`Notes` lists, so
+  adding annotation types needs no shape change. Source-breaking only for direct
+  constructors of that type (the export test project); `IMarkdownExportService`
+  consumers are unaffected.
 
 ## 0.30.0 — Staggered-column detection for rail-mode chunking
 
