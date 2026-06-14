@@ -18,10 +18,17 @@ public record MarkdownExportOptions
 
 public interface IMarkdownExportService
 {
+    /// <summary>
+    /// Exports the PDF at <paramref name="pdfPath"/> to Markdown. For an encrypted
+    /// (password-protected) PDF — e.g. a paper distributed for moderation — pass the
+    /// <paramref name="password"/>; an encrypted document opened without it throws
+    /// <see cref="PdfPasswordRequiredException"/>.
+    /// </summary>
     Task ExportAsync(
         string pdfPath,
         TextWriter output,
         MarkdownExportOptions options,
+        string? password = null,
         IProgress<ExportProgress>? progress = null,
         CancellationToken ct = default);
 }

@@ -25,6 +25,9 @@ is needed. All additions are source-compatible (new parameters are optional).
     `string? password`; `AnnotationFileManager.Checkout` accepts and retains it
     for the debounced auto-save flush.
   - `DocumentController.CreateDocument(string path, string? password = null)`.
+  - `IMarkdownExportService.ExportAsync(..., string? password = null, ...)` — the
+    Markdown export pipeline (text, annotations, and VLM figure crops) now opens
+    and extracts from encrypted PDFs when given the password.
 
 ### Behaviour
 
@@ -35,8 +38,7 @@ is needed. All additions are source-compatible (new parameters are optional).
   moderated copy stays password-protected) — verified by test.
 - `AnnotationExportService.Export` (flatten-to-new-document) **refuses** an encrypted
   source rather than emitting a plaintext copy, since a fresh PDFium document carries
-  no `/Encrypt`. Annotate in place to keep encryption; markdown export of encrypted
-  PDFs is not yet supported (it fails safe at open).
+  no `/Encrypt`. Annotate in place to keep encryption.
 
 ## 0.30.0 — Staggered-column detection for rail-mode chunking
 
