@@ -277,20 +277,9 @@ public sealed class MarkdownExportService : IMarkdownExportService
         if (!annotationFile.Pages.TryGetValue(pageIdx, out var pageAnns) || pageAnns.Count == 0)
             return null;
 
-        // Surface, in document order, every annotation type that carries reader-visible
-        // content for moderation/markup: text markups (highlight/underline/strikeout/
-        // squiggly), sticky notes, typewriter (FreeText), and carets — plus rect/freehand
-        // drawings only when they carry a comment. Decoration-only items are dropped.
-        var surfaced = pageAnns.Where(IsSurfaceable).ToList();
-        return surfaced.Count > 0
-            ? new PageMarkdownBuilder.PageAnnotations(surfaced)
-            : null;
+        // Pass the page's annotations through in document order. PageMarkdownBuilder decides
+        // which actually render (markups always; comment-bearing types when they have text;
+        // decoration-only drawings are dropped), so the surfacing rule lives in one place.
+        return new PageMarkdownBuilder.PageAnnotations(pageAnns);
     }
-
-    private static bool IsSurfaceable(Annotation ann) => ann switch
-    {
-        TextMarkupAnnotation or TextNoteAnnotation or FreeTextAnnotation or CaretAnnotation => true,
-        // Rect / Freehand are visual; only worth exporting when they carry a comment.
-        _ => !string.IsNullOrWhiteSpace(ann.EffectiveContents),
-    };
 }

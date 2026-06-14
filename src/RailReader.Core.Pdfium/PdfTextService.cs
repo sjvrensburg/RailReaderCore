@@ -119,6 +119,10 @@ public sealed class PdfTextService : IPdfTextService
             try
             {
                 pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
+                // Read path is fail-soft: a wrong/missing password yields IntPtr.Zero and the
+                // default (empty) result rather than throwing — this runs on the render hot
+                // path, and the open boundary already validated the password. The write/open
+                // paths use LoadDocumentChecked to throw instead.
                 doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, password);
                 if (doc == IntPtr.Zero)
                     return defaultValue;

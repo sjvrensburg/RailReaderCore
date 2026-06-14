@@ -106,36 +106,35 @@ public static class PageMarkdownBuilder
         if (annotations.Annotations.Count == 0)
             return;
 
-        sb.AppendLine();
-
+        // Render into a buffer first so the leading separator line is emitted only when at
+        // least one annotation actually produced output — markups always do; comment-only
+        // types render nothing when they carry no comment. This dispatch is the single
+        // source of truth for which annotation types appear in the export.
+        var body = new StringBuilder();
         foreach (var ann in annotations.Annotations)
-            AppendAnnotation(sb, ann, pageText);
+        {
+            if (ann is TextMarkupAnnotation markup)
+                AppendMarkup(body, markup, pageText);
+            else
+                AppendComment(body, CommentLabel(ann), ann.EffectiveContents);
+        }
+
+        if (body.Length == 0)
+            return;
+
+        sb.AppendLine();
+        sb.Append(body);
     }
 
-    private static void AppendAnnotation(StringBuilder sb, Annotation ann, PageText? pageText)
+    private static string CommentLabel(Annotation ann) => ann switch
     {
-        switch (ann)
-        {
-            case TextMarkupAnnotation markup:
-                AppendMarkup(sb, markup, pageText);
-                break;
-            case TextNoteAnnotation note:
-                AppendComment(sb, "Note", note.EffectiveContents);
-                break;
-            case FreeTextAnnotation freeText:
-                AppendComment(sb, "Comment", freeText.EffectiveContents);
-                break;
-            case CaretAnnotation caret:
-                AppendComment(sb, "Inserted text", caret.EffectiveContents);
-                break;
-            case RectAnnotation rect:
-                AppendComment(sb, "Box", rect.EffectiveContents);
-                break;
-            case FreehandAnnotation ink:
-                AppendComment(sb, "Drawing", ink.EffectiveContents);
-                break;
-        }
-    }
+        TextNoteAnnotation => "Note",
+        FreeTextAnnotation => "Comment",
+        CaretAnnotation => "Inserted text",
+        RectAnnotation => "Box",
+        FreehandAnnotation => "Drawing",
+        _ => "Annotation",
+    };
 
     /// <summary>
     /// Renders a text-markup annotation: the covered text (or a colour marker when the

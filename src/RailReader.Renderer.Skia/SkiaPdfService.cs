@@ -26,42 +26,39 @@ public sealed class SkiaPdfService : IPdfService
     {
         PdfBytes = File.ReadAllBytes(filePath);
         Password = password;
-        lock (PdfiumGate.Lock)
-        {
-            // Open once up front to validate the password and read the page count.
-            // PDFtoImage swallows load failures (it would just report 0 pages), so we
-            // probe directly to translate an encrypted-without-password / wrong-password
-            // open into a PdfPasswordRequiredException the caller can act on.
-            PageCount = ProbePageCount(PdfBytes, password, filePath);
-            Outline = new PdfOutlineService().Extract(PdfBytes, password);
-        }
+        (PageCount, Outline) = OpenAndRead(PdfBytes, password, filePath);
         if (Outline.Count > 0)
             RailReaderLogging.Logger.Debug($"[PDF] Extracted {Outline.Count} outline entries");
     }
 
     /// <summary>
-    /// Loads the document under the PDFium gate to validate the password and return its
-    /// page count. Throws <see cref="PdfPasswordRequiredException"/> for an encrypted
-    /// document opened with a missing/incorrect password, or
-    /// <see cref="InvalidOperationException"/> for any other load failure (corrupt file).
-    /// Caller holds <see cref="PdfiumGate.Lock"/>.
+    /// Opens the document once under the PDFium gate to validate the password and read both
+    /// the page count and the outline in a single load. PDFtoImage swallows load failures
+    /// (it would just report 0 pages), so we probe directly to translate an
+    /// encrypted-without-password / wrong-password open into a
+    /// <see cref="PdfPasswordRequiredException"/>; any other load failure (corrupt file)
+    /// becomes an <see cref="InvalidOperationException"/>.
     /// </summary>
-    private static int ProbePageCount(byte[] pdfBytes, string? password, string filePath)
+    private static (int PageCount, List<OutlineEntry> Outline) OpenAndRead(
+        byte[] pdfBytes, string? password, string filePath)
     {
-        PdfiumResolver.EnsureLibraryInitialized();
-        var pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
-        IntPtr doc = IntPtr.Zero;
-        try
+        lock (PdfiumGate.Lock)
         {
-            doc = LoadDocumentChecked(pinned.AddrOfPinnedObject(), pdfBytes.Length, password, filePath);
-            if (doc == IntPtr.Zero)
-                throw new InvalidOperationException($"Failed to open PDF '{filePath}' (not a valid PDF document).");
-            return FPDF_GetPageCount(doc);
-        }
-        finally
-        {
-            if (doc != IntPtr.Zero) FPDF_CloseDocument(doc);
-            pinned.Free();
+            PdfiumResolver.EnsureLibraryInitialized();
+            var pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
+            IntPtr doc = IntPtr.Zero;
+            try
+            {
+                doc = LoadDocumentChecked(pinned.AddrOfPinnedObject(), pdfBytes.Length, password, filePath);
+                if (doc == IntPtr.Zero)
+                    throw new InvalidOperationException($"Failed to open PDF '{filePath}' (not a valid PDF document).");
+                return (FPDF_GetPageCount(doc), PdfOutlineService.ExtractFromDocument(doc));
+            }
+            finally
+            {
+                if (doc != IntPtr.Zero) FPDF_CloseDocument(doc);
+                pinned.Free();
+            }
         }
     }
 
