@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="RailReader.Core.Tests" />
+    <InternalsVisibleTo Include="RailReader.Renderer.PdfPigSkia" />
   </ItemGroup>
 
   <ItemGroup>

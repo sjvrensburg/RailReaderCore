@@ -52,7 +52,9 @@ public sealed class AnnotationService : IAnnotationStore
     /// Load annotations for a PDF. Checks internal storage first,
     /// falls back to legacy sidecar file (and migrates it to internal).
     /// </summary>
-    public AnnotationFile? Load(string pdfPath)
+    // password is unused: the sidecar persists annotations in a separate JSON file
+    // and never opens the (possibly encrypted) PDF itself.
+    public AnnotationFile? Load(string pdfPath, string? password = null)
     {
         // Try internal storage first
         var internalPath = GetInternalPath(pdfPath);
@@ -79,7 +81,7 @@ public sealed class AnnotationService : IAnnotationStore
     }
 
     /// <summary>Save annotations to internal storage. Returns false if the write fails.</summary>
-    public bool Save(string pdfPath, AnnotationFile annotations)
+    public bool Save(string pdfPath, AnnotationFile annotations, string? password = null)
     {
         annotations.SourcePdfPath = Path.GetFullPath(pdfPath);
         return SaveToFile(GetInternalPath(pdfPath), annotations);
@@ -131,7 +133,7 @@ public sealed class AnnotationService : IAnnotationStore
     }
 
     /// <summary>Delete internal annotation file for a PDF.</summary>
-    public bool Delete(string pdfPath)
+    public bool Delete(string pdfPath, string? password = null)
     {
         var path = GetInternalPath(pdfPath);
         if (!File.Exists(path)) return false;

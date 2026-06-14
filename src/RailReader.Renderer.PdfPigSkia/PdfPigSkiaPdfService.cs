@@ -36,29 +36,43 @@ public sealed class PdfPigSkiaPdfService : IPdfService, IDisposable
     private bool _disposed;
 
     public byte[] PdfBytes { get; }
+
+    /// <summary>The password the document was opened with, or null when unencrypted.</summary>
+    public string? Password { get; }
+
     public int PageCount { get; }
     public List<OutlineEntry> Outline { get; }
 
     /// <summary>
     /// Convenience overload that reads the file once and forwards to
-    /// <see cref="PdfPigSkiaPdfService(byte[])"/>. Mirrors the desktop
-    /// <c>SkiaPdfService(string)</c> shape.
+    /// <see cref="PdfPigSkiaPdfService(byte[], string?)"/>. Mirrors the desktop
+    /// <c>SkiaPdfService(string, string?)</c> shape.
     /// </summary>
-    public PdfPigSkiaPdfService(string filePath)
-        : this(File.ReadAllBytes(filePath)) { }
+    public PdfPigSkiaPdfService(string filePath, string? password = null)
+        : this(File.ReadAllBytes(filePath), password) { }
 
     /// <summary>
     /// Constructs the service from an in-memory PDF. Useful for web
     /// consumers that receive bytes from a file picker / network /
     /// embedded resource — avoids the temp-file hop the file-path
-    /// constructor would otherwise need.
+    /// constructor would otherwise need. For an encrypted document pass the
+    /// <paramref name="password"/>; an encrypted-without-password / wrong-password
+    /// open surfaces as <see cref="PdfPasswordRequiredException"/>.
     /// </summary>
-    public PdfPigSkiaPdfService(byte[] pdfBytes)
+    public PdfPigSkiaPdfService(byte[] pdfBytes, string? password = null)
     {
         PdfBytes = pdfBytes;
+        Password = password;
         lock (PdfPigGate.Lock)
         {
-            _doc = PdfDocument.Open(PdfBytes);
+            try
+            {
+                _doc = PdfDocument.Open(PdfBytes, PdfPigOpen.Options(password));
+            }
+            catch (UglyToad.PdfPig.Exceptions.PdfDocumentEncryptedException)
+            {
+                throw new PdfPasswordRequiredException(!string.IsNullOrEmpty(password), null);
+            }
             // Registers the Skia page factories so subsequent calls to
             // GetPageAsSKBitmap on this document resolve. Idempotent.
             _doc.AddSkiaPageFactory();

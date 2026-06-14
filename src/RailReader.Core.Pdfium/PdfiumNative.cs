@@ -19,6 +19,33 @@ internal static class PdfiumNative
     [DllImport(Lib)] internal static extern void FPDF_CloseDocument(IntPtr document);
     [DllImport(Lib)] internal static extern int FPDF_GetSignatureCount(IntPtr document);
 
+    // FPDF_GetLastError returns the failure reason for the most recent load on this
+    // thread. Only meaningful immediately after a load returned IntPtr.Zero.
+    // Declared as uint, NOT ulong: PDFium's C signature is `unsigned long`, which is
+    // 32-bit on Windows (LLP64) and 64-bit on Linux/macOS (LP64). The error codes are
+    // tiny and returned in EAX, so reading 32 bits is correct on both ABIs — whereas
+    // marshalling as a 64-bit ulong on Windows reads the undefined upper half of RAX
+    // and can make the == FPDF_ERR_PASSWORD comparison spuriously fail.
+    [DllImport(Lib)] internal static extern uint FPDF_GetLastError();
+
+    // FPDF_ERR_* codes (subset). 4 = the document is password-protected and the
+    // supplied password was missing or incorrect.
+    internal const uint FPDF_ERR_PASSWORD = 4;
+
+    /// <summary>
+    /// Loads a document from pinned bytes, translating a PDFium password failure into
+    /// a <see cref="PdfPasswordRequiredException"/>. Returns <see cref="IntPtr.Zero"/>
+    /// for every other load failure so the caller can apply its own fallback (graceful
+    /// empty result vs. throw). Must be called inside <see cref="PdfiumGate.Lock"/>.
+    /// </summary>
+    internal static IntPtr LoadDocumentChecked(IntPtr data, int size, string? password, string? filePath = null)
+    {
+        var doc = FPDF_LoadMemDocument(data, size, password);
+        if (doc == IntPtr.Zero && FPDF_GetLastError() == FPDF_ERR_PASSWORD)
+            throw new PdfPasswordRequiredException(!string.IsNullOrEmpty(password), filePath);
+        return doc;
+    }
+
     // Pages
     [DllImport(Lib)] internal static extern int FPDF_GetPageCount(IntPtr document);
     [DllImport(Lib)] internal static extern IntPtr FPDF_LoadPage(IntPtr document, int pageIndex);

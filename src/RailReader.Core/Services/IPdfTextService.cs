@@ -7,7 +7,7 @@ namespace RailReader.Core.Services;
 /// </summary>
 public interface IPdfTextService
 {
-    PageText ExtractPageText(byte[] pdfBytes, int pageIndex);
+    PageText ExtractPageText(byte[] pdfBytes, int pageIndex, string? password = null);
     List<List<RectF>> GetTextRangeRects(byte[] pdfBytes, int pageIndex,
-        List<(int CharStart, int CharLength)> ranges);
+        List<(int CharStart, int CharLength)> ranges, string? password = null);
 }

@@ -33,7 +33,7 @@ public sealed class AnnotationFileManager : IDisposable
     /// Check out the shared <see cref="AnnotationFile"/> for a PDF.
     /// If another tab already has this file open, returns the same instance.
     /// </summary>
-    public AnnotationFile Checkout(string pdfPath)
+    public AnnotationFile Checkout(string pdfPath, string? password = null)
     {
         var key = Path.GetFullPath(pdfPath);
 
@@ -42,10 +42,16 @@ public sealed class AnnotationFileManager : IDisposable
             if (_entries.TryGetValue(key, out var entry))
             {
                 entry.RefCount++;
+                // Deliberately do NOT upgrade entry.Password here. The shared model was
+                // loaded under the first checkout's password; adopting a different
+                // password for the save while keeping that already-loaded model could
+                // reconcile a stale model against a now-readable PDF and delete real
+                // annotations. The document-open boundary validates the password up front,
+                // so the first checkout already carries the correct one.
                 return entry.Annotations;
             }
 
-            var annotations = _store.Load(pdfPath) ?? new AnnotationFile
+            var annotations = _store.Load(pdfPath, password) ?? new AnnotationFile
             {
                 SourcePdf = Path.GetFileName(pdfPath),
                 SourcePdfPath = key,
@@ -56,6 +62,7 @@ public sealed class AnnotationFileManager : IDisposable
                 PdfPath = pdfPath,
                 Annotations = annotations,
                 RefCount = 1,
+                Password = password,
             };
             return annotations;
         }
@@ -139,8 +146,8 @@ public sealed class AnnotationFileManager : IDisposable
             || entry.Annotations.Bookmarks.Count > 0;
 
         bool ok = hasContent
-            ? _store.Save(entry.PdfPath, entry.Annotations)
-            : _store.Delete(entry.PdfPath);
+            ? _store.Save(entry.PdfPath, entry.Annotations, entry.Password)
+            : _store.Delete(entry.PdfPath, entry.Password);
 
         if (ok)
             entry.Dirty = false;
@@ -152,6 +159,7 @@ public sealed class AnnotationFileManager : IDisposable
     {
         public required string PdfPath;
         public required AnnotationFile Annotations;
+        public string? Password;
         public int RefCount;
         public bool Dirty;
         public Timer? AutoSaveTimer;

@@ -13,8 +13,8 @@ public sealed class SkiaPdfServiceFactory : IPdfServiceFactory
         PdfiumResolver.Initialize();
     }
 
-    public IPdfService CreatePdfService(string filePath)
-        => new SkiaPdfService(filePath);
+    public IPdfService CreatePdfService(string filePath, string? password = null)
+        => new SkiaPdfService(filePath, password);
 
     public IPdfTextService CreatePdfTextService()
         => new PdfTextService();

@@ -27,7 +27,7 @@ public static class LayoutAnalysisPipeline
     {
         var (pageW, pageH) = pdf.GetPageSize(pageIndex);
         var (rgbBytes, pxW, pxH) = pdf.RenderPagePixmap(pageIndex, analyzer.Capabilities.InputSize);
-        var pageText = pdfText.ExtractPageText(pdf.PdfBytes, pageIndex);
+        var pageText = pdfText.ExtractPageText(pdf.PdfBytes, pageIndex, pdf.Password);
 
         return RunWithPixmap(analyzer, rgbBytes, pxW, pxH, pageW, pageH, pageText.CharBoxes, resolver, ct);
     }

@@ -19,6 +19,14 @@ public interface IRenderedPage : IDisposable
 public interface IPdfService
 {
     byte[] PdfBytes { get; }
+
+    /// <summary>
+    /// The password the document was opened with, or null for an unencrypted PDF.
+    /// Carried so the stateless text/link services (which re-open the document on
+    /// every call) can unlock the same encrypted document.
+    /// </summary>
+    string? Password => null;
+
     int PageCount { get; }
     List<OutlineEntry> Outline { get; }
 

@@ -17,8 +17,8 @@ namespace RailReader.Renderer.PdfPigSkia;
 /// </summary>
 public sealed class PdfPigSkiaPdfServiceFactory : IPdfServiceFactory
 {
-    public IPdfService CreatePdfService(string filePath)
-        => new PdfPigSkiaPdfService(filePath);
+    public IPdfService CreatePdfService(string filePath, string? password = null)
+        => new PdfPigSkiaPdfService(filePath, password);
 
     public IPdfTextService CreatePdfTextService()
         => new PdfTextService();

@@ -26,12 +26,23 @@ public static class AnnotationExportService
         Action<int, int>? onProgress = null)
     {
         var pdfBytes = pdf.PdfBytes;
+
+        // This path flattens into a brand-new document (FPDF_CreateNewDocument +
+        // FPDF_ImportPages), which carries no /Encrypt — so exporting an encrypted
+        // source here would silently strip its password protection. Refuse rather than
+        // emit a plaintext copy of a confidential (e.g. exam-moderation) document. The
+        // in-place PdfAnnotationWriter path preserves encryption; use that to annotate.
+        if (!string.IsNullOrEmpty(pdf.Password))
+            throw new InvalidOperationException(
+                "Cannot export an encrypted PDF to a flattened copy: the exported file would " +
+                "not be encrypted. Annotate in place (PdfAnnotationWriter) to preserve encryption.");
+
         lock (PdfiumGate.Lock)
         {
             var pinnedSrc = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
             try
             {
-                var srcDoc = FPDF_LoadMemDocument(pinnedSrc.AddrOfPinnedObject(), pdfBytes.Length, null);
+                var srcDoc = LoadDocumentChecked(pinnedSrc.AddrOfPinnedObject(), pdfBytes.Length, pdf.Password);
                 if (srcDoc == IntPtr.Zero)
                     throw new InvalidOperationException("Failed to load source PDF via PDFium");
 

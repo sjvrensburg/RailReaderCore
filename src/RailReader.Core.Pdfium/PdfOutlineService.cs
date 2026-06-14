@@ -12,7 +12,7 @@ namespace RailReader.Core.Services;
 public sealed class PdfOutlineService : IPdfOutlineService
 {
 
-    public List<OutlineEntry> Extract(byte[] pdfBytes)
+    public List<OutlineEntry> Extract(byte[] pdfBytes, string? password = null)
     {
         var result = new List<OutlineEntry>();
 
@@ -23,7 +23,7 @@ public sealed class PdfOutlineService : IPdfOutlineService
             try
             {
                 pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
-                doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, null);
+                doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, password);
                 if (doc == IntPtr.Zero)
                     return result;
 
