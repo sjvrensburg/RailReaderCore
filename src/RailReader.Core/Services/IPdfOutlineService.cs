@@ -7,5 +7,5 @@ namespace RailReader.Core.Services;
 /// </summary>
 public interface IPdfOutlineService
 {
-    List<OutlineEntry> Extract(byte[] pdfBytes);
+    List<OutlineEntry> Extract(byte[] pdfBytes, string? password = null);
 }

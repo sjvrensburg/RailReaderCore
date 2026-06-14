@@ -23,6 +23,7 @@
     <ProjectReference Include="../../src/RailReader.Renderer.PdfPigSkia/RailReader.Renderer.PdfPigSkia.csproj" />
     <ProjectReference Include="../../src/RailReader.Core.Analysis/RailReader.Core.Analysis.csproj" />
     <ProjectReference Include="../../src/RailReader.Renderer.Skia/RailReader.Renderer.Skia.csproj" />
+    <ProjectReference Include="../../src/RailReader.Export/RailReader.Export.csproj" />
   </ItemGroup>
 
 </Project>

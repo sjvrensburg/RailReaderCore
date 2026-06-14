@@ -40,7 +40,7 @@ public sealed class PdfAnnotationWriter
     /// written annotations as persisted — so it is not idempotent across repeated calls.
     /// Edit/delete-by-/NM and idempotent save are the next step.
     /// </remarks>
-    public byte[] AddAuthoredAnnotations(byte[] pdfBytes, AnnotationFile annotations)
+    public byte[] AddAuthoredAnnotations(byte[] pdfBytes, AnnotationFile annotations, string? password = null)
     {
         lock (PdfiumGate.Lock)
         {
@@ -49,7 +49,7 @@ public sealed class PdfAnnotationWriter
             var pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
             try
             {
-                var doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, null);
+                var doc = LoadDocumentChecked(pinned.AddrOfPinnedObject(), pdfBytes.Length, password);
                 if (doc == IntPtr.Zero)
                     throw new InvalidOperationException("Failed to load PDF via PDFium");
 
@@ -110,7 +110,7 @@ public sealed class PdfAnnotationWriter
     /// (<see cref="CaretAnnotation"/>). Only pages present in <paramref name="file"/> are
     /// visited.
     /// </summary>
-    public byte[] WriteReconciled(byte[] pdfBytes, AnnotationFile file)
+    public byte[] WriteReconciled(byte[] pdfBytes, AnnotationFile file, string? password = null)
     {
         lock (PdfiumGate.Lock)
         {
@@ -119,7 +119,7 @@ public sealed class PdfAnnotationWriter
             var pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
             try
             {
-                var doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, null);
+                var doc = LoadDocumentChecked(pinned.AddrOfPinnedObject(), pdfBytes.Length, password);
                 if (doc == IntPtr.Zero)
                     throw new InvalidOperationException("Failed to load PDF via PDFium");
 

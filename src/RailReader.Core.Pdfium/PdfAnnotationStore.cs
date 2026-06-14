@@ -18,12 +18,12 @@ public sealed class PdfAnnotationStore : IAnnotationStore
     private readonly PdfAnnotationReader _reader = new();
     private readonly PdfAnnotationWriter _writer = new();
 
-    public AnnotationFile? Load(string pdfPath)
+    public AnnotationFile? Load(string pdfPath, string? password = null)
     {
         if (!File.Exists(pdfPath)) return null;
         try
         {
-            var file = _reader.Read(File.ReadAllBytes(pdfPath));
+            var file = _reader.Read(File.ReadAllBytes(pdfPath), password);
             file.SourcePdf = Path.GetFileName(pdfPath);
             file.SourcePdfPath = Path.GetFullPath(pdfPath);
             return file;
@@ -35,29 +35,30 @@ public sealed class PdfAnnotationStore : IAnnotationStore
         }
     }
 
-    public bool Save(string pdfPath, AnnotationFile annotations) => Reconcile(pdfPath, annotations);
+    public bool Save(string pdfPath, AnnotationFile annotations, string? password = null)
+        => Reconcile(pdfPath, annotations, password);
 
     /// <summary>Removes all managed annotations from the PDF (reconciles every annotated page to empty).</summary>
-    public bool Delete(string pdfPath)
+    public bool Delete(string pdfPath, string? password = null)
     {
         if (!File.Exists(pdfPath)) return false;
         // Reconciliation only visits pages present in the file; to clear everything we must
         // enumerate the pages that currently hold annotations and give each an empty list.
         var empty = new AnnotationFile();
-        var current = Load(pdfPath);
+        var current = Load(pdfPath, password);
         if (current is not null)
             foreach (var page in current.Pages.Keys)
                 empty.Pages[page] = [];
-        return Reconcile(pdfPath, empty);
+        return Reconcile(pdfPath, empty, password);
     }
 
-    private bool Reconcile(string pdfPath, AnnotationFile annotations)
+    private bool Reconcile(string pdfPath, AnnotationFile annotations, string? password)
     {
         if (!File.Exists(pdfPath)) return false;
         try
         {
             var bytes = File.ReadAllBytes(pdfPath);
-            var updated = _writer.WriteReconciled(bytes, annotations);
+            var updated = _writer.WriteReconciled(bytes, annotations, password);
             WriteAtomically(pdfPath, updated);
             return true;
         }

@@ -134,9 +134,13 @@ public sealed partial class DocumentController : IDisposable
 
     /// <summary>
     /// Creates a DocumentState for the given path (synchronous). Call LoadDocumentAsync for bitmap loading.
+    /// For an encrypted PDF, pass the
+    /// <paramref name="password"/>; this throws <see cref="Services.PdfPasswordRequiredException"/>
+    /// when the document is encrypted and the password is missing or wrong, so the
+    /// caller can prompt the user and retry.
     /// </summary>
-    public DocumentState CreateDocument(string path)
-        => new(path, _pdfFactory.CreatePdfService(path), _pdfFactory.CreatePdfTextService(),
+    public DocumentState CreateDocument(string path, string? password = null)
+        => new(path, _pdfFactory.CreatePdfService(path, password), _pdfFactory.CreatePdfTextService(),
             _pdfFactory.CreatePdfLinkService(), _config, _marshaller, _logger);
 
     /// <summary>

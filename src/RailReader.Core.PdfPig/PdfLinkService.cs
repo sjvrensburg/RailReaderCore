@@ -15,11 +15,11 @@ public sealed class PdfLinkService : IPdfLinkService
 {
     private static readonly List<PdfLink> s_empty = [];
 
-    public List<PdfLink> ExtractPageLinks(byte[] pdfBytes, int pageIndex)
+    public List<PdfLink> ExtractPageLinks(byte[] pdfBytes, int pageIndex, string? password = null)
     {
         try
         {
-            using var doc = PdfDocument.Open(pdfBytes);
+            using var doc = PdfDocument.Open(pdfBytes, PdfPigOpen.Options(password));
             if (pageIndex < 0 || pageIndex >= doc.NumberOfPages) return s_empty;
 
             var page = doc.GetPage(pageIndex + 1);

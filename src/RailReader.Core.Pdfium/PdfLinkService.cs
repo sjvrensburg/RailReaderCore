@@ -13,7 +13,7 @@ public sealed class PdfLinkService : IPdfLinkService
 
     private static readonly List<PdfLink> s_empty = [];
 
-    public List<PdfLink> ExtractPageLinks(byte[] pdfBytes, int pageIndex)
+    public List<PdfLink> ExtractPageLinks(byte[] pdfBytes, int pageIndex, string? password = null)
     {
         lock (PdfiumGate.Lock)
         {
@@ -24,7 +24,10 @@ public sealed class PdfLinkService : IPdfLinkService
             try
             {
                 pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
-                doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, null);
+                // Read path is fail-soft: a wrong/missing password yields IntPtr.Zero and an
+                // empty result rather than throwing (the open boundary validated the password).
+                // The write/open paths use LoadDocumentChecked to throw instead.
+                doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, password);
                 if (doc == IntPtr.Zero) return s_empty;
 
                 page = FPDF_LoadPage(doc, pageIndex);

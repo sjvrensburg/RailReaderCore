@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.31.0 — Encrypted (password-protected) PDF support
+
+Lets consumers open, render, extract from, and **annotate** password-protected
+PDFs — the exam-moderation case where exams are distributed as encrypted PDFs.
+The native PDFium/PdfPig load functions always accepted a password; this threads
+one through the Core interfaces so a consumer can supply it and detect when one
+is needed. All additions are source-compatible (new parameters are optional).
+
+### Added
+
+- **`PdfPasswordRequiredException`** — thrown at the document-open boundary when a
+  PDF is encrypted and the supplied password is missing or incorrect.
+  `WrongPassword` distinguishes "needs a password" from "password was wrong" so
+  the UI can prompt appropriately, then retry the open with the password.
+- **Password parameters threaded through the platform-boundary surface:**
+  - `IPdfServiceFactory.CreatePdfService(string filePath, string? password = null)`
+  - `IPdfService.Password { get; }` (carried so the stateless text/link services
+    can reopen the same encrypted document)
+  - `IPdfTextService.ExtractPageText` / `GetTextRangeRects`,
+    `IPdfLinkService.ExtractPageLinks`, `IPdfOutlineService.Extract` each take an
+    optional `string? password`.
+  - `IAnnotationStore.Load` / `Save` / `Delete` each take an optional
+    `string? password`; `AnnotationFileManager.Checkout` accepts and retains it
+    for the debounced auto-save flush.
+  - `DocumentController.CreateDocument(string path, string? password = null)`.
+  - `IMarkdownExportService.ExportAsync(..., string? password = null, ...)` — the
+    Markdown export pipeline (text, annotations, and VLM figure crops) now opens
+    and extracts from encrypted PDFs when given the password.
+
+### Behaviour
+
+- The PDFium open path (`SkiaPdfService` construction) now validates the password
+  up front and surfaces `PdfPasswordRequiredException`; the PdfPig backend
+  translates its `PdfDocumentEncryptedException` the same way.
+- Saving annotations back into an encrypted PDF **preserves the encryption** (the
+  moderated copy stays password-protected) — verified by test.
+- `AnnotationExportService.Export` (flatten-to-new-document) **refuses** an encrypted
+  source rather than emitting a plaintext copy, since a fresh PDFium document carries
+  no `/Encrypt`. Annotate in place to keep encryption.
+- **Markdown export now surfaces all reader-visible annotation types**, not just
+  highlights and sticky notes: underline / strikeout / squiggly (with the text they
+  cover), FreeText (typewriter) comments, carets, and rect/freehand drawings that
+  carry a comment — emitted in document order. Text-markup annotations now also
+  include the reviewer's attached `/Contents` comment (previously dropped), which is
+  the substance of a moderation note.
+
+### Changed (Markdown export internals)
+
+- `PageMarkdownBuilder.PageAnnotations` now wraps a single ordered
+  `IReadOnlyList<Annotation>` instead of separate `Highlights`/`Notes` lists, so
+  adding annotation types needs no shape change. Source-breaking only for direct
+  constructors of that type (the export test project); `IMarkdownExportService`
+  consumers are unaffected.
+
 ## 0.30.0 — Staggered-column detection for rail-mode chunking
 
 Resolves the harmful half of the column-block heuristic limitation documented in

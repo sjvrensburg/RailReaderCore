@@ -115,7 +115,7 @@ public sealed class SearchService
         var hitList = hits.ToList();
         if (hitList.Count == 0) return;
 
-        var allRects = doc.PdfText.GetTextRangeRects(doc.Pdf.PdfBytes, page, hitList);
+        var allRects = doc.PdfText.GetTextRangeRects(doc.Pdf.PdfBytes, page, hitList, doc.Pdf.Password);
 
         for (int i = 0; i < hitList.Count; i++)
         {

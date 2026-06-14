@@ -12,11 +12,11 @@ namespace RailReader.Core.PdfPig;
 /// </summary>
 public sealed class PdfOutlineService : IPdfOutlineService
 {
-    public List<OutlineEntry> Extract(byte[] pdfBytes)
+    public List<OutlineEntry> Extract(byte[] pdfBytes, string? password = null)
     {
         try
         {
-            using var doc = PdfDocument.Open(pdfBytes);
+            using var doc = PdfDocument.Open(pdfBytes, PdfPigOpen.Options(password));
             return Extract(doc);
         }
         catch (Exception ex)

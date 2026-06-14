@@ -27,10 +27,11 @@ public sealed class MarkdownExportService : IMarkdownExportService
         string pdfPath,
         TextWriter output,
         MarkdownExportOptions options,
+        string? password = null,
         IProgress<ExportProgress>? progress = null,
         CancellationToken ct = default)
     {
-        var pdfService = _factory.CreatePdfService(pdfPath);
+        var pdfService = _factory.CreatePdfService(pdfPath, password);
         var (pages, err) = PageRangeParser.Parse(options.PageRange, pdfService.PageCount);
         if (err != null)
             throw new ArgumentException(err);
@@ -42,7 +43,7 @@ public sealed class MarkdownExportService : IMarkdownExportService
 
         AnnotationFile? annotationFile = null;
         if (options.IncludeAnnotations)
-            annotationFile = CompositeAnnotationStore.Default.Load(pdfPath);
+            annotationFile = CompositeAnnotationStore.Default.Load(pdfPath, password);
 
         var vlmEndpoint = options.VlmEndpoint;
         bool vlmAvailable = options.EnableVlm && vlmEndpoint != null
@@ -113,7 +114,7 @@ public sealed class MarkdownExportService : IMarkdownExportService
         var (pageW, pageH) = pdf.GetPageSize(pageIdx);
 
         var (rgbBytes, pxW, pxH) = pdf.RenderPagePixmap(pageIdx, analyzer.Capabilities.InputSize);
-        var pageText = textService.ExtractPageText(pdf.PdfBytes, pageIdx);
+        var pageText = textService.ExtractPageText(pdf.PdfBytes, pageIdx, pdf.Password);
         var analysis = LayoutAnalysisPipeline.RunWithPixmap(
             analyzer, rgbBytes, pxW, pxH, pageW, pageH, pageText.CharBoxes, resolver: null, ct);
         var blocks = analysis.Blocks;
@@ -166,7 +167,7 @@ public sealed class MarkdownExportService : IMarkdownExportService
         AnnotationFile? annotationFile,
         MarkdownExportOptions options)
     {
-        var pageText = textService.ExtractPageText(pdf.PdfBytes, pageIdx);
+        var pageText = textService.ExtractPageText(pdf.PdfBytes, pageIdx, pdf.Password);
         var pageAnnotations = options.IncludeAnnotations
             ? ExtractPageAnnotations(annotationFile, pageIdx)
             : null;
@@ -276,25 +277,9 @@ public sealed class MarkdownExportService : IMarkdownExportService
         if (!annotationFile.Pages.TryGetValue(pageIdx, out var pageAnns) || pageAnns.Count == 0)
             return null;
 
-        var highlights = new List<HighlightAnnotation>();
-        var notes = new List<TextNoteAnnotation>();
-
-        foreach (var ann in pageAnns)
-        {
-            switch (ann)
-            {
-                case HighlightAnnotation h:
-                    highlights.Add(h);
-                    break;
-                case TextNoteAnnotation tn:
-                    notes.Add(tn);
-                    break;
-            }
-        }
-
-        if (highlights.Count == 0 && notes.Count == 0)
-            return null;
-
-        return new PageMarkdownBuilder.PageAnnotations(highlights, notes);
+        // Pass the page's annotations through in document order. PageMarkdownBuilder decides
+        // which actually render (markups always; comment-bearing types when they have text;
+        // decoration-only drawings are dropped), so the surfacing rule lives in one place.
+        return new PageMarkdownBuilder.PageAnnotations(pageAnns);
     }
 }

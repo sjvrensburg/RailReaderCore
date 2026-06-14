@@ -536,7 +536,7 @@ public sealed class DocumentState : IDisposable
             {
                 ct.ThrowIfCancellationRequested();
                 var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize);
-                var pageText = _pdfText.ExtractPageText(_pdf.PdfBytes, page);
+                var pageText = _pdfText.ExtractPageText(_pdf.PdfBytes, page, _pdf.Password);
                 _logger.Debug($"[SubmitAnalysis] Page {page}: pixmap ready {pxW}x{pxH}, {pageText.CharBoxes.Count} chars, submitting...");
                 _marshaller.Post(() =>
                 {
@@ -598,7 +598,7 @@ public sealed class DocumentState : IDisposable
                 {
                     ct.ThrowIfCancellationRequested();
                     var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize);
-                    var pageText = _pdfText.ExtractPageText(_pdf.PdfBytes, page);
+                    var pageText = _pdfText.ExtractPageText(_pdf.PdfBytes, page, _pdf.Password);
                     _marshaller.Post(() =>
                     {
                         if (!IsDisposed)
@@ -859,7 +859,7 @@ public sealed class DocumentState : IDisposable
     public void LoadAnnotations(AnnotationFileManager manager)
     {
         _annotationManager = manager;
-        Annotations = manager.Checkout(FilePath);
+        Annotations = manager.Checkout(FilePath, _pdf.Password);
     }
 
     /// <summary>
@@ -961,7 +961,7 @@ public sealed class DocumentState : IDisposable
         _marshaller.AssertUIThread();
         if (_textCache.TryGetValue(pageIndex, out var cached))
             return cached;
-        var text = _pdfText.ExtractPageText(_pdf.PdfBytes, pageIndex);
+        var text = _pdfText.ExtractPageText(_pdf.PdfBytes, pageIndex, _pdf.Password);
         _textCache[pageIndex] = text;
         return text;
     }
@@ -975,7 +975,7 @@ public sealed class DocumentState : IDisposable
         _marshaller.AssertUIThread();
         if (_linkCache.TryGetValue(pageIndex, out var cached))
             return cached;
-        var links = _pdfLink.ExtractPageLinks(_pdf.PdfBytes, pageIndex);
+        var links = _pdfLink.ExtractPageLinks(_pdf.PdfBytes, pageIndex, _pdf.Password);
         _linkCache[pageIndex] = links;
         return links;
     }

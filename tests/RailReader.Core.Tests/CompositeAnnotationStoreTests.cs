@@ -17,13 +17,13 @@ public class CompositeAnnotationStoreTests
         public readonly Dictionary<string, AnnotationFile> Saved = new(StringComparer.OrdinalIgnoreCase);
         public AnnotationFile? Seed;
 
-        public AnnotationFile? Load(string pdfPath) => Seed;
-        public bool Save(string pdfPath, AnnotationFile annotations)
+        public AnnotationFile? Load(string pdfPath, string? password = null) => Seed;
+        public bool Save(string pdfPath, AnnotationFile annotations, string? password = null)
         {
             Saved[Path.GetFullPath(pdfPath)] = annotations;
             return true;
         }
-        public bool Delete(string pdfPath)
+        public bool Delete(string pdfPath, string? password = null)
         {
             return Saved.Remove(Path.GetFullPath(pdfPath));
         }

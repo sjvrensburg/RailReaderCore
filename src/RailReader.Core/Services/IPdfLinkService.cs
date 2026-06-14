@@ -8,5 +8,5 @@ namespace RailReader.Core.Services;
 /// </summary>
 public interface IPdfLinkService
 {
-    List<PdfLink> ExtractPageLinks(byte[] pdfBytes, int pageIndex);
+    List<PdfLink> ExtractPageLinks(byte[] pdfBytes, int pageIndex, string? password = null);
 }

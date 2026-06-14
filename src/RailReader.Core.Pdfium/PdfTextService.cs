@@ -20,9 +20,9 @@ public sealed class PdfTextService : IPdfTextService
     /// This method converts them to page-point space (origin top-left, Y-down)
     /// matching BBox and the overlay layers.
     /// </summary>
-    public PageText ExtractPageText(byte[] pdfBytes, int pageIndex)
+    public PageText ExtractPageText(byte[] pdfBytes, int pageIndex, string? password = null)
     {
-        return WithTextPage(pdfBytes, pageIndex, s_empty, "extract text",
+        return WithTextPage(pdfBytes, pageIndex, password, s_empty, "extract text",
             (textPage, offsetX, offsetY, visibleHeight) =>
             {
                 int charCount = FPDFText_CountChars(textPage);
@@ -66,13 +66,13 @@ public sealed class PdfTextService : IPdfTextService
     /// adjusted for CropBox offset so highlights align with the rendered page.
     /// </summary>
     public List<List<RectF>> GetTextRangeRects(byte[] pdfBytes, int pageIndex,
-        List<(int CharStart, int CharLength)> ranges)
+        List<(int CharStart, int CharLength)> ranges, string? password = null)
     {
         var result = new List<List<RectF>>(ranges.Count);
         for (int i = 0; i < ranges.Count; i++)
             result.Add([]);
 
-        return WithTextPage(pdfBytes, pageIndex, result, "get text range rects",
+        return WithTextPage(pdfBytes, pageIndex, password, result, "get text range rects",
             (textPage, offsetX, offsetY, visibleHeight) =>
             {
                 for (int i = 0; i < ranges.Count; i++)
@@ -106,7 +106,7 @@ public sealed class PdfTextService : IPdfTextService
     /// Returns <paramref name="defaultValue"/> if the document, page, or text page
     /// fails to load, or if an exception is thrown.
     /// </summary>
-    private static T WithTextPage<T>(byte[] pdfBytes, int pageIndex, T defaultValue,
+    private static T WithTextPage<T>(byte[] pdfBytes, int pageIndex, string? password, T defaultValue,
         string operationName, Func<IntPtr, float, float, double, T> action)
     {
         lock (PdfiumGate.Lock)
@@ -119,7 +119,11 @@ public sealed class PdfTextService : IPdfTextService
             try
             {
                 pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
-                doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, null);
+                // Read path is fail-soft: a wrong/missing password yields IntPtr.Zero and the
+                // default (empty) result rather than throwing — this runs on the render hot
+                // path, and the open boundary already validated the password. The write/open
+                // paths use LoadDocumentChecked to throw instead.
+                doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, password);
                 if (doc == IntPtr.Zero)
                     return defaultValue;
 

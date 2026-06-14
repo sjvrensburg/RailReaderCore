@@ -130,14 +130,14 @@ public class AnnotationConsumerFixesTests
 
     private sealed class AnnotatedSidecar : IAnnotationStore
     {
-        public AnnotationFile? Load(string pdfPath)
+        public AnnotationFile? Load(string pdfPath, string? password = null)
         {
             var f = new AnnotationFile();
             f.Pages[0] = [new HighlightAnnotation { Rects = [new HighlightRect(1, 1, 1, 1)] }];
             return f;
         }
-        public bool Save(string pdfPath, AnnotationFile annotations) => true;
-        public bool Delete(string pdfPath) => true;
+        public bool Save(string pdfPath, AnnotationFile annotations, string? password = null) => true;
+        public bool Delete(string pdfPath, string? password = null) => true;
     }
 
     [Fact]

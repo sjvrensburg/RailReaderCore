@@ -12,9 +12,12 @@ public static class PageMarkdownBuilder
 {
     public record VlmBlockResult(int BlockIndex, string? Text, string? Error);
 
-    public record PageAnnotations(
-        List<HighlightAnnotation> Highlights,
-        List<TextNoteAnnotation> Notes);
+    /// <summary>
+    /// Reader-visible annotations for a page, in document order. Holds every surfaced
+    /// type (text markups, sticky notes, typewriter/FreeText, carets, and commented
+    /// drawings) rather than a fixed pair of lists, so adding a type needs no shape change.
+    /// </summary>
+    public record PageAnnotations(IReadOnlyList<Annotation> Annotations);
 
     /// <summary>
     /// Builds Markdown for a single page from layout blocks.
@@ -93,51 +96,102 @@ public static class PageMarkdownBuilder
     }
 
     /// <summary>
-    /// Appends annotation blockquotes. When pageText is provided, highlights
-    /// include the extracted highlighted text; otherwise a generic colour marker.
+    /// Appends annotation blockquotes in document order. Text markups
+    /// (highlight/underline/strikeout/squiggly) render the text they cover (when
+    /// pageText is available) plus the reviewer's attached comment; sticky notes and
+    /// FreeText render their body; carets and commented drawings render their comment.
     /// </summary>
     internal static void AppendAnnotations(StringBuilder sb, PageAnnotations annotations, PageText? pageText = null)
     {
-        if (annotations.Highlights.Count == 0 && annotations.Notes.Count == 0)
+        if (annotations.Annotations.Count == 0)
+            return;
+
+        // Render into a buffer first so the leading separator line is emitted only when at
+        // least one annotation actually produced output — markups always do; comment-only
+        // types render nothing when they carry no comment. This dispatch is the single
+        // source of truth for which annotation types appear in the export.
+        var body = new StringBuilder();
+        foreach (var ann in annotations.Annotations)
+        {
+            if (ann is TextMarkupAnnotation markup)
+                AppendMarkup(body, markup, pageText);
+            else
+                AppendComment(body, CommentLabel(ann), ann.EffectiveContents);
+        }
+
+        if (body.Length == 0)
             return;
 
         sb.AppendLine();
+        sb.Append(body);
+    }
 
-        foreach (var highlight in annotations.Highlights)
+    private static string CommentLabel(Annotation ann) => ann switch
+    {
+        TextNoteAnnotation => "Note",
+        FreeTextAnnotation => "Comment",
+        CaretAnnotation => "Inserted text",
+        RectAnnotation => "Box",
+        FreehandAnnotation => "Drawing",
+        _ => "Annotation",
+    };
+
+    /// <summary>
+    /// Renders a text-markup annotation: the covered text (or a colour marker when the
+    /// text can't be recovered) followed by the reviewer's comment if one is attached.
+    /// </summary>
+    private static void AppendMarkup(StringBuilder sb, TextMarkupAnnotation markup, PageText? pageText)
+    {
+        var label = MarkupLabel(markup);
+        var covered = ExtractMarkupText(markup, pageText);
+
+        if (covered != null)
         {
-            string? highlightedText = null;
-            if (pageText != null && highlight.Rects.Count > 0)
-            {
-                var texts = new List<string>();
-                foreach (var rect in highlight.Rects)
-                {
-                    var t = pageText.ExtractTextInRect(rect.X, rect.Y, rect.X + rect.W, rect.Y + rect.H);
-                    if (t != null) texts.Add(t);
-                }
-                if (texts.Count > 0)
-                    highlightedText = string.Join(" ", texts);
-            }
-
-            if (highlightedText != null)
-            {
-                sb.AppendLine($"> {highlightedText}");
-                sb.AppendLine($"<!-- highlight: {highlight.Color} -->");
-            }
-            else
-            {
-                sb.AppendLine($"> [highlight: {highlight.Color}]");
-            }
-            sb.AppendLine();
+            sb.AppendLine($"> {covered}");
+            sb.AppendLine($"<!-- {label}: {markup.Color} -->");
+        }
+        else
+        {
+            sb.AppendLine($"> [{label}: {markup.Color}]");
         }
 
-        foreach (var note in annotations.Notes)
+        // The reviewer's note attached to the markup (PDF /Contents) — for moderation
+        // this comment is the substance, distinct from the text being marked.
+        var comment = markup.EffectiveContents;
+        if (!string.IsNullOrWhiteSpace(comment))
+            sb.AppendLine($"> — {comment.Trim()}");
+
+        sb.AppendLine();
+    }
+
+    private static string MarkupLabel(TextMarkupAnnotation markup) => markup switch
+    {
+        UnderlineAnnotation => "underline",
+        StrikeOutAnnotation => "strikeout",
+        SquigglyAnnotation => "squiggly",
+        _ => "highlight",
+    };
+
+    private static string? ExtractMarkupText(TextMarkupAnnotation markup, PageText? pageText)
+    {
+        if (pageText == null || markup.Rects.Count == 0)
+            return null;
+
+        var texts = new List<string>();
+        foreach (var rect in markup.Rects)
         {
-            if (!string.IsNullOrWhiteSpace(note.Text))
-            {
-                sb.AppendLine($"> **Note:** {note.Text.Trim()}");
-                sb.AppendLine();
-            }
+            var t = pageText.ExtractTextInRect(rect.X, rect.Y, rect.X + rect.W, rect.Y + rect.H);
+            if (t != null) texts.Add(t);
         }
+        return texts.Count > 0 ? string.Join(" ", texts) : null;
+    }
+
+    private static void AppendComment(StringBuilder sb, string label, string contents)
+    {
+        if (string.IsNullOrWhiteSpace(contents))
+            return;
+        sb.AppendLine($"> **{label}:** {contents.Trim()}");
+        sb.AppendLine();
     }
 
     private static string? RenderBlock(

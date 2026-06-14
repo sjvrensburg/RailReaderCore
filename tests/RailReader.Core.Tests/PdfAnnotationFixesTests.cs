@@ -227,8 +227,8 @@ public class PdfAnnotationFixesTests
     private sealed class SingleFileSidecar : IAnnotationStore
     {
         public AnnotationFile? Current;
-        public AnnotationFile? Load(string pdfPath) => Current;
-        public bool Save(string pdfPath, AnnotationFile annotations) { Current = annotations; return true; }
-        public bool Delete(string pdfPath) { Current = null; return true; }
+        public AnnotationFile? Load(string pdfPath, string? password = null) => Current;
+        public bool Save(string pdfPath, AnnotationFile annotations, string? password = null) { Current = annotations; return true; }
+        public bool Delete(string pdfPath, string? password = null) { Current = null; return true; }
     }
 }

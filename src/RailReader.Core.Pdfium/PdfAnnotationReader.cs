@@ -23,7 +23,7 @@ public sealed class PdfAnnotationReader
     /// <see cref="AnnotationSource.InPdf"/>. Never throws — on failure it logs
     /// and returns whatever was read so far (possibly empty).
     /// </summary>
-    public AnnotationFile Read(byte[] pdfBytes)
+    public AnnotationFile Read(byte[] pdfBytes, string? password = null)
     {
         var file = new AnnotationFile();
 
@@ -38,7 +38,7 @@ public sealed class PdfAnnotationReader
             try
             {
                 pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
-                doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, null);
+                doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, password);
                 if (doc == IntPtr.Zero) return file;
 
                 int pageCount = FPDF_GetPageCount(doc);

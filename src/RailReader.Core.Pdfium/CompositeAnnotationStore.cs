@@ -65,14 +65,14 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
     /// </summary>
     public Action<string>? OnSidecarMigration { get; set; }
 
-    public AnnotationFile? Load(string pdfPath)
+    public AnnotationFile? Load(string pdfPath, string? password = null)
     {
-        var sidecar = _sidecar.Load(pdfPath);
-        var native = _pdfStore.Load(pdfPath);
+        var sidecar = _sidecar.Load(pdfPath, password);
+        var native = _pdfStore.Load(pdfPath, password);
 
         // Heads-up: a writable PDF whose sidecar still holds annotations will have them baked
         // into the PDF on the next save (lazy migration). Signal the consumer once.
-        if (SidecarHasAnnotations(sidecar) && GetFallbackReason(pdfPath) is null
+        if (SidecarHasAnnotations(sidecar) && GetFallbackReason(pdfPath, password) is null
             && AddOnce(_migrationWarned, pdfPath))
             OnSidecarMigration?.Invoke(pdfPath);
 
@@ -86,13 +86,13 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
         return native;
     }
 
-    public bool Save(string pdfPath, AnnotationFile file)
+    public bool Save(string pdfPath, AnnotationFile file, string? password = null)
     {
-        var reason = GetFallbackReason(pdfPath);
+        var reason = GetFallbackReason(pdfPath, password);
         if (reason is null)
         {
             // PDF is canonical: reconcile annotations into the document.
-            bool ok = _pdfStore.Save(pdfPath, file);
+            bool ok = _pdfStore.Save(pdfPath, file, password);
             // Only touch the sidecar once the PDF write succeeded — otherwise a failed write
             // followed by deleting the sidecar would destroy the only copy of un-migrated annots.
             if (ok)
@@ -104,20 +104,20 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
         return SaveAuthoredToSidecar(pdfPath, file);
     }
 
-    public bool Delete(string pdfPath)
+    public bool Delete(string pdfPath, string? password = null)
     {
-        bool sidecarOk = _sidecar.Delete(pdfPath);
-        if (GetFallbackReason(pdfPath) is null && File.Exists(pdfPath))
-            return _pdfStore.Delete(pdfPath) || sidecarOk;
+        bool sidecarOk = _sidecar.Delete(pdfPath, password);
+        if (GetFallbackReason(pdfPath, password) is null && File.Exists(pdfPath))
+            return _pdfStore.Delete(pdfPath, password) || sidecarOk;
         return sidecarOk;
     }
 
     // --- routing ---
 
-    private SidecarFallbackReason? GetFallbackReason(string pdfPath)
+    private SidecarFallbackReason? GetFallbackReason(string pdfPath, string? password)
     {
         if (!CanWriteFile(pdfPath)) return SidecarFallbackReason.ReadOnly;
-        if (IsSigned(pdfPath)) return SidecarFallbackReason.Signed;
+        if (IsSigned(pdfPath, password)) return SidecarFallbackReason.Signed;
         return null;
     }
 
@@ -137,13 +137,14 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
         }
     }
 
-    private bool IsSigned(string pdfPath)
+    private bool IsSigned(string pdfPath, string? password)
     {
         var key = Path.GetFullPath(pdfPath);
         lock (_cacheLock)
             if (_signedCache.TryGetValue(key, out var cached)) return cached;
 
         bool signed = false;
+        bool probed = false; // true only when the document actually loaded
         try
         {
             var bytes = File.ReadAllBytes(pdfPath);
@@ -153,11 +154,12 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
                 var pin = GCHandle.Alloc(bytes, GCHandleType.Pinned);
                 try
                 {
-                    var doc = FPDF_LoadMemDocument(pin.AddrOfPinnedObject(), bytes.Length, null);
+                    var doc = FPDF_LoadMemDocument(pin.AddrOfPinnedObject(), bytes.Length, password);
                     if (doc != IntPtr.Zero)
                     {
                         signed = FPDF_GetSignatureCount(doc) > 0;
                         FPDF_CloseDocument(doc);
+                        probed = true;
                     }
                 }
                 finally
@@ -171,7 +173,12 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
             RailReaderLogging.Logger.Debug($"[Annotations] Signature probe failed for {pdfPath}: {ex.Message}");
         }
 
-        lock (_cacheLock) _signedCache[key] = signed;
+        // Don't cache a failed probe. An encrypted document opened with a missing/wrong
+        // password loads as Zero (signed stays false); caching that under the path-only
+        // key would poison a later probe made with the correct password and mis-route a
+        // signed-and-encrypted document into a signature-invalidating in-PDF rewrite.
+        if (probed)
+            lock (_cacheLock) _signedCache[key] = signed;
         return signed;
     }
 

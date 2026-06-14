@@ -12,10 +12,8 @@ namespace RailReader.Core.Services;
 public sealed class PdfOutlineService : IPdfOutlineService
 {
 
-    public List<OutlineEntry> Extract(byte[] pdfBytes)
+    public List<OutlineEntry> Extract(byte[] pdfBytes, string? password = null)
     {
-        var result = new List<OutlineEntry>();
-
         lock (PdfiumGate.Lock)
         {
             IntPtr doc = IntPtr.Zero;
@@ -23,16 +21,19 @@ public sealed class PdfOutlineService : IPdfOutlineService
             try
             {
                 pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
-                doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, null);
+                // Read path is fail-soft: a wrong/missing password yields IntPtr.Zero and an
+                // empty outline rather than throwing (the open boundary already validated the
+                // password). The write/open paths use LoadDocumentChecked to throw instead.
+                doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, password);
                 if (doc == IntPtr.Zero)
-                    return result;
+                    return [];
 
-                var root = FPDFBookmark_GetFirstChild(doc, IntPtr.Zero);
-                ReadBookmarks(doc, root, result);
+                return ExtractFromDocument(doc);
             }
             catch (Exception ex)
             {
                 RailReaderLogging.Logger.Error("[Outline] Failed to extract", ex);
+                return [];
             }
             finally
             {
@@ -40,7 +41,19 @@ public sealed class PdfOutlineService : IPdfOutlineService
                 if (pinned.IsAllocated) pinned.Free();
             }
         }
+    }
 
+    /// <summary>
+    /// Walks the bookmark tree of an already-open document. Lets a caller that has loaded
+    /// the document for another reason (e.g. <c>SkiaPdfService</c> reading the page count in
+    /// the same pass) read the outline without a second full load. Mirrors the PdfPig
+    /// backend's <c>Extract(PdfDocument)</c> overload. Caller holds <see cref="PdfiumGate.Lock"/>.
+    /// </summary>
+    internal static List<OutlineEntry> ExtractFromDocument(IntPtr doc)
+    {
+        var result = new List<OutlineEntry>();
+        var root = FPDFBookmark_GetFirstChild(doc, IntPtr.Zero);
+        ReadBookmarks(doc, root, result);
         return result;
     }
 

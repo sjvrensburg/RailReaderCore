@@ -17,11 +17,11 @@ public sealed class PdfTextService : IPdfTextService
 {
     private static readonly PageText s_empty = new("", []);
 
-    public PageText ExtractPageText(byte[] pdfBytes, int pageIndex)
+    public PageText ExtractPageText(byte[] pdfBytes, int pageIndex, string? password = null)
     {
         try
         {
-            using var doc = PdfDocument.Open(pdfBytes);
+            using var doc = PdfDocument.Open(pdfBytes, PdfPigOpen.Options(password));
             if (pageIndex < 0 || pageIndex >= doc.NumberOfPages) return s_empty;
 
             // PdfPig pages are 1-indexed; Core's IPdfTextService is 0-indexed.
@@ -36,7 +36,7 @@ public sealed class PdfTextService : IPdfTextService
     }
 
     public List<List<RectF>> GetTextRangeRects(byte[] pdfBytes, int pageIndex,
-        List<(int CharStart, int CharLength)> ranges)
+        List<(int CharStart, int CharLength)> ranges, string? password = null)
     {
         var result = new List<List<RectF>>(ranges.Count);
         for (int i = 0; i < ranges.Count; i++)
@@ -44,7 +44,7 @@ public sealed class PdfTextService : IPdfTextService
 
         try
         {
-            using var doc = PdfDocument.Open(pdfBytes);
+            using var doc = PdfDocument.Open(pdfBytes, PdfPigOpen.Options(password));
             if (pageIndex < 0 || pageIndex >= doc.NumberOfPages) return result;
 
             var page = doc.GetPage(pageIndex + 1);
