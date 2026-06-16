@@ -59,20 +59,14 @@ public sealed partial class RailNav
 
         // Advance at the current LINE's right extent (not the block/chunk right edge) so a
         // short line in a wide block doesn't auto-scroll through trailing empty space —
-        // matching the manual edge-hold trigger (IsAtHardEdge). The dwell decision below
-        // still uses the raw BLOCK width (whether the block needs horizontal scrolling).
-        var (_, lineRight, lineWidthPx) = GetLineBounds(zoom);
+        // matching the manual edge-hold trigger (IsAtHardEdge).
+        var (_, lineRight, _) = GetLineBounds(zoom);
 
         var ctx = new AutoScrollContext
         {
             SnapInProgress = _snap is not null,
             LineRight = lineRight,
-            // "Fits the viewport" is judged in screen pixels (zoom-dependent) — that is what
-            // determines whether the line scrolls at all. The flat per-line beat is applied
-            // only to fit-in-window lines; the set of beat-eligible lines SHRINKS as zoom
-            // rises (W/zoom falls), so at high zoom even moderate lines scroll (and earn
-            // their reading time by scrolling rather than the beat).
-            LineFitsWindow = lineWidthPx <= windowWidth,
+            // Flat per-line beat held at every line end before the advance (see LinePauseMs).
             LinePauseMs = _config.AutoScrollLinePauseMs,
             WindowWidth = windowWidth,
             Zoom = zoom,
