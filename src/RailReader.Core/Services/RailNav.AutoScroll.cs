@@ -73,7 +73,6 @@ public sealed partial class RailNav
             // rises (W/zoom falls), so at high zoom even moderate lines scroll (and earn
             // their reading time by scrolling rather than the beat).
             LineFitsWindow = lineWidthPx <= windowWidth,
-            CurrentLine = CurrentLine,
             LinePauseMs = _config.AutoScrollLinePauseMs,
             WindowWidth = windowWidth,
             Zoom = zoom,

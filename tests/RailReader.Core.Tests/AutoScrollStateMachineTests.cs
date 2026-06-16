@@ -13,7 +13,6 @@ public class AutoScrollStateMachineTests
     private static AutoScrollContext MakeContext(
         bool snapInProgress = false,
         double lineRight = 1000,
-        int currentLine = 0,
         double linePauseMs = 200,
         double windowWidth = 600,
         double zoom = 1.0,
@@ -25,7 +24,6 @@ public class AutoScrollStateMachineTests
             SnapInProgress = snapInProgress,
             LineRight = lineRight,
             LineFitsWindow = lineFitsWindow,
-            CurrentLine = currentLine,
             LinePauseMs = linePauseMs,
             WindowWidth = windowWidth,
             Zoom = zoom,
@@ -289,6 +287,23 @@ public class AutoScrollStateMachineTests
         sm.Start(1.0);
         sm.ResumeFromPark(); // Scrolling, not parked
         Assert.Equal(AutoScrollState.Scrolling, sm.CurrentState);
+    }
+
+    [Fact]
+    public void RequestDeferredPause_WhileParked_DoesNotUnpark()
+    {
+        // A settle-pause request (e.g. Home/End line-edge snap, or a non-intercepted manual
+        // advance) must not silently un-park the reader — only ResumeFromPark exits a park.
+        var sm = new AutoScrollStateMachine(new NoOpClamp());
+        sm.Start(1.0);
+        double cameraX = 0;
+        sm.RequestDeferredPark();
+        sm.Tick(ref cameraX, 0.016, MakeContext(snapInProgress: false)); // engage park
+        Assert.True(sm.Parked);
+
+        sm.RequestDeferredPause(400);
+        Assert.True(sm.Parked); // stayed parked, not WaitingForSnap
+        Assert.Equal(AutoScrollState.WaitingForAdvance, sm.CurrentState);
     }
 
     [Fact]

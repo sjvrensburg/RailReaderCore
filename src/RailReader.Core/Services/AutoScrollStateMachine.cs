@@ -27,7 +27,6 @@ internal readonly struct AutoScrollContext
     /// <summary>True when the current line fits within the viewport, i.e. it reaches its
     /// right extent with little or no scrolling and so earns almost no reading time.</summary>
     public required bool LineFitsWindow { get; init; }
-    public required int CurrentLine { get; init; }
     /// <summary>Flat per-line beat (ms) held after a fit-in-window line reaches its right
     /// extent — the sole intra-flow cadence knob. Wide lines earn their time by scrolling.</summary>
     public required double LinePauseMs { get; init; }
@@ -150,7 +149,10 @@ internal sealed class AutoScrollStateMachine
     /// </summary>
     public void RequestDeferredPause(double durationMs)
     {
-        if (CurrentState == AutoScrollState.Inactive) return;
+        // A settle-pause request must never silently un-park: while parked the only exit is
+        // ResumeFromPark (so a stray manual nudge — Home/End, a non-intercepted advance — that
+        // calls PauseAutoScroll keeps the reader on the parked unit).
+        if (!IsActive || Parked) return;
         _pendingPauseMs = durationMs;
         _pendingPark = false;
         CurrentState = AutoScrollState.WaitingForSnap;
@@ -164,7 +166,8 @@ internal sealed class AutoScrollStateMachine
     /// </summary>
     public void RequestDeferredPark()
     {
-        if (CurrentState == AutoScrollState.Inactive) return;
+        // No-op when inactive or already parked (idempotent re-entry).
+        if (!IsActive || Parked) return;
         _pendingPauseMs = 0;
         _pendingPark = true;
         CurrentState = AutoScrollState.WaitingForSnap;
