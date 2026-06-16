@@ -33,4 +33,22 @@ public static class DefaultRoleSets
         BlockRole.Algorithm,
         BlockRole.Footnote,
     };
+
+    /// <summary>
+    /// Block roles that park semi-automatic auto-scroll on entry (it waits for an explicit
+    /// advance keypress). Non-prose units whose "am I done?" decision has high, content-
+    /// dependent variance no timer can guess. Prose roles (<see cref="BlockRole.Text"/>,
+    /// <see cref="BlockRole.Caption"/>, <see cref="BlockRole.Aside"/>,
+    /// <see cref="BlockRole.Reference"/>, <see cref="BlockRole.Footnote"/>) flow through.
+    /// </summary>
+    public static IReadOnlySet<BlockRole> AutoScrollStop { get; } = new HashSet<BlockRole>
+    {
+        BlockRole.Heading,
+        BlockRole.Title,
+        BlockRole.DisplayMath,
+        BlockRole.Algorithm,
+        BlockRole.Table,
+        BlockRole.Figure,
+        BlockRole.Chart,
+    };
 }

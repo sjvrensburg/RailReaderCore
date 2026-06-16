@@ -585,6 +585,18 @@ public sealed partial class DocumentController : IDisposable
 
     public void ToggleJumpModeExclusive() => _autoScroll.ToggleJumpModeExclusive(ActiveDocument);
 
+    /// <summary>
+    /// True when semi-automatic auto-scroll is parked on a stop unit (non-prose block, new
+    /// chunk, or new page) waiting for an explicit advance keypress. The consumer routes the
+    /// forward/advance keys to <see cref="ResumeAutoScrollFromPark"/> while this is set and
+    /// surfaces a "parked — press D to continue" affordance.
+    /// </summary>
+    public bool AutoScrollParked =>
+        AutoScrollActive && (ActiveDocument?.Rail.AutoScrollParked ?? false);
+
+    /// <summary>Resume flow from a semi-auto park (the reader pressed the advance key).</summary>
+    public void ResumeAutoScrollFromPark() => ActiveDocument?.Rail.ResumeAutoScrollFromPark();
+
     // --- Colour effects ---
 
     public void SetColourEffect(ColourEffect effect)

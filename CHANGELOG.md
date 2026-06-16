@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.32.0 — Semi-automatic auto-scroll (park at non-prose units)
+
+Replaces rail-mode **fully-automatic** auto-scroll (the timer-driven "dwell" mode)
+with **semi-automatic** scroll: prose flows line-by-line on a single speed knob,
+and auto-scroll **parks** (waits for an explicit advance keypress) on arrival at a
+non-prose unit (equation, table, figure, heading) and at column/page boundaries.
+This deletes the dwell guess-subsystem — the five-plus millisecond knobs that tried
+to guess reading speed and never felt trustworthy on dense math/stats PDFs — and
+hands the high-variance "am I done with this unit?" decision back to the reader.
+Same `P` toggle and `D`/`S` advance keys; full UX rationale lives in
+`railreader2/docs/semi-auto-scroll-design.md`.
+
+### Behaviour
+
+- **Flow** advances line-by-line through prose, **across paragraph/block breaks within
+  a column**, on `AutoScrollLinePauseMs`. Intra-flow pacing is the two honest cases: a
+  wide line earns its time by scrolling (beat `0`); a fit-in-window line holds a flat
+  `AutoScrollLinePauseMs` beat.
+- **Park** (indefinite, no timer) on a line advance that enters a stop unit: a
+  **stop-role block** (`AutoScrollStopClasses`), a **new chunk** (column/section break),
+  or a **new page**. **One stop per unit, on entry** — within a multi-line stop block the
+  remaining lines flow after resume, and leaving a stop block into prose does not park.
+- `DocumentController.AutoScrollParked` reports the parked state; `ResumeAutoScrollFromPark()`
+  resumes flow (the consumer routes the advance keys to it and shows a "parked — press D"
+  affordance). Pan/zoom/inspect stay live while parked.
+
+### ⚠ Breaking — `CoreSettings`
+
+- **Removed:** `AutoScrollBlockPauseMs`, `AutoScrollEquationPauseMs`, `AutoScrollHeaderPauseMs`
+  (and the internal `LineReadBudgetMs` / `MinLineReadMs` / `MaxLineReadMs` reading-budget
+  tuning, which also drove the manual edge-hold short-line gate — manual edge-hold now
+  advances purely on its hold timer).
+- **Added:** `AutoScrollStopClasses` (`IReadOnlySet<BlockRole>`; default `Heading`, `Title`,
+  `DisplayMath`, `Algorithm`, `Table`, `Figure`, `Chart` — see `DefaultRoleSets.AutoScrollStop`).
+  `AppConfig` persists it; old configs silently drop the removed keys and pick up the default.
+- **Kept:** `AutoScrollLinePauseMs` (now the sole intra-flow cadence knob),
+  `AutoScrollTriggerEnabled`/`AutoScrollTriggerDelayMs`, `ScrollSpeedStart`/`Max`,
+  `ScrollRampTime`, `SnapDurationMs`, `DefaultAutoScrollSpeed`.
+
+Coordinate the bump with the railreader2 desktop update (config + key routing + the
+parked affordance); test against the unreleased Core via the local-pack flow first.
+
 ## 0.31.0 — Encrypted (password-protected) PDF support
 
 Lets consumers open, render, extract from, and **annotate** password-protected

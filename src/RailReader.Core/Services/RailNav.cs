@@ -46,48 +46,6 @@ public sealed partial class RailNav : ICameraClamp
     // the state machine fires a line advance after a hold threshold.
     private readonly EdgeHoldStateMachine _lineEdgeHold = new();
 
-    // Tracks how long the current (block, line) has been the active reading target, so a
-    // short line — which sits at the hard edge the instant it is framed — must be held for
-    // a minimum reading beat before a forward edge-hold advance fires. Lazily reset on any
-    // line-identity change, so it stays correct regardless of which path moved the line.
-    private readonly Stopwatch _lineClock = Stopwatch.StartNew();
-    private int _clockBlock = -1;
-    private int _clockLine = -1;
-
-    /// <summary>Test seam: override the elapsed-on-line clock (ms) for deterministic tests.</summary>
-    internal Func<double>? LineDwellElapsedMsOverride;
-
-    private double MsOnCurrentLine()
-    {
-        if (_clockBlock != CurrentBlock || _clockLine != CurrentLine)
-        {
-            _clockBlock = CurrentBlock;
-            _clockLine = CurrentLine;
-            _lineClock.Restart();
-        }
-        return LineDwellElapsedMsOverride?.Invoke() ?? _lineClock.Elapsed.TotalMilliseconds;
-    }
-
-    /// <summary>
-    /// Minimum time (ms) the current line should remain the active reading target before a
-    /// forward advance is permitted. Proportional to the line's text — approximated by its
-    /// PAGE-space width (<see cref="LineInfo.Width"/>, zoom-independent) — divided by the
-    /// reading pace, then floored and capped. A wide line earns this time naturally (it
-    /// scrolls to reach its right extent); this only bites lines that fit the viewport and
-    /// would otherwise advance with no reading time. <c>internal</c> for direct testing.
-    /// </summary>
-    internal double LineReadBudgetMs(double readingSpeedPagePerSec)
-    {
-        if (_navigableIndices.Count == 0) return 0.0;
-        double widthPts = CurrentLineInfo.Width;
-        double naturalMs = readingSpeedPagePerSec > 0
-            ? widthPts / readingSpeedPagePerSec * 1000.0
-            : CoreTuning.MaxLineReadMs;
-        return Math.Clamp(naturalMs, CoreTuning.MinLineReadMs, CoreTuning.MaxLineReadMs);
-    }
-
-
-
     /// <summary>
     /// Whether the current navigable block's role is in the centering role set.
     /// </summary>
@@ -383,33 +341,11 @@ public sealed partial class RailNav : ICameraClamp
     private bool CheckEdgeHoldAdvance(double cameraX, double zoom, double windowWidth, ScrollDirection dir)
     {
         if (IsAtHardEdge(cameraX, zoom, windowWidth, dir))
-        {
-            // A line narrower than the viewport reaches the hard edge the instant it is
-            // framed (no scroll needed), so the only thing gating a forward advance is the
-            // edge-hold timer — a held key flashes past a paragraph's short final line into
-            // the next chunk. Hold the line for its reading beat first; the edge-hold timer
-            // then runs as usual. Wide lines are unaffected: they aren't at the edge until
-            // the user has scrolled across them, which already provides the reading time.
-            if (dir == ScrollDirection.Forward && ForwardAdvanceHeldForReadingBeat(zoom, windowWidth))
-                return false;
-
             return _lineEdgeHold.OnEdgeHit(forward: dir == ScrollDirection.Forward);
-        }
 
         _lineEdgeHold.OnMoved();
         return false;
     }
-
-    /// <summary>
-    /// True when a forward edge-hold advance must wait: the current line fits the viewport
-    /// (so it reached its right extent with little or no scrolling and earned no reading
-    /// time) and has not yet been the active reading target for its <see cref="LineReadBudgetMs"/>.
-    /// Wide lines return false — the user scrolled across them to get here. <c>internal</c>
-    /// for direct testing.
-    /// </summary>
-    internal bool ForwardAdvanceHeldForReadingBeat(double zoom, double windowWidth)
-        => GetLineBounds(zoom).WidthPx <= windowWidth
-           && MsOnCurrentLine() < LineReadBudgetMs(_config.ScrollSpeedMax);
 
     /// <summary>
     /// Returns true when the camera is effectively at the hard scroll boundary for the

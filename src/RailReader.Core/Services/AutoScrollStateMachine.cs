@@ -8,7 +8,9 @@ internal enum AutoScrollState
     Scrolling,
     WaitingForSnap,
     Paused,
-    Dwelling,
+    /// <summary>Indefinite park (no timer): semi-auto scroll has stopped on entry to a
+    /// non-prose unit / chunk / page and waits for an explicit advance keypress.</summary>
+    WaitingForAdvance,
 }
 
 /// <summary>
@@ -25,16 +27,9 @@ internal readonly struct AutoScrollContext
     /// <summary>True when the current line fits within the viewport, i.e. it reaches its
     /// right extent with little or no scrolling and so earns almost no reading time.</summary>
     public required bool LineFitsWindow { get; init; }
-    /// <summary>Minimum reading beat (ms) for the current line — see RailNav.LineReadBudgetMs.
-    /// Only applied to lines that fit the viewport; wide lines earn their time by scrolling.</summary>
-    public required double LineReadBudgetMs { get; init; }
-    /// <summary>Settling dwell (ms) held at the END of every block before advancing, uniform
-    /// across the final line's width so short/medium/long paragraph ends feel alike.</summary>
-    public required double BlockEndPauseMs { get; init; }
-    /// <summary>Raw block width in pixels (without margin).</summary>
-    public required double RawBlockWidthPx { get; init; }
     public required int CurrentLine { get; init; }
-    public required int BlockLineCount { get; init; }
+    /// <summary>Flat per-line beat (ms) held after a fit-in-window line reaches its right
+    /// extent — the sole intra-flow cadence knob. Wide lines earn their time by scrolling.</summary>
     public required double LinePauseMs { get; init; }
     public required double WindowWidth { get; init; }
     public required double Zoom { get; init; }
@@ -42,19 +37,22 @@ internal readonly struct AutoScrollContext
 }
 
 /// <summary>
-/// Manages auto-scroll state as an explicit state machine with well-defined transitions.
-/// Replaces the implicit state previously encoded across multiple boolean flags in RailNav.
+/// Manages semi-automatic auto-scroll as an explicit state machine. Flow advances
+/// line-by-line through prose on a single speed knob; the orchestrator decides where to
+/// <see cref="RequestDeferredPark"/> (a non-prose unit, a new chunk, a new page) and the
+/// reader resumes with an explicit advance keypress (<see cref="ResumeFromPark"/>).
 ///
 /// State transitions:
 ///   Inactive ──Start()──────────────────────────→ Scrolling
-///   Scrolling ──reached mid-block line end──────→ Paused (advances)
-///   Scrolling ──block fits on screen, not dwelt─→ Dwelling (advances)
-///   Scrolling ──reached block end───────────────→ returns reachedEnd
-///   Any ──RequestDeferredPause()────────────────→ WaitingForSnap
-///   WaitingForSnap ──snap completes─────────────→ Paused (non-advancing)
-///   Paused ──timer expires, non-advancing───────→ Scrolling
-///   Paused ──timer expires, advancing───────────→ Scrolling + returns reachedEnd
-///   Dwelling ──timer expires────────────────────→ Scrolling + returns reachedEnd
+///   Scrolling ──reached fit-in-window line end──→ Paused (brief per-line beat), then advances
+///   Scrolling ──reached wide line end───────────→ returns reachedEnd immediately
+///   Any ──RequestDeferredPause()────────────────→ WaitingForSnap (resume flow after snap)
+///   Any ──RequestDeferredPark()─────────────────→ WaitingForSnap (park after snap)
+///   WaitingForSnap ──snap completes, pause──────→ Paused (non-advancing)
+///   WaitingForSnap ──snap completes, park───────→ WaitingForAdvance (indefinite)
+///   WaitingForSnap ──snap completes, neither────→ Scrolling
+///   Paused ──timer expires──────────────────────→ Scrolling (+ returns reachedEnd if advancing)
+///   WaitingForAdvance ──ResumeFromPark()────────→ Scrolling
 ///   Any ──Stop()────────────────────────────────→ Inactive
 /// </summary>
 internal sealed class AutoScrollStateMachine
@@ -63,25 +61,21 @@ internal sealed class AutoScrollStateMachine
 
     public AutoScrollState CurrentState { get; private set; } = AutoScrollState.Inactive;
     public bool IsActive => CurrentState != AutoScrollState.Inactive;
+    /// <summary>True while parked indefinitely, waiting for an explicit advance keypress.</summary>
+    public bool Parked => CurrentState == AutoScrollState.WaitingForAdvance;
 
     // Speed
     private double _speed;
     private bool _boost;
 
-    /// <summary>Base scroll speed (page-units/sec, ignoring boost) — the reading pace used
-    /// to size a short line's reading beat. See RailNav.LineReadBudgetMs.</summary>
-    public double BaseSpeed => _speed;
-
-    // WaitingForSnap: deferred pause duration
+    // WaitingForSnap: deferred action that fires once the snap completes.
     private double _pendingPauseMs;
+    private bool _pendingPark;
 
-    // Paused / Dwelling: countdown timer
+    // Paused: countdown timer
     private Stopwatch? _pauseTimer;
     private double _pauseDurationMs;
     private bool _pauseAdvances; // true = pause triggers line advance on completion
-
-    // Dwell tracking: prevents repeated dwell on the same block
-    private bool _dwelt;
 
     // Wall-clock scroll positioning: camera position is computed as an absolute
     // function of elapsed time rather than accumulated frame deltas. This means
@@ -131,7 +125,7 @@ internal sealed class AutoScrollStateMachine
         _boost = false;
         _pauseTimer = null;
         _pendingPauseMs = 0;
-        _dwelt = false;
+        _pendingPark = false;
         NormalizedSpeed = 0;
         _scrollInitialized = false;
         _scrollClock = null;
@@ -150,22 +144,41 @@ internal sealed class AutoScrollStateMachine
 
     /// <summary>
     /// Request a pause that starts after the current snap animation completes.
-    /// Used when entering a new block (block entry pause) or after a mid-block
-    /// line advance to prevent autoscroll from fighting the snap animation.
-    /// Pass durationMs=0 to wait for snap completion without any display pause.
+    /// Used after a mid-block line advance to resume flow without fighting the snap
+    /// (pass durationMs=0 to wait for snap completion with no display pause).
     /// Transition: current state -> WaitingForSnap.
     /// </summary>
-    public void RequestDeferredPause(double durationMs, bool resetDwell = false)
+    public void RequestDeferredPause(double durationMs)
     {
         if (CurrentState == AutoScrollState.Inactive) return;
         _pendingPauseMs = durationMs;
-        // Dwell tracking is a PER-BLOCK concern: reset whenever the advance crosses
-        // a block boundary (resetDwell) — including within-chunk crossings that now
-        // carry durationMs = 0 — so each fit-in-window block gets its own dwell.
-        // A mid-block line advance (no block change, durationMs = 0) must NOT reset,
-        // else every line of a narrow block re-triggers a full dwell.
-        if (durationMs > 0 || resetDwell) _dwelt = false;
+        _pendingPark = false;
         CurrentState = AutoScrollState.WaitingForSnap;
+    }
+
+    /// <summary>
+    /// Request an indefinite park that engages after the current snap animation completes,
+    /// so the parked frame is the settled, centred target. Used when a line advance enters a
+    /// stop unit (non-prose block, new chunk, new page). Exited only by <see cref="ResumeFromPark"/>.
+    /// Transition: current state -> WaitingForSnap -> WaitingForAdvance.
+    /// </summary>
+    public void RequestDeferredPark()
+    {
+        if (CurrentState == AutoScrollState.Inactive) return;
+        _pendingPauseMs = 0;
+        _pendingPark = true;
+        CurrentState = AutoScrollState.WaitingForSnap;
+    }
+
+    /// <summary>
+    /// Resume flow from an indefinite park (the reader pressed the advance key).
+    /// Transition: WaitingForAdvance -> Scrolling.
+    /// </summary>
+    public void ResumeFromPark()
+    {
+        if (CurrentState != AutoScrollState.WaitingForAdvance) return;
+        CurrentState = AutoScrollState.Scrolling;
+        _scrollInitialized = false; // capture new start position from the parked camera
     }
 
     /// <summary>
@@ -188,9 +201,9 @@ internal sealed class AutoScrollStateMachine
         return CurrentState switch
         {
             AutoScrollState.WaitingForSnap => TickWaitingForSnap(in ctx),
-            AutoScrollState.Paused or AutoScrollState.Dwelling => TickPause(),
+            AutoScrollState.Paused => TickPause(),
             AutoScrollState.Scrolling => TickScrolling(ref cameraX, dtSecs, in ctx),
-            _ => false,
+            _ => false, // Inactive / WaitingForAdvance: no-op
         };
     }
 
@@ -198,11 +211,19 @@ internal sealed class AutoScrollStateMachine
     {
         if (ctx.SnapInProgress) return false; // still snapping
 
-        // Snap completed -> activate the deferred pause, or resume immediately if none
+        // Snap completed -> engage the deferred park, the deferred pause, or resume flow.
+        if (_pendingPark)
+        {
+            _pendingPark = false;
+            CurrentState = AutoScrollState.WaitingForAdvance;
+            NormalizedSpeed = 0;
+            return false;
+        }
+
         double pauseMs = _pendingPauseMs;
         _pendingPauseMs = 0;
         if (pauseMs > 0)
-            BeginPause(pauseMs, advances: false, AutoScrollState.Paused);
+            BeginPause(pauseMs, advances: false);
         else
         {
             CurrentState = AutoScrollState.Scrolling;
@@ -249,57 +270,25 @@ internal sealed class AutoScrollStateMachine
         if (visibleRight < ctx.LineRight)
             return false; // still scrolling
 
-        // Reached right edge -- determine next action
-
-        // Dwell: block fits on screen and we haven't dwelt yet
-        if (ctx.RawBlockWidthPx <= ctx.WindowWidth && !_dwelt && ctx.LinePauseMs > 0)
+        // Reached the line's right edge. Intra-flow pacing is the two honest cases:
+        //   - a wide line earned its reading time by scrolling across → advance now (beat 0);
+        //   - a fit-in-window line reached its end with little/no scroll → hold a flat beat.
+        // The "is this a stop unit?" decision belongs to the orchestrator (it needs role /
+        // chunk / page knowledge the state machine doesn't have); this just reports reachedEnd.
+        if (ctx.LineFitsWindow && ctx.LinePauseMs > 0)
         {
-            _dwelt = true;
-            BeginPause(ctx.LinePauseMs * ctx.BlockLineCount, advances: true, AutoScrollState.Dwelling);
-            return false;
-        }
-
-        bool isBlockEnd = ctx.CurrentLine + 1 >= ctx.BlockLineCount;
-
-        // A line that fits the viewport scrolled little or nothing to reach its right
-        // extent, so it earned almost no reading time. Its reading beat is content-scaled,
-        // floored at the configured line pause so it never reads quicker than a line end.
-        double readingBeat = ctx.LineFitsWindow ? Math.Max(ctx.LinePauseMs, ctx.LineReadBudgetMs) : 0.0;
-
-        if (isBlockEnd)
-        {
-            // Settle at the END of every block before crossing, uniformly across the final
-            // line's width (short / medium / long), so a paragraph end always feels like
-            // one — a medium last line no longer flashes past while a short one (reading
-            // beat) and a long one (scroll travel) feel natural. The short line's reading
-            // beat folds in when it is the longer of the two.
-            double pause = Math.Max(readingBeat, ctx.BlockEndPauseMs);
-            if (pause > 0)
-            {
-                BeginPause(pause, advances: true, AutoScrollState.Paused);
-                return false;
-            }
-            return true;
-        }
-
-        // Mid-block line end. A fit-in-window line gets its reading beat; a wide line earned
-        // its time by scrolling and just takes the configured line pause.
-        double midPause = ctx.LineFitsWindow ? readingBeat : ctx.LinePauseMs;
-        if (midPause > 0)
-        {
-            _dwelt = false; // reset for the next line
-            BeginPause(midPause, advances: true, AutoScrollState.Paused);
+            BeginPause(ctx.LinePauseMs, advances: true);
             return false;
         }
         return true;
     }
 
-    private void BeginPause(double durationMs, bool advances, AutoScrollState state)
+    private void BeginPause(double durationMs, bool advances)
     {
         _pauseTimer = Stopwatch.StartNew();
         _pauseDurationMs = durationMs;
         _pauseAdvances = advances;
         NormalizedSpeed = 0;
-        CurrentState = state;
+        CurrentState = AutoScrollState.Paused;
     }
 }

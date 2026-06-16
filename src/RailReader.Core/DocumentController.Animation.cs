@@ -156,6 +156,12 @@ public sealed partial class DocumentController
     {
         if (doc.Rail.AutoScrolling)
         {
+            // Parked (semi-auto): indefinite wait for an explicit advance keypress. No camera
+            // motion and no forced animation — let the render loop idle until the desktop
+            // calls ResumeAutoScrollFromPark. Pan/zoom/inspect compose via the other paths.
+            if (doc.Rail.AutoScrollParked)
+                return;
+
             if (doc.Rail.NavigableCount > 0
                 && doc.Rail.CurrentBlock >= doc.Rail.NavigableCount - 2
                 && doc.CurrentPage + 1 < doc.PageCount)
@@ -183,8 +189,10 @@ public sealed partial class DocumentController
                     case LineAdvanceResult.PageChanged:
                         FirePageChanged(ref pageChanged, doc.CurrentPage);
                         FireReadingPositionChanged();
+                        // A page boundary is always a stop unit: restart auto-scroll on the
+                        // new page, then park on entry (after the skip-landing snap settles).
                         doc.Rail.StartAutoScroll(_autoScroll.AutoScrollSpeed);
-                        doc.Rail.PauseAutoScroll(GetBlockEntryPause(doc));
+                        doc.Rail.ParkAutoScroll();
                         break;
                     case LineAdvanceResult.PageChangedRailLost:
                         FirePageChanged(ref pageChanged, doc.CurrentPage);
@@ -197,15 +205,23 @@ public sealed partial class DocumentController
                             break;
                         }
                         doc.StartSnap(ww, wh);
-                        // Heavier role-based entry pause only when crossing into a NEW
-                        // chunk (new column/section); crossing block boundaries within a
-                        // column reads continuously (no stutter). But always reset the
-                        // per-block dwell on ANY block change so each fit-in-window block
-                        // still gets its settling dwell.
-                        bool enteredNewChunk = doc.Rail.CurrentChunk != prevChunk;
-                        bool enteredNewBlock = doc.Rail.CurrentBlock != prevBlock;
-                        doc.Rail.PauseAutoScroll(enteredNewChunk ? GetBlockEntryPause(doc) : 0,
-                            resetDwell: enteredNewBlock);
+                        // Park on ENTRY to a stop unit: a new chunk (column/section break), or a
+                        // newly-entered stop-role block (non-prose). One stop per unit — the
+                        // stop-role check is gated on a block change so the remaining lines of a
+                        // multi-line stop block flow after the reader resumes (and leaving a stop
+                        // block into prose does not park). Otherwise prose flows on: defer-resume
+                        // after the snap completes (PauseAutoScroll(0) waits for the snap, then
+                        // recaptures the scroll origin from the settled target) so auto-scroll
+                        // doesn't fight the line snap.
+                        bool shouldPark = ShouldParkOnLineAdvance(
+                            enteredNewChunk: doc.Rail.CurrentChunk != prevChunk,
+                            enteredNewBlock: doc.Rail.CurrentBlock != prevBlock,
+                            newRole: doc.Rail.CurrentNavigableBlock.Role,
+                            _config.AutoScrollStopClasses);
+                        if (shouldPark)
+                            doc.Rail.ParkAutoScroll();
+                        else
+                            doc.Rail.PauseAutoScroll(0);
                         FireReadingPositionChanged();
                         break;
                 }
@@ -215,16 +231,16 @@ public sealed partial class DocumentController
     }
 
     /// <summary>
-    /// Returns the auto-scroll pause duration for entering the current block,
-    /// based on its class (equation, header, or default).
+    /// Semi-auto park decision on a line advance (page changes always park separately). Parks
+    /// on entry to a stop unit: a new chunk (column/section break), or a newly-entered
+    /// stop-role block (a non-prose role in <see cref="CoreSettings.AutoScrollStopClasses"/>).
+    /// The stop-role check is gated on a block change so the remaining lines of a multi-line
+    /// stop block flow after the reader resumes (one stop per unit, on entry) and leaving a
+    /// stop block into prose does not park. <c>internal static</c> for direct testing.
     /// </summary>
-    private double GetBlockEntryPause(DocumentState doc) =>
-        doc.Rail.CurrentNavigableBlock.Role switch
-        {
-            BlockRole.DisplayMath or BlockRole.Algorithm => _config.AutoScrollEquationPauseMs,
-            BlockRole.Title or BlockRole.Heading => _config.AutoScrollHeaderPauseMs,
-            _ => _config.AutoScrollLinePauseMs,
-        };
+    internal static bool ShouldParkOnLineAdvance(
+        bool enteredNewChunk, bool enteredNewBlock, BlockRole newRole, IReadOnlySet<BlockRole> stopClasses)
+        => enteredNewChunk || (enteredNewBlock && stopClasses.Contains(newRole));
 
     /// <summary>
     /// Poll the analysis worker for completed results. Can also be called

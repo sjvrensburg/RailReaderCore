@@ -52,9 +52,6 @@ public sealed class AppConfig : IRecentFilesStore
     public double LineFocusBlurIntensity { get; set; } = 0.5;
     public double LinePadding { get; set; } = 0.2;
     public double AutoScrollLinePauseMs { get; set; } = 400.0;
-    public double AutoScrollBlockPauseMs { get; set; } = 600.0;
-    public double AutoScrollEquationPauseMs { get; set; } = 600.0;
-    public double AutoScrollHeaderPauseMs { get; set; } = 600.0;
     public bool AutoScrollTriggerEnabled { get; set; }
     public double AutoScrollTriggerDelayMs { get; set; } = 2000.0;
     public double JumpPercentage { get; set; } = 25.0;
@@ -75,6 +72,11 @@ public sealed class AppConfig : IRecentFilesStore
 
     [JsonConverter(typeof(BlockRoleSetConverter))]
     public HashSet<BlockRole> CenteringRoles { get; set; } = new(DefaultRoleSets.Centering);
+
+    /// <summary>Block roles that park semi-automatic auto-scroll on entry (it waits for an
+    /// explicit advance keypress). See <see cref="DefaultRoleSets.AutoScrollStop"/>.</summary>
+    [JsonConverter(typeof(BlockRoleSetConverter))]
+    public HashSet<BlockRole> AutoScrollStopClasses { get; set; } = new(DefaultRoleSets.AutoScrollStop);
 
     // VLM (Vision Language Model) settings for Copy as LaTeX / Markdown / Description
     public string? VlmEndpoint { get; set; }
@@ -100,9 +102,6 @@ public sealed class AppConfig : IRecentFilesStore
         RenderDpi = RenderDpiSettings.ForPreset(RenderQuality, CustomMaxRenderDpi, CustomRenderTierStep),
         LinePadding = LinePadding,
         AutoScrollLinePauseMs = AutoScrollLinePauseMs,
-        AutoScrollBlockPauseMs = AutoScrollBlockPauseMs,
-        AutoScrollEquationPauseMs = AutoScrollEquationPauseMs,
-        AutoScrollHeaderPauseMs = AutoScrollHeaderPauseMs,
         AutoScrollTriggerEnabled = AutoScrollTriggerEnabled,
         AutoScrollTriggerDelayMs = AutoScrollTriggerDelayMs,
         JumpPercentage = JumpPercentage,
@@ -119,6 +118,7 @@ public sealed class AppConfig : IRecentFilesStore
         MarginCropping = MarginCropping,
         NavigableRoles = NavigableRoles,
         CenteringRoles = CenteringRoles,
+        AutoScrollStopClasses = AutoScrollStopClasses,
         VlmEndpoint = VlmEndpoint,
         VlmModel = VlmModel,
         VlmApiKey = VlmApiKey,

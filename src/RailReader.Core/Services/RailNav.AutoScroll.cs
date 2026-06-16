@@ -21,10 +21,21 @@ public sealed partial class RailNav
     /// <summary>Inject a settling pause into auto-scroll (e.g. after advancing to a new block).
     /// The pause is deferred until any snap animation completes, so the full duration
     /// is perceived as stillness after the camera reaches its target.</summary>
-    public void PauseAutoScroll(double durationMs, bool resetDwell = false)
+    public void PauseAutoScroll(double durationMs)
     {
-        _autoScrollState.RequestDeferredPause(durationMs, resetDwell);
+        _autoScrollState.RequestDeferredPause(durationMs);
     }
+
+    /// <summary>Park auto-scroll on entry to a stop unit (non-prose block, new chunk, new
+    /// page). The park is deferred until any snap animation completes, then holds indefinitely
+    /// until <see cref="ResumeAutoScrollFromPark"/> — the reader's explicit advance keypress.</summary>
+    public void ParkAutoScroll() => _autoScrollState.RequestDeferredPark();
+
+    /// <summary>Resume flow from an indefinite park (the reader pressed the advance key).</summary>
+    public void ResumeAutoScrollFromPark() => _autoScrollState.ResumeFromPark();
+
+    /// <summary>True while semi-auto scroll is parked, waiting for an explicit advance keypress.</summary>
+    public bool AutoScrollParked => _autoScrollState.Parked;
 
     /// <summary>Set/clear the boost flag (user holding D/Right during auto-scroll).</summary>
     public void SetAutoScrollBoost(bool boost) => _autoScrollState.SetBoost(boost);
@@ -51,23 +62,18 @@ public sealed partial class RailNav
         // matching the manual edge-hold trigger (IsAtHardEdge). The dwell decision below
         // still uses the raw BLOCK width (whether the block needs horizontal scrolling).
         var (_, lineRight, lineWidthPx) = GetLineBounds(zoom);
-        var block = CurrentNavigableBlock;
 
         var ctx = new AutoScrollContext
         {
             SnapInProgress = _snap is not null,
             LineRight = lineRight,
             // "Fits the viewport" is judged in screen pixels (zoom-dependent) — that is what
-            // determines whether the line scrolls at all. The reading beat itself is
-            // page-space (zoom-independent), so the same text reads for the same time at any
-            // magnification, while the set of beat-eligible (fit-in-window) lines SHRINKS as
-            // zoom rises (W/zoom falls) — at high zoom even moderate lines scroll.
+            // determines whether the line scrolls at all. The flat per-line beat is applied
+            // only to fit-in-window lines; the set of beat-eligible lines SHRINKS as zoom
+            // rises (W/zoom falls), so at high zoom even moderate lines scroll (and earn
+            // their reading time by scrolling rather than the beat).
             LineFitsWindow = lineWidthPx <= windowWidth,
-            LineReadBudgetMs = LineReadBudgetMs(_autoScrollState.BaseSpeed),
-            BlockEndPauseMs = _config.AutoScrollBlockPauseMs,
-            RawBlockWidthPx = block.BBox.W * zoom,
             CurrentLine = CurrentLine,
-            BlockLineCount = block.Lines.Count,
             LinePauseMs = _config.AutoScrollLinePauseMs,
             WindowWidth = windowWidth,
             Zoom = zoom,

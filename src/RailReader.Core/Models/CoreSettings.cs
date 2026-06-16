@@ -24,13 +24,19 @@ public sealed record CoreSettings
     public double ScrollRampTime { get; init; } = 1.5;
     public double DefaultAutoScrollSpeed => (ScrollSpeedStart + ScrollSpeedMax) / 2.0;
 
-    // Auto-scroll
+    // Auto-scroll (semi-automatic): flow through prose on AutoScrollLinePauseMs, park on
+    // entry to a stop-role block / new chunk / new page until an explicit advance keypress.
     public double AutoScrollLinePauseMs { get; init; } = 400.0;
-    public double AutoScrollBlockPauseMs { get; init; } = 600.0;
-    public double AutoScrollEquationPauseMs { get; init; } = 600.0;
-    public double AutoScrollHeaderPauseMs { get; init; } = 600.0;
     public bool AutoScrollTriggerEnabled { get; init; }
     public double AutoScrollTriggerDelayMs { get; init; } = 2000.0;
+
+    /// <summary>
+    /// Block roles that, when entered by a line advance, park semi-auto scroll (it waits for
+    /// an explicit advance keypress). Prose roles not in this set flow through, even across
+    /// paragraph/block breaks within a column. Config-derived so the stop set is tunable
+    /// without a code change.
+    /// </summary>
+    public IReadOnlySet<BlockRole> AutoScrollStopClasses { get; init; } = Services.DefaultRoleSets.AutoScrollStop;
 
     // Analysis
     public int AnalysisLookaheadPages { get; init; } = 2;
