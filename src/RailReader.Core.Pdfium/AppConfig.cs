@@ -18,7 +18,7 @@ public sealed class AppConfig : IRecentFilesStore
     internal const int CurrentSchemaVersion = 2;
 
     public double RailZoomThreshold { get; set; } = 3.0;
-    public double SnapDurationMs { get; set; } = 300.0;
+    public double SnapDurationMs { get; set; } = 450.0;
     public double ScrollSpeedStart { get; set; } = 14.0;
     public double ScrollSpeedMax { get; set; } = 42.0;
     public double DefaultAutoScrollSpeed => (ScrollSpeedStart + ScrollSpeedMax) / 2.0;

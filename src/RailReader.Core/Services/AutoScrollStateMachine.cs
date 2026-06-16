@@ -24,11 +24,10 @@ internal readonly struct AutoScrollContext
     public required bool SnapInProgress { get; init; }
     /// <summary>Right edge of the current line (with margin) — the auto-scroll line-end.</summary>
     public required double LineRight { get; init; }
-    /// <summary>True when the current line fits within the viewport, i.e. it reaches its
-    /// right extent with little or no scrolling and so earns almost no reading time.</summary>
-    public required bool LineFitsWindow { get; init; }
-    /// <summary>Flat per-line beat (ms) held after a fit-in-window line reaches its right
-    /// extent — the sole intra-flow cadence knob. Wide lines earn their time by scrolling.</summary>
+    /// <summary>Flat per-line beat (ms) held after every line reaches its right extent, before
+    /// advancing — the sole intra-flow cadence knob. Applied to all lines (wide lines included)
+    /// so each carriage-return is preceded by a rest rather than flipping straight to the next
+    /// line, which read as abrupt. Set to 0 to advance immediately.</summary>
     public required double LinePauseMs { get; init; }
     public required double WindowWidth { get; init; }
     public required double Zoom { get; init; }
@@ -43,8 +42,8 @@ internal readonly struct AutoScrollContext
 ///
 /// State transitions:
 ///   Inactive ──Start()──────────────────────────→ Scrolling
-///   Scrolling ──reached fit-in-window line end──→ Paused (brief per-line beat), then advances
-///   Scrolling ──reached wide line end───────────→ returns reachedEnd immediately
+///   Scrolling ──reached line end (LinePauseMs>0)→ Paused (brief per-line beat), then advances
+///   Scrolling ──reached line end (LinePauseMs=0)→ returns reachedEnd immediately
 ///   Any ──RequestDeferredPause()────────────────→ WaitingForSnap (resume flow after snap)
 ///   Any ──RequestDeferredPark()─────────────────→ WaitingForSnap (park after snap)
 ///   WaitingForSnap ──snap completes, pause──────→ Paused (non-advancing)
@@ -273,12 +272,13 @@ internal sealed class AutoScrollStateMachine
         if (visibleRight < ctx.LineRight)
             return false; // still scrolling
 
-        // Reached the line's right edge. Intra-flow pacing is the two honest cases:
-        //   - a wide line earned its reading time by scrolling across → advance now (beat 0);
-        //   - a fit-in-window line reached its end with little/no scroll → hold a flat beat.
-        // The "is this a stop unit?" decision belongs to the orchestrator (it needs role /
-        // chunk / page knowledge the state machine doesn't have); this just reports reachedEnd.
-        if (ctx.LineFitsWindow && ctx.LinePauseMs > 0)
+        // Reached the line's right edge. Hold a flat per-line beat before advancing — on EVERY
+        // line, wide ones included. A wide line reaching its end then snapping straight back to
+        // the next line's start (a full-width carriage-return) with no rest read as abrupt; the
+        // beat puts a brief pause between "done reading this line" and the carriage-return. The
+        // "is this a stop unit?" decision belongs to the orchestrator (it needs role / chunk /
+        // page knowledge the state machine doesn't have); this just reports reachedEnd.
+        if (ctx.LinePauseMs > 0)
         {
             BeginPause(ctx.LinePauseMs, advances: true);
             return false;

@@ -16,14 +16,12 @@ public class AutoScrollStateMachineTests
         double linePauseMs = 200,
         double windowWidth = 600,
         double zoom = 1.0,
-        double maxSpeed = 5.0,
-        bool lineFitsWindow = false)
+        double maxSpeed = 5.0)
     {
         return new AutoScrollContext
         {
             SnapInProgress = snapInProgress,
             LineRight = lineRight,
-            LineFitsWindow = lineFitsWindow,
             LinePauseMs = linePauseMs,
             WindowWidth = windowWidth,
             Zoom = zoom,
@@ -93,31 +91,18 @@ public class AutoScrollStateMachineTests
         Assert.True(cameraX < 0, "Camera should move left (negative direction)");
     }
 
-    // ===== Intra-flow per-line beat: the two honest cases =====
+    // ===== Intra-flow per-line beat (held on EVERY line end, width-independent) =====
 
     [Fact]
-    public void TickScrolling_WideLineReachesEnd_AdvancesImmediately()
+    public void TickScrolling_ReachesLineEnd_HoldsFlatBeat()
     {
-        // A wide line earned its reading time by scrolling across, so on reaching its right
-        // extent it advances at once (beat 0) — no pause.
+        // On reaching the line's right extent, a configured beat is held (brief Paused) before
+        // advancing — on every line, regardless of width, so each carriage-return is preceded
+        // by a rest rather than flipping straight to the next line.
         var sm = new AutoScrollStateMachine(new NoOpClamp());
         sm.Start(1.0);
         double cameraX = 0;
-        var ctx = MakeContext(lineRight: 100, lineFitsWindow: false, linePauseMs: 200);
-
-        bool result = sm.Tick(ref cameraX, 0.016, in ctx);
-        Assert.True(result); // reachedEnd, advance now
-    }
-
-    [Fact]
-    public void TickScrolling_FitInWindowLineReachesEnd_HoldsFlatBeat()
-    {
-        // A fit-in-window line reached its end with little/no scroll, so it holds a flat
-        // LinePauseMs beat (brief Paused) before advancing.
-        var sm = new AutoScrollStateMachine(new NoOpClamp());
-        sm.Start(1.0);
-        double cameraX = 0;
-        var ctx = MakeContext(lineRight: 100, lineFitsWindow: true, linePauseMs: 200);
+        var ctx = MakeContext(lineRight: 100, linePauseMs: 200);
 
         bool result = sm.Tick(ref cameraX, 0.016, in ctx);
         Assert.False(result); // holding the beat
@@ -126,13 +111,13 @@ public class AutoScrollStateMachineTests
     }
 
     [Fact]
-    public void TickScrolling_FitInWindowLine_NoPauseConfigured_AdvancesImmediately()
+    public void TickScrolling_ReachesLineEnd_NoPauseConfigured_AdvancesImmediately()
     {
-        // With LinePauseMs = 0 even a fit-in-window line advances at once.
+        // With LinePauseMs = 0 the line advances at once on reaching its end (no beat).
         var sm = new AutoScrollStateMachine(new NoOpClamp());
         sm.Start(1.0);
         double cameraX = 0;
-        var ctx = MakeContext(lineRight: 100, lineFitsWindow: true, linePauseMs: 0);
+        var ctx = MakeContext(lineRight: 100, linePauseMs: 0);
 
         Assert.True(sm.Tick(ref cameraX, 0.016, in ctx));
     }
@@ -144,7 +129,7 @@ public class AutoScrollStateMachineTests
         sm.Start(1.0);
         double cameraX = 0;
         // Tiny beat so the test stays fast.
-        var ctx = MakeContext(lineRight: 100, lineFitsWindow: true, linePauseMs: 1);
+        var ctx = MakeContext(lineRight: 100, linePauseMs: 1);
 
         Assert.False(sm.Tick(ref cameraX, 0.016, in ctx)); // enters beat pause
         Assert.Equal(AutoScrollState.Paused, sm.CurrentState);

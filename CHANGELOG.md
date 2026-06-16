@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.32.1 — Semi-auto: per-line reading beat on every line
+
+Follow-up to 0.32.0. The intra-flow per-line beat (`AutoScrollLinePauseMs`) is now
+held at **every** line end before advancing, wide lines included — not only on
+fit-in-window lines. Previously a wide line (common at high magnification) reached
+its right extent and snapped straight back to the next line's start with no rest, a
+full-width carriage-return that read as abrupt and which `AutoScrollLinePauseMs`
+could not soften (the beat was gated on the line fitting the viewport). Now the beat
+gives a brief rest between "done reading this line" and the carriage-return on all
+lines. Set `AutoScrollLinePauseMs = 0` to advance immediately as before. Removed the
+now-unused `AutoScrollContext.LineFitsWindow`. No public API change.
+
+Also raised the default `SnapDurationMs` 300 → 450 ms: the line-to-line (and
+rail-mode zoom) snap at 300 ms arrived too fast, so the pixel-snapping settle at the
+tail read as an abrupt "pop". 450 ms lands more gently. Affects fresh configs only;
+existing persisted values are untouched and the value stays user-tunable.
+
 ## 0.32.0 — Semi-automatic auto-scroll (park at non-prose units)
 
 Replaces rail-mode **fully-automatic** auto-scroll (the timer-driven "dwell" mode)

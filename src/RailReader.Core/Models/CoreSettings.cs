@@ -14,7 +14,7 @@ public sealed record CoreSettings
 {
     // Rail / zoom
     public double RailZoomThreshold { get; init; } = 3.0;
-    public double SnapDurationMs { get; init; } = 300.0;
+    public double SnapDurationMs { get; init; } = 450.0;
     public double LinePadding { get; init; } = 0.2;
     public double JumpPercentage { get; init; } = 25.0;
 
