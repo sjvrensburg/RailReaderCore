@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.33.0 — Parked auto-scroll is no longer reported as "animating"
+
+`DocumentController.IsAnimating` now treats a **parked** semi-auto-scroll as settled.
+Previously it OR-ed in `AutoScrollActive` unconditionally, so a park — an indefinite,
+motionless wait for an explicit advance keypress — kept `IsAnimating == true` for the
+entire park even though `Tick` correctly returns `StillAnimating == false` and the
+code intends the render loop to idle (`TickAutoScroll` returns early when parked). A
+consumer that drives its render loop (or derives a D-Bus "Settled" signal) from the
+`IsAnimating` property would therefore never quiesce while parked — a stuck-busy state
+that matches the intermittent 100 % CPU X11 dispatcher spin investigated in
+[#62](https://github.com/sjvrensburg/RailReaderCore/issues/62) (the spin persists
+"after the user stops interacting", and a park *is* a stop).
+
+`IsAnimating` now excludes a parked auto-scroll (`AutoScrollActive && !AutoScrollParked`),
+aligning the property with the existing `StillAnimating` tick result. Resuming flow
+(`ResumeAutoScrollFromPark`) re-engages it. Behaviour-only; no public API change.
+
+Note: this is the surgical, platform-agnostic half of the #62 mitigation. Whether it
+resolves the desktop spin depends on whether the consumer's loop keys off the
+`IsAnimating` property versus `TickResult.StillAnimating`; the AT-SPI callback-cadence
+hypothesis in #62 was investigated and **ruled out** — `ReadingPositionChanged` /
+`PageChanged` fire only on real line/block/page transitions, never at frame cadence.
+
 ## 0.32.1 — Semi-auto: per-line reading beat on every line
 
 Follow-up to 0.32.0. The intra-flow per-line beat (`AutoScrollLinePauseMs`) is now
