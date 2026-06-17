@@ -193,6 +193,36 @@ public class DocumentControllerTests : IDisposable
     }
 
     [Fact]
+    public void IsAnimating_FalseWhenAutoScrollParked()
+    {
+        var state = CreateAndAddDocument();
+        SetupRailMode(state);
+
+        _controller.ToggleAutoScroll();
+        Assert.True(_controller.AutoScrollActive);
+        // Actively scrolling counts as animating.
+        Assert.True(_controller.IsAnimating);
+
+        // Park, then tick until the deferred park settles into the indefinite hold
+        // (the park engages once any pending snap completes).
+        state.Rail.ParkAutoScroll();
+        for (int i = 0; i < 60 && !_controller.AutoScrollParked; i++)
+            _controller.Tick(0.05);
+        Assert.True(_controller.AutoScrollParked);
+
+        // Regression (issue #62): a parked auto-scroll is an idle wait, not motion.
+        // IsAnimating must go false so the consumer's render loop can quiesce — it must
+        // not stay pinned true via AutoScrollActive while parked.
+        Assert.False(_controller.IsAnimating);
+
+        // Resuming flow re-engages animation.
+        _controller.ResumeAutoScrollFromPark();
+        Assert.True(_controller.AutoScrollActive);
+        Assert.False(_controller.AutoScrollParked);
+        Assert.True(_controller.IsAnimating);
+    }
+
+    [Fact]
     public void ToggleJumpModeExclusive_StopsAutoScroll()
     {
         var state = _controller.CreateDocument(_pdfPath);

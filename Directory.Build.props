@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
-    <VersionPrefix>0.32.1</VersionPrefix>
+    <VersionPrefix>0.33.0</VersionPrefix>
     <Authors>sjvrensburg</Authors>
     <Copyright>Copyright © 2024-2026 Stefan van Rensburg</Copyright>
     <PackageProjectUrl>https://github.com/sjvrensburg/RailReaderCore</PackageProjectUrl>

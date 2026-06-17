@@ -569,11 +569,15 @@ public sealed partial class DocumentController : IDisposable
     /// True while any camera animation (zoom, rail snap) or auto-scroll is running — the
     /// D-Bus control layer derives its "Settled" signal from the true→false transition
     /// of this across <see cref="Tick"/>.
+    /// A <em>parked</em> semi-auto-scroll is excluded: a park is an indefinite idle wait
+    /// for an explicit advance keypress (no camera motion — <see cref="Tick"/> returns
+    /// early with <c>StillAnimating == false</c>), so it must let the render loop quiesce
+    /// rather than pin it true forever (issue #62).
     /// </summary>
     public bool IsAnimating =>
         _zoom.IsAnimating
         || (ActiveDocument is { } d && d.Rail.SnapProgress < 1.0)
-        || AutoScrollActive;
+        || (AutoScrollActive && !(ActiveDocument?.Rail.AutoScrollParked ?? false));
 
     // --- Auto-scroll (delegated to AutoScrollController) ---
 
