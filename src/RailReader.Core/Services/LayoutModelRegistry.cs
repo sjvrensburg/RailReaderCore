@@ -27,7 +27,8 @@ public static class LayoutModelRegistry
         RasterInputSize: 640,
         ProvidesReadingOrder: false,
         Quantized: true,
-        ApproxSizeMb: 69);
+        ApproxSizeMb: 69,
+        Sha256: "087ed4fa1ae3ee03003d8f02f8e5c4d1497cb45e4122e62dfa531acbbe841364");
 
     /// <summary>Docling Heron FP32 (RT-DETRv2, 17-class).</summary>
     public static LayoutModelDescriptor Heron { get; } = new(
@@ -46,10 +47,13 @@ public static class LayoutModelRegistry
         DisplayName: "PP-DocLayoutV3 — FP32",
         Architecture: LayoutModelArchitecture.PPDocLayoutV3,
         FileName: "PP-DocLayoutV3.onnx",
-        DownloadUrl: "https://huggingface.co/alex-dinh/PP-DocLayoutV3-ONNX/resolve/main/PP-DocLayoutV3.onnx",
+        // Mirrored to our own HF account (was a third-party repo) for a stable,
+        // checksum-verified source. The Sha256 is the canonical 130,502,049-byte file.
+        DownloadUrl: "https://huggingface.co/stefanj0/PP-DocLayoutV3-ONNX/resolve/main/PP-DocLayoutV3.onnx",
         RasterInputSize: 800,
         ProvidesReadingOrder: true,
-        ApproxSizeMb: 125);
+        ApproxSizeMb: 125,
+        Sha256: "d24809294b2f9f1a9a2767043a64df2714b66e5be056887be2233d1117d784f6");
 
     /// <summary>PP-DocLayout-S (PicoDet/GFL, ~4.7 MB; intended for web/mobile).</summary>
     public static LayoutModelDescriptor PPDocLayoutS { get; } = new(
@@ -60,7 +64,8 @@ public static class LayoutModelRegistry
         DownloadUrl: "https://huggingface.co/stefanj0/PP-DocLayout-S-ONNX/resolve/main/pp_doclayout_s.onnx",
         RasterInputSize: 1920,
         ProvidesReadingOrder: false,
-        ApproxSizeMb: 5);
+        ApproxSizeMb: 5,
+        Sha256: "33688dbee1c23e34b81777e97cb428eb40f24b242c02b5f623484959e830aec8");
 
     /// <summary>The recommended model for new consumers (backbone-INT8 Heron).</summary>
     public static LayoutModelDescriptor Default => HeronInt8;

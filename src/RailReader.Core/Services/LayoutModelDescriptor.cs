@@ -27,6 +27,11 @@ namespace RailReader.Core.Services;
 /// <param name="ProvidesReadingOrder">True if the model emits per-detection reading order.</param>
 /// <param name="Quantized">True if this is an INT8/quantized export.</param>
 /// <param name="ApproxSizeMb">Approximate download size in MB, for UI/progress.</param>
+/// <param name="Sha256">
+/// Lower-case hex SHA-256 of the canonical file at <see cref="DownloadUrl"/>, for
+/// post-download integrity verification. Null when no checksum is published for
+/// the model (the consumer should fall back to a load-time sanity check).
+/// </param>
 public sealed record LayoutModelDescriptor(
     string Id,
     string DisplayName,
@@ -36,4 +41,5 @@ public sealed record LayoutModelDescriptor(
     int RasterInputSize,
     bool ProvidesReadingOrder,
     bool Quantized = false,
-    int ApproxSizeMb = 0);
+    int ApproxSizeMb = 0,
+    string? Sha256 = null);
