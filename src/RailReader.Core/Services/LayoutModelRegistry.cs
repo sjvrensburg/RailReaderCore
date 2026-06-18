@@ -64,7 +64,8 @@ public static class LayoutModelRegistry
         DownloadUrl: "https://huggingface.co/stefanj0/PP-DocLayout-S-ONNX/resolve/main/pp_doclayout_s.onnx",
         RasterInputSize: 1920,
         ProvidesReadingOrder: false,
-        ApproxSizeMb: 5);
+        ApproxSizeMb: 5,
+        Sha256: "33688dbee1c23e34b81777e97cb428eb40f24b242c02b5f623484959e830aec8");
 
     /// <summary>The recommended model for new consumers (backbone-INT8 Heron).</summary>
     public static LayoutModelDescriptor Default => HeronInt8;
