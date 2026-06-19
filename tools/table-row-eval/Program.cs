@@ -41,6 +41,16 @@ static float YIoU((float lo, float hi) a, (float lo, float hi) b)
     return union <= 0 ? 0 : inter / union;
 }
 
+// Fraction of a GT cell's horizontal ink span [gt] covered by a detected cell [det].
+// Used for cell matching: detected cells and GT word-spans are both ink extents, so a
+// fraction > 0.5 means the detected cell covers the majority of that column's value.
+static float XOverlapFrac((float lo, float hi) det, (float lo, float hi) gt)
+{
+    float inter = MathF.Min(det.hi, gt.hi) - MathF.Max(det.lo, gt.lo);
+    float gtLen = gt.hi - gt.lo;
+    return (inter <= 0 || gtLen <= 0) ? 0 : inter / gtLen;
+}
+
 int nExamples = 0, wordEmptyExamples = 0;
 long tp = 0, fp = 0, fn = 0;
 int exactCount = 0, overSeg = 0, underSeg = 0;
@@ -51,6 +61,13 @@ int wordEmptyRowsTotal = 0;
 // are grid cells ~1.75x taller than the glyphs, so Y-IoU understates a correct
 // one-line-per-row result). A line is "in" a row when its centre falls in the band.
 long centroidHits = 0, detectedTotal = 0, rowHit = 0, rowExactlyOne = 0, gtTotal = 0;
+
+// --- Cell-level (column) metrics — cellNavigation. Scored over word-bearing GT
+// cells: COVERAGE = column reachable, MERGED = fused with a neighbour (the gap-
+// threshold under-split risk), SPLIT = broken across detected cells. ---
+bool haveCells = false;
+long cellGt = 0, cellCovered = 0, cellClean = 0, cellMerged = 0, cellSplit = 0;
+long cellDet = 0, cellDetMatched = 0, cellDetInRows = 0;
 
 foreach (var exWrap in examples.EnumerateArray())
 {
@@ -93,7 +110,10 @@ foreach (var exWrap in examples.EnumerateArray())
     if (gtRows.Count == 0 || charBoxes.Count == 0) { wordEmptyExamples++; continue; }
     nExamples++;
 
-    var lines = LineDetector.DetectLines(block, charBoxes, [], 0, 0, 1, 1);
+    // Cells are a pure overlay: row geometry is identical with cellNavigation on or
+    // off, so the row metrics below are unchanged — one detection pass scores both.
+    var lines = LineDetector.DetectLines(block, charBoxes, [], 0, 0, 1, 1,
+        tableRowReading: true, cellNavigation: true);
     var det = lines.Select(l => (l.Y - l.Height / 2f, l.Y + l.Height / 2f)).ToList();
     var centers = lines.Select(l => l.Y).ToList();
 
@@ -151,6 +171,68 @@ foreach (var exWrap in examples.EnumerateArray())
     if (det.Count == gtRows.Count) exactCount++;
     else if (det.Count > gtRows.Count) overSeg++;
     else underSeg++;
+
+    // --- Cell scoring ---
+    if (!ex.TryGetProperty("cells", out var cellsEl)) continue;
+    haveCells = true;
+
+    // All GT row bands (full set, for mapping a detected line centre to its row).
+    var allBands = ex.GetProperty("rows").EnumerateArray()
+        .Select(Bbox).Select(b => (lo: b[1], hi: b[3])).ToList();
+
+    // Word-bearing GT cells grouped by row index (value = ink span [left, right]).
+    var gtCellsByRow = new Dictionary<int, List<(float lo, float hi)>>();
+    foreach (var c in cellsEl.EnumerateArray())
+    {
+        int ri = c.GetProperty("row").GetInt32();
+        var ws = c.GetProperty("wspan");
+        if (!gtCellsByRow.TryGetValue(ri, out var lst)) gtCellsByRow[ri] = lst = [];
+        lst.Add(((float)ws[0].GetDouble(), (float)ws[1].GetDouble()));
+    }
+
+    // Pool detected cells by the GT row their line centre falls in (half-open band).
+    var detCellsByRow = new Dictionary<int, List<(float lo, float hi)>>();
+    foreach (var l in lines)
+    {
+        if (l.Cells is not { Count: > 0 } cs) continue;
+        cellDet += cs.Count;
+        int ri = -1;
+        for (int g = 0; g < allBands.Count; g++)
+            if (l.Y >= allBands[g].lo && l.Y < allBands[g].hi) { ri = g; break; }
+        if (ri < 0) continue; // line centre outside every GT row → cells unmapped
+        if (!detCellsByRow.TryGetValue(ri, out var pool)) detCellsByRow[ri] = pool = [];
+        foreach (var cell in cs) pool.Add((cell.X, cell.X + cell.Width));
+    }
+
+    foreach (var (ri, gtCells) in gtCellsByRow)
+    {
+        List<(float lo, float hi)> detCells = detCellsByRow.TryGetValue(ri, out var dc) ? dc : [];
+        cellDetInRows += detCells.Count;
+
+        // How many GT cells does each detected cell straddle (>50% of GT ink)?
+        // straddle >= 2 ⇒ the detected cell fuses adjacent columns (under-seg).
+        var straddle = new int[detCells.Count];
+        for (int di = 0; di < detCells.Count; di++)
+            foreach (var gt in gtCells)
+                if (XOverlapFrac(detCells[di], gt) > 0.5f) straddle[di]++;
+        for (int di = 0; di < detCells.Count; di++)
+            if (straddle[di] >= 1) cellDetMatched++;
+
+        foreach (var gt in gtCells)
+        {
+            cellGt++;
+            int nCover = 0, bestDi = -1; float bestOv = 0;
+            for (int di = 0; di < detCells.Count; di++)
+            {
+                float ov = XOverlapFrac(detCells[di], gt);
+                if (ov > 0.5f) { nCover++; if (ov > bestOv) { bestOv = ov; bestDi = di; } }
+            }
+            if (nCover >= 1) cellCovered++;
+            if (nCover >= 2) cellSplit++;
+            if (nCover == 1 && straddle[bestDi] == 1) cellClean++;
+            else if (nCover >= 1 && straddle[bestDi] >= 2) cellMerged++;
+        }
+    }
 }
 
 double precision = tp + fp > 0 ? (double)tp / (tp + fp) : 0;
@@ -175,4 +257,17 @@ Console.WriteLine($"  Y-IoU (strict band overlap — understated by GT row-box p
 Console.WriteLine($"    precision / recall : {precision:0.000} / {recall:0.000},  F1 {f1:0.000}");
 Console.WriteLine($"    matched mean Y-IoU : {(matchedPairs > 0 ? matchedIoUSum / matchedPairs : 0):0.000}");
 Console.WriteLine($"    coverage-recall    : {(nExamples > 0 ? coverageSum / nExamples : 0):0.000}");
+
+if (haveCells)
+{
+    Console.WriteLine();
+    Console.WriteLine($"  CELL (column) detection — cellNavigation, over {cellGt} word-bearing GT cells:");
+    Console.WriteLine($"    cell coverage      : {(cellGt > 0 ? (double)cellCovered / cellGt : 0):0.000}   <- fraction of GT cells reachable (a detected cell covers >50% of its ink)");
+    Console.WriteLine($"    clean 1:1          : {(cellGt > 0 ? (double)cellClean / cellGt : 0):0.000}   <- GT cell <-> exactly one detected cell");
+    Console.WriteLine($"    merged (under-seg) : {(cellGt > 0 ? (double)cellMerged / cellGt : 0):0.000}   <- GT cell fused with a neighbour into one detected cell");
+    Console.WriteLine($"    split  (over-seg)  : {(cellGt > 0 ? (double)cellSplit / cellGt : 0):0.000}   <- GT cell broken across >1 detected cell");
+    Console.WriteLine($"    cell precision     : {(cellDet > 0 ? (double)cellDetMatched / cellDet : 0):0.000}   <- detected cells overlapping some GT cell");
+    Console.WriteLine($"    cells/row ratio    : {(cellGt > 0 ? (double)cellDetInRows / cellGt : 0):0.000}   <- 1.0 = one detected cell per GT cell");
+    Console.WriteLine($"    detected cells     : {cellDet} ({cellDetInRows} mapped into GT rows)");
+}
 return 0;

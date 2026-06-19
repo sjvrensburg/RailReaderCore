@@ -65,6 +65,13 @@ reading alone already lets the reader step rows; cell stepping is the opt-in nex
 Cell detection requires a text layer (the pixel-projection fallback produces no cells) and
 runs only for `Table` blocks.
 
+Validated against SynFinTabs' cell-level ground truth (the `tools/table-row-eval` harness
+now scores cells as well as rows): on 300 real tables / 15,642 word-bearing cells, **cell
+coverage is 1.000** (every column value reachable), **97.4 % are cleanly 1:1**, and **cell
+precision is 0.996** (no spurious cells). The residual is **2.3 % of cells merged** with a
+neighbour — adjacent columns whose whitespace gap is narrower than the ~1× glyph-height
+split threshold — and 0.3 % over-split.
+
 Additive only — no breaking signatures. New: `CoreSettings.CellNavigation`,
 `AnalysisRequest.CellNavigation`, `NavResult.NotApplicable`, the `CellInfo` model,
 `LineInfo.Cells` (optional 5th positional, defaulted), trailing optional `cellNavigation`

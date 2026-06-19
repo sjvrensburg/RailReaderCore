@@ -36,14 +36,26 @@ def fetch_page(split, offset, length):
 
 def compact(example):
     words = []
-    for row in example["rows"]:
+    cells = []
+    for ri, row in enumerate(example["rows"]):
         for cell in row["cells"]:
-            for w in cell["words"]:
-                words.append(w["bbox"])
+            cw = [w["bbox"] for w in cell["words"]]
+            words.extend(cw)
+            # Only word-bearing cells are navigable targets. Record the cell's
+            # word-ink span [minLeft, maxRight] (what the detector actually sees,
+            # vs the padded grid bbox) plus the grid bbox, tagged with its row.
+            if cw:
+                cells.append({
+                    "row": ri,
+                    "bbox": cell["bbox"],
+                    "wspan": [min(b[0] for b in cw), max(b[2] for b in cw)],
+                    "nwords": len(cw),
+                })
     return {
         "id": example["id"],
         "table_bbox": example["bbox"],
         "rows": [row["bbox"] for row in example["rows"]],
+        "cells": cells,
         "words": words,
     }
 
