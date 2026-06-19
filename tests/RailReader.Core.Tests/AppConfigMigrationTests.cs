@@ -46,7 +46,10 @@ public class AppConfigMigrationTests
         Assert.Contains(BlockRole.Text, config.NavigableRoles);
         Assert.Contains(BlockRole.DisplayMath, config.NavigableRoles);
         Assert.Contains(BlockRole.Title, config.NavigableRoles);
-        Assert.Equal(3, config.NavigableRoles.Count);
+        // The cumulative v0 → v3 migration also injects Table (it became navigable
+        // by default in v3), so the translated trio plus Table = 4 roles.
+        Assert.Contains(BlockRole.Table, config.NavigableRoles);
+        Assert.Equal(4, config.NavigableRoles.Count);
 
         Assert.Contains(BlockRole.Text, config.CenteringRoles);
         Assert.Contains(BlockRole.DisplayMath, config.CenteringRoles);
@@ -92,6 +95,38 @@ public class AppConfigMigrationTests
 
         Assert.Contains(BlockRole.Text, config.NavigableRoles);
         Assert.Contains(BlockRole.DisplayMath, config.NavigableRoles);
-        Assert.Equal(2, config.NavigableRoles.Count);
+        Assert.DoesNotContain(BlockRole.Unknown, config.NavigableRoles);
+        // "nonsense_class_name" dropped; the v3 migration adds Table → {Text, DisplayMath, Table}.
+        Assert.Contains(BlockRole.Table, config.NavigableRoles);
+        Assert.Equal(3, config.NavigableRoles.Count);
+    }
+
+    [Fact]
+    public void Migrate_V2Config_AddsTableToNavigableRoles()
+    {
+        // v2 configs were persisted before tables became navigable. The v2→v3
+        // migration injects Table once so existing users pick up table-row reading.
+        var config = new AppConfig { SchemaVersion = 2 };
+        config.NavigableRoles.Remove(BlockRole.Table); // a pre-v3 persisted set lacked it
+
+        bool migrated = AppConfig.Migrate(config, "{}");
+
+        Assert.True(migrated);
+        Assert.Equal(AppConfig.CurrentSchemaVersion, config.SchemaVersion);
+        Assert.Contains(BlockRole.Table, config.NavigableRoles);
+    }
+
+    [Fact]
+    public void Migrate_AfterV3Upgrade_UserRemovalOfTableSticks()
+    {
+        // The "users can still override it" guarantee: once a config is at v3, the
+        // injection does not re-run, so a user who removes Table keeps it removed.
+        var config = new AppConfig { SchemaVersion = AppConfig.CurrentSchemaVersion };
+        config.NavigableRoles.Remove(BlockRole.Table);
+
+        bool migrated = AppConfig.Migrate(config, "{}");
+
+        Assert.False(migrated);
+        Assert.DoesNotContain(BlockRole.Table, config.NavigableRoles);
     }
 }

@@ -68,7 +68,9 @@ def main():
         for r in rows:
             examples.append(compact(r["row"]))
         print(f"  fetched {len(examples)}/{args.n}")
-        offset += length
+        # Advance by what the API actually returned, not what we asked for: a short
+        # (but non-empty) page would otherwise skip the un-returned rows.
+        offset += len(rows)
 
     with open(out, "w") as f:
         json.dump({"examples": examples}, f)

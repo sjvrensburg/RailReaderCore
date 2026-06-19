@@ -30,9 +30,13 @@ multi-line cells — the known limitation a later cell-aware pass will address.
 
 Additive only — no breaking signatures. New: `CoreSettings.TableRowReading`,
 `AnalysisRequest.TableRowReading`, and trailing optional `tableRowReading` parameters on
-`LineDetector.DetectLines` / `BlockPostProcessor.PostProcess`. Downstream consumers
-(railreader2) pick up the new behaviour on the next NuGet bump; no source changes
-required, though wiring a settings toggle is recommended.
+`LineDetector.DetectLines` / `BlockPostProcessor.PostProcess`. The reference file-backed
+config (`RailReader.Core.Pdfium.AppConfig`) gains a `TableRowReading` field and maps it
+through `ToCoreSettings()`; its schema bumps to **v3** with a one-time migration that adds
+`Table` to a persisted `NavigableRoles` set, so existing users pick up table navigability
+on upgrade while remaining free to remove it afterwards. Downstream consumers (railreader2)
+pick up the new behaviour on the next NuGet bump; no source changes required, though wiring
+a settings toggle is recommended.
 
 ## 0.33.0 — Parked auto-scroll is no longer reported as "animating"
 

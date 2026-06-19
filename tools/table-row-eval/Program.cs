@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
@@ -22,7 +23,8 @@ if (args.Length < 1)
     return 1;
 }
 
-float iouThresh = float.TryParse(Environment.GetEnvironmentVariable("TABLEEVAL_IOU"), out var t) ? t : 0.5f;
+float iouThresh = float.TryParse(Environment.GetEnvironmentVariable("TABLEEVAL_IOU"),
+    NumberStyles.Float, CultureInfo.InvariantCulture, out var t) ? t : 0.5f;
 
 using var doc = JsonDocument.Parse(File.ReadAllText(args[0]));
 var examples = doc.RootElement.GetProperty("examples");
@@ -80,7 +82,9 @@ foreach (var exWrap in examples.EnumerateArray())
     {
         var b = Bbox(r);
         var band = (b[1], b[3]);
-        bool hasWord = words.Any(wd => wd.mid >= band.Item1 && wd.mid <= band.Item2);
+        // Half-open [lo, hi): GT rows tile and share edges, so a midpoint exactly on
+        // a shared boundary belongs to the lower row only (never both).
+        bool hasWord = words.Any(wd => wd.mid >= band.Item1 && wd.mid < band.Item2);
         if (hasWord) gtRows.Add(band);
         else wordEmptyRows++;
     }
@@ -102,7 +106,7 @@ foreach (var exWrap in examples.EnumerateArray())
     {
         int hitRow = -1;
         for (int g = 0; g < gtRows.Count; g++)
-            if (cy >= gtRows[g].Item1 && cy <= gtRows[g].Item2) { hitRow = g; break; }
+            if (cy >= gtRows[g].Item1 && cy < gtRows[g].Item2) { hitRow = g; break; }  // half-open, tiled rows
         if (hitRow >= 0) { centroidHits++; rowCenterCount[hitRow]++; }
     }
     foreach (var c in rowCenterCount)
