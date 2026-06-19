@@ -553,6 +553,111 @@ public class RailNavTests
         Assert.False(_nav.Active);
     }
 
+    // ===== Forced activation (low-zoom rail) =====
+
+    [Fact]
+    public void ForceActivateAt_ActivatesBelowThreshold()
+    {
+        var analysis = CreateAnalysis(2, 3);
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { TextRole });
+        Assert.False(_nav.Active);
+
+        // Seat on the second block's region at unity zoom (well below the 3.0 threshold).
+        var box = analysis.Blocks[1].BBox;
+        _nav.ForceActivateAt(box.X + box.W / 2.0, box.Y + box.H / 2.0);
+
+        Assert.True(_nav.Active);
+        Assert.True(_nav.ForceActive);
+        Assert.Equal(1, _nav.CurrentBlock);
+    }
+
+    [Fact]
+    public void ForceActivateAt_SurvivesSubThresholdUpdateZoom()
+    {
+        var analysis = CreateAnalysis(1, 3);
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { TextRole });
+
+        _nav.ForceActivateAt(100, 100);
+        Assert.True(_nav.Active);
+
+        // A normal zoom re-evaluation below threshold must NOT deactivate a forced rail.
+        _nav.UpdateZoom(1.0, 0, 0, WindowWidth, WindowHeight);
+        Assert.True(_nav.Active);
+        Assert.True(_nav.ForceActive);
+    }
+
+    [Fact]
+    public void ClearForceActive_ThenSubThresholdUpdateZoom_Deactivates()
+    {
+        var analysis = CreateAnalysis(1, 3);
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { TextRole });
+
+        _nav.ForceActivateAt(100, 100);
+        Assert.True(_nav.Active);
+
+        _nav.ClearForceActive();
+        Assert.False(_nav.ForceActive);
+
+        // Once the force is released, the normal zoom gate applies again.
+        _nav.UpdateZoom(1.0, 0, 0, WindowWidth, WindowHeight);
+        Assert.False(_nav.Active);
+    }
+
+    [Fact]
+    public void Deactivate_ClearsForceActive()
+    {
+        var analysis = CreateAnalysis(1, 3);
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { TextRole });
+
+        _nav.ForceActivateAt(100, 100);
+        Assert.True(_nav.ForceActive);
+
+        _nav.Deactivate();
+        Assert.False(_nav.Active);
+        Assert.False(_nav.ForceActive);
+    }
+
+    [Fact]
+    public void ForceActivateAt_NoAnalysis_NoOp()
+    {
+        // No SetAnalysis call → nothing seated.
+        _nav.ForceActivateAt(100, 100);
+        Assert.False(_nav.Active);
+        Assert.False(_nav.ForceActive);
+    }
+
+    [Fact]
+    public void ForceActivateAt_ThenNewAnalysis_ClearsForce_NoLeakAcrossPages()
+    {
+        _nav.SetAnalysis(CreateAnalysis(1, 3), new HashSet<BlockRole> { TextRole });
+        _nav.ForceActivateAt(100, 100);
+        Assert.True(_nav.ForceActive);
+
+        // Paging to a new page applies a DIFFERENT analysis — the forced session must not leak onto it.
+        _nav.SetAnalysis(CreateAnalysis(1, 3), new HashSet<BlockRole> { TextRole });
+        Assert.False(_nav.ForceActive);
+
+        // And at low zoom the new page must NOT auto-engage rail.
+        _nav.UpdateZoom(1.0, 0, 0, WindowWidth, WindowHeight);
+        Assert.False(_nav.Active);
+    }
+
+    [Fact]
+    public void ForceActivateAt_ThenZoomAboveThreshold_ConsumesForce()
+    {
+        _nav.SetAnalysis(CreateAnalysis(1, 3), new HashSet<BlockRole> { TextRole });
+        _nav.ForceActivateAt(100, 100);
+
+        // Zoom up past the threshold: now in normal rail territory, the force flag is consumed.
+        _nav.UpdateZoom(4.0, 0, 0, WindowWidth, WindowHeight);
+        Assert.True(_nav.Active);
+        Assert.False(_nav.ForceActive);
+
+        // Zooming back below the threshold now deactivates rail as usual (no longer sticky).
+        _nav.UpdateZoom(1.0, 0, 0, WindowWidth, WindowHeight);
+        Assert.False(_nav.Active);
+    }
+
     [Fact]
     public void ScaleVerticalBias_ScalesProportionally()
     {

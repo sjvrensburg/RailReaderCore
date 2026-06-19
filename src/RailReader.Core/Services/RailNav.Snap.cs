@@ -4,9 +4,16 @@ namespace RailReader.Core.Services;
 
 public sealed partial class RailNav
 {
+    // Below the rail zoom threshold the page is small enough that the whole thing (and the current
+    // line) is visible, so a forced ("start rail here") activation should guide the eye line-by-line
+    // WITHOUT moving the camera — centring/left-aligning the line here just shoves the page off to a
+    // corner. Above the threshold, normal rail framing applies. The current snap (if any) is left
+    // running; at low zoom none is ever started.
+    private bool SnapSuppressed(double zoom) => zoom < _config.RailZoomThreshold;
+
     public void StartSnapToCurrent(double cameraX, double cameraY, double zoom, double windowWidth, double windowHeight)
     {
-        if (!CanNavigate) return;
+        if (!CanNavigate || SnapSuppressed(zoom)) return;
         var (targetX, targetY) = ComputeTargetCamera(zoom, windowWidth, windowHeight);
         BeginSnap(cameraX, cameraY, targetX, targetY);
     }
@@ -17,7 +24,7 @@ public sealed partial class RailNav
     /// </summary>
     public void StartSnapToCurrentEnd(double cameraX, double cameraY, double zoom, double windowWidth, double windowHeight)
     {
-        if (!CanNavigate) return;
+        if (!CanNavigate || SnapSuppressed(zoom)) return;
 
         var (blockLeft, blockRight, blockWidthPx) = GetChunkBounds(zoom);
         double targetX;
@@ -53,7 +60,7 @@ public sealed partial class RailNav
     public void StartSnapToPoint(double cameraX, double cameraY, double zoom,
         double windowWidth, double windowHeight, double pageX)
     {
-        if (!CanNavigate) return;
+        if (!CanNavigate || SnapSuppressed(zoom)) return;
 
         var (_, targetY) = ComputeTargetCamera(zoom, windowWidth, windowHeight);
         double targetX = ClampX(windowWidth / 2.0 - pageX * zoom, zoom, windowWidth);
@@ -85,7 +92,7 @@ public sealed partial class RailNav
     public void StartSnapPreservingPosition(double cameraX, double cameraY, double zoom,
         double windowWidth, double windowHeight, double horizontalFraction, double lineScreenY)
     {
-        if (!CanNavigate) return;
+        if (!CanNavigate || SnapSuppressed(zoom)) return;
 
         var line = CurrentLineInfo;
 

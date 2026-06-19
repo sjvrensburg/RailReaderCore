@@ -120,6 +120,9 @@ public sealed partial class RailNav : ICameraClamp
             _snap = null;
             _scroll.Stop();
             ScrollSpeed = 0.0;
+            // A new page's analysis ends any forced ("start rail here") low-zoom session — otherwise
+            // it would leak onto every subsequently-viewed page (rail re-activating at low zoom there).
+            _forceActive = false;
         }
         else
         {
@@ -152,7 +155,15 @@ public sealed partial class RailNav : ICameraClamp
     public void UpdateZoom(double zoom, double cameraX, double cameraY, double windowWidth, double windowHeight,
         double? cursorPageX = null, double? cursorPageY = null)
     {
-        bool shouldBeActive = zoom >= _config.RailZoomThreshold && HasAnalysis;
+        // Rail normally engages only above the zoom threshold. A forced activation
+        // (ActivateRailAt — "start rail here" at any magnification) keeps it active
+        // below the threshold so readers who don't want to magnify can still rail-read.
+        bool shouldBeActive = (zoom >= _config.RailZoomThreshold || _forceActive) && HasAnalysis;
+
+        // Once the user has zoomed to/above the threshold, normal rail rules take over: consume the
+        // force flag so a later zoom-out below the threshold deactivates rail as usual (otherwise a
+        // forced session would stay sticky-on at every zoom until Escape).
+        if (zoom >= _config.RailZoomThreshold) _forceActive = false;
 
         if (shouldBeActive && !Active)
         {
@@ -193,6 +204,16 @@ public sealed partial class RailNav : ICameraClamp
     // keeps that line through the threshold crossing. Only read when the block pin is set.
     private int _pinnedActivationLine;
 
+    // When set, rail stays active regardless of zoom (see UpdateZoom). Engaged by
+    // ForceActivateAt so a reader can rail-read at any magnification; cleared by
+    // ClearForceActive or any explicit Deactivate.
+    private bool _forceActive;
+
+    /// <summary>True when rail was forced active below the zoom threshold via
+    /// <see cref="ForceActivateAt"/> (and hasn't been cleared). The shell uses this to
+    /// reflect the "start rail here" toggle and to know an Escape should release it.</summary>
+    public bool ForceActive => _forceActive;
+
     /// <summary>Pin the current block and line so the next rail activation keeps them
     /// seated instead of running geometric nearest-block selection.</summary>
     public void PinCurrentBlockForActivation()
@@ -211,7 +232,33 @@ public sealed partial class RailNav : ICameraClamp
         _scroll.Stop();
         ScrollSpeed = 0.0;
         _pinnedActivationBlock = null;
+        _forceActive = false;
     }
+
+    /// <summary>
+    /// Force rail active at <paramref name="pageX"/>/<paramref name="pageY"/> (page-point
+    /// space) regardless of the current zoom, seating the nearest navigable block and the
+    /// line under the point (via <see cref="FindBlockNearPoint"/>). Lets a reader start
+    /// rail-reading at any magnification — the camera is left where it is; the caller may
+    /// snap afterwards. No-op when no analysis is seated.
+    /// </summary>
+    public void ForceActivateAt(double pageX, double pageY)
+    {
+        if (_analysis is null || _navigableIndices.Count == 0) return;
+        _forceActive = true;
+        Active = true;
+        _pinnedActivationBlock = null;
+        FindBlockNearPoint(pageX, pageY); // seats CurrentBlock + CurrentLine
+        VerticalBias = 0;
+        _snap = null;
+        _scroll.Stop();
+        ScrollSpeed = 0.0;
+    }
+
+    /// <summary>Release a forced activation. Rail stays active only if the zoom is at or
+    /// above the threshold the next time <see cref="UpdateZoom"/> runs; the caller should
+    /// re-evaluate (e.g. via the controller's UpdateRailZoom) to deactivate immediately.</summary>
+    public void ClearForceActive() => _forceActive = false;
 
     /// <summary>
     /// Scale VerticalBias proportionally so the active line stays at the

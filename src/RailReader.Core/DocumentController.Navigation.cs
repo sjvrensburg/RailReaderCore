@@ -182,6 +182,33 @@ public sealed partial class DocumentController
     /// <summary>Clear non-rail edge-hold state (call on key release).</summary>
     public void ClearPageEdgeHold() => _pageEdgeHold.Reset();
 
+    /// <summary>Step the rail to the next cell in the current table row (rolling to the next row /
+    /// page-end like <see cref="HandleArrowDown"/>), centring it. Returns true if the move applied —
+    /// false when the current line has no cells, so the caller can fall back to horizontal block nav.
+    /// Cell stepping requires rail active on a cell-bearing row (see <see cref="RailNav.HasCells"/>).</summary>
+    public bool HandleCellRight() => HandleCellNav(forward: true);
+
+    /// <summary>Step the rail to the previous cell (rolling to the previous row's last cell at a row
+    /// start). See <see cref="HandleCellRight"/>.</summary>
+    public bool HandleCellLeft() => HandleCellNav(forward: false);
+
+    private bool HandleCellNav(bool forward)
+    {
+        if (ActiveDocument is not { } doc) return false;
+        if (!doc.Rail.Active) return false;
+
+        var result = forward ? doc.Rail.NextCell() : doc.Rail.PrevCell();
+        if (result == NavResult.NotApplicable) return false;
+
+        var (ww, wh) = GetViewportSize();
+        doc.Rail.StartSnapToCell(doc.Camera.OffsetX, doc.Camera.OffsetY, doc.Camera.Zoom, ww, wh);
+        // PageBoundary at the table's far edge: stay put (no cross-page cell flow in v1) — the snap
+        // simply re-centres the current cell. A within-page roll to the next/prev row is a position
+        // change, so announce either way.
+        FireReadingPositionChanged();
+        return true;
+    }
+
     public void HandleArrowRight(bool shortJump = false)
     {
         if (AutoScrollActive && ActiveDocument is { } d && d.Rail.Active && d.Rail.AutoScrolling)
@@ -289,4 +316,55 @@ public sealed partial class DocumentController
     /// </summary>
     public PdfLink? HitTestLink(double pageX, double pageY)
         => ActiveDocument?.HitTestLink(pageX, pageY);
+
+    /// <summary>
+    /// Force rail mode active at the clicked point regardless of zoom ("start rail here"),
+    /// seating the nearest navigable block and the line under the click, then snapping it to
+    /// the reading position. Unlike <see cref="SmoothlyFrameBlock"/> this does NOT magnify —
+    /// the camera zoom is preserved — so a reader can rail-read at any magnification.
+    /// Returns false when there is no document or the current page has no analysis yet.
+    /// </summary>
+    public bool ActivateRailAt(double canvasX, double canvasY)
+    {
+        if (ActiveDocument is not { } doc) return false;
+        if (!doc.AnalysisCache.TryGetValue(doc.CurrentPage, out var analysis)) return false;
+
+        // Sync RailNav to this page's analysis so the navigable index space + line seating
+        // refer to the current page (mirrors SmoothlyFrameBlock). Skip when already current.
+        if (!ReferenceEquals(doc.Rail.Analysis, analysis))
+            doc.ReapplyNavigableRoles(_config.NavigableRoles);
+        if (!doc.Rail.HasAnalysis) return false;
+
+        double pageX = (canvasX - doc.Camera.OffsetX) / doc.Camera.Zoom;
+        double pageY = (canvasY - doc.Camera.OffsetY) / doc.Camera.Zoom;
+
+        if (AutoScrollActive) StopAutoScroll();
+        doc.Rail.ForceActivateAt(pageX, pageY);
+        var (ww, wh) = GetViewportSize();
+        // Below the rail threshold (the usual "start rail here" case) the snap is intentionally
+        // suppressed (RailNav.SnapSuppressed) so the page doesn't lurch — the seated line is simply
+        // highlighted where it is. Above the threshold this frames the line as normal rail does.
+        doc.StartSnap(ww, wh);
+        FireReadingPositionChanged();
+        return true;
+    }
+
+    /// <summary>True when rail is currently held active below the zoom threshold by a forced
+    /// <see cref="ActivateRailAt"/> activation on the active document.</summary>
+    public bool ForcedRailActive => ActiveDocument?.Rail is { Active: true, ForceActive: true };
+
+    /// <summary>
+    /// Release a forced ("start rail here") activation and re-evaluate the zoom gate, so rail
+    /// deactivates immediately if the current zoom is below the threshold. No-op when rail is
+    /// not forced.
+    /// </summary>
+    public void ExitForcedRail()
+    {
+        if (ActiveDocument is not { } doc) return;
+        if (!doc.Rail.ForceActive) return;
+        doc.Rail.ClearForceActive();
+        var (ww, wh) = GetViewportSize();
+        doc.UpdateRailZoom(ww, wh);
+        FireReadingPositionChanged();
+    }
 }
