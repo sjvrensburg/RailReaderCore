@@ -82,6 +82,17 @@ public sealed record CoreSettings
     /// </summary>
     public bool TableRowReading { get; init; } = true;
 
+    /// <summary>
+    /// Split each table row into navigable cells (requires <see cref="TableRowReading"/>;
+    /// has no effect on non-table blocks). When on, a table row's
+    /// <see cref="LineInfo.Cells"/> is populated so rail mode can step cell-to-cell
+    /// horizontally — following "label …… value" across the whitespace gap at
+    /// magnification. Off by default: row reading alone already lets the reader step
+    /// table rows; cell stepping is the opt-in next level. Cell detection runs only when
+    /// both flags are on, and only for <see cref="BlockRole.Table"/> blocks.
+    /// </summary>
+    public bool CellNavigation { get; init; }
+
     // Visual effects (per-document defaults — UI may override per doc)
     public ColourEffect ColourEffect { get; init; } = ColourEffect.None;
     public double ColourEffectIntensity { get; init; } = 1.0;

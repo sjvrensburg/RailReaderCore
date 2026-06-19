@@ -31,6 +31,21 @@ public sealed partial class RailNav
     }
 
     /// <summary>
+    /// Snap to the current cell: centres the active cell's <see cref="CellInfo.CenterX"/>
+    /// horizontally on the current line, so cell stepping follows "label …… value" across
+    /// the row at magnification. Falls back to <see cref="StartSnapToCurrent"/> when the
+    /// current line has no cells (non-table line, or cell navigation disabled).
+    /// </summary>
+    public void StartSnapToCell(double cameraX, double cameraY, double zoom, double windowWidth, double windowHeight)
+    {
+        if (!CanNavigate) return;
+        if (CurrentCellInfo is { } cell)
+            StartSnapToPoint(cameraX, cameraY, zoom, windowWidth, windowHeight, cell.CenterX);
+        else
+            StartSnapToCurrent(cameraX, cameraY, zoom, windowWidth, windowHeight);
+    }
+
+    /// <summary>
     /// Snap to the current line, centering a specific page X coordinate horizontally.
     /// Used for search result navigation so the match is visible rather than
     /// snapping to the block's left edge.

@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased — Table rows are read row-by-row in rail mode
+## Unreleased — Table rows and cells are navigable in rail mode
+
+### Table rows are read row-by-row in rail mode
 
 Rail mode can now step through a **table's rows**. Previously every `Table` block was
 an *atomic* line — the whole table collapsed to one full-block line and rail mode either
@@ -37,6 +39,40 @@ through `ToCoreSettings()`; its schema bumps to **v3** with a one-time migration
 on upgrade while remaining free to remove it afterwards. Downstream consumers (railreader2)
 pick up the new behaviour on the next NuGet bump; no source changes required, though wiring
 a settings toggle is recommended.
+
+### Cell-level horizontal navigation within table rows
+
+Building on row reading, a table row can now be stepped **cell-by-cell**, so a reader with
+tunnel vision can follow "Account label …… $1,234" across the whitespace gap at high
+magnification instead of panning blindly across the page. Each row's cells are detected by
+splitting its glyphs at horizontal whitespace gaps wider than ~1× the median glyph height
+(the borderless-table rule borrowed, reimplemented MIT-clean, from run-llama/liteparse);
+cells are tagged with a best-effort column track. This is a pure **overlay** on the
+already-validated row geometry — row positions are byte-for-byte unchanged whether or not
+cells are computed, so row reading is unaffected.
+
+A line now carries optional `LineInfo.Cells` (a `CellInfo` list: `X`/`Width`/`CenterX`,
+`ColumnTrack`, and a `CharStart`/`CharCount` text-locator hint). `RailNav` gains
+`CurrentCell`, `CurrentCells`, `HasCells`, `CurrentCellInfo`, `NextCell()`, `PrevCell()`,
+and a `StartSnapToCell()` that centres the active cell. `NextCell`/`PrevCell` wrap to the
+adjacent row at the row ends (propagating page boundaries) and return the new
+`NavResult.NotApplicable` on a line with no cells, so a consumer can fall back to its
+pan/jump path. Assigning `CurrentLine` re-seats the cursor at the row's first cell.
+
+Off by default behind `CoreSettings.CellNavigation` (requires `TableRowReading`): row
+reading alone already lets the reader step rows; cell stepping is the opt-in next level.
+Cell detection requires a text layer (the pixel-projection fallback produces no cells) and
+runs only for `Table` blocks.
+
+Additive only — no breaking signatures. New: `CoreSettings.CellNavigation`,
+`AnalysisRequest.CellNavigation`, `NavResult.NotApplicable`, the `CellInfo` model,
+`LineInfo.Cells` (optional 5th positional, defaulted), trailing optional `cellNavigation`
+parameters on `LineDetector.DetectLines` / `BlockPostProcessor.PostProcess`, and the
+`RailNav` cell members above. The reference `AppConfig` gains a `CellNavigation` field
+(default off) mapped through `ToCoreSettings()`; **no schema migration** — it is purely
+additive and absent keys deserialize to the off default. Desktop wiring (an A/D → cell-step
+handler gated on `HasCells`, a settings toggle, a "stepping cells" affordance) is
+railreader2 work.
 
 ## 0.33.0 — Parked auto-scroll is no longer reported as "animating"
 

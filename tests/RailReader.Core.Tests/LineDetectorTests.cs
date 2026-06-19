@@ -272,6 +272,135 @@ public class LineDetectorTests
         Assert.Single(lines);
     }
 
+    // --- Cell navigation (table rows split into cells) ---
+
+    /// <summary>
+    /// Builds a Table block: <paramref name="rowCount"/> rows, each row laying down
+    /// <paramref name="charsPerCell"/>-glyph runs at each X in <paramref name="colStarts"/>.
+    /// Columns are separated by wide whitespace (the gaps in <paramref name="colStarts"/>),
+    /// glyphs within a run by ~1px — exactly the whitespace-aligned layout of a financial
+    /// statement.
+    /// </summary>
+    private static (LayoutBlock Block, List<CharBox> Chars) MakeTable(
+        float[] colStarts, int rowCount = 3, int charsPerCell = 4,
+        float charHeight = 10f, float rowPitch = 20f, float top = 100f)
+    {
+        var chars = new List<CharBox>();
+        int idx = 0;
+        float maxRight = 0f;
+        for (int r = 0; r < rowCount; r++)
+        {
+            float rowTop = top + r * rowPitch;
+            float rowBottom = rowTop + charHeight;
+            foreach (var colStart in colStarts)
+                for (int c = 0; c < charsPerCell; c++)
+                {
+                    float cl = colStart + c * 8f;
+                    chars.Add(new CharBox(idx++, cl, rowTop, cl + 7f, rowBottom));
+                    maxRight = Math.Max(maxRight, cl + 7f);
+                }
+        }
+
+        float left = colStarts[0] - 2f;
+        float height = (rowCount - 1) * rowPitch + charHeight;
+        var block = new LayoutBlock
+        {
+            BBox = new BBox(left, top - 2f, maxRight - left + 2f, height + 4f),
+            Role = BlockRole.Table,
+            Confidence = 0.9f,
+        };
+        return (block, chars);
+    }
+
+    [Fact]
+    public void Table_CellNavigation_SplitsRowIntoCells()
+    {
+        // Three columns separated by wide gaps → three cells per row.
+        var (block, chars) = MakeTable([100f, 300f, 450f]);
+
+        var lines = LineDetector.DetectLines(block, chars, [], 0, 0, 1, 1,
+            tableRowReading: true, cellNavigation: true);
+
+        Assert.Equal(3, lines.Count);
+        Assert.All(lines, l =>
+        {
+            Assert.NotNull(l.Cells);
+            Assert.Equal(3, l.Cells!.Count);
+        });
+    }
+
+    [Fact]
+    public void Table_CellNavigation_DisabledByDefault_NoCells()
+    {
+        // Row reading on, cell navigation off (the default) → rows, but no cells.
+        var (block, chars) = MakeTable([100f, 300f, 450f]);
+
+        var lines = LineDetector.DetectLines(block, chars, [], 0, 0, 1, 1);
+
+        Assert.Equal(3, lines.Count);
+        Assert.All(lines, l => Assert.Null(l.Cells));
+    }
+
+    [Fact]
+    public void Table_CellNavigation_RequiresRowReading()
+    {
+        // With row reading off the table is atomic; cells are never computed even
+        // when cellNavigation is requested.
+        var (block, chars) = MakeTable([100f, 300f, 450f]);
+
+        var lines = LineDetector.DetectLines(block, chars, [], 0, 0, 1, 1,
+            tableRowReading: false, cellNavigation: true);
+
+        Assert.Single(lines);
+        Assert.Null(lines[0].Cells);
+    }
+
+    [Fact]
+    public void Table_CellNavigation_CellsShareColumnTracksAcrossRows()
+    {
+        var (block, chars) = MakeTable([100f, 300f, 450f]);
+
+        var lines = LineDetector.DetectLines(block, chars, [], 0, 0, 1, 1,
+            tableRowReading: true, cellNavigation: true);
+
+        foreach (var l in lines)
+        {
+            // Cells run left-to-right on tracks 0,1,2, identical across every row.
+            Assert.Equal(new[] { 0, 1, 2 }, l.Cells!.Select(c => c.ColumnTrack).ToArray());
+            // Centres strictly increase left-to-right.
+            Assert.True(l.Cells![0].CenterX < l.Cells[1].CenterX);
+            Assert.True(l.Cells[1].CenterX < l.Cells[2].CenterX);
+        }
+        // First cell of row 0 is anchored at the first column's left edge.
+        Assert.Equal(100f, lines[0].Cells![0].X, 1f);
+    }
+
+    [Fact]
+    public void Table_CellNavigation_TightlySpacedGlyphsStayOneCell()
+    {
+        // A single column (no wide gaps) → one cell spanning the whole run, never
+        // fragmented by the ordinary ~1px inter-glyph spacing.
+        var (block, chars) = MakeTable([100f], charsPerCell: 8);
+
+        var lines = LineDetector.DetectLines(block, chars, [], 0, 0, 1, 1,
+            tableRowReading: true, cellNavigation: true);
+
+        Assert.All(lines, l => Assert.Single(l.Cells!));
+    }
+
+    [Fact]
+    public void NonTable_CellNavigation_ProducesNoCells()
+    {
+        // cellNavigation only affects Table blocks; a Text block never gets cells.
+        var (block, chars) = MakeTable([100f, 300f]);
+        block.Role = BlockRole.Text;
+
+        var lines = LineDetector.DetectLines(block, chars, [], 0, 0, 1, 1,
+            tableRowReading: true, cellNavigation: true);
+
+        Assert.All(lines, l => Assert.Null(l.Cells));
+    }
+
     [Fact]
     public void AtomicClass_Image_CollapsesToOneLine()
     {

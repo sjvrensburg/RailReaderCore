@@ -66,6 +66,20 @@ public static class LineDetector
     /// </summary>
     internal const float OversizeGlyphFactor = 1.8f;
 
+    /// <summary>
+    /// A horizontal gap between successive glyphs wider than this multiple of the median
+    /// glyph height opens a new table cell. ~1× the font size cleanly separates the
+    /// whitespace-aligned columns of a financial statement without splitting the ordinary
+    /// inter-word spaces inside a single cell (mirrors liteparse's borderless-table rule).
+    /// </summary>
+    internal const float CellGapMultiplier = 1.0f;
+
+    /// <summary>
+    /// Cell left edges within this many page points across rows are treated as the same
+    /// column track. Advisory only — see <see cref="CellInfo.ColumnTrack"/>.
+    /// </summary>
+    internal const float ColumnTrackTolerancePts = 6f;
+
     private static readonly HashSet<BlockRole> MathRoles =
         [BlockRole.DisplayMath, BlockRole.InlineMath, BlockRole.Algorithm];
 
@@ -74,11 +88,19 @@ public static class LineDetector
     /// per-row lines via char clustering instead of collapsing to one atomic line,
     /// so rail mode can step through table rows. When false the table stays atomic.
     /// </param>
+    /// <param name="cellNavigation">
+    /// When true (and the block is a table read row-by-row), each detected row's
+    /// <see cref="LineInfo.Cells"/> is populated by splitting the row's glyphs into cells
+    /// at horizontal whitespace gaps, so rail mode can step the row cell-by-cell. Requires
+    /// a text layer (char boxes); the pixel-projection fallback produces no cells. Has no
+    /// effect on non-table blocks or when <paramref name="tableRowReading"/> is false.
+    /// </param>
     public static List<LineInfo> DetectLines(
         LayoutBlock block,
         IReadOnlyList<CharBox>? charBoxes,
         byte[] rgbBytes, int imgW, int imgH, float scaleX, float scaleY,
-        bool tableRowReading = true)
+        bool tableRowReading = true,
+        bool cellNavigation = false)
     {
         bool isTable = block.Role == BlockRole.Table;
         if (AtomicLineRoles.Contains(block.Role) || (isTable && !tableRowReading))
@@ -89,6 +111,7 @@ public static class LineDetector
         // cleanly separated by the greedy split, and the merge can fuse
         // tightly-spaced rows (common in dense financial statements).
         bool mergeOverlaps = !isTable;
+        bool detectCells = isTable && cellNavigation;
 
         if (charBoxes is { Count: > 0 })
         {
@@ -99,7 +122,12 @@ public static class LineDetector
             // merge, stacked rows (matrices, large fractions).
             var charLines = DetectLinesFromChars(block.BBox, charBoxes, mult, excludeOversizeSpanners: !isMath);
             if (charLines.Count > 0)
-                return NormalizeLines(charLines, block.BBox, mergeOverlaps);
+            {
+                var rows = NormalizeLines(charLines, block.BBox, mergeOverlaps);
+                // Cells are a pure overlay on the validated row geometry — row
+                // Y/Height/X/Width are untouched, so row reading is unregressed.
+                return detectCells ? AssignCells(rows, charBoxes, block.BBox) : rows;
+            }
         }
 
         return NormalizeLines(DetectLinesFromPixels(block, rgbBytes, imgW, imgH, scaleX, scaleY), block.BBox, mergeOverlaps);
@@ -165,6 +193,133 @@ public static class LineDetector
             merged.Add(l);
         }
         return merged;
+    }
+
+    // One glyph kept while splitting a table row into cells: its text index plus its
+    // horizontal extent. Vertical extent is irrelevant once a glyph is bucketed to a row.
+    private readonly record struct GlyphRef(int Index, float Left, float Right);
+
+    /// <summary>
+    /// Overlays per-row cell geometry onto already-detected table rows. Each in-block,
+    /// non-degenerate glyph is bucketed to the nearest row by centre-Y; the row's glyphs are
+    /// split into cells wherever the horizontal gap between successive glyphs exceeds
+    /// <see cref="CellGapMultiplier"/>× the median glyph height; cells are then tagged with a
+    /// best-effort column track. Rows are returned in the same order with
+    /// <see cref="LineInfo.Cells"/> populated — a row that gathered no glyphs keeps
+    /// <c>Cells == null</c>. Pure overlay: the row Y/Height/X/Width are never modified, so
+    /// table-row reading is unaffected by whether cells are computed.
+    /// </summary>
+    internal static List<LineInfo> AssignCells(
+        List<LineInfo> rows, IReadOnlyList<CharBox> charBoxes, BBox block)
+    {
+        if (rows.Count == 0) return rows;
+
+        float left = block.X, right = block.X + block.W;
+        float top = block.Y, bottom = block.Y + block.H;
+
+        // Bucket in-block glyphs to the nearest row (by line centre) and collect heights
+        // for the gap threshold. Nearest-row is consistent with the mid-Y clustering that
+        // produced the rows, and assigns every glyph exactly once.
+        var rowGlyphs = new List<GlyphRef>?[rows.Count];
+        var heights = new List<float>();
+        foreach (var c in charBoxes)
+        {
+            float h = c.Bottom - c.Top;
+            if (h <= 0) continue; // whitespace / degenerate box
+            float midX = (c.Left + c.Right) * 0.5f;
+            float midY = (c.Top + c.Bottom) * 0.5f;
+            if (midX < left || midX > right || midY < top || midY > bottom) continue;
+
+            int best = 0;
+            float bestDist = float.PositiveInfinity;
+            for (int r = 0; r < rows.Count; r++)
+            {
+                float d = Math.Abs(rows[r].Y - midY);
+                if (d < bestDist) { bestDist = d; best = r; }
+            }
+            (rowGlyphs[best] ??= []).Add(new GlyphRef(c.Index, c.Left, c.Right));
+            heights.Add(h);
+        }
+
+        if (heights.Count == 0) return rows;
+        heights.Sort();
+        float gapThreshold = heights[heights.Count / 2] * CellGapMultiplier;
+
+        var perRowCells = new List<CellInfo>?[rows.Count];
+        for (int r = 0; r < rows.Count; r++)
+            if (rowGlyphs[r] is { Count: > 0 } glyphs)
+                perRowCells[r] = SplitRowCells(glyphs, gapThreshold);
+
+        InferColumnTracks(perRowCells);
+
+        var result = new List<LineInfo>(rows.Count);
+        for (int r = 0; r < rows.Count; r++)
+            result.Add(perRowCells[r] is { Count: > 0 } cells ? rows[r] with { Cells = cells } : rows[r]);
+        return result;
+    }
+
+    /// <summary>
+    /// Splits one row's glyphs (any order) into cells: sort by left edge, then open a new
+    /// cell whenever the gap from the current cell's running right edge to the next glyph's
+    /// left edge exceeds <paramref name="gapThreshold"/>. Each cell spans min-left…max-right
+    /// and records a (smallest text index, glyph count) locator hint. ColumnTrack is left at
+    /// −1 here and assigned by <see cref="InferColumnTracks"/>.
+    /// </summary>
+    private static List<CellInfo> SplitRowCells(List<GlyphRef> glyphs, float gapThreshold)
+    {
+        glyphs.Sort((a, b) => a.Left.CompareTo(b.Left));
+
+        var cells = new List<CellInfo>();
+        float cellLeft = glyphs[0].Left, cellRight = glyphs[0].Right;
+        int minIndex = glyphs[0].Index, count = 1;
+
+        for (int i = 1; i < glyphs.Count; i++)
+        {
+            var g = glyphs[i];
+            if (g.Left - cellRight > gapThreshold)
+            {
+                cells.Add(new CellInfo(cellLeft, Math.Max(0f, cellRight - cellLeft), -1, minIndex, count));
+                cellLeft = g.Left; cellRight = g.Right; minIndex = g.Index; count = 1;
+            }
+            else
+            {
+                if (g.Right > cellRight) cellRight = g.Right;
+                if (g.Index < minIndex) minIndex = g.Index;
+                count++;
+            }
+        }
+        cells.Add(new CellInfo(cellLeft, Math.Max(0f, cellRight - cellLeft), -1, minIndex, count));
+        return cells;
+    }
+
+    /// <summary>
+    /// Assigns each cell a column-track id by greedily clustering cell LEFT edges across all
+    /// rows: edges are sorted and a new track opens wherever the gap to the previous edge
+    /// exceeds <see cref="ColumnTrackTolerancePts"/>. Left edges are the stable anchor for
+    /// the left-aligned label column and the start of each numeric column. The track id is
+    /// advisory metadata (see <see cref="CellInfo.ColumnTrack"/>) — cell stepping does not
+    /// depend on it, so an imperfect split is harmless.
+    /// </summary>
+    private static void InferColumnTracks(List<CellInfo>?[] perRowCells)
+    {
+        var edges = new List<(int Row, int Cell, float Left)>();
+        for (int r = 0; r < perRowCells.Length; r++)
+            if (perRowCells[r] is { } cells)
+                for (int c = 0; c < cells.Count; c++)
+                    edges.Add((r, c, cells[c].X));
+        if (edges.Count == 0) return;
+
+        edges.Sort((a, b) => a.Left.CompareTo(b.Left));
+
+        int track = 0;
+        float prevLeft = edges[0].Left;
+        foreach (var e in edges)
+        {
+            if (e.Left - prevLeft > ColumnTrackTolerancePts) track++;
+            var cells = perRowCells[e.Row]!;
+            cells[e.Cell] = cells[e.Cell] with { ColumnTrack = track };
+            prevLeft = e.Left;
+        }
     }
 
     private readonly record struct GlyphBox(float MidY, float Top, float Bottom, float Height, float Left, float Right);

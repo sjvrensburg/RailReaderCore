@@ -83,6 +83,11 @@ public sealed class AppConfig : IRecentFilesStore
     /// <see cref="CoreSettings.TableRowReading"/>.</summary>
     public bool TableRowReading { get; set; } = true;
 
+    /// <summary>Split table rows into navigable cells (requires <see cref="TableRowReading"/>)
+    /// so rail mode can step a row cell-by-cell. Off by default. See
+    /// <see cref="CoreSettings.CellNavigation"/>.</summary>
+    public bool CellNavigation { get; set; }
+
     // VLM (Vision Language Model) settings for Copy as LaTeX / Markdown / Description
     public string? VlmEndpoint { get; set; }
     public string? VlmModel { get; set; }
@@ -125,6 +130,7 @@ public sealed class AppConfig : IRecentFilesStore
         CenteringRoles = CenteringRoles,
         AutoScrollStopClasses = AutoScrollStopClasses,
         TableRowReading = TableRowReading,
+        CellNavigation = CellNavigation,
         VlmEndpoint = VlmEndpoint,
         VlmModel = VlmModel,
         VlmApiKey = VlmApiKey,
