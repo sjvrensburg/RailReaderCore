@@ -249,12 +249,26 @@ public class LineDetectorTests
     }
 
     [Fact]
-    public void AtomicClass_Table_CollapsesToOneLine()
+    public void Table_RowReading_SplitsIntoRows()
     {
+        // With table-row reading on (the default), a table is detected row-by-row
+        // so rail mode can step through it — essential for reading financial
+        // statements at high magnification.
         var (block, chars) = MakeLines(lineCount: 6, charsPerLine: 10);
         block.Role = BlockRole.Table;
 
         var lines = LineDetector.DetectLines(block, chars, [], 0, 0, 1, 1);
+        Assert.Equal(6, lines.Count);
+    }
+
+    [Fact]
+    public void Table_RowReadingDisabled_CollapsesToOneLine()
+    {
+        // With the flag off, a table stays atomic (legacy whole-table-as-one-line).
+        var (block, chars) = MakeLines(lineCount: 6, charsPerLine: 10);
+        block.Role = BlockRole.Table;
+
+        var lines = LineDetector.DetectLines(block, chars, [], 0, 0, 1, 1, tableRowReading: false);
         Assert.Single(lines);
     }
 

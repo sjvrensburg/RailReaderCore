@@ -18,6 +18,12 @@ public static class DefaultRoleSets
         BlockRole.DisplayMath,
         BlockRole.Algorithm,
         BlockRole.Footnote,
+        // Tables are navigable so rail mode can step through their rows (detected
+        // per-row when CoreSettings.TableRowReading is set — the default). Tables
+        // also park auto-scroll (see AutoScrollStop): flow through prose, park on
+        // the table, step its rows by hand. Consumers that want rail to skip tables
+        // can drop this from CoreSettings.NavigableRoles.
+        BlockRole.Table,
     };
 
     /// <summary>

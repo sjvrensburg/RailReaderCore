@@ -24,10 +24,11 @@ public static class BlockPostProcessor
         int imgH,
         float scaleX,
         float scaleY,
-        IReadOnlyList<CharBox>? charBoxes)
+        IReadOnlyList<CharBox>? charBoxes,
+        bool tableRowReading = true)
     {
         ResolveVerticalOverlaps(blocks);
-        DetectLinesForBlocks(blocks, rgbBytes, imgW, imgH, scaleX, scaleY, charBoxes);
+        DetectLinesForBlocks(blocks, rgbBytes, imgW, imgH, scaleX, scaleY, charBoxes, tableRowReading);
     }
 
     /// <summary>
@@ -75,11 +76,11 @@ public static class BlockPostProcessor
 
     private static void DetectLinesForBlocks(
         List<LayoutBlock> blocks, byte[] rgbBytes, int imgW, int imgH,
-        float scaleX, float scaleY, IReadOnlyList<CharBox>? charBoxes)
+        float scaleX, float scaleY, IReadOnlyList<CharBox>? charBoxes, bool tableRowReading)
     {
         foreach (var block in blocks)
         {
-            block.Lines = LineDetector.DetectLines(block, charBoxes, rgbBytes, imgW, imgH, scaleX, scaleY);
+            block.Lines = LineDetector.DetectLines(block, charBoxes, rgbBytes, imgW, imgH, scaleX, scaleY, tableRowReading);
             if (block.Lines.Count == 0)
                 block.Lines.Add(new LineInfo(block.BBox.Y + block.BBox.H / 2, block.BBox.H,
                     block.BBox.X, block.BBox.W));

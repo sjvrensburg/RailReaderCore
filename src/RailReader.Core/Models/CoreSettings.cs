@@ -72,6 +72,16 @@ public sealed record CoreSettings
     public IReadOnlySet<BlockRole> NavigableRoles { get; init; } = Services.DefaultRoleSets.Navigable;
     public IReadOnlySet<BlockRole> CenteringRoles { get; init; } = Services.DefaultRoleSets.Centering;
 
+    // Line detection
+    /// <summary>
+    /// Detect table rows: route <see cref="BlockRole.Table"/> blocks through per-row
+    /// line detection (one line per table row) instead of collapsing the whole table
+    /// to a single atomic line. This lets rail mode step a table row-by-row — essential
+    /// for reading financial statements at high magnification. Set <c>false</c> to
+    /// restore the legacy whole-table-as-one-line behaviour.
+    /// </summary>
+    public bool TableRowReading { get; init; } = true;
+
     // Visual effects (per-document defaults — UI may override per doc)
     public ColourEffect ColourEffect { get; init; } = ColourEffect.None;
     public double ColourEffectIntensity { get; init; } = 1.0;

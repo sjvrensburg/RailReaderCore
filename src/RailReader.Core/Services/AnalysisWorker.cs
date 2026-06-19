@@ -7,7 +7,8 @@ namespace RailReader.Core.Services;
 public sealed record AnalysisRequest(
     string FilePath, int Page, byte[] RgbBytes,
     int PxW, int PxH, double PageW, double PageH,
-    IReadOnlyList<CharBox>? CharBoxes = null);
+    IReadOnlyList<CharBox>? CharBoxes = null,
+    bool TableRowReading = true);
 
 public sealed record AnalysisResult(
     string FilePath, int Page, PageAnalysis Analysis);
@@ -105,7 +106,7 @@ public sealed class AnalysisWorker : IDisposable
                 float mapScaleY = request.PxH > 0 ? (float)(request.PageH / request.PxH) : 1f;
                 BlockPostProcessor.PostProcess(
                     analysis.Blocks, request.RgbBytes, request.PxW, request.PxH,
-                    mapScaleX, mapScaleY, request.CharBoxes);
+                    mapScaleX, mapScaleY, request.CharBoxes, request.TableRowReading);
 
                 _logger.Debug($"[Worker] Page {request.Page}: {analysis.Blocks.Count} blocks detected");
 

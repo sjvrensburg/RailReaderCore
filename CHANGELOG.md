@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased — Table rows are read row-by-row in rail mode
+
+Rail mode can now step through a **table's rows**. Previously every `Table` block was
+an *atomic* line — the whole table collapsed to one full-block line and rail mode either
+framed it as a single opaque unit or (with Core's default navigable set) skipped it
+entirely. For a low-vision reader working through a financial statement at high
+magnification that made tables unreadable: there was no way to advance line-by-line down
+the rows.
+
+`LineDetector` now detects `Table` blocks **per row** via the same char-box clustering
+used for prose (one line per row baseline), gated by the new
+`CoreSettings.TableRowReading` (default **true**). The vertical-overlap merge in
+`NormalizeLines` is skipped for tables so tightly-spaced rows — common in dense
+statements — don't fuse. `BlockRole.Table` is also added to `DefaultRoleSets.Navigable`
+so the rail actually enters the table; it remains in `AutoScrollStop`, giving a coherent
+flow: auto-scroll runs through prose, **parks** on the table, and the reader steps its
+rows by hand.
+
+Set `TableRowReading = false` to restore the legacy whole-table-as-one-line behaviour,
+or drop `BlockRole.Table` from `CoreSettings.NavigableRoles` to have rail skip tables.
+
+Validated against the [SynFinTabs](https://huggingface.co/datasets/ethanbradley/synfintabs)
+financial-table dataset (new `tools/table-row-eval` harness, which scores `LineDetector`
+directly against the dataset's ground-truth rows): on 300 real tables / 6,158 rows,
+**100 % of rows are reachable**, **98.3 % get exactly one steppable line**, and no line
+lands outside a row (split ratio 1.02). The ~1.7 % residual is genuinely wrapped
+multi-line cells — the known limitation a later cell-aware pass will address.
+
+Additive only — no breaking signatures. New: `CoreSettings.TableRowReading`,
+`AnalysisRequest.TableRowReading`, and trailing optional `tableRowReading` parameters on
+`LineDetector.DetectLines` / `BlockPostProcessor.PostProcess`. Downstream consumers
+(railreader2) pick up the new behaviour on the next NuGet bump; no source changes
+required, though wiring a settings toggle is recommended.
+
 ## 0.33.0 — Parked auto-scroll is no longer reported as "animating"
 
 `DocumentController.IsAnimating` now treats a **parked** semi-auto-scroll as settled.
