@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — Table rows and cells are navigable in rail mode
+## 0.35.0 — Table rows and cells are navigable in rail mode
 
 ### Table rows are read row-by-row in rail mode
 
