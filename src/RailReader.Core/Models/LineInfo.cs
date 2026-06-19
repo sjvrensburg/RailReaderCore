@@ -7,5 +7,10 @@ namespace RailReader.Core.Models;
 /// extent so each line is self-describing — required when a navigation chunk
 /// concatenates lines from blocks of differing widths, and lets the renderers
 /// focus/highlight the line's true extent rather than the whole parent block.
+///
+/// <para><see cref="Cells"/> is populated only for table rows when cell navigation is
+/// enabled (see <c>CoreSettings.CellNavigation</c>); it is <c>null</c> for every other
+/// line, so non-table lines carry no extra allocation. When present it lists the row's
+/// cells left-to-right, letting rail mode step horizontally cell-by-cell.</para>
 /// </summary>
-public record struct LineInfo(float Y, float Height, float X, float Width);
+public record struct LineInfo(float Y, float Height, float X, float Width, IReadOnlyList<CellInfo>? Cells = null);

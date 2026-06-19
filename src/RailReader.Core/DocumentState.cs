@@ -27,6 +27,8 @@ public sealed class DocumentState : IDisposable
     private bool _lineFocusBlur;
     private bool _lineHighlightEnabled = true;
     private bool _marginCropping;
+    private bool _tableRowReading = true;
+    private bool _cellNavigation;
     /// <summary>Fires when a property changes. Parameter is the property name.</summary>
     public Action<string>? StateChanged;
 
@@ -197,6 +199,8 @@ public sealed class DocumentState : IDisposable
         _lineFocusBlur = config.LineFocusBlur;
         _lineHighlightEnabled = config.LineHighlightEnabled;
         _marginCropping = config.MarginCropping;
+        _tableRowReading = config.TableRowReading;
+        _cellNavigation = config.CellNavigation;
         Rail = new RailNav(config);
         Outline = _pdf.Outline;
         _pageCacheRadius = config.PageCacheRadius;
@@ -214,6 +218,8 @@ public sealed class DocumentState : IDisposable
         _marshaller.AssertUIThread();
         BackgroundQueue.WindowPages = config.BackgroundAnalysisWindowPages;
         _pageCacheRadius = config.PageCacheRadius;
+        _tableRowReading = config.TableRowReading;
+        _cellNavigation = config.CellNavigation;
         EvictDistantPageCaches(CurrentPage);
     }
 
@@ -542,7 +548,7 @@ public sealed class DocumentState : IDisposable
                 {
                     if (IsDisposed || CurrentPage != page) return;
                     _textCache[page] = pageText;
-                    worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes));
+                    worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, _tableRowReading, _cellNavigation));
                 });
             }
             catch (OperationCanceledException) { }
@@ -604,7 +610,7 @@ public sealed class DocumentState : IDisposable
                         if (!IsDisposed)
                         {
                             _textCache[page] = pageText;
-                            worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes));
+                            worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, _tableRowReading, _cellNavigation));
                         }
                     });
                 }
@@ -642,7 +648,7 @@ public sealed class DocumentState : IDisposable
             var (pageW, pageH) = _pdf.GetPageSize(page);
             var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize);
             var pageText = GetOrExtractText(page);
-            worker.Submit(new AnalysisRequest(FilePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes));
+            worker.Submit(new AnalysisRequest(FilePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, _tableRowReading, _cellNavigation));
             return true;
         }
         catch (Exception ex)

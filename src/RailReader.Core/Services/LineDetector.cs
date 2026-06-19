@@ -6,9 +6,12 @@ namespace RailReader.Core.Services;
 /// Detects text lines inside layout blocks.
 ///
 /// Three strategies are applied in order of preference:
-///   1. <b>Atomic classes</b> — equation, figure, table blocks collapse to a single
-///      line spanning the full block. Multi-line equations and figures should
-///      advance in rail mode as one unit, not be fragmented row-by-row.
+///   1. <b>Atomic classes</b> — figure and chart blocks collapse to a single
+///      line spanning the full block. Such purely visual blocks should advance
+///      in rail mode as one unit, not be fragmented row-by-row. Tables are
+///      <i>not</i> atomic when <c>tableRowReading</c> is set (the default): a
+///      table's rows are detected like any other text so the reader can step
+///      through them line-by-line (e.g. financial statements).
 ///   2. <b>Char-box clustering</b> — when PDFium per-character bounding boxes are
 ///      available, cluster them by vertical position. Robust to subscripts,
 ///      superscripts, and inline math; gives true baselines rather than the
@@ -20,9 +23,12 @@ namespace RailReader.Core.Services;
 public static class LineDetector
 {
     /// <summary>
-    /// Block roles treated as a single atomic line in rail mode. Only purely
-    /// visual blocks belong here — they have no meaningful per-line structure
-    /// and should advance as one unit. Math roles (<see cref="BlockRole.DisplayMath"/>,
+    /// Block roles unconditionally treated as a single atomic line in rail mode.
+    /// Only purely visual blocks belong here — they have no meaningful per-line
+    /// structure and should advance as one unit. <see cref="BlockRole.Table"/> is
+    /// deliberately <i>not</i> in this set: it is atomic only when table-row
+    /// reading is disabled (see the <c>tableRowReading</c> parameter of
+    /// <see cref="DetectLines"/>). Math roles (<see cref="BlockRole.DisplayMath"/>,
     /// <see cref="BlockRole.InlineMath"/>, <see cref="BlockRole.Algorithm"/>)
     /// deliberately stay line-detectable because stepwise derivations and
     /// algorithm pseudocode read line-by-line; char-box clustering handles
@@ -32,7 +38,6 @@ public static class LineDetector
     [
         BlockRole.Figure,
         BlockRole.Chart,
-        BlockRole.Table,
     ];
 
     /// <summary>
@@ -61,16 +66,46 @@ public static class LineDetector
     /// </summary>
     internal const float OversizeGlyphFactor = 1.8f;
 
+    /// <summary>
+    /// A horizontal gap between successive glyphs wider than this multiple of the median
+    /// glyph height opens a new table cell. ~1× the font size cleanly separates the
+    /// whitespace-aligned columns of a financial statement without splitting the ordinary
+    /// inter-word spaces inside a single cell (mirrors liteparse's borderless-table rule).
+    /// </summary>
+    internal const float CellGapMultiplier = 1.0f;
+
     private static readonly HashSet<BlockRole> MathRoles =
         [BlockRole.DisplayMath, BlockRole.InlineMath, BlockRole.Algorithm];
 
+    /// <param name="tableRowReading">
+    /// When true (the default), a <see cref="BlockRole.Table"/> block is split into
+    /// per-row lines via char clustering instead of collapsing to one atomic line,
+    /// so rail mode can step through table rows. When false the table stays atomic.
+    /// </param>
+    /// <param name="cellNavigation">
+    /// When true (and the block is a table read row-by-row), each detected row's
+    /// <see cref="LineInfo.Cells"/> is populated by splitting the row's glyphs into cells
+    /// at horizontal whitespace gaps, so rail mode can step the row cell-by-cell. Requires
+    /// a text layer (char boxes); the pixel-projection fallback produces no cells. Has no
+    /// effect on non-table blocks or when <paramref name="tableRowReading"/> is false.
+    /// </param>
     public static List<LineInfo> DetectLines(
         LayoutBlock block,
         IReadOnlyList<CharBox>? charBoxes,
-        byte[] rgbBytes, int imgW, int imgH, float scaleX, float scaleY)
+        byte[] rgbBytes, int imgW, int imgH, float scaleX, float scaleY,
+        bool tableRowReading = true,
+        bool cellNavigation = false)
     {
-        if (AtomicLineRoles.Contains(block.Role))
+        bool isTable = block.Role == BlockRole.Table;
+        if (AtomicLineRoles.Contains(block.Role) || (isTable && !tableRowReading))
             return [new LineInfo(block.BBox.Y + block.BBox.H / 2f, block.BBox.H, block.BBox.X, block.BBox.W)];
+
+        // Table rows come from the same char clustering as prose, but skip the
+        // vertical-overlap merge in NormalizeLines: a table's rows are already
+        // cleanly separated by the greedy split, and the merge can fuse
+        // tightly-spaced rows (common in dense financial statements).
+        bool mergeOverlaps = !isTable;
+        bool detectCells = isTable && cellNavigation;
 
         if (charBoxes is { Count: > 0 })
         {
@@ -81,19 +116,30 @@ public static class LineDetector
             // merge, stacked rows (matrices, large fractions).
             var charLines = DetectLinesFromChars(block.BBox, charBoxes, mult, excludeOversizeSpanners: !isMath);
             if (charLines.Count > 0)
-                return NormalizeLines(charLines, block.BBox);
+            {
+                var rows = NormalizeLines(charLines, block.BBox, mergeOverlaps);
+                // Cells are a pure overlay on the validated row geometry — row
+                // Y/Height/X/Width are untouched, so row reading is unregressed.
+                return detectCells ? AssignCells(rows, charBoxes, block.BBox) : rows;
+            }
         }
 
-        return NormalizeLines(DetectLinesFromPixels(block, rgbBytes, imgW, imgH, scaleX, scaleY), block.BBox);
+        return NormalizeLines(DetectLinesFromPixels(block, rgbBytes, imgW, imgH, scaleX, scaleY), block.BBox, mergeOverlaps);
     }
 
     /// <summary>
     /// Enforces the invariants every line consumer (rail stepping, snap, line
     /// focus/highlight, and chunk concatenation) silently assumes: positive
-    /// height, geometry clamped inside the block, sorted top-to-bottom, and no
-    /// two lines overlapping by more than half the smaller. Idempotent.
+    /// height, geometry clamped inside the block, sorted top-to-bottom, and
+    /// (when <paramref name="mergeOverlaps"/> is set) no two lines overlapping by
+    /// more than half the smaller. Idempotent.
     /// </summary>
-    internal static List<LineInfo> NormalizeLines(List<LineInfo> lines, BBox block)
+    /// <param name="mergeOverlaps">
+    /// Merge lines whose vertical bands overlap by &gt; 50% of the smaller. On by
+    /// default. Disabled for table rows, which the greedy split already separates
+    /// cleanly and whose tight spacing the merge would otherwise fuse.
+    /// </param>
+    internal static List<LineInfo> NormalizeLines(List<LineInfo> lines, BBox block, bool mergeOverlaps = true)
     {
         float top = block.Y, bottom = block.Y + block.H;
         float left = block.X, right = block.X + block.W;
@@ -118,6 +164,8 @@ public static class LineDetector
 
         clamped.Sort((a, b) => a.Y.CompareTo(b.Y));
 
+        if (!mergeOverlaps) return clamped;
+
         // Merge lines whose vertical bands overlap by > 50% of the smaller.
         var merged = new List<LineInfo>(clamped.Count);
         foreach (var l in clamped)
@@ -139,6 +187,91 @@ public static class LineDetector
             merged.Add(l);
         }
         return merged;
+    }
+
+    // One glyph's horizontal extent, kept while splitting a table row into cells.
+    // Vertical extent is irrelevant once a glyph is bucketed to a row.
+    private readonly record struct GlyphRef(float Left, float Right);
+
+    /// <summary>
+    /// Overlays per-row cell geometry onto already-detected table rows. Each in-block,
+    /// non-degenerate glyph is bucketed to the nearest row by centre-Y; the row's glyphs are
+    /// split into cells wherever the horizontal gap between successive glyphs exceeds
+    /// <see cref="CellGapMultiplier"/>× the median glyph height. Rows are updated in place
+    /// (the row list is freshly produced by <see cref="NormalizeLines"/> and owned by the
+    /// caller) with <see cref="LineInfo.Cells"/> populated — a row that gathered no glyphs
+    /// keeps <c>Cells == null</c>. Pure overlay: the row Y/Height/X/Width are never modified,
+    /// so table-row reading is unaffected by whether cells are computed.
+    /// </summary>
+    internal static List<LineInfo> AssignCells(
+        List<LineInfo> rows, IReadOnlyList<CharBox> charBoxes, BBox block)
+    {
+        if (rows.Count == 0) return rows;
+
+        float left = block.X, right = block.X + block.W;
+        float top = block.Y, bottom = block.Y + block.H;
+
+        // Bucket in-block glyphs to the nearest row (by line centre) and collect heights
+        // for the gap threshold. Nearest-row is consistent with the mid-Y clustering that
+        // produced the rows, and assigns every glyph exactly once.
+        var rowGlyphs = new List<GlyphRef>?[rows.Count];
+        var heights = new List<float>();
+        foreach (var c in charBoxes)
+        {
+            float h = c.Bottom - c.Top;
+            if (h <= 0) continue; // whitespace / degenerate box
+            float midX = (c.Left + c.Right) * 0.5f;
+            float midY = (c.Top + c.Bottom) * 0.5f;
+            if (midX < left || midX > right || midY < top || midY > bottom) continue;
+
+            int best = 0;
+            float bestDist = float.PositiveInfinity;
+            for (int r = 0; r < rows.Count; r++)
+            {
+                float d = Math.Abs(rows[r].Y - midY);
+                if (d < bestDist) { bestDist = d; best = r; }
+            }
+            (rowGlyphs[best] ??= []).Add(new GlyphRef(c.Left, c.Right));
+            heights.Add(h);
+        }
+
+        if (heights.Count == 0) return rows;
+        heights.Sort();
+        float gapThreshold = heights[heights.Count / 2] * CellGapMultiplier;
+
+        for (int r = 0; r < rows.Count; r++)
+            if (rowGlyphs[r] is { Count: > 0 } glyphs)
+                rows[r] = rows[r] with { Cells = SplitRowCells(glyphs, gapThreshold) };
+        return rows;
+    }
+
+    /// <summary>
+    /// Splits one row's glyphs (any order) into cells: sort by left edge, then open a new
+    /// cell whenever the gap from the current cell's running right edge to the next glyph's
+    /// left edge exceeds <paramref name="gapThreshold"/>. Each cell spans min-left…max-right.
+    /// </summary>
+    private static List<CellInfo> SplitRowCells(List<GlyphRef> glyphs, float gapThreshold)
+    {
+        glyphs.Sort((a, b) => a.Left.CompareTo(b.Left));
+
+        var cells = new List<CellInfo>();
+        float cellLeft = glyphs[0].Left, cellRight = glyphs[0].Right;
+
+        for (int i = 1; i < glyphs.Count; i++)
+        {
+            var g = glyphs[i];
+            if (g.Left - cellRight > gapThreshold)
+            {
+                cells.Add(new CellInfo(cellLeft, Math.Max(0f, cellRight - cellLeft)));
+                cellLeft = g.Left; cellRight = g.Right;
+            }
+            else if (g.Right > cellRight)
+            {
+                cellRight = g.Right;
+            }
+        }
+        cells.Add(new CellInfo(cellLeft, Math.Max(0f, cellRight - cellLeft)));
+        return cells;
     }
 
     private readonly record struct GlyphBox(float MidY, float Top, float Bottom, float Height, float Left, float Right);

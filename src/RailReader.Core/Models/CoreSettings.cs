@@ -72,6 +72,27 @@ public sealed record CoreSettings
     public IReadOnlySet<BlockRole> NavigableRoles { get; init; } = Services.DefaultRoleSets.Navigable;
     public IReadOnlySet<BlockRole> CenteringRoles { get; init; } = Services.DefaultRoleSets.Centering;
 
+    // Line detection
+    /// <summary>
+    /// Detect table rows: route <see cref="BlockRole.Table"/> blocks through per-row
+    /// line detection (one line per table row) instead of collapsing the whole table
+    /// to a single atomic line. This lets rail mode step a table row-by-row — essential
+    /// for reading financial statements at high magnification. Set <c>false</c> to
+    /// restore the legacy whole-table-as-one-line behaviour.
+    /// </summary>
+    public bool TableRowReading { get; init; } = true;
+
+    /// <summary>
+    /// Split each table row into navigable cells (requires <see cref="TableRowReading"/>;
+    /// has no effect on non-table blocks). When on, a table row's
+    /// <see cref="LineInfo.Cells"/> is populated so rail mode can step cell-to-cell
+    /// horizontally — following "label …… value" across the whitespace gap at
+    /// magnification. Off by default: row reading alone already lets the reader step
+    /// table rows; cell stepping is the opt-in next level. Cell detection runs only when
+    /// both flags are on, and only for <see cref="BlockRole.Table"/> blocks.
+    /// </summary>
+    public bool CellNavigation { get; init; }
+
     // Visual effects (per-document defaults — UI may override per doc)
     public ColourEffect ColourEffect { get; init; } = ColourEffect.None;
     public double ColourEffectIntensity { get; init; } = 1.0;

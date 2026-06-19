@@ -15,7 +15,7 @@ public sealed class AppConfig : IRecentFilesStore
     /// </summary>
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
-    internal const int CurrentSchemaVersion = 2;
+    internal const int CurrentSchemaVersion = 3;
 
     public double RailZoomThreshold { get; set; } = 3.0;
     public double SnapDurationMs { get; set; } = 450.0;
@@ -78,6 +78,16 @@ public sealed class AppConfig : IRecentFilesStore
     [JsonConverter(typeof(BlockRoleSetConverter))]
     public HashSet<BlockRole> AutoScrollStopClasses { get; set; } = new(DefaultRoleSets.AutoScrollStop);
 
+    /// <summary>Detect table rows so rail mode can step through them (one line per row)
+    /// instead of collapsing a table to a single atomic line. See
+    /// <see cref="CoreSettings.TableRowReading"/>.</summary>
+    public bool TableRowReading { get; set; } = true;
+
+    /// <summary>Split table rows into navigable cells (requires <see cref="TableRowReading"/>)
+    /// so rail mode can step a row cell-by-cell. Off by default. See
+    /// <see cref="CoreSettings.CellNavigation"/>.</summary>
+    public bool CellNavigation { get; set; }
+
     // VLM (Vision Language Model) settings for Copy as LaTeX / Markdown / Description
     public string? VlmEndpoint { get; set; }
     public string? VlmModel { get; set; }
@@ -119,6 +129,8 @@ public sealed class AppConfig : IRecentFilesStore
         NavigableRoles = NavigableRoles,
         CenteringRoles = CenteringRoles,
         AutoScrollStopClasses = AutoScrollStopClasses,
+        TableRowReading = TableRowReading,
+        CellNavigation = CellNavigation,
         VlmEndpoint = VlmEndpoint,
         VlmModel = VlmModel,
         VlmApiKey = VlmApiKey,
@@ -198,6 +210,16 @@ public sealed class AppConfig : IRecentFilesStore
         if (config.SchemaVersion < 2)
         {
             MigrateLegacyClasses(config, rawJson);
+        }
+
+        // v2 → v3: tables became navigable by default so rail mode can step through
+        // their rows (see CoreSettings.TableRowReading). Inject Table into the
+        // persisted navigable set once, so configs written before v3 pick up the
+        // feature. This runs only on the v2→v3 upgrade — a user who later removes
+        // Table keeps it removed (the config is then at v3 and this block is skipped).
+        if (config.SchemaVersion < 3)
+        {
+            config.NavigableRoles.Add(BlockRole.Table);
         }
 
         config.SchemaVersion = CurrentSchemaVersion;

@@ -951,4 +951,174 @@ public class RailNavTests
         Assert.True(nav2.ScrollSpeed > 0.0); // still scrolling across the full line
     }
 
+    // ===== Cell navigation (table rows split into cells) =====
+
+    /// <summary>
+    /// Creates a single Table block of <paramref name="rowCount"/> rows, each row carrying
+    /// <paramref name="cellsPerRow"/> evenly-spaced cells. Mirrors what
+    /// <c>LineDetector.AssignCells</c> produces so the navigation can be exercised without
+    /// running detection.
+    /// </summary>
+    private static PageAnalysis CreateTableAnalysis(int rowCount, int cellsPerRow)
+    {
+        const float xOffset = 72f, blockWidth = 468f, rowHeight = 16f, top = 72f;
+        float cellWidth = blockWidth / cellsPerRow;
+
+        var lines = new List<LineInfo>();
+        for (int r = 0; r < rowCount; r++)
+        {
+            var cells = new List<CellInfo>();
+            for (int c = 0; c < cellsPerRow; c++)
+                cells.Add(new CellInfo(xOffset + c * cellWidth, cellWidth * 0.6f));
+            lines.Add(new LineInfo(top + r * rowHeight, rowHeight, xOffset, blockWidth, cells));
+        }
+
+        var block = new LayoutBlock
+        {
+            BBox = new BBox(xOffset, top, blockWidth, rowCount * rowHeight),
+            Role = BlockRole.Table,
+            Confidence = 0.95f,
+            Order = 0,
+            Lines = lines,
+        };
+        return new PageAnalysis { Blocks = [block], PageWidth = 612, PageHeight = 792 };
+    }
+
+    private void ActivateTable(int rowCount, int cellsPerRow)
+    {
+        _nav.SetAnalysis(CreateTableAnalysis(rowCount, cellsPerRow), new HashSet<BlockRole> { BlockRole.Table });
+        _nav.Active = true;
+    }
+
+    [Fact]
+    public void NextCell_AdvancesWithinRow()
+    {
+        ActivateTable(rowCount: 2, cellsPerRow: 3);
+
+        Assert.True(_nav.HasCells);
+        Assert.Equal(0, _nav.CurrentCell);
+
+        Assert.Equal(NavResult.Ok, _nav.NextCell());
+        Assert.Equal(1, _nav.CurrentCell);
+        Assert.Equal(0, _nav.CurrentLine); // same row
+    }
+
+    [Fact]
+    public void NextCell_AtRowEnd_AdvancesLineAndResetsCell()
+    {
+        ActivateTable(rowCount: 2, cellsPerRow: 2);
+
+        Assert.Equal(NavResult.Ok, _nav.NextCell()); // cell 0 -> 1
+        Assert.Equal(1, _nav.CurrentCell);
+
+        Assert.Equal(NavResult.Ok, _nav.NextCell()); // last cell -> next row
+        Assert.Equal(1, _nav.CurrentLine);
+        Assert.Equal(0, _nav.CurrentCell); // seated at first cell of the new row
+    }
+
+    [Fact]
+    public void NextCell_AtLastCellOfLastRow_ReturnsPageBoundary()
+    {
+        ActivateTable(rowCount: 1, cellsPerRow: 2);
+
+        _nav.NextCell();                                       // cell 0 -> 1
+        Assert.Equal(NavResult.PageBoundaryNext, _nav.NextCell()); // nowhere left on the page
+    }
+
+    [Fact]
+    public void PrevCell_AtRowStart_MovesToPrevRowLastCell()
+    {
+        ActivateTable(rowCount: 2, cellsPerRow: 3);
+
+        _nav.NextLine(); // move to row 1, cell reset to 0
+        Assert.Equal(1, _nav.CurrentLine);
+        Assert.Equal(0, _nav.CurrentCell);
+
+        Assert.Equal(NavResult.Ok, _nav.PrevCell());
+        Assert.Equal(0, _nav.CurrentLine);
+        Assert.Equal(2, _nav.CurrentCell); // last cell of the 3-cell row
+    }
+
+    [Fact]
+    public void PrevCell_AtFirstCellFirstRow_ReturnsPageBoundary()
+    {
+        ActivateTable(rowCount: 1, cellsPerRow: 3);
+
+        Assert.Equal(NavResult.PageBoundaryPrev, _nav.PrevCell());
+    }
+
+    [Fact]
+    public void CellStep_OnNonTableLine_ReturnsNotApplicable()
+    {
+        ActivateWithAnalysis(1, 3); // plain text blocks — no cells
+
+        Assert.False(_nav.HasCells);
+        Assert.Null(_nav.CurrentCellInfo);
+        Assert.Equal(NavResult.NotApplicable, _nav.NextCell());
+        Assert.Equal(NavResult.NotApplicable, _nav.PrevCell());
+    }
+
+    [Fact]
+    public void CurrentLineAssignment_ResetsCurrentCell()
+    {
+        ActivateTable(rowCount: 2, cellsPerRow: 3);
+
+        _nav.NextCell(); // CurrentCell -> 1
+        Assert.Equal(1, _nav.CurrentCell);
+
+        _nav.CurrentLine = 1; // any line assignment re-seats at the first cell
+        Assert.Equal(0, _nav.CurrentCell);
+    }
+
+    [Fact]
+    public void NextLine_ResetsCurrentCell()
+    {
+        ActivateTable(rowCount: 2, cellsPerRow: 3);
+
+        _nav.NextCell();
+        _nav.NextCell(); // CurrentCell -> 2
+        Assert.Equal(2, _nav.CurrentCell);
+
+        _nav.NextLine();
+        Assert.Equal(0, _nav.CurrentCell);
+    }
+
+    [Fact]
+    public void CurrentCellInfo_TracksActiveCell()
+    {
+        ActivateTable(rowCount: 1, cellsPerRow: 3);
+
+        var first = _nav.CurrentCellInfo;
+        Assert.NotNull(first);
+
+        _nav.NextCell();
+        var second = _nav.CurrentCellInfo;
+        Assert.NotNull(second);
+        Assert.True(second!.Value.CenterX > first!.Value.CenterX); // moved right
+    }
+
+    [Fact]
+    public void StartSnapToCell_CentersCellHorizontally()
+    {
+        // The block (468pt) is far wider than the window at zoom 4, so it scrolls.
+        // Snapping to a right-hand cell must pull the camera further left than a
+        // left-hand cell, bringing the cell to the centre.
+        ActivateTable(rowCount: 1, cellsPerRow: 3);
+
+        double camLeft = 0, camY0 = 0;
+        _nav.CurrentCell = 0;
+        _nav.StartSnapToCell(camLeft, camY0, Zoom, WindowWidth, WindowHeight);
+        Thread.Sleep(5);
+        _nav.Tick(ref camLeft, ref camY0, 0.016, Zoom, WindowWidth);
+
+        double camRight = 0, camY1 = 0;
+        _nav.CurrentCell = 2;
+        _nav.StartSnapToCell(camRight, camY1, Zoom, WindowWidth, WindowHeight);
+        Thread.Sleep(5);
+        _nav.Tick(ref camRight, ref camY1, 0.016, Zoom, WindowWidth);
+
+        Assert.True(camRight < camLeft,
+            $"right cell should scroll camera further left: camRight={camRight}, camLeft={camLeft}");
+    }
+
 }

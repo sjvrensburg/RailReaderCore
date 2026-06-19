@@ -10,7 +10,21 @@ public sealed partial class RailNav : ICameraClamp
     private readonly List<int> _navigableIndices = [];
 
     public int CurrentBlock { get; set; }
-    public int CurrentLine { get; set; }
+
+    private int _currentLine;
+    /// <summary>
+    /// Index of the active line within the current block. Assigning it seats the cursor at
+    /// that row's first cell (<see cref="CurrentCell"/> resets to 0), so every line
+    /// transition — internal advances and the controller's pause-restore alike — starts cell
+    /// stepping from the left. The same-analysis preserve path in <see cref="SetAnalysis"/>
+    /// only reassigns this when the line is out of range, so a pure config refresh keeps the
+    /// seated cell.
+    /// </summary>
+    public int CurrentLine
+    {
+        get => _currentLine;
+        set { _currentLine = value; CurrentCell = 0; }
+    }
     public bool Active { get; set; }
     public double ScrollSpeed { get; private set; }
 
