@@ -46,18 +46,19 @@ Building on row reading, a table row can now be stepped **cell-by-cell**, so a r
 tunnel vision can follow "Account label …… $1,234" across the whitespace gap at high
 magnification instead of panning blindly across the page. Each row's cells are detected by
 splitting its glyphs at horizontal whitespace gaps wider than ~1× the median glyph height
-(the borderless-table rule borrowed, reimplemented MIT-clean, from run-llama/liteparse);
-cells are tagged with a best-effort column track. This is a pure **overlay** on the
-already-validated row geometry — row positions are byte-for-byte unchanged whether or not
-cells are computed, so row reading is unaffected.
+(the borderless-table rule borrowed, reimplemented MIT-clean, from run-llama/liteparse).
+This is a pure **overlay** on the already-validated row geometry — row positions are
+byte-for-byte unchanged whether or not cells are computed, so row reading is unaffected.
 
-A line now carries optional `LineInfo.Cells` (a `CellInfo` list: `X`/`Width`/`CenterX`,
-`ColumnTrack`, and a `CharStart`/`CharCount` text-locator hint). `RailNav` gains
-`CurrentCell`, `CurrentCells`, `HasCells`, `CurrentCellInfo`, `NextCell()`, `PrevCell()`,
-and a `StartSnapToCell()` that centres the active cell. `NextCell`/`PrevCell` wrap to the
-adjacent row at the row ends (propagating page boundaries) and return the new
-`NavResult.NotApplicable` on a line with no cells, so a consumer can fall back to its
-pan/jump path. Assigning `CurrentLine` re-seats the cursor at the row's first cell.
+A line now carries optional `LineInfo.Cells` (a `CellInfo` list of `X`/`Width`/`CenterX`,
+listed left-to-right). `RailNav` gains `CurrentCell`, `CurrentCells`, `HasCells`,
+`CurrentCellInfo`, `NextCell()`, `PrevCell()`, and a `StartSnapToCell()` that centres the
+active cell. `NextCell`/`PrevCell` wrap to the adjacent row at the row ends (propagating
+page boundaries) and return the new `NavResult.NotApplicable` on a line with no cells, so a
+consumer can fall back to its pan/jump path. Assigning `CurrentLine` re-seats the cursor at
+the row's first cell. (Column identity and per-cell text are intentionally not modelled yet
+— they can be added without breaking the read-only `CellInfo` contract when a consumer
+needs them.)
 
 Off by default behind `CoreSettings.CellNavigation` (requires `TableRowReading`): row
 reading alone already lets the reader step rows; cell stepping is the opt-in next level.

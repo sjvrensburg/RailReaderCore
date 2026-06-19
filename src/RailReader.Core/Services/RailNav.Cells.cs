@@ -49,9 +49,12 @@ public sealed partial class RailNav
         if (!CanNavigate) return NavResult.Ok;
         if (CurrentCells is not { Count: > 0 } cells) return NavResult.NotApplicable;
 
-        if (CurrentCell + 1 < cells.Count)
+        // Normalise a possibly-stale index (e.g. carried over from a wider row) before
+        // stepping, so navigation can never walk past the row's real cells.
+        int cell = Math.Clamp(CurrentCell, 0, cells.Count - 1);
+        if (cell + 1 < cells.Count)
         {
-            CurrentCell++;
+            CurrentCell = cell + 1;
             return NavResult.Ok;
         }
         return NextLine();
@@ -67,11 +70,12 @@ public sealed partial class RailNav
     public NavResult PrevCell()
     {
         if (!CanNavigate) return NavResult.Ok;
-        if (CurrentCells is not { Count: > 0 }) return NavResult.NotApplicable;
+        if (CurrentCells is not { Count: > 0 } cells) return NavResult.NotApplicable;
 
-        if (CurrentCell > 0)
+        int cell = Math.Clamp(CurrentCell, 0, cells.Count - 1);
+        if (cell > 0)
         {
-            CurrentCell--;
+            CurrentCell = cell - 1;
             return NavResult.Ok;
         }
 

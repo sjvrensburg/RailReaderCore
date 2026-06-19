@@ -969,7 +969,7 @@ public class RailNavTests
         {
             var cells = new List<CellInfo>();
             for (int c = 0; c < cellsPerRow; c++)
-                cells.Add(new CellInfo(xOffset + c * cellWidth, cellWidth * 0.6f, c, c * 4, 4));
+                cells.Add(new CellInfo(xOffset + c * cellWidth, cellWidth * 0.6f));
             lines.Add(new LineInfo(top + r * rowHeight, rowHeight, xOffset, blockWidth, cells));
         }
 

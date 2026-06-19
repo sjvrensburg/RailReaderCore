@@ -356,7 +356,7 @@ public class LineDetectorTests
     }
 
     [Fact]
-    public void Table_CellNavigation_CellsShareColumnTracksAcrossRows()
+    public void Table_CellNavigation_CellsAreOrderedAndColumnAlignedAcrossRows()
     {
         var (block, chars) = MakeTable([100f, 300f, 450f]);
 
@@ -365,14 +365,17 @@ public class LineDetectorTests
 
         foreach (var l in lines)
         {
-            // Cells run left-to-right on tracks 0,1,2, identical across every row.
-            Assert.Equal(new[] { 0, 1, 2 }, l.Cells!.Select(c => c.ColumnTrack).ToArray());
-            // Centres strictly increase left-to-right.
+            // Cells are listed left-to-right with strictly increasing centres.
             Assert.True(l.Cells![0].CenterX < l.Cells[1].CenterX);
             Assert.True(l.Cells[1].CenterX < l.Cells[2].CenterX);
         }
-        // First cell of row 0 is anchored at the first column's left edge.
-        Assert.Equal(100f, lines[0].Cells![0].X, 1f);
+        // The Nth cell starts at the Nth column's left edge, identical across every row.
+        Assert.All(lines, l =>
+        {
+            Assert.Equal(100f, l.Cells![0].X, 1f);
+            Assert.Equal(300f, l.Cells[1].X, 1f);
+            Assert.Equal(450f, l.Cells[2].X, 1f);
+        });
     }
 
     [Fact]
