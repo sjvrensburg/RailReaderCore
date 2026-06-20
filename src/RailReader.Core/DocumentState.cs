@@ -176,7 +176,7 @@ public sealed class DocumentState : IDisposable
     public DocumentState(string filePath, IPdfService pdf, IPdfTextService pdfText, IPdfLinkService pdfLink,
         CoreSettings config, IThreadMarshaller marshaller, ILogger? logger = null)
     {
-        Primary = new Viewport();
+        Primary = new Viewport(config);
         _marshaller = marshaller;
         _logger = logger ?? NullLogger.Instance;
         FilePath = filePath;
@@ -191,7 +191,6 @@ public sealed class DocumentState : IDisposable
         Primary.MarginCroppingBacking = config.MarginCropping;
         _tableRowReading = config.TableRowReading;
         _cellNavigation = config.CellNavigation;
-        Primary.Rail = new RailNav(config);
         Outline = _pdf.Outline;
         _pageCacheRadius = config.PageCacheRadius;
         Primary.RenderDpi = config.RenderDpi;

@@ -18,11 +18,21 @@ namespace RailReader.Core;
 /// </summary>
 public sealed class Viewport
 {
+    internal Viewport(CoreSettings config)
+    {
+        // Rail needs config at construction, so build it here rather than leaving the
+        // member null-initialised and assigned later by the owner (a NRE footgun once a
+        // future phase constructs viewports outside DocumentState's ctor).
+        Rail = new RailNav(config);
+    }
+
     /// <summary>Camera (pan/zoom/offset) for this view.</summary>
     public Camera Camera { get; } = new();
 
     /// <summary>This view's viewport size in px. The controller keeps an ambient size and pushes it
-    /// here; in the single-window world all viewports share it, so it equals the controller's. Per-view
+    /// here. <b>Not read yet</b> — the controller's <c>GetViewportSize()</c> still feeds all animation
+    /// from its ambient <c>_vpWidth/_vpHeight</c>; this becomes the source of truth when the per-view
+    /// Tick reads it (later increment). In the single-window world it equals the controller's; per-view
     /// sizing diverges once detached surfaces manage their own dimensions (Phase 2).</summary>
     public double Width { get; private set; } = 1200;
     public double Height { get; private set; } = 900;
@@ -34,8 +44,8 @@ public sealed class Viewport
         if (h > 0) Height = h;
     }
 
-    /// <summary>Rail navigation state for this view (set once at construction).</summary>
-    public RailNav Rail { get; internal set; } = null!;
+    /// <summary>Rail navigation state for this view (built in the constructor).</summary>
+    public RailNav Rail { get; }
 
     /// <summary>Smooth zoom/pan animation state for this view.</summary>
     internal ZoomAnimationController Zoom { get; } = new();

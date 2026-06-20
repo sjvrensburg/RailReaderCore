@@ -120,8 +120,9 @@ public sealed partial class DocumentController : IDisposable
     {
         if (w > 0) _vpWidth = w;
         if (h > 0) _vpHeight = h;
-        // Push the ambient size into every view so each viewport's own Width/Height stays the
-        // source of truth for per-view animation (Phase 1). Single-window today → all equal.
+        // Mirror the ambient size into every view's Width/Height. Not yet consumed (GetViewportSize
+        // still returns the ambient size below); this primes the per-view size the relocated Tick
+        // will read in a later increment. Single-window today → all equal.
         foreach (var doc in Documents)
             doc.Primary.SetSize(_vpWidth, _vpHeight);
     }
@@ -573,10 +574,17 @@ public sealed partial class DocumentController : IDisposable
     /// early with <c>StillAnimating == false</c>), so it must let the render loop quiesce
     /// rather than pin it true forever (issue #62).
     /// </summary>
-    public bool IsAnimating =>
-        (ActiveDocument?.Primary.Zoom.IsAnimating ?? false)
-        || (ActiveDocument is { } d && d.Rail.SnapProgress < 1.0)
-        || (AutoScrollActive && !(ActiveDocument?.Rail.AutoScrollParked ?? false));
+    public bool IsAnimating
+    {
+        get
+        {
+            if (ActiveDocument is not { } d)
+                return AutoScrollActive; // no doc → only a stray auto-scroll flag could be "animating"
+            return d.Primary.Zoom.IsAnimating
+                || d.Rail.SnapProgress < 1.0
+                || (AutoScrollActive && !d.Rail.AutoScrollParked);
+        }
+    }
 
     // --- Auto-scroll (delegated to AutoScrollController) ---
 

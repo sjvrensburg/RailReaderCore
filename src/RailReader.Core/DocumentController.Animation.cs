@@ -18,6 +18,9 @@ public sealed partial class DocumentController
         if (doc is null) return default;
 
         var (ww, wh) = GetViewportSize();
+        // Free-pan pause is the active view's own state and can't change within a tick;
+        // read it once instead of re-walking ActiveDocument via the RailPaused property.
+        bool railPaused = doc.Primary.RailPause is not null;
         bool cameraChanged = false;
         bool pageChanged = false;
         bool overlayChanged = false;
@@ -25,7 +28,7 @@ public sealed partial class DocumentController
 
         TickZoomAnimation(doc, ww, wh, ref cameraChanged, ref animating);
 
-        if (!RailPaused)
+        if (!railPaused)
             TickRailSnap(doc, dt, ww, wh, ref cameraChanged, ref pageChanged, ref overlayChanged, ref animating);
 
         // Snap Y to integer pixel when rail mode is stable or nearly so.
@@ -42,7 +45,7 @@ public sealed partial class DocumentController
             }
         }
 
-        if (!RailPaused)
+        if (!railPaused)
             TickAutoScroll(doc, dt, ww, wh, ref cameraChanged, ref pageChanged, ref overlayChanged, ref animating);
 
         // Decay zoom blur speed
