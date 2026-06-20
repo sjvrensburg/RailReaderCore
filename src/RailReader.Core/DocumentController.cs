@@ -120,6 +120,10 @@ public sealed partial class DocumentController : IDisposable
     {
         if (w > 0) _vpWidth = w;
         if (h > 0) _vpHeight = h;
+        // Push the ambient size into every view so each viewport's own Width/Height stays the
+        // source of truth for per-view animation (Phase 1). Single-window today → all equal.
+        foreach (var doc in Documents)
+            doc.Primary.SetSize(_vpWidth, _vpHeight);
     }
 
     public (double Width, double Height) GetViewportSize() => (_vpWidth, _vpHeight);
@@ -144,6 +148,7 @@ public sealed partial class DocumentController : IDisposable
     public void AddDocument(DocumentState state)
     {
         var (ww, wh) = GetViewportSize();
+        state.Primary.SetSize(ww, wh); // seed this view's size from the ambient size
 
         var saved = _recentFiles.GetReadingPosition(state.FilePath);
         bool restoredPage = saved is not null && saved.Page > 0;

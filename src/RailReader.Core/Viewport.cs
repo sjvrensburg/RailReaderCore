@@ -21,6 +21,19 @@ public sealed class Viewport
     /// <summary>Camera (pan/zoom/offset) for this view.</summary>
     public Camera Camera { get; } = new();
 
+    /// <summary>This view's viewport size in px. The controller keeps an ambient size and pushes it
+    /// here; in the single-window world all viewports share it, so it equals the controller's. Per-view
+    /// sizing diverges once detached surfaces manage their own dimensions (Phase 2).</summary>
+    public double Width { get; private set; } = 1200;
+    public double Height { get; private set; } = 900;
+
+    /// <summary>Sets this view's size (ignores non-positive dimensions, matching the controller).</summary>
+    public void SetSize(double w, double h)
+    {
+        if (w > 0) Width = w;
+        if (h > 0) Height = h;
+    }
+
     /// <summary>Rail navigation state for this view (set once at construction).</summary>
     public RailNav Rail { get; internal set; } = null!;
 
