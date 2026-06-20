@@ -116,7 +116,7 @@ public sealed partial class DocumentController
 
             if (doc.Rail.ConsumeAutoScrollTrigger())
             {
-                _autoScroll.ActivateAutoScroll();
+                doc.Primary.AutoScroll.ActivateAutoScroll();
                 StatusMessage?.Invoke("Auto-scroll activated");
             }
 
@@ -194,7 +194,7 @@ public sealed partial class DocumentController
                         FireReadingPositionChanged();
                         // A page boundary is always a stop unit: restart auto-scroll on the
                         // new page, then park on entry (after the skip-landing snap settles).
-                        doc.Rail.StartAutoScroll(_autoScroll.AutoScrollSpeed);
+                        doc.Rail.StartAutoScroll(doc.Primary.AutoScroll.AutoScrollSpeed);
                         doc.Rail.ParkAutoScroll();
                         break;
                     case LineAdvanceResult.PageChangedRailLost:

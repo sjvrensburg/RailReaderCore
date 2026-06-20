@@ -27,7 +27,6 @@ public sealed partial class DocumentController : IDisposable
     private readonly IThreadMarshaller _marshaller;
     private readonly IPdfServiceFactory _pdfFactory;
     private readonly ILogger _logger;
-    private readonly AutoScrollController _autoScroll;
     private readonly AnnotationFileManager _annotationManager;
     private AnalysisWorker? _worker;
     public bool HasWorker => _worker is not null;
@@ -52,9 +51,13 @@ public sealed partial class DocumentController : IDisposable
     public AnnotationInteractionHandler Annotations { get; }
     public SearchService Search { get; }
 
-    // Auto-scroll state (delegated to AutoScrollController)
-    public bool AutoScrollActive => _autoScroll.AutoScrollActive;
-    public bool JumpMode { get => _autoScroll.JumpMode; set => _autoScroll.JumpMode = value; }
+    // Auto-scroll state — per-view, lives on the active document's Viewport.
+    public bool AutoScrollActive => ActiveDocument?.Primary.AutoScroll.AutoScrollActive ?? false;
+    public bool JumpMode
+    {
+        get => ActiveDocument?.Primary.AutoScroll.JumpMode ?? false;
+        set { if (ActiveDocument is { } d) d.Primary.AutoScroll.JumpMode = value; }
+    }
 
     // Rail pause (Ctrl+drag free pan) state — per-view, lives on Viewport.
     public bool RailPaused => ActiveDocument?.Primary.RailPause is not null;
@@ -88,8 +91,6 @@ public sealed partial class DocumentController : IDisposable
         _marshaller = marshaller;
         _pdfFactory = pdfFactory;
         _logger = logger ?? NullLogger.Instance;
-        _autoScroll = new AutoScrollController(config);
-        _autoScroll.StateChanged = name => StateChanged?.Invoke(name);
         _annotationManager = new AnnotationFileManager(annotationStore, marshaller);
         _annotationManager.OnSaveFailure = msg => StatusMessage?.Invoke(msg);
         Annotations = new AnnotationInteractionHandler();
@@ -150,6 +151,9 @@ public sealed partial class DocumentController : IDisposable
     {
         var (ww, wh) = GetViewportSize();
         state.Primary.SetSize(ww, wh); // seed this view's size from the ambient size
+        // This view's auto-scroll state changes surface through the controller's StateChanged
+        // (UI re-reads AutoScrollActive/JumpMode, which delegate to the active view).
+        state.Primary.AutoScroll.StateChanged = name => StateChanged?.Invoke(name);
 
         var saved = _recentFiles.GetReadingPosition(state.FilePath);
         bool restoredPage = saved is not null && saved.Page > 0;
@@ -190,14 +194,15 @@ public sealed partial class DocumentController : IDisposable
     {
         if (index >= 0 && index < Documents.Count)
         {
-            if (ActiveDocument is { } d) d.Primary.RailPause = null;
+            // Leaving this tab: drop its free-pan pause and end its auto-scroll session, so a tab
+            // switch quiesces the tab you're leaving. With per-view auto-scroll flags there is no
+            // shared flag to go stale, so the old post-switch sync is no longer needed.
+            if (ActiveDocument is { } leaving)
+            {
+                leaving.Primary.RailPause = null;
+                leaving.Primary.AutoScroll.StopAutoScroll(leaving);
+            }
             ActiveDocumentIndex = index;
-
-            // Sync the global auto-scroll flag with the newly active document.
-            // Without this, switching away from a tab with active auto-scroll leaves
-            // the flag stale, which prevents hold-scroll (and its trigger) on other tabs.
-            if (AutoScrollActive && !(ActiveDocument?.Rail.AutoScrolling ?? false))
-                _autoScroll.StopAutoScroll(null);
         }
     }
 
@@ -588,13 +593,13 @@ public sealed partial class DocumentController : IDisposable
 
     // --- Auto-scroll (delegated to AutoScrollController) ---
 
-    public void ToggleAutoScroll() => _autoScroll.ToggleAutoScroll(ActiveDocument);
+    public void ToggleAutoScroll() => ActiveDocument?.Primary.AutoScroll.ToggleAutoScroll(ActiveDocument);
 
-    public void StopAutoScroll() => _autoScroll.StopAutoScroll(ActiveDocument);
+    public void StopAutoScroll() => ActiveDocument?.Primary.AutoScroll.StopAutoScroll(ActiveDocument);
 
-    public void ToggleAutoScrollExclusive() => _autoScroll.ToggleAutoScrollExclusive(ActiveDocument);
+    public void ToggleAutoScrollExclusive() => ActiveDocument?.Primary.AutoScroll.ToggleAutoScrollExclusive(ActiveDocument);
 
-    public void ToggleJumpModeExclusive() => _autoScroll.ToggleJumpModeExclusive(ActiveDocument);
+    public void ToggleJumpModeExclusive() => ActiveDocument?.Primary.AutoScroll.ToggleJumpModeExclusive(ActiveDocument);
 
     /// <summary>
     /// True when semi-automatic auto-scroll is parked on a stop unit (non-prose block, new
@@ -635,9 +640,9 @@ public sealed partial class DocumentController : IDisposable
     public void OnConfigChanged(CoreSettings newConfig)
     {
         _config = newConfig;
-        _autoScroll.UpdateConfig(newConfig);
         foreach (var doc in Documents)
         {
+            doc.Primary.AutoScroll.UpdateConfig(newConfig);
             doc.Rail.UpdateConfig(_config);
             doc.ReapplyNavigableRoles(_config.NavigableRoles);
             doc.UpdateBackgroundSettings(_config);
@@ -653,9 +658,9 @@ public sealed partial class DocumentController : IDisposable
     public void OnSliderChanged(CoreSettings newConfig)
     {
         _config = newConfig;
-        _autoScroll.UpdateConfig(newConfig);
         foreach (var doc in Documents)
         {
+            doc.Primary.AutoScroll.UpdateConfig(newConfig);
             doc.Rail.UpdateConfig(_config);
             // Keep per-document render-DPI in sync with _config on this path too,
             // so the two can't diverge. OnRenderQualityChanged no-ops unless the

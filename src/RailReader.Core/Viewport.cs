@@ -20,10 +20,11 @@ public sealed class Viewport
 {
     internal Viewport(CoreSettings config)
     {
-        // Rail needs config at construction, so build it here rather than leaving the
-        // member null-initialised and assigned later by the owner (a NRE footgun once a
-        // future phase constructs viewports outside DocumentState's ctor).
+        // Rail and AutoScroll need config at construction, so build them here rather than leaving the
+        // members null-initialised and assigned later by the owner (a NRE footgun once a future phase
+        // constructs viewports outside DocumentState's ctor).
         Rail = new RailNav(config);
+        AutoScroll = new AutoScrollController(config);
     }
 
     /// <summary>Camera (pan/zoom/offset) for this view.</summary>
@@ -49,6 +50,9 @@ public sealed class Viewport
 
     /// <summary>Smooth zoom/pan animation state for this view.</summary>
     internal ZoomAnimationController Zoom { get; } = new();
+
+    /// <summary>Auto-scroll + jump-mode state for this view (built in the constructor).</summary>
+    internal AutoScrollController AutoScroll { get; }
 
     /// <summary>Non-rail page-edge hold state (hold arrow at the page edge → page advance) for this view.</summary>
     internal EdgeHoldStateMachine PageEdgeHold { get; } = new();
