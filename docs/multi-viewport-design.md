@@ -1,6 +1,6 @@
 # Multi-viewport design: independent & detachable viewports in RailReader.Core
 
-> **Status:** Phase 0 complete + Phase 1 in progress on `feat/multi-viewport` (2026-06-20).
+> **Status:** Phase 0 + Phase 1 (incl. the `Viewport`-threaded capstone) complete on `feat/multi-viewport` (2026-06-20). Phase 2 (railreader2 GUI) and Phase 3 (facade removal + `DocumentState`→`DocumentModel` rename) remain.
 > **Scope:** `RailReader.Core` only. **Driver:** support split-pane and detached-window reading —
 > *N* independent, interactive cameras over one open document — without changing the threading model.
 >
@@ -17,29 +17,36 @@
 >   (drain worker + fan-out + read-ahead) is now callable once per frame independently of per-view
 >   animation; `Tick` delegates to it. Behaviour-preserving.
 >
-> ### Remaining capstone — `Viewport`-threaded geometry/render/tick (sequenced)
+> ### Capstone — `Viewport`-threaded geometry/render/tick — **DONE** (5 green slices, 718/718)
 >
-> A second viewport can hold its own `Camera` today, but cannot render or rail-navigate independently
-> because the geometry/render/tick pipeline is hardwired to `doc.Primary`. Making viewports truly
-> independent is one interlocked refactor, best done as its own focused pass in these green slices:
+> A second viewport can now render and tick independently; the geometry/render/tick pipeline is
+> threaded through a `Viewport` rather than hardwired to `doc.Primary`. Landed in these slices:
 >
-> 1. **`Viewport.Owner` back-ref** (set in the `DocumentState` ctor) — gives a viewport access to
->    doc-level data (`Pdf`, caches, `DocumentContentFraction`, marshaller/logger/CTS).
-> 2. **Move camera geometry onto `Viewport`** (delegated from `DocumentState`, so call sites are
->    untouched): `GetFitRect`, `CenterPage`, `FitWidth(/PreservingTop)`, `ClampCamera`, `ApplyZoom`,
+> 1. ✅ **`Viewport.Owner` back-ref** (set in the `DocumentState` ctor) — gives a viewport access to
+>    doc-level data (`Pdf`, caches, `DocumentContentFraction`, marshaller/logger).
+> 2. ✅ **Camera geometry on `Viewport`** (delegated from `DocumentState`, call sites untouched):
+>    `GetFitRect`, `CenterPage`, `FitWidth(/PreservingTop)`, `ClampCamera`, `ApplyZoom`,
 >    `UpdateRailZoom`, `StartSnap(/PreservingPosition/ToEnd)`, `ComputeBlockFitZoom`,
->    `ComputeCenteredFrame`. They read `Camera`/`Rail`/`PageWidth/Height` (already on `Viewport`) and
->    `Owner.DocumentContentFraction`.
-> 3. **Move the render path onto `Viewport`** (delegated): `LoadPageBitmap`, `PrefetchPage`,
->    `UpdateRenderDpiIfNeeded`, `OnRenderQualityChanged` — they write the per-view `CachedPage`/DPI
->    state and read `Owner.Pdf`/marshaller/CTS. Per-view CTS (§6 disposal ordering) lands here.
-> 4. **Parameterise the tick on a `Viewport`**: `TickViewport(Viewport vp, dt)` (camera/rail/zoom/
->    auto-scroll + navigation), with `Tick(dt)` = `PumpAnalysis(); TickViewport(FocusedViewport)`.
->    Navigation (`AdvanceLine`/`SkipToNavigablePage`) operates on the passed viewport.
-> 5. **`DocumentState.Viewports` + `AddViewport`/`RemoveViewport`**, `Viewport.IsLive` (focus-tracking
->    default), `RequestAnimation`, per-viewport events behind focused-viewport facades — landed WITH a
->    multi-viewport test that renders + ticks two viewports on one document (so the API is never
->    write-only). `StateChanged`/`_cts` finish moving to `Viewport` here.
+>    `ComputeCenteredFrame`. Read this view's `Camera`/`Rail`/`PageWidth/Height` + `Owner.DocumentContentFraction`.
+> 3. ✅ **Render path on `Viewport`** (delegated): `LoadPageBitmap`, `PrefetchPage`,
+>    `UpdateRenderDpiIfNeeded`, `OnRenderQualityChanged` — write per-view `CachedPage`/DPI state, reach
+>    `Owner.Pdf`/marshaller. Per-view `Viewport.Cts` lands here (§6 disposal ordering); analysis-submission
+>    tasks keep the doc-level `_cts`.
+> 4. ✅ **Tick parameterised on a `Viewport`**: public `TickViewport(Viewport vp, dt)`; `Tick(dt)` is a
+>    facade that resolves `FocusedViewport` and delegates. Tick helpers + the rail-nav helpers
+>    (`AdvanceLine`/`SkipToNavigablePage`/`ApplySkipLanding`/`TryResumeSkip`) operate on the passed
+>    viewport. `ZoomAnimationController` re-parameterised onto `Viewport` (slice 4a).
+> 5. ✅ **`DocumentState.Viewports` + `AddViewport`/`RemoveViewport`**, `Viewport.IsLive` (default true),
+>    `RequestAnimation`, `Viewport : IDisposable`, per-view `StateChanged` (page state moved onto
+>    `Viewport`; `DocumentState` forwards `Primary.StateChanged`), union cache eviction. Landed with
+>    `MultiViewportTests` (renders + ticks two viewports on one document).
+>
+> **Known Phase-1 boundary (deferred to the analysis-fan-out phase, §5):** a non-primary view's
+> camera/zoom/rail/auto-scroll/rasterisation are independent, but a *cross-page* transition reached from
+> its tick still routes through doc-level `GoToPage`/`SubmitAnalysis` (Primary-targeted). `TickViewport`
+> also still runs `PumpAnalysis` internally (one pump per ticked view) — the pump-once-globally split is a
+> Phase 2 frame-loop concern. Both are documented on the public API and harmless for the single focused
+> viewport that ships today.
 
 ## Contents
 
