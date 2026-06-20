@@ -9,14 +9,13 @@ public sealed partial class DocumentController
 
     private enum LineAdvanceResult { NoChange, LineAdvanced, PageChanged, PageChangedRailLost }
 
-    private LineAdvanceResult AdvanceLine(DocumentState doc, bool forward, double ww, double wh)
+    private LineAdvanceResult AdvanceLine(Viewport vp, bool forward, double ww, double wh)
     {
-        int currentPage = doc.CurrentPage;
-        var result = forward ? doc.Rail.NextLine() : doc.Rail.PrevLine();
+        var result = forward ? vp.Rail.NextLine() : vp.Rail.PrevLine();
         var boundary = forward ? NavResult.PageBoundaryNext : NavResult.PageBoundaryPrev;
         if (result == boundary)
         {
-            return SkipToNavigablePage(doc, forward, 0, ww, wh) switch
+            return SkipToNavigablePage(vp, forward, 0, ww, wh) switch
             {
                 SkipResult.FoundNavigable => LineAdvanceResult.PageChanged,
                 _ => LineAdvanceResult.PageChangedRailLost,
@@ -33,14 +32,15 @@ public sealed partial class DocumentController
     /// If analysis is pending (async), stores skip state on the document for
     /// deferred continuation via <see cref="TryResumeSkip"/>.
     /// </summary>
-    private SkipResult SkipToNavigablePage(DocumentState doc, bool forward, int skipped, double ww, double wh)
+    private SkipResult SkipToNavigablePage(Viewport vp, bool forward, int skipped, double ww, double wh)
     {
+        var doc = vp.Owner;
         int step = forward ? 1 : -1;
         int targetPage = doc.CurrentPage + step;
 
         // Preserve vertical bias across page transitions so the line stays
         // at the same screen position instead of snapping to center.
-        double savedBias = doc.Rail.VerticalBias;
+        double savedBias = vp.Rail.VerticalBias;
 
         while (targetPage >= 0 && targetPage < doc.PageCount)
         {
@@ -57,24 +57,24 @@ public sealed partial class DocumentController
             if (!doc.GoToPage(targetPage, _worker, _config.NavigableRoles, ww, wh))
             {
                 NotifyRenderFailed(targetPage);
-                doc.PendingSkip = null;
+                vp.PendingSkip = null;
                 return SkipResult.Exhausted;
             }
-            doc.UpdateRailZoom(ww, wh);
+            vp.UpdateRailZoom(ww, wh);
 
-            if (doc.Rail.Active)
+            if (vp.Rail.Active)
             {
-                doc.PendingSkip = null;
+                vp.PendingSkip = null;
                 doc.QueueLookahead(_config.AnalysisLookaheadPages);
-                ApplySkipLanding(doc, forward, savedBias);
-                doc.StartSnap(ww, wh);
+                ApplySkipLanding(vp, forward, savedBias);
+                vp.StartSnap(ww, wh);
                 if (skipped > 0) NotifyPagesSkipped(skipped);
                 return SkipResult.FoundNavigable;
             }
 
             if (doc.PendingRailSetup)
             {
-                doc.PendingSkip = new(forward, skipped, savedBias);
+                vp.PendingSkip = new(forward, skipped, savedBias);
                 doc.QueueLookahead(_config.AnalysisLookaheadPages);
                 return SkipResult.Deferred;
             }
@@ -83,7 +83,7 @@ public sealed partial class DocumentController
             targetPage += step;
         }
 
-        doc.PendingSkip = null;
+        vp.PendingSkip = null;
         return SkipResult.Exhausted;
     }
 
@@ -102,21 +102,21 @@ public sealed partial class DocumentController
             : $"Skipped {count} pages (no text blocks)");
     }
 
-    private static void ApplySkipLanding(DocumentState doc, bool forward, double savedBias)
+    private static void ApplySkipLanding(Viewport vp, bool forward, double savedBias)
     {
-        if (!forward) doc.Rail.JumpToEnd();
-        doc.Rail.VerticalBias = savedBias;
+        if (!forward) vp.Rail.JumpToEnd();
+        vp.Rail.VerticalBias = savedBias;
     }
 
     /// <summary>
     /// Resume a deferred skip after analysis arrived with no navigable blocks.
     /// Called from <see cref="PollAnalysisResults"/>.
     /// </summary>
-    private bool TryResumeSkip(DocumentState doc, double ww, double wh)
+    private bool TryResumeSkip(Viewport vp, double ww, double wh)
     {
-        var skip = doc.PendingSkip!;
-        doc.Rail.VerticalBias = skip.SavedVerticalBias;
-        return SkipToNavigablePage(doc, skip.Forward, skip.Skipped + 1, ww, wh) == SkipResult.FoundNavigable;
+        var skip = vp.PendingSkip!;
+        vp.Rail.VerticalBias = skip.SavedVerticalBias;
+        return SkipToNavigablePage(vp, skip.Forward, skip.Skipped + 1, ww, wh) == SkipResult.FoundNavigable;
     }
 
     public void HandleArrowDown() => HandleVerticalNav(forward: true);
@@ -130,7 +130,7 @@ public sealed partial class DocumentController
 
         if (doc.Rail.Active)
         {
-            var adv = AdvanceLine(doc, forward, ww, wh);
+            var adv = AdvanceLine(doc.Primary, forward, ww, wh);
             if (adv == LineAdvanceResult.LineAdvanced)
             {
                 doc.StartSnap(ww, wh);
