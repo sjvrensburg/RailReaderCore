@@ -69,8 +69,8 @@ public sealed class DocumentState : IDisposable
 
     public bool PendingRailSetup
     {
-        get => Primary.PendingRailSetupBacking;
-        set => SetField(ref Primary.PendingRailSetupBacking, value, nameof(PendingRailSetup));
+        get => Primary.PendingRailSetup;
+        set => Primary.PendingRailSetup = value;
     }
 
     public ColourEffect ColourEffect
@@ -363,28 +363,33 @@ public sealed class DocumentState : IDisposable
     /// </summary>
     internal void OnRenderQualityChanged(in RenderDpiSettings settings) => Primary.OnRenderQualityChanged(in settings);
 
-    public void SubmitAnalysis(AnalysisWorker? worker, IReadOnlySet<BlockRole> navigableRoles)
+    // Analysis submission + lookahead are per-view (they read the viewport's CurrentPage / page dims
+    // / PendingRailSetup / lookahead queue) but write the document-level caches and feed the single
+    // shared worker. Each takes the target Viewport; the no-vp overloads delegate to Primary so every
+    // existing call site is unchanged (capstone §5.5 / analysis-fan-out phase).
+
+    public void SubmitAnalysis(Viewport vp, AnalysisWorker? worker, IReadOnlySet<BlockRole> navigableRoles)
     {
-        if (_analysisCache.TryGetValue(CurrentPage, out var cached))
+        if (_analysisCache.TryGetValue(vp.CurrentPage, out var cached))
         {
-            _logger.Debug($"[SubmitAnalysis] Page {CurrentPage}: cache hit, {cached.Blocks.Count} blocks");
-            ApplyAnalysis(cached, navigableRoles);
+            _logger.Debug($"[SubmitAnalysis] Page {vp.CurrentPage}: cache hit, {cached.Blocks.Count} blocks");
+            ApplyAnalysis(vp, cached, navigableRoles);
             return;
         }
 
         if (worker is null) return;
 
-        if (worker.IsInFlight(FilePath, CurrentPage))
+        if (worker.IsInFlight(FilePath, vp.CurrentPage))
         {
-            _logger.Debug($"[SubmitAnalysis] Page {CurrentPage}: already in flight");
-            PendingRailSetup = true;
+            _logger.Debug($"[SubmitAnalysis] Page {vp.CurrentPage}: already in flight");
+            vp.PendingRailSetup = true;
             return;
         }
 
-        int page = CurrentPage;
-        double pageW = PageWidth, pageH = PageHeight;
+        int page = vp.CurrentPage;
+        double pageW = vp.PageWidth, pageH = vp.PageHeight;
         string filePath = FilePath;
-        PendingRailSetup = true;
+        vp.PendingRailSetup = true;
 
         _logger.Debug($"[SubmitAnalysis] Page {page}: scheduling pixmap on background thread...");
         var ct = _cts.Token;
@@ -399,7 +404,7 @@ public sealed class DocumentState : IDisposable
                 _logger.Debug($"[SubmitAnalysis] Page {page}: pixmap ready {pxW}x{pxH}, {pageText.CharBoxes.Count} chars, submitting...");
                 _marshaller.Post(() =>
                 {
-                    if (IsDisposed || CurrentPage != page) return;
+                    if (IsDisposed || vp.CurrentPage != page) return;
                     _textCache[page] = pageText;
                     worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, _tableRowReading, _cellNavigation));
                 });
@@ -408,48 +413,56 @@ public sealed class DocumentState : IDisposable
             catch (Exception ex)
             {
                 _logger.Error($"Failed to prepare analysis input: {ex.Message}", ex);
-                _marshaller.Post(() => { if (!IsDisposed) PendingRailSetup = false; });
+                _marshaller.Post(() => { if (!IsDisposed) vp.PendingRailSetup = false; });
             }
         }, ct);
     }
 
+    public void SubmitAnalysis(AnalysisWorker? worker, IReadOnlySet<BlockRole> navigableRoles)
+        => SubmitAnalysis(Primary, worker, navigableRoles);
+
+    public void ReapplyNavigableRoles(Viewport vp, IReadOnlySet<BlockRole> navigableRoles)
+    {
+        if (_analysisCache.TryGetValue(vp.CurrentPage, out var cached))
+            vp.Rail.SetAnalysis(cached, navigableRoles);
+    }
+
     public void ReapplyNavigableRoles(IReadOnlySet<BlockRole> navigableRoles)
+        => ReapplyNavigableRoles(Primary, navigableRoles);
+
+    private void ApplyAnalysis(Viewport vp, PageAnalysis analysis, IReadOnlySet<BlockRole> navigableRoles)
     {
-        if (_analysisCache.TryGetValue(CurrentPage, out var cached))
-            Rail.SetAnalysis(cached, navigableRoles);
+        vp.Rail.SetAnalysis(analysis, navigableRoles);
+        vp.PendingRailSetup = false;
     }
 
-    private void ApplyAnalysis(PageAnalysis analysis, IReadOnlySet<BlockRole> navigableRoles)
+    public void QueueLookahead(Viewport vp, int count)
     {
-        Rail.SetAnalysis(analysis, navigableRoles);
-        PendingRailSetup = false;
-    }
-
-    public void QueueLookahead(int count)
-    {
-        PendingAnalysis.Clear();
+        vp.PendingAnalysis.Clear();
         if (_analysisCache.Count < PageCount)
-            BackgroundQueue.Reset(CurrentPage);
+            BackgroundQueue.Reset(vp.CurrentPage);
         for (int i = 1; i <= count; i++)
         {
-            int page = CurrentPage + i;
+            int page = vp.CurrentPage + i;
             if (page < PageCount && !_analysisCache.ContainsKey(page))
-                PendingAnalysis.Enqueue(page);
+                vp.PendingAnalysis.Enqueue(page);
         }
     }
 
-    public bool SubmitPendingLookahead(AnalysisWorker? worker)
+    public void QueueLookahead(int count) => QueueLookahead(Primary, count);
+
+    public bool SubmitPendingLookahead(Viewport vp, AnalysisWorker? worker)
     {
         if (worker is null || !worker.IsIdle) return false;
-        if (PendingRailSetup) return false;
+        if (vp.PendingRailSetup) return false;
 
-        while (PendingAnalysis.Count > 0)
+        while (vp.PendingAnalysis.Count > 0)
         {
-            int page = PendingAnalysis.Dequeue();
+            int page = vp.PendingAnalysis.Dequeue();
             if (_analysisCache.ContainsKey(page) || worker.IsInFlight(FilePath, page)) continue;
 
             string filePath = FilePath;
-            double pageW = PageWidth, pageH = PageHeight;
+            double pageW = vp.PageWidth, pageH = vp.PageHeight;
             var ct = _cts.Token;
             Task.Run(() =>
             {
@@ -477,6 +490,8 @@ public sealed class DocumentState : IDisposable
         }
         return false;
     }
+
+    public bool SubmitPendingLookahead(AnalysisWorker? worker) => SubmitPendingLookahead(Primary, worker);
 
     /// <summary>
     /// Submits the next background analysis page (outside the lookahead window).
@@ -511,41 +526,44 @@ public sealed class DocumentState : IDisposable
         }
     }
 
-    public bool GoToPage(int page, AnalysisWorker? worker, IReadOnlySet<BlockRole> navigableRoles, double windowWidth, double windowHeight)
+    public bool GoToPage(Viewport vp, int page, AnalysisWorker? worker, IReadOnlySet<BlockRole> navigableRoles, double windowWidth, double windowHeight)
     {
         page = Math.Clamp(page, 0, PageCount - 1);
-        if (page == CurrentPage) return true;
+        if (page == vp.CurrentPage) return true;
 
-        int oldPage = CurrentPage;
-        double oldZoom = Camera.Zoom;
+        int oldPage = vp.CurrentPage;
+        double oldZoom = vp.Camera.Zoom;
 
         // Clear stale state from the previous page — the background task
-        // for the old page will check CurrentPage != page and discard its
+        // for the old page will check vp.CurrentPage != page and discard its
         // result, so these flags must not linger.
-        ClearPendingState();
+        ClearPendingState(vp);
 
-        CurrentPage = page;
-        if (!LoadPageBitmap())
+        vp.CurrentPage = page;
+        if (!vp.LoadPageBitmap())
         {
-            CurrentPage = oldPage;
+            vp.CurrentPage = oldPage;
             return false;
         }
-        SubmitAnalysis(worker, navigableRoles);
-        Camera.Zoom = oldZoom;
-        ClampCamera(windowWidth, windowHeight);
+        SubmitAnalysis(vp, worker, navigableRoles);
+        vp.Camera.Zoom = oldZoom;
+        vp.ClampCamera(windowWidth, windowHeight);
         return true;
     }
 
+    public bool GoToPage(int page, AnalysisWorker? worker, IReadOnlySet<BlockRole> navigableRoles, double windowWidth, double windowHeight)
+        => GoToPage(Primary, page, worker, navigableRoles, windowWidth, windowHeight);
+
     /// <summary>
-    /// Clears transient state tied to the current page. Call before
-    /// navigating away so that stale flags don't leak across pages.
+    /// Clears transient state tied to a view's current page. Call before
+    /// navigating that view away so that stale flags don't leak across pages.
     /// </summary>
-    internal void ClearPendingState()
+    internal void ClearPendingState(Viewport vp)
     {
-        PendingRailSetup = false;
-        PendingSkip = null;
-        Primary.Prefetched?.Dispose();
-        Primary.Prefetched = null;
+        vp.PendingRailSetup = false;
+        vp.PendingSkip = null;
+        vp.Prefetched?.Dispose();
+        vp.Prefetched = null;
     }
 
     // --- Camera geometry: delegated to the view (capstone slice 2). The bodies live on

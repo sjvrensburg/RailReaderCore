@@ -54,7 +54,7 @@ public sealed partial class DocumentController
             }
 
             // Either has navigable blocks (land on it) or needs async analysis
-            if (!doc.GoToPage(targetPage, _worker, _config.NavigableRoles, ww, wh))
+            if (!doc.GoToPage(vp, targetPage, _worker, _config.NavigableRoles, ww, wh))
             {
                 NotifyRenderFailed(targetPage);
                 vp.PendingSkip = null;
@@ -65,17 +65,17 @@ public sealed partial class DocumentController
             if (vp.Rail.Active)
             {
                 vp.PendingSkip = null;
-                doc.QueueLookahead(_config.AnalysisLookaheadPages);
+                doc.QueueLookahead(vp, _config.AnalysisLookaheadPages);
                 ApplySkipLanding(vp, forward, savedBias);
                 vp.StartSnap(ww, wh);
                 if (skipped > 0) NotifyPagesSkipped(skipped);
                 return SkipResult.FoundNavigable;
             }
 
-            if (doc.PendingRailSetup)
+            if (vp.PendingRailSetup)
             {
                 vp.PendingSkip = new(forward, skipped, savedBias);
-                doc.QueueLookahead(_config.AnalysisLookaheadPages);
+                doc.QueueLookahead(vp, _config.AnalysisLookaheadPages);
                 return SkipResult.Deferred;
             }
 

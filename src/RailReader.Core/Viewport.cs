@@ -139,6 +139,14 @@ public sealed class Viewport : IDisposable
     internal bool LineHighlightEnabledBacking = true;
     internal bool MarginCroppingBacking;
 
+    /// <summary>True while this view is waiting on analysis for its current page before its rail can
+    /// be seated. Per-view so each viewport tracks its own pending state; fires <see cref="StateChanged"/>.</summary>
+    public bool PendingRailSetup
+    {
+        get => PendingRailSetupBacking;
+        set => SetField(ref PendingRailSetupBacking, value, nameof(PendingRailSetup));
+    }
+
     /// <summary>When set, this page was reached via rail navigation and should be skipped
     /// if analysis reveals no navigable blocks. Cleared on landing.</summary>
     public PendingPageSkip? PendingSkip { get; set; }
