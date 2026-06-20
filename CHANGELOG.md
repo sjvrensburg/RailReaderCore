@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.37.0 — Multi-viewport foundation (additive)
+
+Introduces the foundation for **independent, detachable viewports** — *N* cameras over one open
+document (split-pane / tear-off reading). This is Phase 1 of the multi-viewport design
+(`docs/multi-viewport-design.md`) and is **entirely additive and backward-compatible**: a
+single-viewport consumer compiles and behaves identically, because `DocumentState` keeps its full
+public surface as a thin facade over one primary `Viewport`.
+
+### New public surface
+
+- **`Viewport`** — owns a view's `Camera`, `RailNav`, current page + dimensions, rasterised-page
+  cache (`CachedPage`/`CachedDpi`/`MinimapPage`), render-DPI state machine, zoom/auto-scroll/edge-hold
+  animation, a per-view `StateChanged`, and the camera-geometry + render methods (`CenterPage`,
+  `FitWidth`, `ClampCamera`, `ApplyZoom`, `StartSnap*`, `LoadPageBitmap`, `UpdateRenderDpiIfNeeded`, …).
+  Now `IDisposable`.
+- **`DocumentState.Primary`** (the embedded primary view) and **`DocumentState.Viewports`** (always
+  ≥ 1, `[0] == Primary`).
+- **`DocumentState.AddViewport()` / `RemoveViewport(vp)`** — attach/detach additional views, each with
+  its own camera and render cache, sharing the document's PDF / analysis / annotations.
+- **`Viewport.IsLive`** (focus-tracking flag) and **`Viewport.RequestAnimation`** (host frame hook).
+- **`DocumentController.TickViewport(Viewport vp, double dt)`** — advance one animation frame for a
+  specific viewport; `Tick(double)` is now a facade over it for the focused viewport.
+- **`DocumentController.FocusedViewport`** and **`PumpAnalysis(quiescent)`** — the global analysis pump,
+  now separable from per-view camera animation.
+
+### Behaviour
+
+Unchanged for the single-viewport path (718 tests green; identical camera/rail/render behaviour). A
+second viewport renders and ticks its camera / zoom / rail / auto-scroll independently of the first.
+
+**Known boundary (deferred):** a non-primary view's *cross-page* navigation still routes through the
+document-level `GoToPage` / analysis fan-out (primary-targeted), and `TickViewport` runs the analysis
+pump once per ticked view. Both are documented on the API and harmless for the single focused viewport
+that ships today; full per-view navigation and a pump-once-globally split land with the GUI work. No
+public API is removed or changed — the only breaking release will be the eventual `DocumentState` →
+`DocumentModel` rename (a later phase).
+
+## 0.36.0 — Low-zoom rail activation + table cell navigation
+
+> CHANGELOG entry backfilled: 0.36.0 was tagged without one.
+
+- **"Start rail here" at any magnification.** `RailNav.ForceActivateAt` / `ClearForceActive` plus a
+  force gate let rail engage below the zoom threshold; the force flag is consumed once zoom reaches the
+  threshold and cleared on page change, so a forced session can't get stuck or leak onto later pages.
+  Snap is suppressed below the threshold so forced low-zoom rail guides the eye line-by-line without
+  yanking the camera off to a corner. Exposed via `DocumentController.ActivateRailAt` / `ExitForcedRail`
+  / `ForcedRailActive`.
+- **Cell-by-cell table navigation.** `DocumentController.HandleCellRight` / `HandleCellLeft` wrap
+  `RailNav.NextCell` / `PrevCell` + `StartSnapToCell`, with reading-position announcements and table-edge
+  boundary handling.
+
 ## 0.35.0 — Table rows and cells are navigable in rail mode
 
 ### Table rows are read row-by-row in rail mode
