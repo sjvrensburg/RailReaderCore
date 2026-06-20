@@ -176,7 +176,7 @@ public sealed class DocumentState : IDisposable
     public DocumentState(string filePath, IPdfService pdf, IPdfTextService pdfText, IPdfLinkService pdfLink,
         CoreSettings config, IThreadMarshaller marshaller, ILogger? logger = null)
     {
-        Primary = new Viewport(config);
+        Primary = new Viewport(config, this);
         _marshaller = marshaller;
         _logger = logger ?? NullLogger.Instance;
         FilePath = filePath;

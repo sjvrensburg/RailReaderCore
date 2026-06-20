@@ -18,14 +18,24 @@ namespace RailReader.Core;
 /// </summary>
 public sealed class Viewport
 {
-    internal Viewport(CoreSettings config)
+    internal Viewport(CoreSettings config, DocumentState owner)
     {
+        // Back-reference to the owning document (set at construction so the camera-geometry /
+        // render-path methods that move onto Viewport in later increments can reach doc-level data
+        // — Pdf, caches, DocumentContentFraction, marshaller/logger). Always non-null.
+        Owner = owner;
         // Rail and AutoScroll need config at construction, so build them here rather than leaving the
         // members null-initialised and assigned later by the owner (a NRE footgun once a future phase
         // constructs viewports outside DocumentState's ctor).
         Rail = new RailNav(config);
         AutoScroll = new AutoScrollController(config);
     }
+
+    /// <summary>The document this view belongs to. Gives the per-view camera/render methods
+    /// (moved onto <see cref="Viewport"/> in the capstone) read access to doc-level data:
+    /// <see cref="DocumentState.Pdf"/>, the page caches, <see cref="DocumentState.DocumentContentFraction"/>,
+    /// and the marshaller/logger. Set once in the constructor.</summary>
+    internal DocumentState Owner { get; }
 
     /// <summary>Camera (pan/zoom/offset) for this view.</summary>
     public Camera Camera { get; } = new();
