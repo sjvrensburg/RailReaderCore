@@ -57,19 +57,13 @@ public sealed partial class DocumentController
                 cameraChanged = true;
         }
 
-        // Poll analysis results
-        var (gotResults, needsAnim, gotPageChange) = PollAnalysisResults();
+        // Drain the analysis worker and schedule read-ahead (global, once per frame).
+        // `quiescent: !animating` preserves the prior gate: read-ahead only when neither
+        // the camera nor a just-arrived result is animating.
+        var (gotResults, needsAnim, gotPageChange) = PumpAnalysis(quiescent: !animating);
         animating |= needsAnim;
         overlayChanged |= gotResults;
         pageChanged |= gotPageChange;
-
-        if (!animating)
-        {
-            if (!doc.SubmitPendingLookahead(_worker)
-                && !doc.Rail.Active
-                && _worker is not null && _worker.IsIdle)
-                TrySubmitBackgroundReadAhead();
-        }
 
         // DPI bitmap swap
         if (doc.DpiRenderReady)
@@ -244,6 +238,31 @@ public sealed partial class DocumentController
     internal static bool ShouldParkOnLineAdvance(
         bool enteredNewChunk, bool enteredNewBlock, BlockRole newRole, IReadOnlySet<BlockRole> stopClasses)
         => enteredNewChunk || (enteredNewBlock && stopClasses.Contains(newRole));
+
+    /// <summary>
+    /// The global analysis pump: drain the worker (fanning results out to the matching
+    /// documents) and, when the frame is otherwise idle, schedule lookahead / background
+    /// read-ahead. Designed to be called <em>once per frame</em> regardless of how many
+    /// viewports tick (the worker and its read-ahead are global). <paramref name="quiescent"/>
+    /// is whether the caller's frame has no in-progress camera animation; read-ahead is
+    /// suppressed unless quiescent and no freshly-arrived result needs animating (so a
+    /// PDFium re-render can't jump the gate mid-scroll). Returns the same flags as
+    /// <see cref="PollAnalysisResults"/> so a facade <see cref="Tick"/> can fold them in.
+    /// </summary>
+    public (bool GotResults, bool NeedsAnimation, bool PageChanged) PumpAnalysis(bool quiescent = true)
+    {
+        var (gotResults, needsAnim, gotPageChange) = PollAnalysisResults();
+
+        if (quiescent && !needsAnim && ActiveDocument is { } doc)
+        {
+            if (!doc.SubmitPendingLookahead(_worker)
+                && !doc.Rail.Active
+                && _worker is not null && _worker.IsIdle)
+                TrySubmitBackgroundReadAhead();
+        }
+
+        return (gotResults, needsAnim, gotPageChange);
+    }
 
     /// <summary>
     /// Poll the analysis worker for completed results. Can also be called
