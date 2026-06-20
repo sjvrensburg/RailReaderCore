@@ -21,6 +21,13 @@ public sealed class Viewport
     /// <summary>Camera (pan/zoom/offset) for this view.</summary>
     public Camera Camera { get; } = new();
 
+    // --- Page position + dimensions (this view's current page). Backing storage for
+    //     DocumentState's delegated CurrentPage/PageWidth/PageHeight, which keep the
+    //     SetField/StateChanged/eviction logic and write here via ref (Phase 0). ---
+    internal int CurrentPageBacking;
+    internal double PageWidthBacking;
+    internal double PageHeightBacking;
+
     // --- Rasterised page output (rendered at THIS view's DPI) ---
 
     /// <summary>The cached rendered page bitmap.</summary>

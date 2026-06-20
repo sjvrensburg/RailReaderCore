@@ -18,9 +18,6 @@ public sealed class DocumentState : IDisposable
     internal bool IsDisposed { get; private set; }
 
     private string _title;
-    private int _currentPage;
-    private double _pageWidth;
-    private double _pageHeight;
     private bool _debugOverlay;
     private bool _pendingRailSetup;
     private ColourEffect _colourEffect;
@@ -50,24 +47,24 @@ public sealed class DocumentState : IDisposable
 
     public int CurrentPage
     {
-        get => _currentPage;
+        get => Primary.CurrentPageBacking;
         set
         {
-            if (SetField(ref _currentPage, value, nameof(CurrentPage)))
+            if (SetField(ref Primary.CurrentPageBacking, value, nameof(CurrentPage)))
                 EvictDistantPageCaches(value);
         }
     }
 
     public double PageWidth
     {
-        get => _pageWidth;
-        set => SetField(ref _pageWidth, value, nameof(PageWidth));
+        get => Primary.PageWidthBacking;
+        set => SetField(ref Primary.PageWidthBacking, value, nameof(PageWidth));
     }
 
     public double PageHeight
     {
-        get => _pageHeight;
-        set => SetField(ref _pageHeight, value, nameof(PageHeight));
+        get => Primary.PageHeightBacking;
+        set => SetField(ref Primary.PageHeightBacking, value, nameof(PageHeight));
     }
 
     public bool DebugOverlay
