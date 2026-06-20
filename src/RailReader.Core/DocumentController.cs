@@ -35,25 +35,42 @@ public sealed partial class DocumentController : IDisposable
     private double _vpHeight = 900;
 
     public List<DocumentState> Documents { get; } = [];
-    public int ActiveDocumentIndex { get; set; }
+
+    private Viewport? _focusedViewport;
+
+    /// <summary>
+    /// The view that receives input / search / annotation — the single source of truth for "where
+    /// the user is". A host sets this on pane focus (split-pane / detached window); the active
+    /// document derives from it, so the two cannot diverge. Null when no document is open; setting a
+    /// view whose document isn't open is ignored.
+    /// </summary>
+    public Viewport? FocusedViewport
+    {
+        get => _focusedViewport;
+        set
+        {
+            if (value is not null && !Documents.Contains(value.Owner)) return;
+            _focusedViewport = value;
+        }
+    }
+
     public CoreSettings Config => _config;
     public ColourEffect ActiveColourEffect => ActiveDocument?.ColourEffect ?? _config.ColourEffect;
     public float ActiveColourIntensity => (float)_config.ColourEffectIntensity;
     public AnalysisWorker? Worker => _worker;
     public AnnotationFileManager AnnotationManager => _annotationManager;
 
-    public DocumentState? ActiveDocument =>
-        ActiveDocumentIndex >= 0 && ActiveDocumentIndex < Documents.Count
-            ? Documents[ActiveDocumentIndex]
-            : null;
+    /// <summary>The document the focused view belongs to — the input/search/annotation target.
+    /// Derived from <see cref="FocusedViewport"/>, so setting focus moves it.</summary>
+    public DocumentState? ActiveDocument => _focusedViewport?.Owner;
 
-    /// <summary>
-    /// The view that receives input — the active document's primary viewport. The single
-    /// accessor for per-view state (camera, rail, zoom, auto-scroll); a later phase widens
-    /// this to a settable focus independent of the active document (multi-viewport, see
-    /// docs/multi-viewport-design.md §7).
-    /// </summary>
-    public Viewport? FocusedViewport => ActiveDocument?.Primary;
+    /// <summary>Index of <see cref="ActiveDocument"/> in <see cref="Documents"/> (-1 if none). Setting
+    /// it focuses that document's primary view — the tab-switch entry point.</summary>
+    public int ActiveDocumentIndex
+    {
+        get => _focusedViewport?.Owner is { } d ? Documents.IndexOf(d) : -1;
+        set => _focusedViewport = (uint)value < (uint)Documents.Count ? Documents[value].Primary : null;
+    }
 
     // Annotation and search subsystems
     public AnnotationInteractionHandler Annotations { get; }
@@ -191,9 +208,13 @@ public sealed partial class DocumentController : IDisposable
         _recentFiles.SaveReadingPosition(doc.FilePath, doc.CurrentPage,
             doc.Camera.Zoom, doc.Camera.OffsetX, doc.Camera.OffsetY, doc.ColourEffect);
 
+        // Re-point focus only when the closed document held it; a surviving focused view (another
+        // tab, or a detached pane) keeps focus, and ActiveDocumentIndex follows it automatically.
+        bool closingFocused = ReferenceEquals(_focusedViewport?.Owner, doc);
         Documents.RemoveAt(index);
         doc.Dispose();
-        ActiveDocumentIndex = Math.Clamp(ActiveDocumentIndex, 0, Math.Max(Documents.Count - 1, 0));
+        if (closingFocused)
+            _focusedViewport = Documents.Count > 0 ? Documents[Math.Min(index, Documents.Count - 1)].Primary : null;
         // Free-pan pause is per-view now: the closed doc's pause died with its disposal, and any
         // other tab is already cleared on switch-away (SelectDocument). The surviving active doc
         // keeps its own pause — so nothing to clear here. (The old global `_railPause = null` was a
@@ -228,13 +249,11 @@ public sealed partial class DocumentController : IDisposable
             || toIndex < 0 || toIndex >= Documents.Count)
             return;
 
-        var selected = ActiveDocument;
         var doc = Documents[fromIndex];
         Documents.RemoveAt(fromIndex);
         Documents.Insert(toIndex, doc);
-
-        if (selected is not null)
-            ActiveDocumentIndex = Documents.IndexOf(selected);
+        // Focus is a view reference, not an index, so reordering the tab list leaves it intact —
+        // ActiveDocument / ActiveDocumentIndex follow the moved document automatically.
     }
 
     public void SaveAllReadingPositions()

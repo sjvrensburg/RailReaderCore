@@ -192,6 +192,31 @@ public class MultiViewportTests : IDisposable
         Assert.Equal(2, controllerEvent);  // and the controller-level facade mirrored it
     }
 
+    [Fact]
+    public void FocusedViewport_IsSourceOfTruth_ActiveDocumentFollows()
+    {
+        var docA = SetupDoc(); // single doc; AddDocument focuses its primary
+        Assert.Same(docA, _controller.ActiveDocument);
+        Assert.Same(docA.Primary, _controller.FocusedViewport);
+
+        var docB = _controller.CreateDocument(_pdfPath);
+        docB.LoadPageBitmap();
+        _controller.AddDocument(docB); // focuses docB.Primary
+        Assert.Same(docB, _controller.ActiveDocument);
+        Assert.Equal(1, _controller.ActiveDocumentIndex);
+
+        // Setting focus back to docA's primary moves the active document + index with it.
+        _controller.FocusedViewport = docA.Primary;
+        Assert.Same(docA, _controller.ActiveDocument);
+        Assert.Equal(0, _controller.ActiveDocumentIndex);
+
+        // A view whose document isn't open is rejected (focus unchanged).
+        var orphan = _controller.CreateDocument(_pdfPath);
+        _controller.FocusedViewport = orphan.Primary;
+        Assert.Same(docA, _controller.ActiveDocument);
+        orphan.Dispose();
+    }
+
     // A one-block (3-line) navigable Text analysis so a seated rail reports HasAnalysis.
     private static PageAnalysis MakeNavigableAnalysis()
     {
