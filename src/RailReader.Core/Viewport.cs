@@ -24,6 +24,9 @@ public sealed class Viewport
     /// <summary>Rail navigation state for this view (set once at construction).</summary>
     public RailNav Rail { get; internal set; } = null!;
 
+    /// <summary>Smooth zoom/pan animation state for this view.</summary>
+    internal ZoomAnimationController Zoom { get; } = new();
+
     // --- Page position + dimensions (this view's current page). Backing storage for
     //     DocumentState's delegated CurrentPage/PageWidth/PageHeight, which keep the
     //     SetField/StateChanged/eviction logic and write here via ref (Phase 0). ---

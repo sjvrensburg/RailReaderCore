@@ -27,7 +27,6 @@ public sealed partial class DocumentController : IDisposable
     private readonly IThreadMarshaller _marshaller;
     private readonly IPdfServiceFactory _pdfFactory;
     private readonly ILogger _logger;
-    private readonly ZoomAnimationController _zoom;
     private readonly AutoScrollController _autoScroll;
     private readonly AnnotationFileManager _annotationManager;
     private AnalysisWorker? _worker;
@@ -93,7 +92,6 @@ public sealed partial class DocumentController : IDisposable
         _marshaller = marshaller;
         _pdfFactory = pdfFactory;
         _logger = logger ?? NullLogger.Instance;
-        _zoom = new ZoomAnimationController();
         _autoScroll = new AutoScrollController(config);
         _autoScroll.StateChanged = name => StateChanged?.Invoke(name);
         _annotationManager = new AnnotationFileManager(annotationStore, marshaller);
@@ -334,7 +332,7 @@ public sealed partial class DocumentController : IDisposable
 
     public void GoToPage(int page)
     {
-        _zoom.Cancel();
+        ActiveDocument?.Primary.Zoom.Cancel();
         if (ActiveDocument is not { } doc) return;
         var (ww, wh) = GetViewportSize();
         int prevPage = doc.CurrentPage;
@@ -356,7 +354,7 @@ public sealed partial class DocumentController : IDisposable
 
     public void FitPage()
     {
-        _zoom.Cancel();
+        ActiveDocument?.Primary.Zoom.Cancel();
         if (ActiveDocument is not { } doc) return;
         var (ww, wh) = GetViewportSize();
         doc.CenterPage(ww, wh);
@@ -365,7 +363,7 @@ public sealed partial class DocumentController : IDisposable
 
     public void FitWidth()
     {
-        _zoom.Cancel();
+        ActiveDocument?.Primary.Zoom.Cancel();
         if (ActiveDocument is not { } doc) return;
         var (ww, wh) = GetViewportSize();
         doc.FitWidth(ww, wh);
@@ -389,15 +387,15 @@ public sealed partial class DocumentController : IDisposable
         else
         {
             double factor = 1.0 + scrollDelta * CoreTuning.ZoomScrollSensitivity;
-            double baseZoom = _zoom.PendingTargetZoom ?? doc.Camera.Zoom;
+            double baseZoom = doc.Primary.Zoom.PendingTargetZoom ?? doc.Camera.Zoom;
             double newZoom = Math.Clamp(baseZoom * factor, Camera.ZoomMin, Camera.ZoomMax);
-            _zoom.Start(doc, newZoom, cursorX, cursorY, _vpWidth);
+            doc.Primary.Zoom.Start(doc, newZoom, cursorX, cursorY, _vpWidth);
         }
     }
 
     public void HandlePan(double dx, double dy, bool ctrlHeld = false)
     {
-        _zoom.Cancel();
+        ActiveDocument?.Primary.Zoom.Cancel();
         if (ActiveDocument is not { } doc) return;
         if (AutoScrollActive) StopAutoScroll();
         var (ww, wh) = GetViewportSize();
@@ -455,12 +453,12 @@ public sealed partial class DocumentController : IDisposable
         if (ActiveDocument is not { } doc) return;
         var (ww, wh) = GetViewportSize();
 
-        double baseZoom = _zoom.PendingTargetZoom ?? doc.Camera.Zoom;
+        double baseZoom = doc.Primary.Zoom.PendingTargetZoom ?? doc.Camera.Zoom;
         double newZoom = Math.Clamp(
             zoomIn ? baseZoom * CoreTuning.ZoomStep : baseZoom / CoreTuning.ZoomStep,
             Camera.ZoomMin, Camera.ZoomMax);
 
-        _zoom.Start(doc, newZoom, ww / 2.0, wh / 2.0, _vpWidth);
+        doc.Primary.Zoom.Start(doc, newZoom, ww / 2.0, wh / 2.0, _vpWidth);
         if (!doc.Rail.Active && AutoScrollActive) StopAutoScroll();
     }
 
@@ -476,7 +474,7 @@ public sealed partial class DocumentController : IDisposable
         double z = Math.Clamp(targetZoom, Camera.ZoomMin, Camera.ZoomMax);
         double cpx = (ww / 2.0 - targetOffsetX) / z; // target viewport-centre in page space
         double cpy = (wh / 2.0 - targetOffsetY) / z;
-        _zoom.StartTo(doc, z, targetOffsetX, targetOffsetY, cpx, cpy);
+        doc.Primary.Zoom.StartTo(doc, z, targetOffsetX, targetOffsetY, cpx, cpy);
     }
 
     /// <summary>
@@ -521,7 +519,7 @@ public sealed partial class DocumentController : IDisposable
         var (ox, oy) = doc.Rail.ComputeSnapTarget(z, ww, wh);
         var lineInfo = doc.Rail.CurrentLineInfo; // seated block's target line
         if (AutoScrollActive) StopAutoScroll();
-        _zoom.StartTo(doc, z, ox, oy, lineInfo.X + lineInfo.Width / 2.0, lineInfo.Y, durationMs);
+        doc.Primary.Zoom.StartTo(doc, z, ox, oy, lineInfo.X + lineInfo.Width / 2.0, lineInfo.Y, durationMs);
         FireReadingPositionChanged();
         return true;
     }
@@ -560,7 +558,7 @@ public sealed partial class DocumentController : IDisposable
         var (z, ox, oy) = doc.ComputeCenteredFrame(box, ww, wh, targetZoom);
         if (AutoScrollActive) StopAutoScroll();
         doc.Rail.Deactivate(); // drive the camera directly; no rail seat/snap
-        _zoom.StartCameraOnly(doc, z, ox, oy, durationMs);
+        doc.Primary.Zoom.StartCameraOnly(doc, z, ox, oy, durationMs);
         FireReadingPositionChanged(); // rail now inactive → reading position cleared
         return true;
     }
@@ -575,7 +573,7 @@ public sealed partial class DocumentController : IDisposable
     /// rather than pin it true forever (issue #62).
     /// </summary>
     public bool IsAnimating =>
-        _zoom.IsAnimating
+        (ActiveDocument?.Primary.Zoom.IsAnimating ?? false)
         || (ActiveDocument is { } d && d.Rail.SnapProgress < 1.0)
         || (AutoScrollActive && !(ActiveDocument?.Rail.AutoScrollParked ?? false));
 

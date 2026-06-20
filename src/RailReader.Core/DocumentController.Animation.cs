@@ -92,14 +92,14 @@ public sealed partial class DocumentController
     private void TickZoomAnimation(DocumentState doc, double ww, double wh,
         ref bool cameraChanged, ref bool animating)
     {
-        _zoom.Tick(doc, ww, wh, ref cameraChanged, ref animating);
+        doc.Primary.Zoom.Tick(doc, ww, wh, ref cameraChanged, ref animating);
     }
 
     /// <summary>Rail snap animation and edge-hold line advance (skipped while zoom is animating).</summary>
     private void TickRailSnap(DocumentState doc, double dt, double ww, double wh,
         ref bool cameraChanged, ref bool pageChanged, ref bool overlayChanged, ref bool animating)
     {
-        if (!_zoom.IsAnimating)
+        if (!doc.Primary.Zoom.IsAnimating)
         {
             double cx = doc.Camera.OffsetX, cy = doc.Camera.OffsetY;
             bool railAnimating = doc.Rail.Tick(ref cx, ref cy, dt, doc.Camera.Zoom, ww);
