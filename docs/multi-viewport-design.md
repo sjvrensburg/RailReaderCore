@@ -1,8 +1,17 @@
 # Multi-viewport design: independent & detachable viewports in RailReader.Core
 
-> **Status:** proposal (no code yet). **Date:** 2026-06-20. **Scope:** `RailReader.Core` only.
-> **Driver:** support split-pane and detached-window reading — *N* independent, interactive
-> cameras over one open document — without changing the threading model.
+> **Status:** Phase 0 landed on `feat/multi-viewport` (2026-06-20); Phases 1–3 pending.
+> **Scope:** `RailReader.Core` only. **Driver:** support split-pane and detached-window reading —
+> *N* independent, interactive cameras over one open document — without changing the threading model.
+>
+> **Implementation progress.** Phase 0 (the `DocumentState` → embedded `Viewport` extraction) is
+> implemented: `Viewport` now owns the camera, `RailNav`, current-page + dimensions, the rasterised-page
+> cache, the render-DPI state machine, the prefetch buffer, pending rail/skip state, the lookahead
+> queue, the back/forward stacks, and the display prefs; `DocumentState` embeds one `Primary` viewport
+> and delegates. Zero API/behaviour change — 713/713 tests green, full solution builds. **Not yet done
+> in Phase 0:** the controller singletons (`_zoom` / `_autoScroll` / `_railPause` / `_pageEdgeHold` /
+> `_vpWidth`/`_vpHeight`, §2.2) and `StateChanged`/`_cts` still live on `DocumentController` /
+> `DocumentState`; their relocation is folded into the Phase 1 viewport-addressed controller refactor.
 
 ## Contents
 
