@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.38.0 — Multi-viewport analysis fan-out (additive)
+
+Phase 1's second half: with the `Viewport` foundation in place (0.37.0), this wires **analysis,
+navigation, configuration, and the per-frame tick** to address an arbitrary viewport rather than
+only the document's primary. It is the Core-side work the railreader2 GUI team flagged as a
+prerequisite for the Phase 2 split-pane / tear-off UI (railreader2#180). **Entirely additive and
+backward-compatible** — every new entry point is a viewport-addressed overload alongside an
+unchanged primary-delegating facade, so a single-viewport consumer compiles and behaves identically.
+
+### New public surface
+
+- **Per-viewport events** — `Viewport.PageChanged` (`Action<int>?`) and
+  `Viewport.ReadingPositionChanged` (`Action<ReadingPosition>?`) fire for *that* view. The
+  controller-level `PageChanged` / `ReadingPositionChanged` facades now follow the focused view and
+  re-point on focus change, so existing single-view consumers see no difference.
+- **`Viewport.IsLive`** (`bool`, default `true`) and **`Viewport.RequestAnimation`** (`Action?`) —
+  a host marks a view live (focused, the active-document pane, or a shown detached pane) so the
+  analysis fan-out fires its visual side effects and wakes it; a background view is seated silently.
+- **`DocumentController.FocusedViewport`** (`Viewport?`, settable) is now the single source of
+  truth: `ActiveDocument` and `ActiveDocumentIndex` derive from `FocusedViewport.Owner`, and setting
+  either re-points focus. Setting a viewport whose document isn't open is rejected.
+- **Viewport-addressed model overloads** on `DocumentState`: `SubmitAnalysis(vp, …)`,
+  `ReapplyNavigableRoles(vp, …)`, `QueueLookahead(vp, …)`, `SubmitPendingLookahead(vp, …)`,
+  `GoToPage(vp, …)` (plus the existing no-`vp` facades, which delegate to `Primary`).
+- **`DocumentController.TickViewport(Viewport vp, double dt, bool pumpAnalysis)`** — the document-
+  global analysis pump (worker drain + read-ahead) is now separable from the per-view tick. A host
+  driving *N* views per frame ticks the focused view with `pumpAnalysis: true` (or calls
+  `PumpAnalysis` once itself) and the rest with `false`, instead of pumping redundantly per view.
+  The 2-arg `TickViewport` and single-viewport `Tick(double)` always pump — behaviour unchanged.
+
+### Behaviour
+
+- **Analysis fan-out (§5.4):** a completed page analysis is cached once at the model level and then
+  seats the rail of *every* view of that document sitting on the analysed page and awaiting setup —
+  two views on the same page each get their own rail seated independently. Visual side effects
+  (reading-position/page events, deferred-skip resume, wake) fire only for live views.
+- **Config fan-out (§8):** `OnConfigChanged` / `OnSliderChanged` now propagate rail, auto-scroll,
+  render-DPI, and navigable-role settings to **every** viewport of each document, so a detached pane
+  responds to a live settings change too. Document-level caches/queue update once per document.
+
+### Notes
+
+- Phase 2 (railreader2 split-pane / tear-off GUI) and Phase 3 (the breaking
+  `DocumentState` → `DocumentModel` rename) remain downstream — tracked in railreader2#180.
+
 ## 0.37.0 — Multi-viewport foundation (additive)
 
 Introduces the foundation for **independent, detachable viewports** — *N* cameras over one open
