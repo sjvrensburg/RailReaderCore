@@ -22,14 +22,23 @@ public sealed partial class DocumentController
     /// <summary>
     /// Advance one animation frame for a specific <paramref name="vp"/>: its camera/rail/zoom/
     /// auto-scroll animation and DPI bitmap swap, plus the global analysis pump. Operates on the
-    /// passed viewport throughout, so a second viewport animates independently of the first. A
-    /// multi-viewport host drives each visible viewport's tick from its own frame callback.
-    /// <para>Note: this still runs <see cref="PumpAnalysis"/> internally (preserving the single-
-    /// viewport <see cref="Tick(double)"/> behaviour exactly). A host ticking several viewports per
-    /// frame therefore pumps once per view — harmless (the worker drains on the first), but the
-    /// pump-once-globally split is a Phase 2 frame-loop concern.</para>
+    /// passed viewport throughout, so a second viewport animates independently of the first.
+    /// <para>Facade that pumps analysis (preserving single-viewport <see cref="Tick(double)"/>
+    /// behaviour exactly). A multi-viewport host that ticks several views per frame should instead
+    /// pump once via the <see cref="TickViewport(Viewport,double,bool)"/> overload — see §5.5.</para>
     /// </summary>
-    public TickResult TickViewport(Viewport vp, double dt)
+    public TickResult TickViewport(Viewport vp, double dt) => TickViewport(vp, dt, pumpAnalysis: true);
+
+    /// <summary>
+    /// Advance one animation frame for <paramref name="vp"/>, with explicit control over the global
+    /// analysis pump. The pump (worker drain + read-ahead scheduling) is document-global, not
+    /// per-view, so a host driving N viewports per frame ticks the focused view with
+    /// <paramref name="pumpAnalysis"/>=<c>true</c> (or calls <see cref="PumpAnalysis"/> once itself)
+    /// and the rest with <c>false</c> — the worker would otherwise be drained redundantly on each
+    /// view (harmless, but wasteful). The single-viewport <see cref="Tick(double)"/> path always
+    /// pumps, so its behaviour is unchanged.
+    /// </summary>
+    public TickResult TickViewport(Viewport vp, double dt, bool pumpAnalysis)
     {
         dt = Math.Min(dt, 1.0 / 30.0);
 
@@ -72,13 +81,17 @@ public sealed partial class DocumentController
                 cameraChanged = true;
         }
 
-        // Drain the analysis worker and schedule read-ahead (global, once per frame).
+        // Drain the analysis worker and schedule read-ahead (document-global, once per frame).
         // `quiescent: !animating` preserves the prior gate: read-ahead only when neither
-        // the camera nor a just-arrived result is animating.
-        var (gotResults, needsAnim, gotPageChange) = PumpAnalysis(quiescent: !animating);
-        animating |= needsAnim;
-        overlayChanged |= gotResults;
-        pageChanged |= gotPageChange;
+        // the camera nor a just-arrived result is animating. A multi-viewport host pumps
+        // once per frame (not once per view) by passing pumpAnalysis:false on the others.
+        if (pumpAnalysis)
+        {
+            var (gotResults, needsAnim, gotPageChange) = PumpAnalysis(quiescent: !animating);
+            animating |= needsAnim;
+            overlayChanged |= gotResults;
+            pageChanged |= gotPageChange;
+        }
 
         // DPI bitmap swap
         if (vp.DpiRenderReady)

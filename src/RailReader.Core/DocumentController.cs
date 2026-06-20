@@ -676,11 +676,16 @@ public sealed partial class DocumentController : IDisposable
         _config = newConfig;
         foreach (var doc in Documents)
         {
-            doc.Primary.AutoScroll.UpdateConfig(newConfig);
-            doc.Rail.UpdateConfig(_config);
-            doc.ReapplyNavigableRoles(_config.NavigableRoles);
-            doc.UpdateBackgroundSettings(_config);
-            doc.OnRenderQualityChanged(_config.RenderDpi);
+            // Per-view settings reach EVERY view (rail, auto-scroll, render-DPI); a detached pane
+            // must respond to a live settings change too (§8).
+            foreach (var vp in doc.Viewports)
+            {
+                vp.AutoScroll.UpdateConfig(newConfig);
+                vp.Rail.UpdateConfig(_config);
+                doc.ReapplyNavigableRoles(vp, _config.NavigableRoles);
+                vp.OnRenderQualityChanged(_config.RenderDpi);
+            }
+            doc.UpdateBackgroundSettings(_config); // doc-level caches/queue — once per document
         }
     }
 
@@ -693,14 +698,15 @@ public sealed partial class DocumentController : IDisposable
     {
         _config = newConfig;
         foreach (var doc in Documents)
-        {
-            doc.Primary.AutoScroll.UpdateConfig(newConfig);
-            doc.Rail.UpdateConfig(_config);
-            // Keep per-document render-DPI in sync with _config on this path too,
-            // so the two can't diverge. OnRenderQualityChanged no-ops unless the
-            // resolved tuning actually changed, so a normal slider drag is free.
-            doc.OnRenderQualityChanged(_config.RenderDpi);
-        }
+            foreach (var vp in doc.Viewports)
+            {
+                vp.AutoScroll.UpdateConfig(newConfig);
+                vp.Rail.UpdateConfig(_config);
+                // Keep per-view render-DPI in sync with _config on this path too, so the two can't
+                // diverge. OnRenderQualityChanged no-ops unless the resolved tuning actually changed,
+                // so a normal slider drag is free.
+                vp.OnRenderQualityChanged(_config.RenderDpi);
+            }
     }
 
 

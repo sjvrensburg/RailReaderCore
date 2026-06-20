@@ -250,6 +250,69 @@ public class MultiViewportTests : IDisposable
         orphan.Dispose();
     }
 
+    [Fact]
+    public void ConfigChange_PropagatesToEveryViewport()
+    {
+        // Slice C: per-view settings reach EVERY view, not just the primary — a detached pane must
+        // respond to a live settings change too (§8). Rail.ZoomThreshold mirrors RailZoomThreshold.
+        var doc = SetupDoc();
+        var vp2 = doc.AddViewport();
+        Assert.Equal(3.0, vp2.Rail.ZoomThreshold, 3);   // default RailZoomThreshold
+
+        _controller.OnConfigChanged(_controller.Config with { RailZoomThreshold = 7.0 });
+
+        Assert.Equal(7.0, doc.Primary.Rail.ZoomThreshold, 3);  // primary tracks the new config
+        Assert.Equal(7.0, vp2.Rail.ZoomThreshold, 3);          // and the detached pane too
+    }
+
+    [Fact]
+    public void PumpedTick_DrainsWorkerAndFansOutToAnUntickedView()
+    {
+        // Slice D pump-once: the analysis pump is document-global. A host ticks ONE view with
+        // pumpAnalysis:true; that single pump drains the worker and fans results out to every
+        // view of the document — including views never ticked this frame (§5.5).
+        _controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
+
+        var doc = SetupDoc();             // focused primary on page 0
+        var vp1 = doc.Primary;
+        var vp2 = doc.AddViewport();      // never ticked below
+        vp2.CurrentPage = 1;
+        vp2.LoadPageBitmap();
+
+        doc.SubmitAnalysis(vp2, _controller.Worker, _controller.Config.NavigableRoles);
+        Assert.True(vp2.PendingRailSetup);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (vp2.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
+        {
+            _controller.TickViewport(vp1, 0.016, pumpAnalysis: true); // only vp1 is ticked
+            Thread.Sleep(10);
+        }
+
+        Assert.False(vp2.PendingRailSetup);   // vp1's pump fanned out to the un-ticked vp2
+        Assert.True(vp2.Rail.HasAnalysis);
+    }
+
+    [Fact]
+    public void PumplessTickOverload_AdvancesViewOwnAnimation()
+    {
+        // Slice D: the pumpless overload still advances the ticked view's own camera animation —
+        // it only skips the document-global analysis pump (which a host runs once per frame).
+        var doc = SetupDoc();             // no worker initialised → no rail/analysis interference
+        var vp = doc.Primary;
+        vp.CenterPage(800, 600);
+        vp.Camera.Zoom = 1.0;
+        vp.Zoom.Start(vp, 2.0, 400, 300, 800);
+        Thread.Sleep(220);                // past the zoom duration
+
+        var r = _controller.TickViewport(vp, 0.25, pumpAnalysis: false);
+
+        Assert.Equal(2.0, vp.Camera.Zoom, 3);   // the pumpless overload still ticked the view
+        Assert.False(vp.Zoom.IsAnimating);
+        Assert.True(r.CameraChanged);
+    }
+
     // A one-block (3-line) navigable Text analysis so a seated rail reports HasAnalysis.
     private static PageAnalysis MakeNavigableAnalysis()
     {
