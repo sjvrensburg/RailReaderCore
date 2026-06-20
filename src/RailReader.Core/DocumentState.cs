@@ -20,7 +20,10 @@ public sealed class DocumentState : IDisposable
     private string _title;
     private bool _tableRowReading = true;
     private bool _cellNavigation;
-    /// <summary>Fires when a property changes. Parameter is the property name.</summary>
+    /// <summary>Fires when a property changes. Parameter is the property name. Doc-level changes
+    /// (e.g. Title) fire directly; per-view page changes are forwarded from the primary
+    /// <see cref="Viewport.StateChanged"/> (wired in the constructor) so single-viewport
+    /// subscribers see the same notifications as before.</summary>
     public Action<string>? StateChanged;
 
     /// <summary>Sets a backing field and fires StateChanged if the value changed.</summary>
@@ -39,26 +42,23 @@ public sealed class DocumentState : IDisposable
         set => SetField(ref _title, value, nameof(Title));
     }
 
+    // Page position + dimensions are per-view (on Viewport); these delegate to the primary view.
     public int CurrentPage
     {
-        get => Primary.CurrentPageBacking;
-        set
-        {
-            if (SetField(ref Primary.CurrentPageBacking, value, nameof(CurrentPage)))
-                EvictDistantPageCaches(value);
-        }
+        get => Primary.CurrentPage;
+        set => Primary.CurrentPage = value;
     }
 
     public double PageWidth
     {
-        get => Primary.PageWidthBacking;
-        set => SetField(ref Primary.PageWidthBacking, value, nameof(PageWidth));
+        get => Primary.PageWidth;
+        set => Primary.PageWidth = value;
     }
 
     public double PageHeight
     {
-        get => Primary.PageHeightBacking;
-        set => SetField(ref Primary.PageHeightBacking, value, nameof(PageHeight));
+        get => Primary.PageHeight;
+        set => Primary.PageHeight = value;
     }
 
     public bool DebugOverlay
@@ -180,6 +180,9 @@ public sealed class DocumentState : IDisposable
         CoreSettings config, IThreadMarshaller marshaller, ILogger? logger = null)
     {
         Primary = new Viewport(config, this);
+        // Forward the primary view's per-view property changes to the doc-level StateChanged facade
+        // so existing single-viewport subscribers keep seeing CurrentPage/PageWidth/PageHeight events.
+        Primary.StateChanged += name => StateChanged?.Invoke(name);
         _marshaller = marshaller;
         _logger = logger ?? NullLogger.Instance;
         FilePath = filePath;
@@ -214,6 +217,14 @@ public sealed class DocumentState : IDisposable
         _cellNavigation = config.CellNavigation;
         EvictDistantPageCaches(CurrentPage);
     }
+
+    /// <summary>
+    /// Drops text/link cache entries for pages no view needs any more, called when a viewport's
+    /// page changes. Eviction is centred on the union of all viewports' current pages so a second
+    /// view advancing can't drop a page the primary is still sitting on (§5). Today there is one
+    /// viewport, so this is the single-centre behaviour.
+    /// </summary>
+    internal void EvictDistantPageCaches() => EvictDistantPageCaches(Primary.CurrentPage);
 
     /// <summary>
     /// Drops text/link cache entries for pages outside ±<see cref="_pageCacheRadius"/>

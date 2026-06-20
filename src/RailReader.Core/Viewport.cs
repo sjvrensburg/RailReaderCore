@@ -37,6 +37,22 @@ public sealed class Viewport
     /// and the marshaller/logger. Set once in the constructor.</summary>
     internal DocumentState Owner { get; }
 
+    /// <summary>Fires when a per-view property changes (parameter is the property name). Per-view so a
+    /// multi-viewport host can tell "which view changed". <see cref="DocumentState.StateChanged"/>
+    /// forwards the primary view's events, so existing single-viewport subscribers are unaffected.</summary>
+    public Action<string>? StateChanged;
+
+    /// <summary>Sets a backing field and fires <see cref="StateChanged"/> if the value changed.
+    /// Mirrors <c>DocumentState.SetField</c> — UI-thread-only, same change-detection.</summary>
+    private bool SetField<T>(ref T field, T value, string propertyName)
+    {
+        Owner.Marshaller.AssertUIThread();
+        if (EqualityComparer<T>.Default.Equals(field, value)) return false;
+        field = value;
+        StateChanged?.Invoke(propertyName);
+        return true;
+    }
+
     /// <summary>Camera (pan/zoom/offset) for this view.</summary>
     public Camera Camera { get; } = new();
 
@@ -70,12 +86,38 @@ public sealed class Viewport
     /// <summary>Active free-pan (Ctrl+drag) rail-pause snapshot for this view, or null when not paused.</summary>
     internal RailPauseState? RailPause { get; set; }
 
-    // --- Page position + dimensions (this view's current page). Backing storage for
-    //     DocumentState's delegated CurrentPage/PageWidth/PageHeight, which keep the
-    //     SetField/StateChanged/eviction logic and write here via ref (Phase 0). ---
+    // --- Page position + dimensions (this view's current page). Per-view properties:
+    //     each viewport sits on its own page rendered at its own size. DocumentState's
+    //     CurrentPage/PageWidth/PageHeight delegate here. ---
     internal int CurrentPageBacking;
     internal double PageWidthBacking;
     internal double PageHeightBacking;
+
+    /// <summary>This view's current page index. Setting it evicts now-distant text/link caches
+    /// (doc-level, union of all views) and fires <see cref="StateChanged"/>.</summary>
+    public int CurrentPage
+    {
+        get => CurrentPageBacking;
+        set
+        {
+            if (SetField(ref CurrentPageBacking, value, nameof(CurrentPage)))
+                Owner.EvictDistantPageCaches();
+        }
+    }
+
+    /// <summary>This view's current page width in PDF points (set when the page bitmap loads).</summary>
+    public double PageWidth
+    {
+        get => PageWidthBacking;
+        set => SetField(ref PageWidthBacking, value, nameof(PageWidth));
+    }
+
+    /// <summary>This view's current page height in PDF points (set when the page bitmap loads).</summary>
+    public double PageHeight
+    {
+        get => PageHeightBacking;
+        set => SetField(ref PageHeightBacking, value, nameof(PageHeight));
+    }
 
     // --- Per-view display prefs + pending state. Backing storage for DocumentState's
     //     delegated SetField properties (written via ref). ---
@@ -182,8 +224,8 @@ public sealed class Viewport
                 CachedPage = pf.Page;
                 CachedDpi = pf.Dpi;
                 MinimapPage = pf.Minimap;
-                Owner.PageWidth = pf.PageWidth;
-                Owner.PageHeight = pf.PageHeight;
+                PageWidth = pf.PageWidth;
+                PageHeight = pf.PageHeight;
                 Prefetched = null; // consumed — don't dispose, we're using the bitmaps
                 oldPage?.Dispose();
                 oldMinimap?.Dispose();
@@ -199,8 +241,8 @@ public sealed class Viewport
             CachedPage = newPage;
             CachedDpi = dpi;
             MinimapPage = newMinimap;
-            Owner.PageWidth = w;
-            Owner.PageHeight = h;
+            PageWidth = w;
+            PageHeight = h;
             oldPage?.Dispose();
             oldMinimap?.Dispose();
             return true;
