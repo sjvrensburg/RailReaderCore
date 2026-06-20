@@ -18,12 +18,6 @@ public sealed class DocumentState : IDisposable
     internal bool IsDisposed { get; private set; }
 
     private string _title;
-    private bool _debugOverlay;
-    private bool _pendingRailSetup;
-    private ColourEffect _colourEffect;
-    private bool _lineFocusBlur;
-    private bool _lineHighlightEnabled = true;
-    private bool _marginCropping;
     private bool _tableRowReading = true;
     private bool _cellNavigation;
     /// <summary>Fires when a property changes. Parameter is the property name.</summary>
@@ -69,38 +63,38 @@ public sealed class DocumentState : IDisposable
 
     public bool DebugOverlay
     {
-        get => _debugOverlay;
-        set => SetField(ref _debugOverlay, value, nameof(DebugOverlay));
+        get => Primary.DebugOverlayBacking;
+        set => SetField(ref Primary.DebugOverlayBacking, value, nameof(DebugOverlay));
     }
 
     public bool PendingRailSetup
     {
-        get => _pendingRailSetup;
-        set => SetField(ref _pendingRailSetup, value, nameof(PendingRailSetup));
+        get => Primary.PendingRailSetupBacking;
+        set => SetField(ref Primary.PendingRailSetupBacking, value, nameof(PendingRailSetup));
     }
 
     public ColourEffect ColourEffect
     {
-        get => _colourEffect;
-        set => SetField(ref _colourEffect, value, nameof(ColourEffect));
+        get => Primary.ColourEffectBacking;
+        set => SetField(ref Primary.ColourEffectBacking, value, nameof(ColourEffect));
     }
 
     public bool LineFocusBlur
     {
-        get => _lineFocusBlur;
-        set => SetField(ref _lineFocusBlur, value, nameof(LineFocusBlur));
+        get => Primary.LineFocusBlurBacking;
+        set => SetField(ref Primary.LineFocusBlurBacking, value, nameof(LineFocusBlur));
     }
 
     public bool LineHighlightEnabled
     {
-        get => _lineHighlightEnabled;
-        set => SetField(ref _lineHighlightEnabled, value, nameof(LineHighlightEnabled));
+        get => Primary.LineHighlightEnabledBacking;
+        set => SetField(ref Primary.LineHighlightEnabledBacking, value, nameof(LineHighlightEnabled));
     }
 
     public bool MarginCropping
     {
-        get => _marginCropping;
-        set => SetField(ref _marginCropping, value, nameof(MarginCropping));
+        get => Primary.MarginCroppingBacking;
+        set => SetField(ref Primary.MarginCroppingBacking, value, nameof(MarginCropping));
     }
 
     public string FilePath { get; }
@@ -126,7 +120,7 @@ public sealed class DocumentState : IDisposable
     // caches; <= 0 disables eviction. See CoreSettings.PageCacheRadius.
     private int _pageCacheRadius;
 
-    public Queue<int> PendingAnalysis { get; } = new();
+    public Queue<int> PendingAnalysis => Primary.PendingAnalysis;
     internal BackgroundAnalysisQueue BackgroundQueue { get; private set; } = null!;
 
     /// <summary>Number of pages with cached analysis results.</summary>
@@ -150,16 +144,14 @@ public sealed class DocumentState : IDisposable
     /// When set, this page was reached via rail navigation and should be
     /// skipped if analysis reveals no navigable blocks. Cleared on landing.
     /// </summary>
-    public PendingPageSkip? PendingSkip { get; set; }
+    public PendingPageSkip? PendingSkip { get => Primary.PendingSkip; set => Primary.PendingSkip = value; }
     public List<OutlineEntry> Outline { get; }
 
-    // Navigation history (back/forward) — per-document so tab switching doesn't cross-pollinate
-    private readonly Stack<int> _backStack = new();
-    private readonly Stack<int> _forwardStack = new();
-    public int BackStackCount => _backStack.Count;
-    public int ForwardStackCount => _forwardStack.Count;
-    public int PeekBack() => _backStack.Peek();
-    public int PeekForward() => _forwardStack.Peek();
+    // Navigation history (back/forward) — per-view so each viewport navigates independently
+    public int BackStackCount => Primary.BackStack.Count;
+    public int ForwardStackCount => Primary.ForwardStack.Count;
+    public int PeekBack() => Primary.BackStack.Peek();
+    public int PeekForward() => Primary.ForwardStack.Peek();
 
     // Annotations (shared via AnnotationFileManager when set)
     public AnnotationFile Annotations { get; set; } = new();
@@ -193,10 +185,10 @@ public sealed class DocumentState : IDisposable
         _pdfLink = pdfLink;
         PageCount = _pdf.PageCount;
         _title = Path.GetFileName(filePath);
-        _colourEffect = config.ColourEffect;
-        _lineFocusBlur = config.LineFocusBlur;
-        _lineHighlightEnabled = config.LineHighlightEnabled;
-        _marginCropping = config.MarginCropping;
+        Primary.ColourEffectBacking = config.ColourEffect;
+        Primary.LineFocusBlurBacking = config.LineFocusBlur;
+        Primary.LineHighlightEnabledBacking = config.LineHighlightEnabled;
+        Primary.MarginCroppingBacking = config.MarginCropping;
         _tableRowReading = config.TableRowReading;
         _cellNavigation = config.CellNavigation;
         Rail = new RailNav(config);
@@ -1018,22 +1010,22 @@ public sealed class DocumentState : IDisposable
     internal void PushHistory(int currentPage)
     {
         _marshaller.AssertUIThread();
-        _backStack.Push(currentPage);
-        _forwardStack.Clear();
+        Primary.BackStack.Push(currentPage);
+        Primary.ForwardStack.Clear();
     }
 
     internal int PopBack(int currentPage)
     {
         _marshaller.AssertUIThread();
-        _forwardStack.Push(currentPage);
-        return _backStack.Pop();
+        Primary.ForwardStack.Push(currentPage);
+        return Primary.BackStack.Pop();
     }
 
     internal int PopForward(int currentPage)
     {
         _marshaller.AssertUIThread();
-        _backStack.Push(currentPage);
-        return _forwardStack.Pop();
+        Primary.BackStack.Push(currentPage);
+        return Primary.ForwardStack.Pop();
     }
 
     /// <summary>

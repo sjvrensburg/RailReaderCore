@@ -28,6 +28,26 @@ public sealed class Viewport
     internal double PageWidthBacking;
     internal double PageHeightBacking;
 
+    // --- Per-view display prefs + pending state. Backing storage for DocumentState's
+    //     delegated SetField properties (written via ref). ---
+    internal bool DebugOverlayBacking;
+    internal bool PendingRailSetupBacking;
+    internal ColourEffect ColourEffectBacking;
+    internal bool LineFocusBlurBacking;
+    internal bool LineHighlightEnabledBacking = true;
+    internal bool MarginCroppingBacking;
+
+    /// <summary>When set, this page was reached via rail navigation and should be skipped
+    /// if analysis reveals no navigable blocks. Cleared on landing.</summary>
+    public PendingPageSkip? PendingSkip { get; set; }
+
+    /// <summary>Lookahead pages queued for analysis for this view.</summary>
+    public Queue<int> PendingAnalysis { get; } = new();
+
+    // Navigation history (back/forward) — per-view so each viewport navigates independently.
+    internal readonly Stack<int> BackStack = new();
+    internal readonly Stack<int> ForwardStack = new();
+
     // --- Rasterised page output (rendered at THIS view's DPI) ---
 
     /// <summary>The cached rendered page bitmap.</summary>
