@@ -109,7 +109,7 @@ public sealed class DocumentState : IDisposable
     /// </summary>
     public Viewport Primary { get; }
     public Camera Camera => Primary.Camera;
-    public RailNav Rail { get; }
+    public RailNav Rail => Primary.Rail;
     private readonly Dictionary<int, PageAnalysis> _analysisCache = [];
     private readonly Dictionary<int, PageText> _textCache = [];
     private readonly Dictionary<int, List<PdfLink>> _linkCache = [];
@@ -191,7 +191,7 @@ public sealed class DocumentState : IDisposable
         Primary.MarginCroppingBacking = config.MarginCropping;
         _tableRowReading = config.TableRowReading;
         _cellNavigation = config.CellNavigation;
-        Rail = new RailNav(config);
+        Primary.Rail = new RailNav(config);
         Outline = _pdf.Outline;
         _pageCacheRadius = config.PageCacheRadius;
         Primary.RenderDpi = config.RenderDpi;

@@ -21,6 +21,9 @@ public sealed class Viewport
     /// <summary>Camera (pan/zoom/offset) for this view.</summary>
     public Camera Camera { get; } = new();
 
+    /// <summary>Rail navigation state for this view (set once at construction).</summary>
+    public RailNav Rail { get; internal set; } = null!;
+
     // --- Page position + dimensions (this view's current page). Backing storage for
     //     DocumentState's delegated CurrentPage/PageWidth/PageHeight, which keep the
     //     SetField/StateChanged/eviction logic and write here via ref (Phase 0). ---
