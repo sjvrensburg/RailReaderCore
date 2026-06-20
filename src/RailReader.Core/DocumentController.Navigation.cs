@@ -180,7 +180,7 @@ public sealed partial class DocumentController
     }
 
     /// <summary>Clear non-rail edge-hold state (call on key release).</summary>
-    public void ClearPageEdgeHold() => ActiveDocument?.Primary.PageEdgeHold.Reset();
+    public void ClearPageEdgeHold() => FocusedViewport?.PageEdgeHold.Reset();
 
     /// <summary>Step the rail to the next cell in the current table row (rolling to the next row /
     /// page-end like <see cref="HandleArrowDown"/>), centring it. Returns true if the move applied —

@@ -47,20 +47,28 @@ public sealed partial class DocumentController : IDisposable
             ? Documents[ActiveDocumentIndex]
             : null;
 
+    /// <summary>
+    /// The view that receives input — the active document's primary viewport. The single
+    /// accessor for per-view state (camera, rail, zoom, auto-scroll); a later phase widens
+    /// this to a settable focus independent of the active document (multi-viewport, see
+    /// docs/multi-viewport-design.md §7).
+    /// </summary>
+    public Viewport? FocusedViewport => ActiveDocument?.Primary;
+
     // Annotation and search subsystems
     public AnnotationInteractionHandler Annotations { get; }
     public SearchService Search { get; }
 
     // Auto-scroll state — per-view, lives on the active document's Viewport.
-    public bool AutoScrollActive => ActiveDocument?.Primary.AutoScroll.AutoScrollActive ?? false;
+    public bool AutoScrollActive => FocusedViewport?.AutoScroll.AutoScrollActive ?? false;
     public bool JumpMode
     {
-        get => ActiveDocument?.Primary.AutoScroll.JumpMode ?? false;
+        get => FocusedViewport?.AutoScroll.JumpMode ?? false;
         set { if (ActiveDocument is { } d) d.Primary.AutoScroll.JumpMode = value; }
     }
 
     // Rail pause (Ctrl+drag free pan) state — per-view, lives on Viewport.
-    public bool RailPaused => ActiveDocument?.Primary.RailPause is not null;
+    public bool RailPaused => FocusedViewport?.RailPause is not null;
 
     /// <summary>
     /// Fired when a property changes. UI can subscribe to update bindings.
@@ -339,7 +347,7 @@ public sealed partial class DocumentController : IDisposable
 
     public void GoToPage(int page)
     {
-        ActiveDocument?.Primary.Zoom.Cancel();
+        FocusedViewport?.Zoom.Cancel();
         if (ActiveDocument is not { } doc) return;
         var (ww, wh) = GetViewportSize();
         int prevPage = doc.CurrentPage;
@@ -361,7 +369,7 @@ public sealed partial class DocumentController : IDisposable
 
     public void FitPage()
     {
-        ActiveDocument?.Primary.Zoom.Cancel();
+        FocusedViewport?.Zoom.Cancel();
         if (ActiveDocument is not { } doc) return;
         var (ww, wh) = GetViewportSize();
         doc.CenterPage(ww, wh);
@@ -370,7 +378,7 @@ public sealed partial class DocumentController : IDisposable
 
     public void FitWidth()
     {
-        ActiveDocument?.Primary.Zoom.Cancel();
+        FocusedViewport?.Zoom.Cancel();
         if (ActiveDocument is not { } doc) return;
         var (ww, wh) = GetViewportSize();
         doc.FitWidth(ww, wh);
@@ -402,7 +410,7 @@ public sealed partial class DocumentController : IDisposable
 
     public void HandlePan(double dx, double dy, bool ctrlHeld = false)
     {
-        ActiveDocument?.Primary.Zoom.Cancel();
+        FocusedViewport?.Zoom.Cancel();
         if (ActiveDocument is not { } doc) return;
         if (AutoScrollActive) StopAutoScroll();
         var (ww, wh) = GetViewportSize();
@@ -593,13 +601,13 @@ public sealed partial class DocumentController : IDisposable
 
     // --- Auto-scroll (delegated to AutoScrollController) ---
 
-    public void ToggleAutoScroll() => ActiveDocument?.Primary.AutoScroll.ToggleAutoScroll(ActiveDocument);
+    public void ToggleAutoScroll() => FocusedViewport?.AutoScroll.ToggleAutoScroll(ActiveDocument);
 
-    public void StopAutoScroll() => ActiveDocument?.Primary.AutoScroll.StopAutoScroll(ActiveDocument);
+    public void StopAutoScroll() => FocusedViewport?.AutoScroll.StopAutoScroll(ActiveDocument);
 
-    public void ToggleAutoScrollExclusive() => ActiveDocument?.Primary.AutoScroll.ToggleAutoScrollExclusive(ActiveDocument);
+    public void ToggleAutoScrollExclusive() => FocusedViewport?.AutoScroll.ToggleAutoScrollExclusive(ActiveDocument);
 
-    public void ToggleJumpModeExclusive() => ActiveDocument?.Primary.AutoScroll.ToggleJumpModeExclusive(ActiveDocument);
+    public void ToggleJumpModeExclusive() => FocusedViewport?.AutoScroll.ToggleJumpModeExclusive(ActiveDocument);
 
     /// <summary>
     /// True when semi-automatic auto-scroll is parked on a stop unit (non-prose block, new
