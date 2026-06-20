@@ -21,10 +21,15 @@ public sealed partial class DocumentController
 
     /// <summary>
     /// Advance one animation frame for a specific <paramref name="vp"/>: its camera/rail/zoom/
-    /// auto-scroll animation and DPI bitmap swap, plus the one global analysis pump. Operates on
-    /// the passed viewport throughout, so a second viewport animates independently of the first.
+    /// auto-scroll animation and DPI bitmap swap, plus the global analysis pump. Operates on the
+    /// passed viewport throughout, so a second viewport animates independently of the first. A
+    /// multi-viewport host drives each visible viewport's tick from its own frame callback.
+    /// <para>Note: this still runs <see cref="PumpAnalysis"/> internally (preserving the single-
+    /// viewport <see cref="Tick(double)"/> behaviour exactly). A host ticking several viewports per
+    /// frame therefore pumps once per view — harmless (the worker drains on the first), but the
+    /// pump-once-globally split is a Phase 2 frame-loop concern.</para>
     /// </summary>
-    private TickResult TickViewport(Viewport vp, double dt)
+    public TickResult TickViewport(Viewport vp, double dt)
     {
         dt = Math.Min(dt, 1.0 / 30.0);
 

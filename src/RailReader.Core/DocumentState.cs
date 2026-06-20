@@ -111,6 +111,13 @@ public sealed class DocumentState : IDisposable
     /// cache; <see cref="DocumentState"/>'s camera/render-surface members delegate here.
     /// </summary>
     public Viewport Primary { get; }
+
+    private readonly List<Viewport> _viewports;
+    /// <summary>All views of this document — always ≥1, with <c>Viewports[0] == <see cref="Primary"/></c>.
+    /// A document starts with just <see cref="Primary"/>; <see cref="AddViewport"/> appends detached
+    /// views (split-pane / tear-off windows), each with its own camera and rasterised-page cache.</summary>
+    public IReadOnlyList<Viewport> Viewports => _viewports;
+
     public Camera Camera => Primary.Camera;
     public RailNav Rail => Primary.Rail;
     private readonly Dictionary<int, PageAnalysis> _analysisCache = [];
@@ -119,9 +126,11 @@ public sealed class DocumentState : IDisposable
     public IReadOnlyDictionary<int, PageAnalysis> AnalysisCache => _analysisCache;
     public IReadOnlyDictionary<int, PageText> TextCache => _textCache;
     public IReadOnlyDictionary<int, List<PdfLink>> LinkCache => _linkCache;
-    // Pages farther than this from CurrentPage are dropped from the text/link
-    // caches; <= 0 disables eviction. See CoreSettings.PageCacheRadius.
+    // Pages farther than this from any view's current page are dropped from the
+    // text/link caches; <= 0 disables eviction. See CoreSettings.PageCacheRadius.
     private int _pageCacheRadius;
+    // Latest settings snapshot — kept so AddViewport can build a new view from current config.
+    private CoreSettings _config;
 
     public Queue<int> PendingAnalysis => Primary.PendingAnalysis;
     internal BackgroundAnalysisQueue BackgroundQueue { get; private set; } = null!;
@@ -179,7 +188,9 @@ public sealed class DocumentState : IDisposable
     public DocumentState(string filePath, IPdfService pdf, IPdfTextService pdfText, IPdfLinkService pdfLink,
         CoreSettings config, IThreadMarshaller marshaller, ILogger? logger = null)
     {
+        _config = config;
         Primary = new Viewport(config, this);
+        _viewports = [Primary];
         // Forward the primary view's per-view property changes to the doc-level StateChanged facade
         // so existing single-viewport subscribers keep seeing CurrentPage/PageWidth/PageHeight events.
         Primary.StateChanged += name => StateChanged?.Invoke(name);
@@ -211,43 +222,81 @@ public sealed class DocumentState : IDisposable
     internal void UpdateBackgroundSettings(CoreSettings config)
     {
         _marshaller.AssertUIThread();
+        _config = config;
         BackgroundQueue.WindowPages = config.BackgroundAnalysisWindowPages;
         _pageCacheRadius = config.PageCacheRadius;
         _tableRowReading = config.TableRowReading;
         _cellNavigation = config.CellNavigation;
-        EvictDistantPageCaches(CurrentPage);
+        EvictDistantPageCaches();
     }
 
     /// <summary>
-    /// Drops text/link cache entries for pages no view needs any more, called when a viewport's
-    /// page changes. Eviction is centred on the union of all viewports' current pages so a second
-    /// view advancing can't drop a page the primary is still sitting on (§5). Today there is one
-    /// viewport, so this is the single-centre behaviour.
+    /// Drops text/link cache entries for pages no view needs, called when a viewport's page changes
+    /// or cache tuning updates. A page is kept if it is within ±<see cref="_pageCacheRadius"/> of ANY
+    /// view's current page (union over all viewports), so one view advancing can't drop a page another
+    /// view still sits on (§5). The analysis-geometry cache is left intact (cheap to hold, expensive to
+    /// recompute). No-op when eviction is disabled (<see cref="_pageCacheRadius"/> &lt;= 0).
     /// </summary>
-    internal void EvictDistantPageCaches() => EvictDistantPageCaches(Primary.CurrentPage);
-
-    /// <summary>
-    /// Drops text/link cache entries for pages outside ±<see cref="_pageCacheRadius"/>
-    /// of <paramref name="center"/>. The analysis-geometry cache is left intact
-    /// (cheap to hold, expensive to recompute).
-    /// </summary>
-    private void EvictDistantPageCaches(int center)
+    internal void EvictDistantPageCaches()
     {
         if (_pageCacheRadius <= 0) return;
-        int lo = center - _pageCacheRadius, hi = center + _pageCacheRadius;
-        EvictOutside(_textCache, lo, hi);
-        EvictOutside(_linkCache, lo, hi);
+        EvictUnneeded(_textCache);
+        EvictUnneeded(_linkCache);
     }
 
-    private static void EvictOutside<TValue>(Dictionary<int, TValue> cache, int lo, int hi)
+    private void EvictUnneeded<TValue>(Dictionary<int, TValue> cache)
     {
         List<int>? stale = null;
         foreach (var page in cache.Keys)
-            if (page < lo || page > hi)
+            if (!AnyViewportNeeds(page))
                 (stale ??= []).Add(page);
         if (stale is null) return;
         foreach (var page in stale)
             cache.Remove(page);
+    }
+
+    private bool AnyViewportNeeds(int page)
+    {
+        foreach (var vp in _viewports)
+            if (Math.Abs(page - vp.CurrentPage) <= _pageCacheRadius)
+                return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Adds a detached view of this document (split-pane / tear-off window): a fresh
+    /// <see cref="Viewport"/> seeded from the current settings and the primary view's size, starting
+    /// on page 0 with a default camera. The caller positions it (page / centre / zoom). Its render
+    /// cache and camera are independent of the primary's. UI-thread only.
+    /// </summary>
+    public Viewport AddViewport()
+    {
+        _marshaller.AssertUIThread();
+        var vp = new Viewport(_config, this)
+        {
+            ColourEffectBacking = _config.ColourEffect,
+            LineFocusBlurBacking = _config.LineFocusBlur,
+            LineHighlightEnabledBacking = _config.LineHighlightEnabled,
+            MarginCroppingBacking = _config.MarginCropping,
+            RenderDpi = _config.RenderDpi,
+        };
+        vp.SetSize(Primary.Width, Primary.Height);
+        _viewports.Add(vp);
+        return vp;
+    }
+
+    /// <summary>
+    /// Removes and disposes a detached view (cancelling its in-flight renders and freeing its
+    /// bitmaps). The <see cref="Primary"/> view cannot be removed — it lives for the document's
+    /// lifetime. No-op if the view isn't ours. UI-thread only.
+    /// </summary>
+    public void RemoveViewport(Viewport vp)
+    {
+        _marshaller.AssertUIThread();
+        if (ReferenceEquals(vp, Primary))
+            throw new InvalidOperationException("Cannot remove the primary viewport.");
+        if (_viewports.Remove(vp))
+            vp.Dispose();
     }
 
     /// <summary>
@@ -792,29 +841,18 @@ public sealed class DocumentState : IDisposable
     {
         if (IsDisposed) return;
         IsDisposed = true;
-        // §6 disposal ordering: cancel the view's in-flight render/prefetch/DPI tasks (and the
-        // doc-level analysis tasks) BEFORE freeing the bitmaps/PDF they touch. Each task's Post
-        // callback re-checks IsDisposed and disposes its own result, so a late one is harmless.
-        Primary.Cts.Cancel();
+        // §6 disposal ordering: cancel the doc-level analysis tasks, then dispose every view. Each
+        // Viewport.Dispose cancels its own in-flight render/prefetch/DPI tasks before freeing the
+        // bitmaps they touch, and clears its callbacks (incl. the auto-scroll StateChanged hook wired
+        // in DocumentController.AddDocument). Each task's Post callback re-checks IsDisposed and
+        // disposes its own result, so a late one is harmless.
         _cts.Cancel();
         _annotationManager?.Release(FilePath);
-        var page = CachedPage;
-        CachedPage = null;
-        page?.Dispose();
-        var mm = MinimapPage;
-        MinimapPage = null;
-        mm?.Dispose();
-        Primary.Prefetched?.Dispose();
-        Primary.Prefetched = null;
-        Primary.Cts.Dispose();
+        foreach (var vp in _viewports)
+            vp.Dispose();
         _cts.Dispose();
 
         StateChanged = null;
         AnalysisCacheUpdated = null;
-        OnDpiRenderComplete = null;
-        // The per-document auto-scroll callback (wired in DocumentController.AddDocument) captures the
-        // controller; clear it alongside the others so a late/parked auto-scroll callback can't fire
-        // StateChanged for a disposed document.
-        Primary.AutoScroll.StateChanged = null;
     }
 }

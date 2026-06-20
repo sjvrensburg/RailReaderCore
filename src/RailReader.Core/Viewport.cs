@@ -16,7 +16,7 @@ namespace RailReader.Core;
 /// the render-DPI state machine, and the page-prefetch buffer. Rail navigation, current
 /// page, history, and display preferences move here in later increments.</para>
 /// </summary>
-public sealed class Viewport
+public sealed class Viewport : IDisposable
 {
     internal Viewport(CoreSettings config, DocumentState owner)
     {
@@ -52,6 +52,17 @@ public sealed class Viewport
         StateChanged?.Invoke(propertyName);
         return true;
     }
+
+    /// <summary>Whether this view is "live" — currently visible/focused and worth feeding analysis,
+    /// read-ahead, and forced animation frames. The analysis fan-out (§5) and a host's render loop
+    /// consult it. Defaults to true so a single-viewport document behaves exactly as before; a
+    /// multi-viewport host sets it as views show/hide.</summary>
+    public bool IsLive { get; set; } = true;
+
+    /// <summary>Host hook to request an animation frame for THIS view (e.g. after a DPI re-render or
+    /// an external camera change). A multi-viewport host wires each surface's invalidate here so a
+    /// background tick can wake the right window. Null when no host is attached.</summary>
+    public Action? RequestAnimation { get; set; }
 
     /// <summary>Camera (pan/zoom/offset) for this view.</summary>
     public Camera Camera { get; } = new();
@@ -607,4 +618,34 @@ public sealed class Viewport
     {
         Rail.StartSnapToCurrentEnd(Camera.OffsetX, Camera.OffsetY, Camera.Zoom, windowWidth, windowHeight);
     }
+
+    /// <summary>
+    /// Releases this view's resources: cancels its in-flight render/prefetch/DPI tasks (so a late
+    /// one can't touch a freed bitmap — §6 disposal ordering), frees the cached page/minimap/prefetch
+    /// bitmaps, and drops its callbacks. Called by <see cref="DocumentState.RemoveViewport"/> for a
+    /// detached view and by <see cref="DocumentState.Dispose"/> for every view of a closing document.
+    /// Safe to call more than once.
+    /// </summary>
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        Cts.Cancel();
+        Cts.Dispose();
+
+        CachedPage?.Dispose();
+        CachedPage = null;
+        MinimapPage?.Dispose();
+        MinimapPage = null;
+        Prefetched?.Dispose();
+        Prefetched = null;
+
+        StateChanged = null;
+        OnDpiRenderComplete = null;
+        RequestAnimation = null;
+        AutoScroll.StateChanged = null;
+    }
+
+    private bool _disposed;
 }
