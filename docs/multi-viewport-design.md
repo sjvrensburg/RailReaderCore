@@ -1,17 +1,22 @@
 # Multi-viewport design: independent & detachable viewports in RailReader.Core
 
-> **Status:** Phase 0 landed on `feat/multi-viewport` (2026-06-20); Phases 1–3 pending.
+> **Status:** Phase 0 complete + Phase 1 in progress on `feat/multi-viewport` (2026-06-20).
 > **Scope:** `RailReader.Core` only. **Driver:** support split-pane and detached-window reading —
 > *N* independent, interactive cameras over one open document — without changing the threading model.
 >
-> **Implementation progress.** Phase 0 (the `DocumentState` → embedded `Viewport` extraction) is
-> implemented: `Viewport` now owns the camera, `RailNav`, current-page + dimensions, the rasterised-page
-> cache, the render-DPI state machine, the prefetch buffer, pending rail/skip state, the lookahead
-> queue, the back/forward stacks, and the display prefs; `DocumentState` embeds one `Primary` viewport
-> and delegates. Zero API/behaviour change — 713/713 tests green, full solution builds. **Not yet done
-> in Phase 0:** the controller singletons (`_zoom` / `_autoScroll` / `_railPause` / `_pageEdgeHold` /
-> `_vpWidth`/`_vpHeight`, §2.2) and `StateChanged`/`_cts` still live on `DocumentController` /
-> `DocumentState`; their relocation is folded into the Phase 1 viewport-addressed controller refactor.
+> **Implementation progress (all increments 713/713 green, zero behaviour change, full solution builds):**
+> - **Phase 0 done** — `DocumentState` → embedded `Viewport`: camera, `RailNav`, current-page + dims,
+>   rasterised-page cache, render-DPI state machine, prefetch buffer, pending rail/skip state, lookahead
+>   queue, back/forward stacks, display prefs. `DocumentState` embeds one `Primary` and delegates.
+> - **Phase 1 partial** — controller per-view singletons relocated onto `Viewport`: `ZoomAnimationController`
+>   (`Viewport.Zoom`), rail-pause (`Viewport.RailPause`), page edge-hold (`Viewport.PageEdgeHold`), and
+>   viewport size (`Viewport.Width/Height/SetSize`, pushed from the controller's ambient size).
+> - **Phase 1 remaining** — (a) auto-scroll state onto `Viewport` (entangled with the focused-viewport
+>   `StateChanged` wiring + the SelectDocument cross-tab sync — deferred to land with the events work);
+>   (b) relocate the `Tick` body to `Viewport.Tick(dt)` + add `controller.PumpAnalysis()` (§5.4);
+>   (c) the additive API — `IsLive`, `RequestAnimation`, per-viewport events behind focused-viewport
+>   facades, `DocumentModel.Viewports` + `AddViewport`/`RemoveViewport`, `controller.FocusedViewport`.
+>   `StateChanged`/`_cts` also still live on `DocumentController`/`DocumentState` pending that work.
 
 ## Contents
 
