@@ -1,3 +1,4 @@
+using RailReader.Core.Commands;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
 
@@ -41,6 +42,14 @@ public sealed class Viewport : IDisposable
     /// multi-viewport host can tell "which view changed". <see cref="DocumentState.StateChanged"/>
     /// forwards the primary view's events, so existing single-viewport subscribers are unaffected.</summary>
     public Action<string>? StateChanged;
+
+    /// <summary>Fires when this view's page changes (parameter = new page index). Per-view so a detached
+    /// pane updates its own chrome; the controller-level <c>PageChanged</c> mirrors the focused view.</summary>
+    public Action<int>? PageChanged;
+
+    /// <summary>Fires when this view's rail reading position (block/line) changes. Per-view, mirrored to
+    /// the controller-level <c>ReadingPositionChanged</c> for the focused view.</summary>
+    public Action<ReadingPosition>? ReadingPositionChanged;
 
     /// <summary>Sets a backing field and fires <see cref="StateChanged"/> if the value changed.
     /// Mirrors <c>DocumentState.SetField</c> — UI-thread-only, same change-detection.</summary>
@@ -657,6 +666,8 @@ public sealed class Viewport : IDisposable
         Prefetched = null;
 
         StateChanged = null;
+        PageChanged = null;
+        ReadingPositionChanged = null;
         OnDpiRenderComplete = null;
         RequestAnimation = null;
         AutoScroll.StateChanged = null;

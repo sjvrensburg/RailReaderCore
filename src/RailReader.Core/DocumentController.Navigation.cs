@@ -140,7 +140,7 @@ public sealed partial class DocumentController
             }
             else if (adv is LineAdvanceResult.PageChanged or LineAdvanceResult.PageChangedRailLost)
             {
-                PageChanged?.Invoke(doc.CurrentPage);
+                RaisePageChanged(doc.Primary);
             }
 
             if (adv is LineAdvanceResult.LineAdvanced or LineAdvanceResult.PageChanged)

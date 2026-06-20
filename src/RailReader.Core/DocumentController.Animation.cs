@@ -147,7 +147,7 @@ public sealed partial class DocumentController
         var adv = AdvanceLine(vp, forward, ww, wh);
         if (adv is LineAdvanceResult.PageChanged or LineAdvanceResult.PageChangedRailLost)
         {
-            FirePageChanged(ref pageChanged, vp.Owner.CurrentPage);
+            FirePageChanged(ref pageChanged, vp);
             if (!forward && adv == LineAdvanceResult.PageChanged)
                 vp.StartSnapToEnd(ww, wh);
         }
@@ -199,7 +199,7 @@ public sealed partial class DocumentController
                 switch (adv)
                 {
                     case LineAdvanceResult.PageChanged:
-                        FirePageChanged(ref pageChanged, vp.Owner.CurrentPage);
+                        FirePageChanged(ref pageChanged, vp);
                         FireReadingPositionChanged();
                         // A page boundary is always a stop unit: restart auto-scroll on the
                         // new page, then park on entry (after the skip-landing snap settles).
@@ -207,7 +207,7 @@ public sealed partial class DocumentController
                         vp.Rail.ParkAutoScroll();
                         break;
                     case LineAdvanceResult.PageChangedRailLost:
-                        FirePageChanged(ref pageChanged, vp.Owner.CurrentPage);
+                        FirePageChanged(ref pageChanged, vp);
                         StopAutoScroll();
                         break;
                     case LineAdvanceResult.LineAdvanced:
@@ -300,60 +300,16 @@ public sealed partial class DocumentController
                 if (doc.IsDisposed || doc.FilePath != result.FilePath) continue;
                 matchedLiveDoc = true;
 
+                // Cache once at the model level — every view of this document shares it.
                 doc.SetAnalysis(result.Page, result.Analysis);
 
-                if (doc.CurrentPage != result.Page)
-                    continue;
-
-                if (!doc.PendingRailSetup)
-                    continue;
-
-                // Visual side effects (event fires, page-change / needs-animation
-                // flags) must only reflect the ACTIVE document — a background tab's
-                // analysis completing must not fire events for, or repaint, the tab
-                // the user is actually looking at.
-                bool isActive = doc == ActiveDocument;
-                int prevPage = doc.CurrentPage;
-
-                doc.Rail.SetAnalysis(result.Analysis, _config.NavigableRoles);
-                doc.PendingRailSetup = false;
-                doc.UpdateRailZoom(ww, wh);
-                _logger.Debug($"[Analysis] Rail has {doc.Rail.NavigableCount} navigable blocks, Active={doc.Rail.Active}");
-                if (doc.Rail.Active)
+                // Fan out to every view of this document sitting on the analysed page and waiting
+                // for its rail (§5.4). Two views on the same page each get seated independently.
+                foreach (var vp in doc.Viewports)
                 {
-                    if (doc.PendingSkip is { } pendingSkip)
-                        ApplySkipLanding(doc.Primary, pendingSkip.Forward, pendingSkip.SavedVerticalBias);
-                    doc.PendingSkip = null;
-                    doc.StartSnap(ww, wh);
-                    if (isActive)
-                    {
-                        needsAnim = true;
-                        FireReadingPositionChanged();
-                    }
+                    if (vp.CurrentPage != result.Page || !vp.PendingRailSetup) continue;
+                    ApplyAnalysisToViewport(vp, result.Analysis, ww, wh, ref needsAnim, ref pageChanged);
                 }
-                else if (doc.PendingSkip is not null)
-                {
-                    if (isActive)
-                    {
-                        if (TryResumeSkip(doc.Primary, ww, wh))
-                        {
-                            needsAnim = true;
-                            FireReadingPositionChanged();
-                        }
-                    }
-                    else
-                        doc.PendingSkip = null;
-                }
-
-                // Single chokepoint for the PageChanged event: announce a transition
-                // exactly once, and only if the active document's page actually moved
-                // during this resolution (a deferred skip advancing to a navigable
-                // page — including via re-deferral inside TryResumeSkip, which calls
-                // doc.GoToPage without firing the event). ApplySkipLanding does not
-                // change the page, so a same-page completion (already announced when
-                // the skip first deferred) does not fire again.
-                if (isActive && doc.CurrentPage != prevPage)
-                    FirePageChanged(ref pageChanged, doc.CurrentPage);
             }
 
             // Fire once per result, but only when a live document actually owns it
@@ -362,6 +318,56 @@ public sealed partial class DocumentController
                 AnalysisPageReady?.Invoke(result.Page);
         }
         return (got, needsAnim, pageChanged);
+    }
+
+    /// <summary>
+    /// Seats a freshly-arrived page analysis on one viewport — the §5.4 fan-out body. Sets the view's
+    /// rail, clears its pending flag, applies any deferred skip-landing, and starts its snap. Visual
+    /// side effects — the needs-animation flag and the reading-position / page-change events — fire
+    /// only for the FOCUSED view; a non-focused (e.g. background-tab) view is seated silently so it is
+    /// ready when shown. The view's own per-viewport events always fire. (Slice B widens the "focused"
+    /// gate to "live" once the GUI marks detached panes live.) A non-focused view never changes page
+    /// here — only the focused view resumes a deferred skip — so the page-change announcement is safe.
+    /// </summary>
+    private void ApplyAnalysisToViewport(Viewport vp, PageAnalysis analysis, double ww, double wh,
+        ref bool needsAnim, ref bool pageChanged)
+    {
+        bool focused = vp == FocusedViewport;
+        int prevPage = vp.CurrentPage;
+
+        vp.Rail.SetAnalysis(analysis, _config.NavigableRoles);
+        vp.PendingRailSetup = false;
+        vp.UpdateRailZoom(ww, wh);
+        _logger.Debug($"[Analysis] Rail has {vp.Rail.NavigableCount} navigable blocks, Active={vp.Rail.Active}");
+
+        if (vp.Rail.Active)
+        {
+            if (vp.PendingSkip is { } pendingSkip)
+                ApplySkipLanding(vp, pendingSkip.Forward, pendingSkip.SavedVerticalBias);
+            vp.PendingSkip = null;
+            vp.StartSnap(ww, wh);
+            if (focused)
+            {
+                needsAnim = true;
+                FireReadingPositionChanged(vp);
+            }
+        }
+        else if (vp.PendingSkip is not null)
+        {
+            if (focused)
+            {
+                if (TryResumeSkip(vp, ww, wh))
+                {
+                    needsAnim = true;
+                    FireReadingPositionChanged(vp);
+                }
+            }
+            else
+                vp.PendingSkip = null;
+        }
+
+        if (vp.CurrentPage != prevPage)
+            FirePageChanged(ref pageChanged, vp);
     }
 
     /// <summary>

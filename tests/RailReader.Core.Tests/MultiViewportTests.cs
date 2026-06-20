@@ -145,4 +145,74 @@ public class MultiViewportTests : IDisposable
         Assert.Equal(2, doc.CurrentPage);
         Assert.Same(doc.Primary.Camera, doc.Camera);
     }
+
+    [Fact]
+    public void Analysis_FansOutToSecondaryViewportOnItsOwnPage()
+    {
+        // The §5.4 fan-out: analysis arriving for a SECONDARY viewport's page seats that view's
+        // own rail (not the primary's), via the real worker pipeline with a fake analyzer.
+        _controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
+
+        var doc = SetupDoc(); // Primary on page 0; AddDocument submits page-0 analysis
+        var vp2 = doc.AddViewport();
+        vp2.CurrentPage = 1;
+        vp2.LoadPageBitmap();
+
+        // Submit analysis for vp2's page (1). Primary stays on page 0.
+        doc.SubmitAnalysis(vp2, _controller.Worker, _controller.Config.NavigableRoles);
+        Assert.True(vp2.PendingRailSetup);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (vp2.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
+        {
+            _controller.PollAnalysisResults();
+            Thread.Sleep(10);
+        }
+
+        Assert.False(vp2.PendingRailSetup);                 // the fan-out cleared it
+        Assert.True(vp2.Rail.HasAnalysis);                  // vp2's OWN rail got seated
+        Assert.Equal(1, vp2.CurrentPage);
+        Assert.True(doc.AnalysisCache.ContainsKey(1));      // cached at the model level
+        Assert.NotSame(doc.Primary.Rail, vp2.Rail);         // independent rails
+    }
+
+    [Fact]
+    public void PerViewportPageChanged_FiresForFocusedViewAndMirrorsToController()
+    {
+        var doc = SetupDoc();
+        int? viewEvent = null, controllerEvent = null;
+        doc.Primary.PageChanged += p => viewEvent = p;          // per-viewport event
+        _controller.PageChanged = p => controllerEvent = p;     // focused-view facade
+
+        _controller.GoToPage(2);
+
+        Assert.Equal(2, doc.Primary.CurrentPage);
+        Assert.Equal(2, viewEvent);        // the view's own PageChanged fired
+        Assert.Equal(2, controllerEvent);  // and the controller-level facade mirrored it
+    }
+
+    // A one-block (3-line) navigable Text analysis so a seated rail reports HasAnalysis.
+    private static PageAnalysis MakeNavigableAnalysis()
+    {
+        var lines = new List<LineInfo>();
+        for (int l = 0; l < 3; l++)
+            lines.Add(new LineInfo(72f + l * 16f, 16f, 72f, 468f));
+        return new PageAnalysis
+        {
+            PageWidth = 612,
+            PageHeight = 792,
+            Blocks =
+            [
+                new LayoutBlock
+                {
+                    BBox = new BBox(72f, 72f, 468f, 48f),
+                    Role = BlockRole.Text,
+                    Confidence = 0.95f,
+                    Order = 0,
+                    Lines = lines,
+                },
+            ],
+        };
+    }
 }

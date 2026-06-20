@@ -368,7 +368,7 @@ public sealed partial class DocumentController : IDisposable
         // DocumentState.GoToPage returns true without changing anything when the
         // target clamps to the current page; only announce a real transition.
         if (doc.CurrentPage != prevPage)
-            PageChanged?.Invoke(doc.CurrentPage);
+            RaisePageChanged(doc.Primary);
     }
 
     private void NotifyRenderFailed(int page)
@@ -736,21 +736,24 @@ public sealed partial class DocumentController : IDisposable
     /// two cannot drift.
     /// </summary>
     private ReadingPosition? BuildReadingPosition(DocumentState doc, bool withText)
-    {
-        if (!doc.Rail.Active || !doc.Rail.HasAnalysis) return null;
+        => BuildReadingPosition(doc.Primary, withText);
 
-        var block = doc.Rail.CurrentNavigableBlock;
+    private ReadingPosition? BuildReadingPosition(Viewport vp, bool withText)
+    {
+        if (!vp.Rail.Active || !vp.Rail.HasAnalysis) return null;
+
+        var block = vp.Rail.CurrentNavigableBlock;
         if (block.Lines.Count == 0) return null;
 
         // Report the line index actually described (CurrentLine clamped to the
         // block's lines), matching the line CurrentLineInfo extracts text from.
-        int lineIndex = Math.Min(doc.Rail.CurrentLine, block.Lines.Count - 1);
+        int lineIndex = Math.Min(vp.Rail.CurrentLine, block.Lines.Count - 1);
         string blockText = "";
         string lineText = "";
-        if (withText && doc.TextCache.TryGetValue(doc.CurrentPage, out var pageText))
+        if (withText && vp.Owner.TextCache.TryGetValue(vp.CurrentPage, out var pageText))
         {
             blockText = pageText.ExtractBlockText(block);
-            var line = doc.Rail.CurrentLineInfo;
+            var line = vp.Rail.CurrentLineInfo;
             float top = line.Y - line.Height / 2f;
             lineText = pageText.ExtractTextInRect(
                 line.X, top, line.X + line.Width, top + line.Height) ?? "";
@@ -759,9 +762,9 @@ public sealed partial class DocumentController : IDisposable
         // GetPageDescription), NOT the navigable-subset index, so agents can
         // correlate the two even when the page has non-navigable blocks.
         var (vpW, _) = GetViewportSize();
-        double hFraction = doc.Rail.ComputeHorizontalFraction(doc.Camera.OffsetX, doc.Camera.Zoom, vpW);
+        double hFraction = vp.Rail.ComputeHorizontalFraction(vp.Camera.OffsetX, vp.Camera.Zoom, vpW);
         return new ReadingPosition(
-            doc.CurrentPage, doc.Rail.CurrentNavigableArrayIndex, lineIndex,
+            vp.CurrentPage, vp.Rail.CurrentNavigableArrayIndex, lineIndex,
             block.Role, blockText, lineText, block.BBox,
             block.Lines.Count, hFraction);
     }
@@ -815,23 +818,40 @@ public sealed partial class DocumentController : IDisposable
     }
 
     /// <summary>
-    /// Sets the pageChanged flag and fires the PageChanged event in one call.
-    /// Use this instead of setting the flag + invoking the event separately,
-    /// so new code paths can't forget one or the other.
+    /// Sets the pageChanged flag and announces the page change for <paramref name="vp"/> in one call,
+    /// so a code path can't forget one or the other. Fires the view's own <see cref="Viewport.PageChanged"/>
+    /// and — when <paramref name="vp"/> is the focused view — the controller-level <c>PageChanged</c> facade.
     /// </summary>
-    private void FirePageChanged(ref bool pageChanged, int newPage)
+    private void FirePageChanged(ref bool pageChanged, Viewport vp)
     {
         pageChanged = true;
-        PageChanged?.Invoke(newPage);
+        RaisePageChanged(vp);
+    }
+
+    /// <summary>Announces a page change for <paramref name="vp"/> (no TickResult flag): the view's own
+    /// <see cref="Viewport.PageChanged"/>, plus the controller-level facade when it is the focused view.</summary>
+    private void RaisePageChanged(Viewport vp)
+    {
+        vp.PageChanged?.Invoke(vp.CurrentPage);
+        if (vp == FocusedViewport)
+            PageChanged?.Invoke(vp.CurrentPage);
     }
 
     private void FireReadingPositionChanged()
     {
-        // Capture once: avoids a null-deref if the last subscriber unsubscribes
-        // between the check and the invoke.
-        var handler = ReadingPositionChanged;
-        if (handler is null) return;
-        if (ActiveDocument is { } doc && BuildReadingPosition(doc, withText: false) is { } pos)
-            handler(pos);
+        if (FocusedViewport is { } vp) FireReadingPositionChanged(vp);
+    }
+
+    /// <summary>Announces a rail reading-position change for <paramref name="vp"/>: the view's own
+    /// <see cref="Viewport.ReadingPositionChanged"/>, plus the controller-level facade when it is the
+    /// focused view. Builds the position lazily and only when someone is listening.</summary>
+    private void FireReadingPositionChanged(Viewport vp)
+    {
+        bool focused = vp == FocusedViewport;
+        if (vp.ReadingPositionChanged is null && (!focused || ReadingPositionChanged is null)) return;
+        if (BuildReadingPosition(vp, withText: false) is not { } pos) return;
+        vp.ReadingPositionChanged?.Invoke(pos);
+        if (focused)
+            ReadingPositionChanged?.Invoke(pos);
     }
 }
