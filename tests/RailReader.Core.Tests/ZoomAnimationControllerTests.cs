@@ -32,7 +32,7 @@ public class ZoomAnimationControllerTests : IDisposable
     {
         Assert.False(_zoom.IsAnimating);
 
-        _zoom.Start(_doc, 2.0, 400, 300, 800);
+        _zoom.Start(_doc.Primary, 2.0, 400, 300, 800);
 
         Assert.True(_zoom.IsAnimating);
         Assert.Equal(2.0, _zoom.PendingTargetZoom);
@@ -42,14 +42,14 @@ public class ZoomAnimationControllerTests : IDisposable
     public void Tick_ProgressesAnimation()
     {
         _doc.Camera.Zoom = 1.0;
-        _zoom.Start(_doc, 3.0, 400, 300, 800);
+        _zoom.Start(_doc.Primary, 3.0, 400, 300, 800);
 
         // Let a tiny bit of time elapse so the animation progresses
         Thread.Sleep(10);
 
         bool cameraChanged = false;
         bool animating = false;
-        _zoom.Tick(_doc, 800, 600, ref cameraChanged, ref animating);
+        _zoom.Tick(_doc.Primary, 800, 600, ref cameraChanged, ref animating);
 
         Assert.True(cameraChanged);
         // Zoom should have moved toward the target
@@ -60,14 +60,14 @@ public class ZoomAnimationControllerTests : IDisposable
     public void Tick_CompletesAnimation()
     {
         _doc.Camera.Zoom = 1.0;
-        _zoom.Start(_doc, 2.0, 400, 300, 800);
+        _zoom.Start(_doc.Primary, 2.0, 400, 300, 800);
 
         // Wait longer than the 180ms animation duration
         Thread.Sleep(200);
 
         bool cameraChanged = false;
         bool animating = false;
-        _zoom.Tick(_doc, 800, 600, ref cameraChanged, ref animating);
+        _zoom.Tick(_doc.Primary, 800, 600, ref cameraChanged, ref animating);
 
         Assert.True(cameraChanged);
         Assert.False(animating);
@@ -79,7 +79,7 @@ public class ZoomAnimationControllerTests : IDisposable
     [Fact]
     public void Cancel_ClearsAnimation()
     {
-        _zoom.Start(_doc, 2.0, 400, 300, 800);
+        _zoom.Start(_doc.Primary, 2.0, 400, 300, 800);
         Assert.True(_zoom.IsAnimating);
 
         _zoom.Cancel();
@@ -91,11 +91,11 @@ public class ZoomAnimationControllerTests : IDisposable
     [Fact]
     public void Start_WhileAnimating_UpdatesTarget()
     {
-        _zoom.Start(_doc, 2.0, 400, 300, 800);
+        _zoom.Start(_doc.Primary, 2.0, 400, 300, 800);
         Assert.Equal(2.0, _zoom.PendingTargetZoom);
 
         // Start a new animation to a different zoom level while the first is in progress
-        _zoom.Start(_doc, 4.0, 400, 300, 800);
+        _zoom.Start(_doc.Primary, 4.0, 400, 300, 800);
 
         Assert.True(_zoom.IsAnimating);
         Assert.Equal(4.0, _zoom.PendingTargetZoom);

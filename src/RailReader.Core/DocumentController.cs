@@ -27,8 +27,6 @@ public sealed partial class DocumentController : IDisposable
     private readonly IThreadMarshaller _marshaller;
     private readonly IPdfServiceFactory _pdfFactory;
     private readonly ILogger _logger;
-    private readonly ZoomAnimationController _zoom;
-    private readonly AutoScrollController _autoScroll;
     private readonly AnnotationFileManager _annotationManager;
     private AnalysisWorker? _worker;
     public bool HasWorker => _worker is not null;
@@ -49,20 +47,28 @@ public sealed partial class DocumentController : IDisposable
             ? Documents[ActiveDocumentIndex]
             : null;
 
+    /// <summary>
+    /// The view that receives input — the active document's primary viewport. The single
+    /// accessor for per-view state (camera, rail, zoom, auto-scroll); a later phase widens
+    /// this to a settable focus independent of the active document (multi-viewport, see
+    /// docs/multi-viewport-design.md §7).
+    /// </summary>
+    public Viewport? FocusedViewport => ActiveDocument?.Primary;
+
     // Annotation and search subsystems
     public AnnotationInteractionHandler Annotations { get; }
     public SearchService Search { get; }
 
-    // Auto-scroll state (delegated to AutoScrollController)
-    public bool AutoScrollActive => _autoScroll.AutoScrollActive;
-    public bool JumpMode { get => _autoScroll.JumpMode; set => _autoScroll.JumpMode = value; }
+    // Auto-scroll state — per-view, lives on the active document's Viewport.
+    public bool AutoScrollActive => FocusedViewport?.AutoScroll.AutoScrollActive ?? false;
+    public bool JumpMode
+    {
+        get => FocusedViewport?.AutoScroll.JumpMode ?? false;
+        set { if (FocusedViewport is { } vp) vp.AutoScroll.JumpMode = value; }
+    }
 
-    // Rail pause (Ctrl+drag free pan) state
-    private RailPauseState? _railPause;
-    public bool RailPaused => _railPause is not null;
-
-    // Edge-hold page advance (non-rail vertical scrolling)
-    private readonly EdgeHoldStateMachine _pageEdgeHold = new();
+    // Rail pause (Ctrl+drag free pan) state — per-view, lives on Viewport.
+    public bool RailPaused => FocusedViewport?.RailPause is not null;
 
     /// <summary>
     /// Fired when a property changes. UI can subscribe to update bindings.
@@ -93,9 +99,6 @@ public sealed partial class DocumentController : IDisposable
         _marshaller = marshaller;
         _pdfFactory = pdfFactory;
         _logger = logger ?? NullLogger.Instance;
-        _zoom = new ZoomAnimationController();
-        _autoScroll = new AutoScrollController(config);
-        _autoScroll.StateChanged = name => StateChanged?.Invoke(name);
         _annotationManager = new AnnotationFileManager(annotationStore, marshaller);
         _annotationManager.OnSaveFailure = msg => StatusMessage?.Invoke(msg);
         Annotations = new AnnotationInteractionHandler();
@@ -126,6 +129,11 @@ public sealed partial class DocumentController : IDisposable
     {
         if (w > 0) _vpWidth = w;
         if (h > 0) _vpHeight = h;
+        // Mirror the ambient size into every view's Width/Height. Not yet consumed (GetViewportSize
+        // still returns the ambient size below); this primes the per-view size the relocated Tick
+        // will read in a later increment. Single-window today → all equal.
+        foreach (var doc in Documents)
+            doc.Primary.SetSize(_vpWidth, _vpHeight);
     }
 
     public (double Width, double Height) GetViewportSize() => (_vpWidth, _vpHeight);
@@ -150,6 +158,10 @@ public sealed partial class DocumentController : IDisposable
     public void AddDocument(DocumentState state)
     {
         var (ww, wh) = GetViewportSize();
+        state.Primary.SetSize(ww, wh); // seed this view's size from the ambient size
+        // This view's auto-scroll state changes surface through the controller's StateChanged
+        // (UI re-reads AutoScrollActive/JumpMode, which delegate to the active view).
+        state.Primary.AutoScroll.StateChanged = name => StateChanged?.Invoke(name);
 
         var saved = _recentFiles.GetReadingPosition(state.FilePath);
         bool restoredPage = saved is not null && saved.Page > 0;
@@ -182,23 +194,31 @@ public sealed partial class DocumentController : IDisposable
         Documents.RemoveAt(index);
         doc.Dispose();
         ActiveDocumentIndex = Math.Clamp(ActiveDocumentIndex, 0, Math.Max(Documents.Count - 1, 0));
-        _railPause = null;
+        // Free-pan pause is per-view now: the closed doc's pause died with its disposal, and any
+        // other tab is already cleared on switch-away (SelectDocument). The surviving active doc
+        // keeps its own pause — so nothing to clear here. (The old global `_railPause = null` was a
+        // single shared slot; reaching into the *new* active view to null it would clobber a
+        // legitimate in-progress free-pan on the tab the user is keeping.)
         Search.CloseSearch();
     }
 
     public void SelectDocument(int index)
     {
-        if (index >= 0 && index < Documents.Count)
-        {
-            _railPause = null;
-            ActiveDocumentIndex = index;
+        // Re-selecting the already-active tab is a no-op: it is not "leaving" the tab, so it must
+        // not quiesce it. Without this guard, a redundant SelectDocument(ActiveDocumentIndex) (which
+        // tab-strip click handlers commonly fire) would stop the active view's auto-scroll and drop
+        // its free-pan pause via the leaving-tab teardown below.
+        if (index < 0 || index >= Documents.Count || index == ActiveDocumentIndex) return;
 
-            // Sync the global auto-scroll flag with the newly active document.
-            // Without this, switching away from a tab with active auto-scroll leaves
-            // the flag stale, which prevents hold-scroll (and its trigger) on other tabs.
-            if (AutoScrollActive && !(ActiveDocument?.Rail.AutoScrolling ?? false))
-                _autoScroll.StopAutoScroll(null);
+        // Leaving this tab: drop its free-pan pause and end its auto-scroll session, so a tab
+        // switch quiesces the tab you're leaving. With per-view auto-scroll flags there is no
+        // shared flag to go stale, so the old post-switch sync is no longer needed.
+        if (ActiveDocument is { } leaving)
+        {
+            leaving.Primary.RailPause = null;
+            leaving.Primary.AutoScroll.StopAutoScroll(leaving);
         }
+        ActiveDocumentIndex = index;
     }
 
     public void MoveDocument(int fromIndex, int toIndex)
@@ -334,7 +354,7 @@ public sealed partial class DocumentController : IDisposable
 
     public void GoToPage(int page)
     {
-        _zoom.Cancel();
+        FocusedViewport?.Zoom.Cancel();
         if (ActiveDocument is not { } doc) return;
         var (ww, wh) = GetViewportSize();
         int prevPage = doc.CurrentPage;
@@ -356,7 +376,7 @@ public sealed partial class DocumentController : IDisposable
 
     public void FitPage()
     {
-        _zoom.Cancel();
+        FocusedViewport?.Zoom.Cancel();
         if (ActiveDocument is not { } doc) return;
         var (ww, wh) = GetViewportSize();
         doc.CenterPage(ww, wh);
@@ -365,7 +385,7 @@ public sealed partial class DocumentController : IDisposable
 
     public void FitWidth()
     {
-        _zoom.Cancel();
+        FocusedViewport?.Zoom.Cancel();
         if (ActiveDocument is not { } doc) return;
         var (ww, wh) = GetViewportSize();
         doc.FitWidth(ww, wh);
@@ -389,15 +409,15 @@ public sealed partial class DocumentController : IDisposable
         else
         {
             double factor = 1.0 + scrollDelta * CoreTuning.ZoomScrollSensitivity;
-            double baseZoom = _zoom.PendingTargetZoom ?? doc.Camera.Zoom;
+            double baseZoom = doc.Primary.Zoom.PendingTargetZoom ?? doc.Camera.Zoom;
             double newZoom = Math.Clamp(baseZoom * factor, Camera.ZoomMin, Camera.ZoomMax);
-            _zoom.Start(doc, newZoom, cursorX, cursorY, _vpWidth);
+            doc.Primary.Zoom.Start(doc.Primary, newZoom, cursorX, cursorY, _vpWidth);
         }
     }
 
     public void HandlePan(double dx, double dy, bool ctrlHeld = false)
     {
-        _zoom.Cancel();
+        FocusedViewport?.Zoom.Cancel();
         if (ActiveDocument is not { } doc) return;
         if (AutoScrollActive) StopAutoScroll();
         var (ww, wh) = GetViewportSize();
@@ -414,7 +434,7 @@ public sealed partial class DocumentController : IDisposable
 
     private void StartRailPause(DocumentState doc)
     {
-        _railPause = new(doc.Rail.CurrentBlock, doc.Rail.CurrentLine, doc.Rail.VerticalBias, doc.Camera.Zoom);
+        doc.Primary.RailPause = new(doc.Rail.CurrentBlock, doc.Rail.CurrentLine, doc.Rail.VerticalBias, doc.Camera.Zoom);
         StatusMessage?.Invoke("Free pan — release Ctrl to return");
     }
 
@@ -423,10 +443,10 @@ public sealed partial class DocumentController : IDisposable
     /// </summary>
     public void ResumeRailFromPause()
     {
-        if (_railPause is not { } pause) return;
-        _railPause = null;
-
         if (ActiveDocument is not { } doc) return;
+        if (doc.Primary.RailPause is not { } pause) return;
+        doc.Primary.RailPause = null;
+
         var (ww, wh) = GetViewportSize();
 
         // Restore zoom if it changed during free pan (may re-enter rail mode)
@@ -455,12 +475,12 @@ public sealed partial class DocumentController : IDisposable
         if (ActiveDocument is not { } doc) return;
         var (ww, wh) = GetViewportSize();
 
-        double baseZoom = _zoom.PendingTargetZoom ?? doc.Camera.Zoom;
+        double baseZoom = doc.Primary.Zoom.PendingTargetZoom ?? doc.Camera.Zoom;
         double newZoom = Math.Clamp(
             zoomIn ? baseZoom * CoreTuning.ZoomStep : baseZoom / CoreTuning.ZoomStep,
             Camera.ZoomMin, Camera.ZoomMax);
 
-        _zoom.Start(doc, newZoom, ww / 2.0, wh / 2.0, _vpWidth);
+        doc.Primary.Zoom.Start(doc.Primary, newZoom, ww / 2.0, wh / 2.0, _vpWidth);
         if (!doc.Rail.Active && AutoScrollActive) StopAutoScroll();
     }
 
@@ -476,7 +496,7 @@ public sealed partial class DocumentController : IDisposable
         double z = Math.Clamp(targetZoom, Camera.ZoomMin, Camera.ZoomMax);
         double cpx = (ww / 2.0 - targetOffsetX) / z; // target viewport-centre in page space
         double cpy = (wh / 2.0 - targetOffsetY) / z;
-        _zoom.StartTo(doc, z, targetOffsetX, targetOffsetY, cpx, cpy);
+        doc.Primary.Zoom.StartTo(doc.Primary, z, targetOffsetX, targetOffsetY, cpx, cpy);
     }
 
     /// <summary>
@@ -521,7 +541,7 @@ public sealed partial class DocumentController : IDisposable
         var (ox, oy) = doc.Rail.ComputeSnapTarget(z, ww, wh);
         var lineInfo = doc.Rail.CurrentLineInfo; // seated block's target line
         if (AutoScrollActive) StopAutoScroll();
-        _zoom.StartTo(doc, z, ox, oy, lineInfo.X + lineInfo.Width / 2.0, lineInfo.Y, durationMs);
+        doc.Primary.Zoom.StartTo(doc.Primary, z, ox, oy, lineInfo.X + lineInfo.Width / 2.0, lineInfo.Y, durationMs);
         FireReadingPositionChanged();
         return true;
     }
@@ -560,7 +580,7 @@ public sealed partial class DocumentController : IDisposable
         var (z, ox, oy) = doc.ComputeCenteredFrame(box, ww, wh, targetZoom);
         if (AutoScrollActive) StopAutoScroll();
         doc.Rail.Deactivate(); // drive the camera directly; no rail seat/snap
-        _zoom.StartCameraOnly(doc, z, ox, oy, durationMs);
+        doc.Primary.Zoom.StartCameraOnly(doc.Primary, z, ox, oy, durationMs);
         FireReadingPositionChanged(); // rail now inactive → reading position cleared
         return true;
     }
@@ -574,20 +594,27 @@ public sealed partial class DocumentController : IDisposable
     /// early with <c>StillAnimating == false</c>), so it must let the render loop quiesce
     /// rather than pin it true forever (issue #62).
     /// </summary>
-    public bool IsAnimating =>
-        _zoom.IsAnimating
-        || (ActiveDocument is { } d && d.Rail.SnapProgress < 1.0)
-        || (AutoScrollActive && !(ActiveDocument?.Rail.AutoScrollParked ?? false));
+    public bool IsAnimating
+    {
+        get
+        {
+            if (ActiveDocument is not { } d)
+                return false; // no active document → nothing (zoom/rail/auto-scroll is all per-view) can animate
+            return d.Primary.Zoom.IsAnimating
+                || d.Rail.SnapProgress < 1.0
+                || (d.Primary.AutoScroll.AutoScrollActive && !d.Rail.AutoScrollParked);
+        }
+    }
 
     // --- Auto-scroll (delegated to AutoScrollController) ---
 
-    public void ToggleAutoScroll() => _autoScroll.ToggleAutoScroll(ActiveDocument);
+    public void ToggleAutoScroll() => FocusedViewport?.AutoScroll.ToggleAutoScroll(ActiveDocument);
 
-    public void StopAutoScroll() => _autoScroll.StopAutoScroll(ActiveDocument);
+    public void StopAutoScroll() => FocusedViewport?.AutoScroll.StopAutoScroll(ActiveDocument);
 
-    public void ToggleAutoScrollExclusive() => _autoScroll.ToggleAutoScrollExclusive(ActiveDocument);
+    public void ToggleAutoScrollExclusive() => FocusedViewport?.AutoScroll.ToggleAutoScrollExclusive(ActiveDocument);
 
-    public void ToggleJumpModeExclusive() => _autoScroll.ToggleJumpModeExclusive(ActiveDocument);
+    public void ToggleJumpModeExclusive() => FocusedViewport?.AutoScroll.ToggleJumpModeExclusive(ActiveDocument);
 
     /// <summary>
     /// True when semi-automatic auto-scroll is parked on a stop unit (non-prose block, new
@@ -628,9 +655,9 @@ public sealed partial class DocumentController : IDisposable
     public void OnConfigChanged(CoreSettings newConfig)
     {
         _config = newConfig;
-        _autoScroll.UpdateConfig(newConfig);
         foreach (var doc in Documents)
         {
+            doc.Primary.AutoScroll.UpdateConfig(newConfig);
             doc.Rail.UpdateConfig(_config);
             doc.ReapplyNavigableRoles(_config.NavigableRoles);
             doc.UpdateBackgroundSettings(_config);
@@ -646,9 +673,9 @@ public sealed partial class DocumentController : IDisposable
     public void OnSliderChanged(CoreSettings newConfig)
     {
         _config = newConfig;
-        _autoScroll.UpdateConfig(newConfig);
         foreach (var doc in Documents)
         {
+            doc.Primary.AutoScroll.UpdateConfig(newConfig);
             doc.Rail.UpdateConfig(_config);
             // Keep per-document render-DPI in sync with _config on this path too,
             // so the two can't diverge. OnRenderQualityChanged no-ops unless the

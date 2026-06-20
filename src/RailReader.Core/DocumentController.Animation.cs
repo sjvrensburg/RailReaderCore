@@ -8,70 +8,82 @@ public sealed partial class DocumentController
     // --- Tick (animation frame logic) ---
 
     /// <summary>
-    /// Advance one animation frame. Returns what needs repainting.
+    /// Advance one animation frame for the focused viewport. Returns what needs repainting.
+    /// Facade over <see cref="TickViewport"/> — retained as the single-viewport entry point
+    /// through Phase 2 (see <c>docs/multi-viewport-design.md</c> §7). A multi-viewport host
+    /// drives each on-screen viewport's <see cref="TickViewport"/> from its own frame callback.
     /// </summary>
     public TickResult Tick(double dt)
     {
+        if (FocusedViewport is not { } vp) return default;
+        return TickViewport(vp, dt);
+    }
+
+    /// <summary>
+    /// Advance one animation frame for a specific <paramref name="vp"/>: its camera/rail/zoom/
+    /// auto-scroll animation and DPI bitmap swap, plus the global analysis pump. Operates on the
+    /// passed viewport throughout, so a second viewport animates independently of the first. A
+    /// multi-viewport host drives each visible viewport's tick from its own frame callback.
+    /// <para>Note: this still runs <see cref="PumpAnalysis"/> internally (preserving the single-
+    /// viewport <see cref="Tick(double)"/> behaviour exactly). A host ticking several viewports per
+    /// frame therefore pumps once per view — harmless (the worker drains on the first), but the
+    /// pump-once-globally split is a Phase 2 frame-loop concern.</para>
+    /// </summary>
+    public TickResult TickViewport(Viewport vp, double dt)
+    {
         dt = Math.Min(dt, 1.0 / 30.0);
 
-        var doc = ActiveDocument;
-        if (doc is null) return default;
-
         var (ww, wh) = GetViewportSize();
+        // Free-pan pause is this view's own state and can't change within a tick; read it once.
+        bool railPaused = vp.RailPause is not null;
         bool cameraChanged = false;
         bool pageChanged = false;
         bool overlayChanged = false;
         bool animating = false;
 
-        TickZoomAnimation(doc, ww, wh, ref cameraChanged, ref animating);
+        TickZoomAnimation(vp, ww, wh, ref cameraChanged, ref animating);
 
-        if (!RailPaused)
-            TickRailSnap(doc, dt, ww, wh, ref cameraChanged, ref pageChanged, ref overlayChanged, ref animating);
+        if (!railPaused)
+            TickRailSnap(vp, dt, ww, wh, ref cameraChanged, ref pageChanged, ref overlayChanged, ref animating);
 
         // Snap Y to integer pixel when rail mode is stable or nearly so.
         // Snapping during the snap animation tail (progress > 0.95) eliminates
         // the last few frames of sub-pixel text shimmer before full stop.
-        if (_config.PixelSnapping && doc.Rail.Active
-            && (!animating || doc.Rail.SnapProgress > 0.95))
+        if (_config.PixelSnapping && vp.Rail.Active
+            && (!animating || vp.Rail.SnapProgress > 0.95))
         {
-            double snapped = Math.Round(doc.Camera.OffsetY);
-            if (snapped != doc.Camera.OffsetY)
+            double snapped = Math.Round(vp.Camera.OffsetY);
+            if (snapped != vp.Camera.OffsetY)
             {
-                doc.Camera.OffsetY = snapped;
+                vp.Camera.OffsetY = snapped;
                 cameraChanged = true;
             }
         }
 
-        if (!RailPaused)
-            TickAutoScroll(doc, dt, ww, wh, ref cameraChanged, ref pageChanged, ref overlayChanged, ref animating);
+        if (!railPaused)
+            TickAutoScroll(vp, dt, ww, wh, ref cameraChanged, ref pageChanged, ref overlayChanged, ref animating);
 
         // Decay zoom blur speed
-        if (doc.Camera.ZoomSpeed > 0)
+        if (vp.Camera.ZoomSpeed > 0)
         {
-            doc.Camera.DecayZoomSpeed(dt);
+            vp.Camera.DecayZoomSpeed(dt);
             animating = true;
-            if (doc.Camera.ZoomSpeed > 0)
+            if (vp.Camera.ZoomSpeed > 0)
                 cameraChanged = true;
         }
 
-        // Poll analysis results
-        var (gotResults, needsAnim, gotPageChange) = PollAnalysisResults();
+        // Drain the analysis worker and schedule read-ahead (global, once per frame).
+        // `quiescent: !animating` preserves the prior gate: read-ahead only when neither
+        // the camera nor a just-arrived result is animating.
+        var (gotResults, needsAnim, gotPageChange) = PumpAnalysis(quiescent: !animating);
         animating |= needsAnim;
         overlayChanged |= gotResults;
         pageChanged |= gotPageChange;
 
-        if (!animating)
-        {
-            if (!doc.SubmitPendingLookahead(_worker)
-                && !doc.Rail.Active
-                && _worker is not null && _worker.IsIdle)
-                TrySubmitBackgroundReadAhead();
-        }
-
         // DPI bitmap swap
-        if (doc.DpiRenderReady)
+        if (vp.DpiRenderReady)
         {
-            doc.DpiRenderReady = false;
+            vp.DpiRenderReady = false;
             pageChanged = true;
         }
 
@@ -79,45 +91,45 @@ public sealed partial class DocumentController
         // UpdateRenderDpiIfNeeded gates on Rail.ScrollSpeed/AutoScrolling and
         // does nothing if the cached DPI is already within hysteresis, so this
         // poll is cheap. Also poll while a render-quality change is pending
-        // (RenderDpiPending) even mid-animation — otherwise a preset change made
+        // (RenderDpiDirty) even mid-animation — otherwise a preset change made
         // during auto-scroll (which keeps `animating` true) would never apply to
         // the current page until scrolling stopped entirely.
-        if (!animating || doc.RenderDpiPending)
-            doc.UpdateRenderDpiIfNeeded();
+        if (!animating || vp.RenderDpiDirty)
+            vp.UpdateRenderDpiIfNeeded();
 
         return new TickResult(cameraChanged, pageChanged, overlayChanged, false, false, animating);
     }
 
     /// <summary>Smooth zoom animation step (delegated to ZoomAnimationController).</summary>
-    private void TickZoomAnimation(DocumentState doc, double ww, double wh,
+    private void TickZoomAnimation(Viewport vp, double ww, double wh,
         ref bool cameraChanged, ref bool animating)
     {
-        _zoom.Tick(doc, ww, wh, ref cameraChanged, ref animating);
+        vp.Zoom.Tick(vp, ww, wh, ref cameraChanged, ref animating);
     }
 
     /// <summary>Rail snap animation and edge-hold line advance (skipped while zoom is animating).</summary>
-    private void TickRailSnap(DocumentState doc, double dt, double ww, double wh,
+    private void TickRailSnap(Viewport vp, double dt, double ww, double wh,
         ref bool cameraChanged, ref bool pageChanged, ref bool overlayChanged, ref bool animating)
     {
-        if (!_zoom.IsAnimating)
+        if (!vp.Zoom.IsAnimating)
         {
-            double cx = doc.Camera.OffsetX, cy = doc.Camera.OffsetY;
-            bool railAnimating = doc.Rail.Tick(ref cx, ref cy, dt, doc.Camera.Zoom, ww);
-            if (cx != doc.Camera.OffsetX || cy != doc.Camera.OffsetY)
+            double cx = vp.Camera.OffsetX, cy = vp.Camera.OffsetY;
+            bool railAnimating = vp.Rail.Tick(ref cx, ref cy, dt, vp.Camera.Zoom, ww);
+            if (cx != vp.Camera.OffsetX || cy != vp.Camera.OffsetY)
             {
-                doc.Camera.OffsetX = cx;
-                doc.Camera.OffsetY = cy;
+                vp.Camera.OffsetX = cx;
+                vp.Camera.OffsetY = cy;
                 cameraChanged = true;
             }
             animating |= railAnimating;
 
-            if (doc.Rail.ConsumeAutoScrollTrigger())
+            if (vp.Rail.ConsumeAutoScrollTrigger())
             {
-                _autoScroll.ActivateAutoScroll();
+                vp.AutoScroll.ActivateAutoScroll();
                 StatusMessage?.Invoke("Auto-scroll activated");
             }
 
-            HandleEdgeAdvance(doc, ww, wh, ref pageChanged, ref cameraChanged, ref overlayChanged);
+            HandleEdgeAdvance(vp, ww, wh, ref pageChanged, ref cameraChanged, ref overlayChanged);
         }
     }
 
@@ -125,24 +137,24 @@ public sealed partial class DocumentController
     /// Handles edge-hold line advances: D/Right held at line end → NextLine;
     /// A/Left held at line start → PrevLine.
     /// </summary>
-    private void HandleEdgeAdvance(DocumentState doc, double ww, double wh,
+    private void HandleEdgeAdvance(Viewport vp, double ww, double wh,
         ref bool pageChanged, ref bool cameraChanged, ref bool overlayChanged)
     {
-        if (doc.Rail.AutoScrolling) return;
-        if (doc.Rail.ConsumePendingEdgeAdvance() is not { } edgeDir) return;
+        if (vp.Rail.AutoScrolling) return;
+        if (vp.Rail.ConsumePendingEdgeAdvance() is not { } edgeDir) return;
 
         bool forward = edgeDir == ScrollDirection.Forward;
-        var adv = AdvanceLine(doc, forward, ww, wh);
+        var adv = AdvanceLine(vp, forward, ww, wh);
         if (adv is LineAdvanceResult.PageChanged or LineAdvanceResult.PageChangedRailLost)
         {
-            FirePageChanged(ref pageChanged, doc.CurrentPage);
+            FirePageChanged(ref pageChanged, vp.Owner.CurrentPage);
             if (!forward && adv == LineAdvanceResult.PageChanged)
-                doc.StartSnapToEnd(ww, wh);
+                vp.StartSnapToEnd(ww, wh);
         }
         else if (adv == LineAdvanceResult.LineAdvanced)
         {
-            if (forward) doc.StartSnap(ww, wh);
-            else doc.StartSnapToEnd(ww, wh);
+            if (forward) vp.StartSnap(ww, wh);
+            else vp.StartSnapToEnd(ww, wh);
         }
         overlayChanged = true;
         cameraChanged = true;
@@ -151,60 +163,60 @@ public sealed partial class DocumentController
     }
 
     /// <summary>Auto-scroll tick: advance along the current line, then advance to the next line/page.</summary>
-    private void TickAutoScroll(DocumentState doc, double dt, double ww, double wh,
+    private void TickAutoScroll(Viewport vp, double dt, double ww, double wh,
         ref bool cameraChanged, ref bool pageChanged, ref bool overlayChanged, ref bool animating)
     {
-        if (doc.Rail.AutoScrolling)
+        if (vp.Rail.AutoScrolling)
         {
             // Parked (semi-auto): indefinite wait for an explicit advance keypress. No camera
             // motion and no forced animation — let the render loop idle until the desktop
             // calls ResumeAutoScrollFromPark. Pan/zoom/inspect compose via the other paths.
-            if (doc.Rail.AutoScrollParked)
+            if (vp.Rail.AutoScrollParked)
                 return;
 
-            if (doc.Rail.NavigableCount > 0
-                && doc.Rail.CurrentBlock >= doc.Rail.NavigableCount - 2
-                && doc.CurrentPage + 1 < doc.PageCount)
+            if (vp.Rail.NavigableCount > 0
+                && vp.Rail.CurrentBlock >= vp.Rail.NavigableCount - 2
+                && vp.Owner.CurrentPage + 1 < vp.Owner.PageCount)
             {
-                doc.PrefetchPage(doc.CurrentPage + 1);
+                vp.PrefetchPage(vp.Owner.CurrentPage + 1);
             }
 
-            double cx = doc.Camera.OffsetX;
-            bool reachedEnd = doc.Rail.TickAutoScroll(ref cx, dt, doc.Camera.Zoom, ww);
-            if (cx != doc.Camera.OffsetX)
+            double cx = vp.Camera.OffsetX;
+            bool reachedEnd = vp.Rail.TickAutoScroll(ref cx, dt, vp.Camera.Zoom, ww);
+            if (cx != vp.Camera.OffsetX)
             {
-                doc.Camera.OffsetX = cx;
+                vp.Camera.OffsetX = cx;
                 cameraChanged = true;
             }
             animating = true;
 
             if (reachedEnd)
             {
-                int prevBlock = doc.Rail.CurrentBlock;
-                int prevLine = doc.Rail.CurrentLine;
-                int prevChunk = doc.Rail.CurrentChunk;
-                var adv = AdvanceLine(doc, forward: true, ww, wh);
+                int prevBlock = vp.Rail.CurrentBlock;
+                int prevLine = vp.Rail.CurrentLine;
+                int prevChunk = vp.Rail.CurrentChunk;
+                var adv = AdvanceLine(vp, forward: true, ww, wh);
                 switch (adv)
                 {
                     case LineAdvanceResult.PageChanged:
-                        FirePageChanged(ref pageChanged, doc.CurrentPage);
+                        FirePageChanged(ref pageChanged, vp.Owner.CurrentPage);
                         FireReadingPositionChanged();
                         // A page boundary is always a stop unit: restart auto-scroll on the
                         // new page, then park on entry (after the skip-landing snap settles).
-                        doc.Rail.StartAutoScroll(_autoScroll.AutoScrollSpeed);
-                        doc.Rail.ParkAutoScroll();
+                        vp.Rail.StartAutoScroll(vp.AutoScroll.AutoScrollSpeed);
+                        vp.Rail.ParkAutoScroll();
                         break;
                     case LineAdvanceResult.PageChangedRailLost:
-                        FirePageChanged(ref pageChanged, doc.CurrentPage);
+                        FirePageChanged(ref pageChanged, vp.Owner.CurrentPage);
                         StopAutoScroll();
                         break;
                     case LineAdvanceResult.LineAdvanced:
-                        if (doc.Rail.CurrentBlock == prevBlock && doc.Rail.CurrentLine == prevLine)
+                        if (vp.Rail.CurrentBlock == prevBlock && vp.Rail.CurrentLine == prevLine)
                         {
                             StopAutoScroll();
                             break;
                         }
-                        doc.StartSnap(ww, wh);
+                        vp.StartSnap(ww, wh);
                         // Park on ENTRY to a stop unit: a new chunk (column/section break), or a
                         // newly-entered stop-role block (non-prose). One stop per unit — the
                         // stop-role check is gated on a block change so the remaining lines of a
@@ -214,14 +226,14 @@ public sealed partial class DocumentController
                         // recaptures the scroll origin from the settled target) so auto-scroll
                         // doesn't fight the line snap.
                         bool shouldPark = ShouldParkOnLineAdvance(
-                            enteredNewChunk: doc.Rail.CurrentChunk != prevChunk,
-                            enteredNewBlock: doc.Rail.CurrentBlock != prevBlock,
-                            newRole: doc.Rail.CurrentNavigableBlock.Role,
+                            enteredNewChunk: vp.Rail.CurrentChunk != prevChunk,
+                            enteredNewBlock: vp.Rail.CurrentBlock != prevBlock,
+                            newRole: vp.Rail.CurrentNavigableBlock.Role,
                             _config.AutoScrollStopClasses);
                         if (shouldPark)
-                            doc.Rail.ParkAutoScroll();
+                            vp.Rail.ParkAutoScroll();
                         else
-                            doc.Rail.PauseAutoScroll(0);
+                            vp.Rail.PauseAutoScroll(0);
                         FireReadingPositionChanged();
                         break;
                 }
@@ -241,6 +253,31 @@ public sealed partial class DocumentController
     internal static bool ShouldParkOnLineAdvance(
         bool enteredNewChunk, bool enteredNewBlock, BlockRole newRole, IReadOnlySet<BlockRole> stopClasses)
         => enteredNewChunk || (enteredNewBlock && stopClasses.Contains(newRole));
+
+    /// <summary>
+    /// The global analysis pump: drain the worker (fanning results out to the matching
+    /// documents) and, when the frame is otherwise idle, schedule lookahead / background
+    /// read-ahead. Designed to be called <em>once per frame</em> regardless of how many
+    /// viewports tick (the worker and its read-ahead are global). <paramref name="quiescent"/>
+    /// is whether the caller's frame has no in-progress camera animation; read-ahead is
+    /// suppressed unless quiescent and no freshly-arrived result needs animating (so a
+    /// PDFium re-render can't jump the gate mid-scroll). Returns the same flags as
+    /// <see cref="PollAnalysisResults"/> so a facade <see cref="Tick"/> can fold them in.
+    /// </summary>
+    public (bool GotResults, bool NeedsAnimation, bool PageChanged) PumpAnalysis(bool quiescent = true)
+    {
+        var (gotResults, needsAnim, gotPageChange) = PollAnalysisResults();
+
+        if (quiescent && !needsAnim && ActiveDocument is { } doc)
+        {
+            if (!doc.SubmitPendingLookahead(_worker)
+                && !doc.Rail.Active
+                && _worker is not null && _worker.IsIdle)
+                TrySubmitBackgroundReadAhead();
+        }
+
+        return (gotResults, needsAnim, gotPageChange);
+    }
 
     /// <summary>
     /// Poll the analysis worker for completed results. Can also be called
@@ -285,7 +322,7 @@ public sealed partial class DocumentController
                 if (doc.Rail.Active)
                 {
                     if (doc.PendingSkip is { } pendingSkip)
-                        ApplySkipLanding(doc, pendingSkip.Forward, pendingSkip.SavedVerticalBias);
+                        ApplySkipLanding(doc.Primary, pendingSkip.Forward, pendingSkip.SavedVerticalBias);
                     doc.PendingSkip = null;
                     doc.StartSnap(ww, wh);
                     if (isActive)
@@ -298,7 +335,7 @@ public sealed partial class DocumentController
                 {
                     if (isActive)
                     {
-                        if (TryResumeSkip(doc, ww, wh))
+                        if (TryResumeSkip(doc.Primary, ww, wh))
                         {
                             needsAnim = true;
                             FireReadingPositionChanged();

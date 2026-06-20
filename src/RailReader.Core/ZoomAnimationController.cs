@@ -53,11 +53,11 @@ internal sealed class ZoomAnimationController
     /// Starts a smooth zoom animation toward <paramref name="focusX"/>,<paramref name="focusY"/>
     /// (screen coordinates). Accumulates from any in-progress animation.
     /// </summary>
-    public void Start(DocumentState doc, double newZoom, double focusX, double focusY, double vpWidth)
+    public void Start(Viewport vp, double newZoom, double focusX, double focusY, double vpWidth)
     {
-        double baseOx = _zoomAnim?.TargetOffsetX ?? doc.Camera.OffsetX;
-        double baseOy = _zoomAnim?.TargetOffsetY ?? doc.Camera.OffsetY;
-        double baseZoom = _zoomAnim?.TargetZoom ?? doc.Camera.Zoom;
+        double baseOx = _zoomAnim?.TargetOffsetX ?? vp.Camera.OffsetX;
+        double baseOy = _zoomAnim?.TargetOffsetY ?? vp.Camera.OffsetY;
+        double baseZoom = _zoomAnim?.TargetZoom ?? vp.Camera.Zoom;
 
         double targetOx = focusX - (focusX - baseOx) * (newZoom / baseZoom);
         double targetOy = focusY - (focusY - baseOy) * (newZoom / baseZoom);
@@ -65,18 +65,18 @@ internal sealed class ZoomAnimationController
         // Capture rail reading position before zoom so we can restore it on completion
         double hFraction = -1;
         double lineScreenY = 0;
-        if (doc.Rail.Active && doc.Rail.HasAnalysis)
+        if (vp.Rail.Active && vp.Rail.HasAnalysis)
         {
-            hFraction = doc.Rail.ComputeHorizontalFraction(doc.Camera.OffsetX, doc.Camera.Zoom, vpWidth);
-            lineScreenY = doc.Rail.CurrentLineInfo.Y * doc.Camera.Zoom + doc.Camera.OffsetY;
+            hFraction = vp.Rail.ComputeHorizontalFraction(vp.Camera.OffsetX, vp.Camera.Zoom, vpWidth);
+            lineScreenY = vp.Rail.CurrentLineInfo.Y * vp.Camera.Zoom + vp.Camera.OffsetY;
         }
 
         _zoomAnim = new ZoomAnimation
         {
-            StartZoom = doc.Camera.Zoom,
+            StartZoom = vp.Camera.Zoom,
             TargetZoom = newZoom,
-            StartOffsetX = doc.Camera.OffsetX,
-            StartOffsetY = doc.Camera.OffsetY,
+            StartOffsetX = vp.Camera.OffsetX,
+            StartOffsetY = vp.Camera.OffsetY,
             TargetOffsetX = targetOx,
             TargetOffsetY = targetOy,
             CursorPageX = (focusX - targetOx) / newZoom,
@@ -96,16 +96,16 @@ internal sealed class ZoomAnimationController
     /// mid-animation — the point <c>FindBlockNearPoint</c> uses to pick the active
     /// block. Pass the target block's line centre so activation lands on it.
     /// </summary>
-    public void StartTo(DocumentState doc,
+    public void StartTo(Viewport vp,
         double targetZoom, double targetOffsetX, double targetOffsetY,
         double cursorPageX, double cursorPageY, double? durationMs = null)
     {
         _zoomAnim = new ZoomAnimation
         {
-            StartZoom = doc.Camera.Zoom,
+            StartZoom = vp.Camera.Zoom,
             TargetZoom = targetZoom,
-            StartOffsetX = doc.Camera.OffsetX,
-            StartOffsetY = doc.Camera.OffsetY,
+            StartOffsetX = vp.Camera.OffsetX,
+            StartOffsetY = vp.Camera.OffsetY,
             TargetOffsetX = targetOffsetX,
             TargetOffsetY = targetOffsetY,
             CursorPageX = cursorPageX,
@@ -123,15 +123,15 @@ internal sealed class ZoomAnimationController
     /// centred framing of non-navigable blocks (figures/tables/charts) that the rail index can't
     /// seat. The caller is responsible for deactivating rail first.
     /// </summary>
-    public void StartCameraOnly(DocumentState doc,
+    public void StartCameraOnly(Viewport vp,
         double targetZoom, double targetOffsetX, double targetOffsetY, double? durationMs = null)
     {
         _zoomAnim = new ZoomAnimation
         {
-            StartZoom = doc.Camera.Zoom,
+            StartZoom = vp.Camera.Zoom,
             TargetZoom = targetZoom,
-            StartOffsetX = doc.Camera.OffsetX,
-            StartOffsetY = doc.Camera.OffsetY,
+            StartOffsetX = vp.Camera.OffsetX,
+            StartOffsetY = vp.Camera.OffsetY,
             TargetOffsetX = targetOffsetX,
             TargetOffsetY = targetOffsetY,
             CursorPageX = 0,
@@ -144,7 +144,7 @@ internal sealed class ZoomAnimationController
     }
 
     /// <summary>Smooth zoom animation step.</summary>
-    public void Tick(DocumentState doc, double ww, double wh,
+    public void Tick(Viewport vp, double ww, double wh,
         ref bool cameraChanged, ref bool animating)
     {
         if (_zoomAnim is { } za)
@@ -154,17 +154,17 @@ internal sealed class ZoomAnimationController
             // Cubic ease-out: 1 - (1-t)^3
             double ease = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
 
-            double prevZoom = doc.Camera.Zoom;
-            doc.Camera.Zoom = za.StartZoom + (za.TargetZoom - za.StartZoom) * ease;
-            doc.Camera.OffsetX = za.StartOffsetX + (za.TargetOffsetX - za.StartOffsetX) * ease;
-            doc.Camera.OffsetY = za.StartOffsetY + (za.TargetOffsetY - za.StartOffsetY) * ease;
-            doc.Camera.NotifyZoomChange();
+            double prevZoom = vp.Camera.Zoom;
+            vp.Camera.Zoom = za.StartZoom + (za.TargetZoom - za.StartZoom) * ease;
+            vp.Camera.OffsetX = za.StartOffsetX + (za.TargetOffsetX - za.StartOffsetX) * ease;
+            vp.Camera.OffsetY = za.StartOffsetY + (za.TargetOffsetY - za.StartOffsetY) * ease;
+            vp.Camera.NotifyZoomChange();
             // Pure camera moves drive the camera directly — no rail bias scaling and no per-frame
             // rail re-evaluation, so rail can't re-engage and hijack a figure/table frame.
             if (!za.PureCameraMove)
             {
-                doc.Rail.ScaleVerticalBias(prevZoom, doc.Camera.Zoom);
-                doc.UpdateRailZoom(ww, wh, za.CursorPageX, za.CursorPageY);
+                vp.Rail.ScaleVerticalBias(prevZoom, vp.Camera.Zoom);
+                vp.UpdateRailZoom(ww, wh, za.CursorPageX, za.CursorPageY);
             }
             cameraChanged = true;
 
@@ -174,15 +174,15 @@ internal sealed class ZoomAnimationController
                 double lineY = za.LineScreenY;
                 bool pure = za.PureCameraMove;
                 _zoomAnim = null;
-                doc.ClampCamera(ww, wh);
-                if (!pure && doc.Rail.Active)
+                vp.ClampCamera(ww, wh);
+                if (!pure && vp.Rail.Active)
                 {
                     if (hFrac >= 0)
-                        doc.StartSnapPreservingPosition(ww, wh, hFrac, lineY);
+                        vp.StartSnapPreservingPosition(ww, wh, hFrac, lineY);
                     else
-                        doc.StartSnap(ww, wh);
+                        vp.StartSnap(ww, wh);
                 }
-                doc.UpdateRenderDpiIfNeeded();
+                vp.UpdateRenderDpiIfNeeded();
             }
             else
             {

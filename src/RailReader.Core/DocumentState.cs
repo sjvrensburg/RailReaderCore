@@ -18,18 +18,12 @@ public sealed class DocumentState : IDisposable
     internal bool IsDisposed { get; private set; }
 
     private string _title;
-    private int _currentPage;
-    private double _pageWidth;
-    private double _pageHeight;
-    private bool _debugOverlay;
-    private bool _pendingRailSetup;
-    private ColourEffect _colourEffect;
-    private bool _lineFocusBlur;
-    private bool _lineHighlightEnabled = true;
-    private bool _marginCropping;
     private bool _tableRowReading = true;
     private bool _cellNavigation;
-    /// <summary>Fires when a property changes. Parameter is the property name.</summary>
+    /// <summary>Fires when a property changes. Parameter is the property name. Doc-level changes
+    /// (e.g. Title) fire directly; per-view page changes are forwarded from the primary
+    /// <see cref="Viewport.StateChanged"/> (wired in the constructor) so single-viewport
+    /// subscribers see the same notifications as before.</summary>
     public Action<string>? StateChanged;
 
     /// <summary>Sets a backing field and fires StateChanged if the value changed.</summary>
@@ -48,88 +42,97 @@ public sealed class DocumentState : IDisposable
         set => SetField(ref _title, value, nameof(Title));
     }
 
+    // Page position + dimensions are per-view (on Viewport); these delegate to the primary view.
     public int CurrentPage
     {
-        get => _currentPage;
-        set
-        {
-            if (SetField(ref _currentPage, value, nameof(CurrentPage)))
-                EvictDistantPageCaches(value);
-        }
+        get => Primary.CurrentPage;
+        set => Primary.CurrentPage = value;
     }
 
     public double PageWidth
     {
-        get => _pageWidth;
-        set => SetField(ref _pageWidth, value, nameof(PageWidth));
+        get => Primary.PageWidth;
+        set => Primary.PageWidth = value;
     }
 
     public double PageHeight
     {
-        get => _pageHeight;
-        set => SetField(ref _pageHeight, value, nameof(PageHeight));
+        get => Primary.PageHeight;
+        set => Primary.PageHeight = value;
     }
 
     public bool DebugOverlay
     {
-        get => _debugOverlay;
-        set => SetField(ref _debugOverlay, value, nameof(DebugOverlay));
+        get => Primary.DebugOverlayBacking;
+        set => SetField(ref Primary.DebugOverlayBacking, value, nameof(DebugOverlay));
     }
 
     public bool PendingRailSetup
     {
-        get => _pendingRailSetup;
-        set => SetField(ref _pendingRailSetup, value, nameof(PendingRailSetup));
+        get => Primary.PendingRailSetupBacking;
+        set => SetField(ref Primary.PendingRailSetupBacking, value, nameof(PendingRailSetup));
     }
 
     public ColourEffect ColourEffect
     {
-        get => _colourEffect;
-        set => SetField(ref _colourEffect, value, nameof(ColourEffect));
+        get => Primary.ColourEffectBacking;
+        set => SetField(ref Primary.ColourEffectBacking, value, nameof(ColourEffect));
     }
 
     public bool LineFocusBlur
     {
-        get => _lineFocusBlur;
-        set => SetField(ref _lineFocusBlur, value, nameof(LineFocusBlur));
+        get => Primary.LineFocusBlurBacking;
+        set => SetField(ref Primary.LineFocusBlurBacking, value, nameof(LineFocusBlur));
     }
 
     public bool LineHighlightEnabled
     {
-        get => _lineHighlightEnabled;
-        set => SetField(ref _lineHighlightEnabled, value, nameof(LineHighlightEnabled));
+        get => Primary.LineHighlightEnabledBacking;
+        set => SetField(ref Primary.LineHighlightEnabledBacking, value, nameof(LineHighlightEnabled));
     }
 
     public bool MarginCropping
     {
-        get => _marginCropping;
-        set => SetField(ref _marginCropping, value, nameof(MarginCropping));
+        get => Primary.MarginCroppingBacking;
+        set => SetField(ref Primary.MarginCroppingBacking, value, nameof(MarginCropping));
     }
 
     public string FilePath { get; }
     public int PageCount { get; }
     public IPdfService Pdf => _pdf;
     public IPdfTextService PdfText => _pdfText;
-    public Camera Camera { get; } = new();
-    public RailNav Rail { get; }
+    // Doc-level dependencies the per-view render path (moved onto Viewport) reaches via Owner.
+    internal IThreadMarshaller Marshaller => _marshaller;
+    internal ILogger Logger => _logger;
+
+    /// <summary>
+    /// The single embedded view (Phase 0 of the multi-viewport split — see
+    /// <c>docs/multi-viewport-design.md</c>). Holds the camera and the rasterised-page
+    /// cache; <see cref="DocumentState"/>'s camera/render-surface members delegate here.
+    /// </summary>
+    public Viewport Primary { get; }
+
+    private readonly List<Viewport> _viewports;
+    /// <summary>All views of this document — always ≥1, with <c>Viewports[0] == <see cref="Primary"/></c>.
+    /// A document starts with just <see cref="Primary"/>; <see cref="AddViewport"/> appends detached
+    /// views (split-pane / tear-off windows), each with its own camera and rasterised-page cache.</summary>
+    public IReadOnlyList<Viewport> Viewports => _viewports;
+
+    public Camera Camera => Primary.Camera;
+    public RailNav Rail => Primary.Rail;
     private readonly Dictionary<int, PageAnalysis> _analysisCache = [];
     private readonly Dictionary<int, PageText> _textCache = [];
     private readonly Dictionary<int, List<PdfLink>> _linkCache = [];
     public IReadOnlyDictionary<int, PageAnalysis> AnalysisCache => _analysisCache;
     public IReadOnlyDictionary<int, PageText> TextCache => _textCache;
     public IReadOnlyDictionary<int, List<PdfLink>> LinkCache => _linkCache;
-    // Pages farther than this from CurrentPage are dropped from the text/link
-    // caches; <= 0 disables eviction. See CoreSettings.PageCacheRadius.
+    // Pages farther than this from any view's current page are dropped from the
+    // text/link caches; <= 0 disables eviction. See CoreSettings.PageCacheRadius.
     private int _pageCacheRadius;
+    // Latest settings snapshot — kept so AddViewport can build a new view from current config.
+    private CoreSettings _config;
 
-    // Active render-quality tuning (DPI cap / tier step / floor / pixel-area
-    // ceiling / hysteresis). Updated at runtime via OnRenderQualityChanged.
-    private RenderDpiSettings _renderDpi = RenderDpiSettings.Default;
-
-    // Set when a render-quality change arrives while PDFium is busy, so the
-    // forced re-render is retried from the animation tick once it frees.
-    private bool _renderDpiDirty;
-    public Queue<int> PendingAnalysis { get; } = new();
+    public Queue<int> PendingAnalysis => Primary.PendingAnalysis;
     internal BackgroundAnalysisQueue BackgroundQueue { get; private set; } = null!;
 
     /// <summary>Number of pages with cached analysis results.</summary>
@@ -144,7 +147,7 @@ public sealed class DocumentState : IDisposable
     /// the PDFium gate free for the in-flight task and any follow-up scroll-path
     /// calls (text/link extraction) the user is about to need.
     /// </summary>
-    public bool IsPdfiumBusy => _dpiRenderPending || _prefetchPending;
+    public bool IsPdfiumBusy => Primary.DpiRenderPending || Primary.PrefetchPending;
 
     /// <summary>Fires on the UI thread when a new page analysis result is cached.</summary>
     public event Action? AnalysisCacheUpdated;
@@ -153,16 +156,14 @@ public sealed class DocumentState : IDisposable
     /// When set, this page was reached via rail navigation and should be
     /// skipped if analysis reveals no navigable blocks. Cleared on landing.
     /// </summary>
-    public PendingPageSkip? PendingSkip { get; set; }
+    public PendingPageSkip? PendingSkip { get => Primary.PendingSkip; set => Primary.PendingSkip = value; }
     public List<OutlineEntry> Outline { get; }
 
-    // Navigation history (back/forward) — per-document so tab switching doesn't cross-pollinate
-    private readonly Stack<int> _backStack = new();
-    private readonly Stack<int> _forwardStack = new();
-    public int BackStackCount => _backStack.Count;
-    public int ForwardStackCount => _forwardStack.Count;
-    public int PeekBack() => _backStack.Peek();
-    public int PeekForward() => _forwardStack.Peek();
+    // Navigation history (back/forward) — per-view so each viewport navigates independently
+    public int BackStackCount => Primary.BackStack.Count;
+    public int ForwardStackCount => Primary.ForwardStack.Count;
+    public int PeekBack() => Primary.BackStack.Peek();
+    public int PeekForward() => Primary.ForwardStack.Peek();
 
     // Annotations (shared via AnnotationFileManager when set)
     public AnnotationFile Annotations { get; set; } = new();
@@ -170,9 +171,9 @@ public sealed class DocumentState : IDisposable
     public Stack<IUndoAction> RedoStack { get; } = new();
     private AnnotationFileManager? _annotationManager;
 
-    // Cached rendered page and the DPI it was rendered at
-    public IRenderedPage? CachedPage { get; private set; }
-    public int CachedDpi { get; private set; }
+    // Cached rendered page and the DPI it was rendered at (delegated to the view).
+    public IRenderedPage? CachedPage { get => Primary.CachedPage; private set => Primary.CachedPage = value; }
+    public int CachedDpi { get => Primary.CachedDpi; private set => Primary.CachedDpi = value; }
 
     /// <summary>
     /// Document-wide content fraction: the smallest page-fractional rectangle that
@@ -182,11 +183,17 @@ public sealed class DocumentState : IDisposable
     public ContentFraction? DocumentContentFraction { get; private set; }
 
     // Small pre-scaled thumbnail used by the minimap (≤200×280 px).
-    public IRenderedPage? MinimapPage { get; private set; }
+    public IRenderedPage? MinimapPage { get => Primary.MinimapPage; private set => Primary.MinimapPage = value; }
 
     public DocumentState(string filePath, IPdfService pdf, IPdfTextService pdfText, IPdfLinkService pdfLink,
         CoreSettings config, IThreadMarshaller marshaller, ILogger? logger = null)
     {
+        _config = config;
+        Primary = new Viewport(config, this);
+        _viewports = [Primary];
+        // Forward the primary view's per-view property changes to the doc-level StateChanged facade
+        // so existing single-viewport subscribers keep seeing CurrentPage/PageWidth/PageHeight events.
+        Primary.StateChanged += name => StateChanged?.Invoke(name);
         _marshaller = marshaller;
         _logger = logger ?? NullLogger.Instance;
         FilePath = filePath;
@@ -195,16 +202,15 @@ public sealed class DocumentState : IDisposable
         _pdfLink = pdfLink;
         PageCount = _pdf.PageCount;
         _title = Path.GetFileName(filePath);
-        _colourEffect = config.ColourEffect;
-        _lineFocusBlur = config.LineFocusBlur;
-        _lineHighlightEnabled = config.LineHighlightEnabled;
-        _marginCropping = config.MarginCropping;
+        Primary.ColourEffectBacking = config.ColourEffect;
+        Primary.LineFocusBlurBacking = config.LineFocusBlur;
+        Primary.LineHighlightEnabledBacking = config.LineHighlightEnabled;
+        Primary.MarginCroppingBacking = config.MarginCropping;
         _tableRowReading = config.TableRowReading;
         _cellNavigation = config.CellNavigation;
-        Rail = new RailNav(config);
         Outline = _pdf.Outline;
         _pageCacheRadius = config.PageCacheRadius;
-        _renderDpi = config.RenderDpi;
+        Primary.RenderDpi = config.RenderDpi;
         BackgroundQueue = new BackgroundAnalysisQueue(PageCount, config.BackgroundAnalysisWindowPages);
     }
 
@@ -216,35 +222,86 @@ public sealed class DocumentState : IDisposable
     internal void UpdateBackgroundSettings(CoreSettings config)
     {
         _marshaller.AssertUIThread();
+        _config = config;
         BackgroundQueue.WindowPages = config.BackgroundAnalysisWindowPages;
         _pageCacheRadius = config.PageCacheRadius;
         _tableRowReading = config.TableRowReading;
         _cellNavigation = config.CellNavigation;
-        EvictDistantPageCaches(CurrentPage);
+        EvictDistantPageCaches();
     }
 
     /// <summary>
-    /// Drops text/link cache entries for pages outside ±<see cref="_pageCacheRadius"/>
-    /// of <paramref name="center"/>. The analysis-geometry cache is left intact
-    /// (cheap to hold, expensive to recompute).
+    /// Drops text/link cache entries for pages no view needs, called when a viewport's page changes
+    /// or cache tuning updates. A page is kept if it is within ±<see cref="_pageCacheRadius"/> of ANY
+    /// view's current page (union over all viewports), so one view advancing can't drop a page another
+    /// view still sits on (§5). The analysis-geometry cache is left intact (cheap to hold, expensive to
+    /// recompute). No-op when eviction is disabled (<see cref="_pageCacheRadius"/> &lt;= 0).
     /// </summary>
-    private void EvictDistantPageCaches(int center)
+    internal void EvictDistantPageCaches()
     {
         if (_pageCacheRadius <= 0) return;
-        int lo = center - _pageCacheRadius, hi = center + _pageCacheRadius;
-        EvictOutside(_textCache, lo, hi);
-        EvictOutside(_linkCache, lo, hi);
+        EvictUnneeded(_textCache);
+        EvictUnneeded(_linkCache);
     }
 
-    private static void EvictOutside<TValue>(Dictionary<int, TValue> cache, int lo, int hi)
+    private void EvictUnneeded<TValue>(Dictionary<int, TValue> cache)
     {
         List<int>? stale = null;
         foreach (var page in cache.Keys)
-            if (page < lo || page > hi)
+            if (!AnyViewportNeeds(page))
                 (stale ??= []).Add(page);
         if (stale is null) return;
         foreach (var page in stale)
             cache.Remove(page);
+    }
+
+    private bool AnyViewportNeeds(int page)
+    {
+        foreach (var vp in _viewports)
+            if (Math.Abs(page - vp.CurrentPage) <= _pageCacheRadius)
+                return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Adds a detached view of this document (split-pane / tear-off window): a fresh
+    /// <see cref="Viewport"/> seeded from the current settings and the primary view's size, starting
+    /// on page 0 with a default camera. The caller positions it (page / centre / zoom). Its render
+    /// cache and camera are independent of the primary's. UI-thread only.
+    /// <para><b>Scope (Phase 1):</b> a non-primary view's camera, zoom, rail-snap, auto-scroll and
+    /// rasterisation are fully independent, but a <em>cross-page</em> transition reached from its
+    /// tick (rail page-advance / edge-hold) still routes through the document-level
+    /// <see cref="GoToPage"/>, which moves the <see cref="Primary"/> view. Per-view page navigation
+    /// and analysis fan-out land with the analysis-fan-out phase (see <c>docs/multi-viewport-design.md</c> §5).</para>
+    /// </summary>
+    public Viewport AddViewport()
+    {
+        _marshaller.AssertUIThread();
+        var vp = new Viewport(_config, this)
+        {
+            ColourEffectBacking = _config.ColourEffect,
+            LineFocusBlurBacking = _config.LineFocusBlur,
+            LineHighlightEnabledBacking = _config.LineHighlightEnabled,
+            MarginCroppingBacking = _config.MarginCropping,
+            RenderDpi = _config.RenderDpi,
+        };
+        vp.SetSize(Primary.Width, Primary.Height);
+        _viewports.Add(vp);
+        return vp;
+    }
+
+    /// <summary>
+    /// Removes and disposes a detached view (cancelling its in-flight renders and freeing its
+    /// bitmaps). The <see cref="Primary"/> view cannot be removed — it lives for the document's
+    /// lifetime. No-op if the view isn't ours. UI-thread only.
+    /// </summary>
+    public void RemoveViewport(Viewport vp)
+    {
+        _marshaller.AssertUIThread();
+        if (ReferenceEquals(vp, Primary))
+            throw new InvalidOperationException("Cannot remove the primary viewport.");
+        if (_viewports.Remove(vp))
+            vp.Dispose();
     }
 
     /// <summary>
@@ -253,49 +310,7 @@ public sealed class DocumentState : IDisposable
     /// Returns false if the page could not be rendered.
     /// Uses prefetched bitmap if available for the current page (seamless auto-scroll transitions).
     /// </summary>
-    public bool LoadPageBitmap()
-    {
-        var oldPage = CachedPage;
-        var oldMinimap = MinimapPage;
-
-        try
-        {
-            // Use prefetched page if available (e.g. from auto-scroll lookahead).
-            if (_prefetched is { } pf && pf.PageIndex == CurrentPage)
-            {
-                CachedPage = pf.Page;
-                CachedDpi = pf.Dpi;
-                MinimapPage = pf.Minimap;
-                PageWidth = pf.PageWidth;
-                PageHeight = pf.PageHeight;
-                _prefetched = null; // consumed — don't dispose, we're using the bitmaps
-                oldPage?.Dispose();
-                oldMinimap?.Dispose();
-                return true;
-            }
-
-            var (w, h) = _pdf.GetPageSize(CurrentPage);
-            int dpi = CalculateRenderDpi(Camera.Zoom, w, h, _renderDpi);
-            var newPage = _pdf.RenderPage(CurrentPage, dpi);
-            var newMinimap = _pdf.RenderThumbnail(CurrentPage);
-
-            // Commit: swap fields and dispose old bitmaps only after full success
-            CachedPage = newPage;
-            CachedDpi = dpi;
-            MinimapPage = newMinimap;
-            PageWidth = w;
-            PageHeight = h;
-            oldPage?.Dispose();
-            oldMinimap?.Dispose();
-            return true;
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
-        {
-            _logger.Error($"Failed to render page {CurrentPage + 1}: {ex.Message}", ex);
-            return false;
-        }
-    }
+    public bool LoadPageBitmap() => Primary.LoadPageBitmap();
 
     /// <summary>
     /// Schedules background rendering of the specified page for seamless auto-scroll
@@ -303,82 +318,20 @@ public sealed class DocumentState : IDisposable
     /// call if it targets the same page. No-op if a prefetch is already pending or
     /// the page is out of range.
     /// </summary>
-    internal void PrefetchPage(int pageIndex)
-    {
-        // Serialize with DPI re-render to avoid concurrent PDFium access.
-        if (_prefetchPending || _dpiRenderPending) return;
-        if (pageIndex < 0 || pageIndex >= PageCount || IsDisposed) return;
-        if (_prefetched?.PageIndex == pageIndex) return;
-
-        _prefetchPending = true;
-        // Capture UI-thread state; the page's own dimensions (needed for the
-        // pixel-area ceiling) are fetched inside the task to keep PDFium off the
-        // UI thread, so DPI is computed there too.
-        double zoom = Camera.Zoom;
-        var dpiSettings = _renderDpi;
-        var ct = _cts.Token;
-
-        Task.Run(() =>
-        {
-            PrefetchedPageData? prepared = null;
-            Exception? error = null;
-            try
-            {
-                ct.ThrowIfCancellationRequested();
-                var (w, h) = _pdf.GetPageSize(pageIndex);
-                int dpi = CalculateRenderDpi(zoom, w, h, dpiSettings);
-                _logger.Debug($"[PDFium] prefetch pg {pageIndex} @ {dpi}dpi tid={Environment.CurrentManagedThreadId} file={Path.GetFileName(FilePath)}");
-                var page = _pdf.RenderPage(pageIndex, dpi);
-                var minimap = _pdf.RenderThumbnail(pageIndex);
-                prepared = new(pageIndex, dpi, page, minimap, w, h);
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception ex) { error = ex; }
-
-            _marshaller.Post(() =>
-            {
-                try
-                {
-                    if (error is not null)
-                        _logger.Error($"Failed to prefetch page {pageIndex + 1}: {error.Message}", error);
-                    if (IsDisposed || prepared is null)
-                    {
-                        prepared?.Dispose();
-                        return;
-                    }
-                    _prefetched?.Dispose();
-                    _prefetched = prepared;
-                }
-                finally { _prefetchPending = false; }
-            });
-        }, ct);
-    }
-
-    private bool _dpiRenderPending;
-
-    // Page prefetch for seamless auto-scroll page transitions.
-    private sealed record PrefetchedPageData(
-        int PageIndex, int Dpi, IRenderedPage Page, IRenderedPage Minimap,
-        double PageWidth, double PageHeight) : IDisposable
-    {
-        public void Dispose() { Page.Dispose(); Minimap.Dispose(); }
-    }
-
-    private PrefetchedPageData? _prefetched;
-    private bool _prefetchPending;
+    internal void PrefetchPage(int pageIndex) => Primary.PrefetchPage(pageIndex);
 
     /// <summary>
     /// Set to true when a DPI re-render completes. The next animation frame
     /// picks this up and invalidates the page layer atomically with the
-    /// camera update, avoiding mid-frame bitmap swaps.
+    /// camera update, avoiding mid-frame bitmap swaps. (Delegated to the view.)
     /// </summary>
-    public bool DpiRenderReady { get; internal set; }
+    public bool DpiRenderReady { get => Primary.DpiRenderReady; internal set => Primary.DpiRenderReady = value; }
 
     /// <summary>
     /// Called on the UI thread when a DPI re-render completes, so the view can
-    /// request an animation frame to pick up the new bitmap.
+    /// request an animation frame to pick up the new bitmap. (Delegated to the view.)
     /// </summary>
-    public Action? OnDpiRenderComplete { get; set; }
+    public Action? OnDpiRenderComplete { get => Primary.OnDpiRenderComplete; set => Primary.OnDpiRenderComplete = value; }
 
     /// <summary>
     /// Checks if the current zoom demands a different DPI and schedules an
@@ -390,94 +343,13 @@ public sealed class DocumentState : IDisposable
     /// while scrolling and retried from the animation tick (which polls
     /// <see cref="RenderDpiPending"/>) the moment scrolling stops.
     /// </summary>
-    public bool UpdateRenderDpiIfNeeded()
-    {
-        // Serialize with prefetch to avoid concurrent PDFium access. If a
-        // render-quality change is pending it stays dirty and retries once the
-        // gate frees (from the animation tick or the in-flight render's completion).
-        if (_dpiRenderPending || _prefetchPending) return false;
-
-        bool force = _renderDpiDirty;
-
-        // Skip DPI re-renders while the user is actively scrolling. PDFium runs
-        // under a process-wide gate; a 100-200ms re-render at high zoom blocks
-        // any subsequent text/link extraction the scroll path may need and the
-        // bitmap-swap defers a frame. This applies to forced (preset-change)
-        // re-renders too: jumping the gate mid-scroll would stutter the scroll,
-        // so the change stays dirty and the animation tick retries it the moment
-        // scroll velocity drops to zero.
-        if (Rail.ScrollSpeed > 0.1 || Rail.AutoScrolling) return false;
-
-        int neededDpi = CalculateRenderDpi(Camera.Zoom, PageWidth, PageHeight, _renderDpi);
-        bool trigger = force
-            ? neededDpi != CachedDpi
-            : neededDpi > CachedDpi * _renderDpi.UpscaleHysteresis
-              || (neededDpi < CachedDpi * _renderDpi.DownscaleHysteresis && CachedDpi > _renderDpi.MinDpi);
-
-        // Optimistically mark a forced (preset-change) pass as satisfied now that
-        // it's about to render (or needs no render). If the scheduled re-render
-        // later FAILS, the completion handler re-arms the flag so the tick retries
-        // — without this, a thrown RenderPage would silently strand the page at
-        // the old DPI (the flag was already cleared).
-        if (force) _renderDpiDirty = false;
-
-        if (trigger)
-        {
-            _dpiRenderPending = true;
-            int page = CurrentPage;
-            var ct = _cts.Token;
-            Task.Run(() =>
-            {
-                IRenderedPage? newPage = null;
-                Exception? error = null;
-                try
-                {
-                    ct.ThrowIfCancellationRequested();
-                    _logger.Debug($"[PDFium] dpi-rerender pg {page} @ {neededDpi}dpi tid={Environment.CurrentManagedThreadId} file={Path.GetFileName(FilePath)}");
-                    newPage = _pdf.RenderPage(page, neededDpi);
-                }
-                catch (OperationCanceledException) { }
-                catch (Exception ex) { error = ex; }
-
-                _marshaller.Post(() =>
-                {
-                    try
-                    {
-                        if (error is not null)
-                            _logger.Error($"Failed to re-render page at {neededDpi} DPI: {error.Message}", error);
-                        if (IsDisposed || CurrentPage != page || newPage is null)
-                        {
-                            newPage?.Dispose();
-                            // Re-arm a forced re-render that FAILED (RenderPage threw →
-                            // error set) so the pending preset change is retried, not
-                            // lost. A page-navigation abort or cancellation leaves error
-                            // null, and GoToPage's LoadPageBitmap already rendered the new
-                            // page at the new DPI, so neither needs a re-arm.
-                            if (force && !IsDisposed && error is not null)
-                                _renderDpiDirty = true;
-                            return;
-                        }
-                        var oldPage = CachedPage;
-                        CachedPage = newPage;
-                        CachedDpi = neededDpi;
-                        DpiRenderReady = true;
-                        oldPage?.Dispose();
-                        OnDpiRenderComplete?.Invoke();
-                    }
-                    finally { _dpiRenderPending = false; }
-                });
-            }, ct);
-            return true;
-        }
-
-        return false;
-    }
+    public bool UpdateRenderDpiIfNeeded() => Primary.UpdateRenderDpiIfNeeded();
 
     /// <summary>True while a render-quality change is queued but not yet applied
     /// (PDFium was busy, or the user is scrolling). Polled every frame by the
     /// animation tick so the deferred re-render fires as soon as the gate and
     /// scroll allow, even while another animation is still running.</summary>
-    internal bool RenderDpiPending => _renderDpiDirty;
+    internal bool RenderDpiPending => Primary.RenderDpiDirty;
 
     /// <summary>
     /// Applies a new render-quality preset at runtime and invalidates the page
@@ -489,26 +361,7 @@ public sealed class DocumentState : IDisposable
     /// (rasterised at the old DPI) is dropped and the current page is forced to
     /// re-render — deferred via the dirty flag while PDFium is busy or scrolling.
     /// </summary>
-    internal void OnRenderQualityChanged(in RenderDpiSettings settings)
-    {
-        _marshaller.AssertUIThread();
-
-        // Gate on the actual DPI tuning, not "some setting changed" — OnConfigChanged
-        // funnels every settings change here. RenderDpiSettings is a record struct
-        // with value equality, so this is a cheap, correct comparison.
-        if (settings == _renderDpi) return;
-
-        _renderDpi = settings;
-
-        // Drop the prefetch buffer — it was rasterised at the previous DPI.
-        _prefetched?.Dispose();
-        _prefetched = null;
-
-        // Force the current page to re-render at the new DPI band; if PDFium is
-        // busy or the user is scrolling, mark dirty so the tick retries.
-        _renderDpiDirty = true;
-        UpdateRenderDpiIfNeeded();
-    }
+    internal void OnRenderQualityChanged(in RenderDpiSettings settings) => Primary.OnRenderQualityChanged(in settings);
 
     public void SubmitAnalysis(AnalysisWorker? worker, IReadOnlySet<BlockRole> navigableRoles)
     {
@@ -691,44 +544,27 @@ public sealed class DocumentState : IDisposable
     {
         PendingRailSetup = false;
         PendingSkip = null;
-        _prefetched?.Dispose();
-        _prefetched = null;
+        Primary.Prefetched?.Dispose();
+        Primary.Prefetched = null;
     }
+
+    // --- Camera geometry: delegated to the view (capstone slice 2). The bodies live on
+    //     Viewport (reading its own Camera/Rail/page dims + Owner.DocumentContentFraction);
+    //     these wrappers keep DocumentState's public surface and call sites untouched. ---
 
     /// <summary>
     /// Returns the page-space rectangle used by fit/centre operations.
     /// With margin cropping off (or no analysis yet), this is the full page.
     /// With margin cropping on, it's the content region of the page.
     /// </summary>
-    public (double X, double Y, double W, double H) GetFitRect()
-    {
-        if (MarginCropping && DocumentContentFraction is { } f)
-        {
-            return (f.X * PageWidth, f.Y * PageHeight,
-                    f.W * PageWidth, f.H * PageHeight);
-        }
-        return (0, 0, PageWidth, PageHeight);
-    }
-
-    /// <summary>
-    /// Sub-rail-threshold epsilon: keeps margin-cropping fit zoom strictly
-    /// below the rail trigger so cropping never accidentally enters rail mode.
-    /// </summary>
-    private const double RailThresholdEpsilon = 0.001;
+    public (double X, double Y, double W, double H) GetFitRect() => Primary.GetFitRect();
 
     /// <summary>
     /// Zoom that fits <paramref name="box"/> within the viewport with a uniform margin,
     /// clamped to the camera range. The limiting dimension wins so the whole block shows.
     /// </summary>
     public double ComputeBlockFitZoom(BBox box, double viewportW, double viewportH,
-        double marginFraction = 0.08)
-    {
-        double padW = box.W * (1.0 + 2.0 * marginFraction);
-        double padH = box.H * (1.0 + 2.0 * marginFraction);
-        if (padW <= 0 || padH <= 0 || viewportW <= 0 || viewportH <= 0) return Camera.Zoom;
-        double z = Math.Min(viewportW / padW, viewportH / padH);
-        return Math.Clamp(z, Camera.ZoomMin, Camera.ZoomMax);
-    }
+        double marginFraction = 0.08) => Primary.ComputeBlockFitZoom(box, viewportW, viewportH, marginFraction);
 
     /// <summary>
     /// Camera target (zoom + offsets) that centres <paramref name="box"/> in the viewport,
@@ -739,37 +575,11 @@ public sealed class DocumentState : IDisposable
     /// </summary>
     public (double Zoom, double OffsetX, double OffsetY) ComputeCenteredFrame(
         BBox box, double viewportW, double viewportH, double? targetZoom = null)
-    {
-        double z = Math.Clamp(targetZoom ?? ComputeBlockFitZoom(box, viewportW, viewportH),
-            Camera.ZoomMin, Camera.ZoomMax);
-        double ox = (viewportW - box.W * z) / 2.0 - box.X * z;
-        double oy = (viewportH - box.H * z) / 2.0 - box.Y * z;
-        return (z, ox, oy);
-    }
+        => Primary.ComputeCenteredFrame(box, viewportW, viewportH, targetZoom);
 
-    public void CenterPage(double windowWidth, double windowHeight)
-    {
-        if (PageWidth <= 0 || PageHeight <= 0 || windowWidth <= 0 || windowHeight <= 0) return;
-        var (rx, ry, rw, rh) = GetFitRect();
-        if (rw <= 0 || rh <= 0) return;
-        Camera.Zoom = Math.Min(windowWidth / rw, windowHeight / rh);
-        Camera.OffsetX = CenteredOffsetX(windowWidth, rx, rw, Camera.Zoom);
-        Camera.OffsetY = (windowHeight - rh * Camera.Zoom) / 2.0 - ry * Camera.Zoom;
-    }
+    public void CenterPage(double windowWidth, double windowHeight) => Primary.CenterPage(windowWidth, windowHeight);
 
-    public void FitWidth(double windowWidth, double windowHeight)
-    {
-        if (PageWidth <= 0 || windowWidth <= 0) return;
-        var (rx, ry, rw, rh) = GetFitRect();
-        if (rw <= 0) return;
-
-        Camera.Zoom = ComputeFitWidthZoom(windowWidth, rw);
-        double scaledRectH = rh * Camera.Zoom;
-        Camera.OffsetX = CenteredOffsetX(windowWidth, rx, rw, Camera.Zoom);
-        Camera.OffsetY = scaledRectH <= windowHeight
-            ? (windowHeight - scaledRectH) / 2.0 - ry * Camera.Zoom
-            : -ry * Camera.Zoom;
-    }
+    public void FitWidth(double windowWidth, double windowHeight) => Primary.FitWidth(windowWidth, windowHeight);
 
     /// <summary>
     /// Applies the fit-width zoom while keeping the page-space y currently at
@@ -778,89 +588,24 @@ public sealed class DocumentState : IDisposable
     /// Horizontally, content is centred (same as <see cref="FitWidth"/>).
     /// </summary>
     public void FitWidthPreservingTop(double windowWidth, double windowHeight)
-    {
-        if (PageWidth <= 0 || windowWidth <= 0 || Camera.Zoom <= 0) return;
-        double pageTopY = -Camera.OffsetY / Camera.Zoom;
+        => Primary.FitWidthPreservingTop(windowWidth, windowHeight);
 
-        var (rx, _, rw, _) = GetFitRect();
-        double newZoom = ComputeFitWidthZoom(windowWidth, rw);
-        if (newZoom <= 0) return;
-
-        Camera.Zoom = newZoom;
-        Camera.OffsetX = CenteredOffsetX(windowWidth, rx, rw, newZoom);
-        Camera.OffsetY = -pageTopY * newZoom;
-        ClampCamera(windowWidth, windowHeight);
-    }
-
-    private static double CenteredOffsetX(double windowWidth, double rectX, double rectW, double zoom)
-        => (windowWidth - rectW * zoom) / 2.0 - rectX * zoom;
-
-    private double ComputeFitWidthZoom(double windowWidth, double rectW)
-    {
-        if (rectW <= 0) return Camera.Zoom;
-
-        double maxZoom = Camera.ZoomMax;
-        // Keep margin cropping from pushing the user into rail mode on large
-        // screens. Only caps when the uncropped fit was itself below the rail
-        // threshold — if the user would already be in rail without cropping,
-        // cropping shouldn't un-rail them.
-        if (MarginCropping && Rail.ZoomThreshold > 0)
-        {
-            double uncroppedFit = windowWidth / PageWidth;
-            if (uncroppedFit < Rail.ZoomThreshold)
-                maxZoom = Math.Min(maxZoom, Rail.ZoomThreshold - RailThresholdEpsilon);
-        }
-        return Math.Clamp(windowWidth / rectW, Camera.ZoomMin, maxZoom);
-    }
-
-    public void ClampCamera(double windowWidth, double windowHeight)
-    {
-        double scaledW = PageWidth * Camera.Zoom;
-        double scaledH = PageHeight * Camera.Zoom;
-
-        if (scaledW <= windowWidth)
-            Camera.OffsetX = (windowWidth - scaledW) / 2.0;
-        else
-            Camera.OffsetX = Math.Clamp(Camera.OffsetX, windowWidth - scaledW, 0);
-
-        if (scaledH <= windowHeight)
-            Camera.OffsetY = (windowHeight - scaledH) / 2.0;
-        else
-            Camera.OffsetY = Math.Clamp(Camera.OffsetY, windowHeight - scaledH, 0);
-    }
+    public void ClampCamera(double windowWidth, double windowHeight) => Primary.ClampCamera(windowWidth, windowHeight);
 
     public void ApplyZoom(double newZoom, double windowWidth, double windowHeight)
-    {
-        Camera.Zoom = Math.Clamp(newZoom, Camera.ZoomMin, Camera.ZoomMax);
-        UpdateRailZoom(windowWidth, windowHeight);
-        if (Rail.Active)
-            StartSnap(windowWidth, windowHeight);
-        ClampCamera(windowWidth, windowHeight);
-    }
+        => Primary.ApplyZoom(newZoom, windowWidth, windowHeight);
 
     public void UpdateRailZoom(double windowWidth, double windowHeight,
         double? cursorPageX = null, double? cursorPageY = null)
-    {
-        Rail.UpdateZoom(Camera.Zoom, Camera.OffsetX, Camera.OffsetY, windowWidth, windowHeight,
-            cursorPageX, cursorPageY);
-    }
+        => Primary.UpdateRailZoom(windowWidth, windowHeight, cursorPageX, cursorPageY);
 
-    public void StartSnap(double windowWidth, double windowHeight)
-    {
-        Rail.StartSnapToCurrent(Camera.OffsetX, Camera.OffsetY, Camera.Zoom, windowWidth, windowHeight);
-    }
+    public void StartSnap(double windowWidth, double windowHeight) => Primary.StartSnap(windowWidth, windowHeight);
 
     public void StartSnapPreservingPosition(double windowWidth, double windowHeight,
         double horizontalFraction, double lineScreenY)
-    {
-        Rail.StartSnapPreservingPosition(Camera.OffsetX, Camera.OffsetY, Camera.Zoom,
-            windowWidth, windowHeight, horizontalFraction, lineScreenY);
-    }
+        => Primary.StartSnapPreservingPosition(windowWidth, windowHeight, horizontalFraction, lineScreenY);
 
-    public void StartSnapToEnd(double windowWidth, double windowHeight)
-    {
-        Rail.StartSnapToCurrentEnd(Camera.OffsetX, Camera.OffsetY, Camera.Zoom, windowWidth, windowHeight);
-    }
+    public void StartSnapToEnd(double windowWidth, double windowHeight) => Primary.StartSnapToEnd(windowWidth, windowHeight);
 
     public void LoadAnnotations(AnnotationFileManager manager)
     {
@@ -1033,22 +778,22 @@ public sealed class DocumentState : IDisposable
     internal void PushHistory(int currentPage)
     {
         _marshaller.AssertUIThread();
-        _backStack.Push(currentPage);
-        _forwardStack.Clear();
+        Primary.BackStack.Push(currentPage);
+        Primary.ForwardStack.Clear();
     }
 
     internal int PopBack(int currentPage)
     {
         _marshaller.AssertUIThread();
-        _forwardStack.Push(currentPage);
-        return _backStack.Pop();
+        Primary.ForwardStack.Push(currentPage);
+        return Primary.BackStack.Pop();
     }
 
     internal int PopForward(int currentPage)
     {
         _marshaller.AssertUIThread();
-        _backStack.Push(currentPage);
-        return _forwardStack.Pop();
+        Primary.BackStack.Push(currentPage);
+        return Primary.ForwardStack.Pop();
     }
 
     /// <summary>
@@ -1101,20 +846,18 @@ public sealed class DocumentState : IDisposable
     {
         if (IsDisposed) return;
         IsDisposed = true;
+        // §6 disposal ordering: cancel the doc-level analysis tasks, then dispose every view. Each
+        // Viewport.Dispose cancels its own in-flight render/prefetch/DPI tasks before freeing the
+        // bitmaps they touch, and clears its callbacks (incl. the auto-scroll StateChanged hook wired
+        // in DocumentController.AddDocument). Each task's Post callback re-checks IsDisposed and
+        // disposes its own result, so a late one is harmless.
         _cts.Cancel();
         _annotationManager?.Release(FilePath);
-        var page = CachedPage;
-        CachedPage = null;
-        page?.Dispose();
-        var mm = MinimapPage;
-        MinimapPage = null;
-        mm?.Dispose();
-        _prefetched?.Dispose();
-        _prefetched = null;
+        foreach (var vp in _viewports)
+            vp.Dispose();
         _cts.Dispose();
 
         StateChanged = null;
         AnalysisCacheUpdated = null;
-        OnDpiRenderComplete = null;
     }
 }
