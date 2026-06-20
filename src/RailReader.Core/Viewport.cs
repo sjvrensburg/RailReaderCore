@@ -310,7 +310,10 @@ public sealed class Viewport : IDisposable
                 {
                     if (error is not null)
                         Owner.Logger.Error($"Failed to prefetch page {pageIndex + 1}: {error.Message}", error);
-                    if (Owner.IsDisposed || prepared is null)
+                    // Bail if the document OR just this view (RemoveViewport) was disposed while the
+                    // render was in flight — otherwise we'd resurrect Prefetched on a freed view whose
+                    // Dispose already ran, leaking the bitmaps it will never get to dispose.
+                    if (Owner.IsDisposed || _disposed || prepared is null)
                     {
                         prepared?.Dispose();
                         return;
@@ -387,15 +390,19 @@ public sealed class Viewport : IDisposable
                     {
                         if (error is not null)
                             Owner.Logger.Error($"Failed to re-render page at {neededDpi} DPI: {error.Message}", error);
-                        if (Owner.IsDisposed || CurrentPageBacking != page || newPage is null)
+                        // Bail if the document OR just this view (RemoveViewport) was disposed while the
+                        // render was in flight — otherwise we'd swap a fresh bitmap onto a freed view
+                        // whose Dispose already ran, leaking it.
+                        if (Owner.IsDisposed || _disposed || CurrentPageBacking != page || newPage is null)
                         {
                             newPage?.Dispose();
                             // Re-arm a forced re-render that FAILED (RenderPage threw →
                             // error set) so the pending preset change is retried, not
                             // lost. A page-navigation abort or cancellation leaves error
                             // null, and GoToPage's LoadPageBitmap already rendered the new
-                            // page at the new DPI, so neither needs a re-arm.
-                            if (force && !Owner.IsDisposed && error is not null)
+                            // page at the new DPI, so neither needs a re-arm. A disposed
+                            // view is gone — never re-arm it.
+                            if (force && !Owner.IsDisposed && !_disposed && error is not null)
                                 RenderDpiDirty = true;
                             return;
                         }

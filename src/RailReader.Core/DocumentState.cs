@@ -268,6 +268,11 @@ public sealed class DocumentState : IDisposable
     /// <see cref="Viewport"/> seeded from the current settings and the primary view's size, starting
     /// on page 0 with a default camera. The caller positions it (page / centre / zoom). Its render
     /// cache and camera are independent of the primary's. UI-thread only.
+    /// <para><b>Scope (Phase 1):</b> a non-primary view's camera, zoom, rail-snap, auto-scroll and
+    /// rasterisation are fully independent, but a <em>cross-page</em> transition reached from its
+    /// tick (rail page-advance / edge-hold) still routes through the document-level
+    /// <see cref="GoToPage"/>, which moves the <see cref="Primary"/> view. Per-view page navigation
+    /// and analysis fan-out land with the analysis-fan-out phase (see <c>docs/multi-viewport-design.md</c> §5).</para>
     /// </summary>
     public Viewport AddViewport()
     {
