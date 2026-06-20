@@ -89,7 +89,7 @@ public sealed partial class DocumentController
     private void TickZoomAnimation(DocumentState doc, double ww, double wh,
         ref bool cameraChanged, ref bool animating)
     {
-        doc.Primary.Zoom.Tick(doc, ww, wh, ref cameraChanged, ref animating);
+        doc.Primary.Zoom.Tick(doc.Primary, ww, wh, ref cameraChanged, ref animating);
     }
 
     /// <summary>Rail snap animation and edge-hold line advance (skipped while zoom is animating).</summary>

@@ -411,7 +411,7 @@ public sealed partial class DocumentController : IDisposable
             double factor = 1.0 + scrollDelta * CoreTuning.ZoomScrollSensitivity;
             double baseZoom = doc.Primary.Zoom.PendingTargetZoom ?? doc.Camera.Zoom;
             double newZoom = Math.Clamp(baseZoom * factor, Camera.ZoomMin, Camera.ZoomMax);
-            doc.Primary.Zoom.Start(doc, newZoom, cursorX, cursorY, _vpWidth);
+            doc.Primary.Zoom.Start(doc.Primary, newZoom, cursorX, cursorY, _vpWidth);
         }
     }
 
@@ -480,7 +480,7 @@ public sealed partial class DocumentController : IDisposable
             zoomIn ? baseZoom * CoreTuning.ZoomStep : baseZoom / CoreTuning.ZoomStep,
             Camera.ZoomMin, Camera.ZoomMax);
 
-        doc.Primary.Zoom.Start(doc, newZoom, ww / 2.0, wh / 2.0, _vpWidth);
+        doc.Primary.Zoom.Start(doc.Primary, newZoom, ww / 2.0, wh / 2.0, _vpWidth);
         if (!doc.Rail.Active && AutoScrollActive) StopAutoScroll();
     }
 
@@ -496,7 +496,7 @@ public sealed partial class DocumentController : IDisposable
         double z = Math.Clamp(targetZoom, Camera.ZoomMin, Camera.ZoomMax);
         double cpx = (ww / 2.0 - targetOffsetX) / z; // target viewport-centre in page space
         double cpy = (wh / 2.0 - targetOffsetY) / z;
-        doc.Primary.Zoom.StartTo(doc, z, targetOffsetX, targetOffsetY, cpx, cpy);
+        doc.Primary.Zoom.StartTo(doc.Primary, z, targetOffsetX, targetOffsetY, cpx, cpy);
     }
 
     /// <summary>
@@ -541,7 +541,7 @@ public sealed partial class DocumentController : IDisposable
         var (ox, oy) = doc.Rail.ComputeSnapTarget(z, ww, wh);
         var lineInfo = doc.Rail.CurrentLineInfo; // seated block's target line
         if (AutoScrollActive) StopAutoScroll();
-        doc.Primary.Zoom.StartTo(doc, z, ox, oy, lineInfo.X + lineInfo.Width / 2.0, lineInfo.Y, durationMs);
+        doc.Primary.Zoom.StartTo(doc.Primary, z, ox, oy, lineInfo.X + lineInfo.Width / 2.0, lineInfo.Y, durationMs);
         FireReadingPositionChanged();
         return true;
     }
@@ -580,7 +580,7 @@ public sealed partial class DocumentController : IDisposable
         var (z, ox, oy) = doc.ComputeCenteredFrame(box, ww, wh, targetZoom);
         if (AutoScrollActive) StopAutoScroll();
         doc.Rail.Deactivate(); // drive the camera directly; no rail seat/snap
-        doc.Primary.Zoom.StartCameraOnly(doc, z, ox, oy, durationMs);
+        doc.Primary.Zoom.StartCameraOnly(doc.Primary, z, ox, oy, durationMs);
         FireReadingPositionChanged(); // rail now inactive → reading position cleared
         return true;
     }
