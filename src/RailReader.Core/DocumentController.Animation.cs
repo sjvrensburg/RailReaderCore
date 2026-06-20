@@ -323,16 +323,18 @@ public sealed partial class DocumentController
     /// <summary>
     /// Seats a freshly-arrived page analysis on one viewport — the §5.4 fan-out body. Sets the view's
     /// rail, clears its pending flag, applies any deferred skip-landing, and starts its snap. Visual
-    /// side effects — the needs-animation flag and the reading-position / page-change events — fire
-    /// only for the FOCUSED view; a non-focused (e.g. background-tab) view is seated silently so it is
-    /// ready when shown. The view's own per-viewport events always fire. (Slice B widens the "focused"
-    /// gate to "live" once the GUI marks detached panes live.) A non-focused view never changes page
-    /// here — only the focused view resumes a deferred skip — so the page-change announcement is safe.
+    /// side effects fire for a <see cref="IsViewportLive">live</see> view (the focused view, an active-
+    /// document pane, or a host-shown detached pane): its own reading-position / page events fire, it
+    /// resumes a deferred skip, and it is woken (focused → the controller tick's needs-animation flag;
+    /// non-focused → its own <see cref="Viewport.RequestAnimation"/>). A background view is seated
+    /// silently so it is ready when shown. The controller-level event facades and the tick's repaint
+    /// flags reflect only the FOCUSED view.
     /// </summary>
     private void ApplyAnalysisToViewport(Viewport vp, PageAnalysis analysis, double ww, double wh,
         ref bool needsAnim, ref bool pageChanged)
     {
         bool focused = vp == FocusedViewport;
+        bool live = IsViewportLive(vp);
         int prevPage = vp.CurrentPage;
 
         vp.Rail.SetAnalysis(analysis, _config.NavigableRoles);
@@ -346,29 +348,48 @@ public sealed partial class DocumentController
                 ApplySkipLanding(vp, pendingSkip.Forward, pendingSkip.SavedVerticalBias);
             vp.PendingSkip = null;
             vp.StartSnap(ww, wh);
-            if (focused)
-            {
-                needsAnim = true;
-                FireReadingPositionChanged(vp);
-            }
+            if (live)
+                WakeSeatedView(vp, focused, ref needsAnim);
         }
         else if (vp.PendingSkip is not null)
         {
-            if (focused)
+            if (live)
             {
                 if (TryResumeSkip(vp, ww, wh))
-                {
-                    needsAnim = true;
-                    FireReadingPositionChanged(vp);
-                }
+                    WakeSeatedView(vp, focused, ref needsAnim);
             }
             else
                 vp.PendingSkip = null;
         }
 
         if (vp.CurrentPage != prevPage)
-            FirePageChanged(ref pageChanged, vp);
+        {
+            RaisePageChanged(vp);            // the view's own PageChanged; controller facade if focused
+            if (focused) pageChanged = true; // only the focused view drives the controller tick repaint
+        }
     }
+
+    /// <summary>Announces a freshly-seated reading position and wakes the view: the focused view via the
+    /// controller tick's <paramref name="needsAnim"/> flag, a live non-focused pane via its own
+    /// <see cref="Viewport.RequestAnimation"/> hook.</summary>
+    private void WakeSeatedView(Viewport vp, bool focused, ref bool needsAnim)
+    {
+        FireReadingPositionChanged(vp);
+        if (focused) needsAnim = true;
+        else vp.RequestAnimation?.Invoke();
+    }
+
+    /// <summary>
+    /// Whether a view is "live" — worth firing events for and resuming its own deferred skip. True for
+    /// the focused view; for any other view, true when the host has marked it visible
+    /// (<see cref="Viewport.IsLive"/>) AND it is either a view of the active document (so an active-tab
+    /// split pane stays live) or a non-primary detached pane. A background tab's PRIMARY is therefore
+    /// never live on its own — you focus it to make it active — preserving the single-window rule that
+    /// only the active document announces. The host refines this by toggling IsLive on its panes.
+    /// </summary>
+    private bool IsViewportLive(Viewport vp)
+        => vp == FocusedViewport
+           || (vp.IsLive && (vp.Owner == ActiveDocument || !ReferenceEquals(vp, vp.Owner.Primary)));
 
     /// <summary>
     /// Returns true if any document has unanalysed pages remaining.

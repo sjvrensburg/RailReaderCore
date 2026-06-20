@@ -1,3 +1,4 @@
+using RailReader.Core.Commands;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
 using Xunit;
@@ -190,6 +191,38 @@ public class MultiViewportTests : IDisposable
         Assert.Equal(2, doc.Primary.CurrentPage);
         Assert.Equal(2, viewEvent);        // the view's own PageChanged fired
         Assert.Equal(2, controllerEvent);  // and the controller-level facade mirrored it
+    }
+
+    [Fact]
+    public void Analysis_FiresPerViewportReadingPosition_ForLiveNonFocusedView()
+    {
+        // A live (IsLive) detached pane that is NOT focused still fires its own ReadingPositionChanged
+        // when the fan-out seats its rail — gap #3 (IsLive consulted), not just the focused view.
+        _controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
+
+        var doc = SetupDoc();                // focus stays on doc.Primary
+        var vp2 = doc.AddViewport();         // a detached pane; IsLive defaults true
+        Assert.NotSame(vp2, _controller.FocusedViewport);
+        vp2.CurrentPage = 1;
+        vp2.LoadPageBitmap();
+        vp2.Camera.Zoom = 6.0;               // above RailZoomThreshold (3.0) so the seated rail activates
+
+        ReadingPosition? vp2Pos = null;
+        vp2.ReadingPositionChanged += p => vp2Pos = p;
+
+        doc.SubmitAnalysis(vp2, _controller.Worker, _controller.Config.NavigableRoles);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (vp2.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
+        {
+            _controller.PollAnalysisResults();
+            Thread.Sleep(10);
+        }
+
+        Assert.True(vp2.Rail.Active);        // seated + activated
+        Assert.NotNull(vp2Pos);              // the live, non-focused view fired its OWN event
+        Assert.Equal(1, vp2Pos!.Page);
     }
 
     [Fact]
