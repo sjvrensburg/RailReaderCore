@@ -64,7 +64,7 @@ public sealed partial class DocumentController : IDisposable
     public bool JumpMode
     {
         get => FocusedViewport?.AutoScroll.JumpMode ?? false;
-        set { if (ActiveDocument is { } d) d.Primary.AutoScroll.JumpMode = value; }
+        set { if (FocusedViewport is { } vp) vp.AutoScroll.JumpMode = value; }
     }
 
     // Rail pause (Ctrl+drag free pan) state — per-view, lives on Viewport.
@@ -194,24 +194,31 @@ public sealed partial class DocumentController : IDisposable
         Documents.RemoveAt(index);
         doc.Dispose();
         ActiveDocumentIndex = Math.Clamp(ActiveDocumentIndex, 0, Math.Max(Documents.Count - 1, 0));
-        if (ActiveDocument is { } d) d.Primary.RailPause = null;
+        // Free-pan pause is per-view now: the closed doc's pause died with its disposal, and any
+        // other tab is already cleared on switch-away (SelectDocument). The surviving active doc
+        // keeps its own pause — so nothing to clear here. (The old global `_railPause = null` was a
+        // single shared slot; reaching into the *new* active view to null it would clobber a
+        // legitimate in-progress free-pan on the tab the user is keeping.)
         Search.CloseSearch();
     }
 
     public void SelectDocument(int index)
     {
-        if (index >= 0 && index < Documents.Count)
+        // Re-selecting the already-active tab is a no-op: it is not "leaving" the tab, so it must
+        // not quiesce it. Without this guard, a redundant SelectDocument(ActiveDocumentIndex) (which
+        // tab-strip click handlers commonly fire) would stop the active view's auto-scroll and drop
+        // its free-pan pause via the leaving-tab teardown below.
+        if (index < 0 || index >= Documents.Count || index == ActiveDocumentIndex) return;
+
+        // Leaving this tab: drop its free-pan pause and end its auto-scroll session, so a tab
+        // switch quiesces the tab you're leaving. With per-view auto-scroll flags there is no
+        // shared flag to go stale, so the old post-switch sync is no longer needed.
+        if (ActiveDocument is { } leaving)
         {
-            // Leaving this tab: drop its free-pan pause and end its auto-scroll session, so a tab
-            // switch quiesces the tab you're leaving. With per-view auto-scroll flags there is no
-            // shared flag to go stale, so the old post-switch sync is no longer needed.
-            if (ActiveDocument is { } leaving)
-            {
-                leaving.Primary.RailPause = null;
-                leaving.Primary.AutoScroll.StopAutoScroll(leaving);
-            }
-            ActiveDocumentIndex = index;
+            leaving.Primary.RailPause = null;
+            leaving.Primary.AutoScroll.StopAutoScroll(leaving);
         }
+        ActiveDocumentIndex = index;
     }
 
     public void MoveDocument(int fromIndex, int toIndex)
@@ -592,10 +599,10 @@ public sealed partial class DocumentController : IDisposable
         get
         {
             if (ActiveDocument is not { } d)
-                return AutoScrollActive; // no doc → only a stray auto-scroll flag could be "animating"
+                return false; // no active document → nothing (zoom/rail/auto-scroll is all per-view) can animate
             return d.Primary.Zoom.IsAnimating
                 || d.Rail.SnapProgress < 1.0
-                || (AutoScrollActive && !d.Rail.AutoScrollParked);
+                || (d.Primary.AutoScroll.AutoScrollActive && !d.Rail.AutoScrollParked);
         }
     }
 

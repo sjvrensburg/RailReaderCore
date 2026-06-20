@@ -1092,5 +1092,9 @@ public sealed class DocumentState : IDisposable
         StateChanged = null;
         AnalysisCacheUpdated = null;
         OnDpiRenderComplete = null;
+        // The per-document auto-scroll callback (wired in DocumentController.AddDocument) captures the
+        // controller; clear it alongside the others so a late/parked auto-scroll callback can't fire
+        // StateChanged for a disposed document.
+        Primary.AutoScroll.StateChanged = null;
     }
 }
