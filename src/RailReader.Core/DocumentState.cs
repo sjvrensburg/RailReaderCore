@@ -101,6 +101,9 @@ public sealed class DocumentState : IDisposable
     public int PageCount { get; }
     public IPdfService Pdf => _pdf;
     public IPdfTextService PdfText => _pdfText;
+    // Doc-level dependencies the per-view render path (moved onto Viewport) reaches via Owner.
+    internal IThreadMarshaller Marshaller => _marshaller;
+    internal ILogger Logger => _logger;
 
     /// <summary>
     /// The single embedded view (Phase 0 of the multi-viewport split — see
@@ -242,49 +245,7 @@ public sealed class DocumentState : IDisposable
     /// Returns false if the page could not be rendered.
     /// Uses prefetched bitmap if available for the current page (seamless auto-scroll transitions).
     /// </summary>
-    public bool LoadPageBitmap()
-    {
-        var oldPage = CachedPage;
-        var oldMinimap = MinimapPage;
-
-        try
-        {
-            // Use prefetched page if available (e.g. from auto-scroll lookahead).
-            if (Primary.Prefetched is { } pf && pf.PageIndex == CurrentPage)
-            {
-                CachedPage = pf.Page;
-                CachedDpi = pf.Dpi;
-                MinimapPage = pf.Minimap;
-                PageWidth = pf.PageWidth;
-                PageHeight = pf.PageHeight;
-                Primary.Prefetched = null; // consumed — don't dispose, we're using the bitmaps
-                oldPage?.Dispose();
-                oldMinimap?.Dispose();
-                return true;
-            }
-
-            var (w, h) = _pdf.GetPageSize(CurrentPage);
-            int dpi = CalculateRenderDpi(Camera.Zoom, w, h, Primary.RenderDpi);
-            var newPage = _pdf.RenderPage(CurrentPage, dpi);
-            var newMinimap = _pdf.RenderThumbnail(CurrentPage);
-
-            // Commit: swap fields and dispose old bitmaps only after full success
-            CachedPage = newPage;
-            CachedDpi = dpi;
-            MinimapPage = newMinimap;
-            PageWidth = w;
-            PageHeight = h;
-            oldPage?.Dispose();
-            oldMinimap?.Dispose();
-            return true;
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
-        {
-            _logger.Error($"Failed to render page {CurrentPage + 1}: {ex.Message}", ex);
-            return false;
-        }
-    }
+    public bool LoadPageBitmap() => Primary.LoadPageBitmap();
 
     /// <summary>
     /// Schedules background rendering of the specified page for seamless auto-scroll
@@ -292,56 +253,7 @@ public sealed class DocumentState : IDisposable
     /// call if it targets the same page. No-op if a prefetch is already pending or
     /// the page is out of range.
     /// </summary>
-    internal void PrefetchPage(int pageIndex)
-    {
-        // Serialize with DPI re-render to avoid concurrent PDFium access.
-        if (Primary.PrefetchPending || Primary.DpiRenderPending) return;
-        if (pageIndex < 0 || pageIndex >= PageCount || IsDisposed) return;
-        if (Primary.Prefetched?.PageIndex == pageIndex) return;
-
-        Primary.PrefetchPending = true;
-        // Capture UI-thread state; the page's own dimensions (needed for the
-        // pixel-area ceiling) are fetched inside the task to keep PDFium off the
-        // UI thread, so DPI is computed there too.
-        double zoom = Camera.Zoom;
-        var dpiSettings = Primary.RenderDpi;
-        var ct = _cts.Token;
-
-        Task.Run(() =>
-        {
-            Viewport.PrefetchedPageData? prepared = null;
-            Exception? error = null;
-            try
-            {
-                ct.ThrowIfCancellationRequested();
-                var (w, h) = _pdf.GetPageSize(pageIndex);
-                int dpi = CalculateRenderDpi(zoom, w, h, dpiSettings);
-                _logger.Debug($"[PDFium] prefetch pg {pageIndex} @ {dpi}dpi tid={Environment.CurrentManagedThreadId} file={Path.GetFileName(FilePath)}");
-                var page = _pdf.RenderPage(pageIndex, dpi);
-                var minimap = _pdf.RenderThumbnail(pageIndex);
-                prepared = new(pageIndex, dpi, page, minimap, w, h);
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception ex) { error = ex; }
-
-            _marshaller.Post(() =>
-            {
-                try
-                {
-                    if (error is not null)
-                        _logger.Error($"Failed to prefetch page {pageIndex + 1}: {error.Message}", error);
-                    if (IsDisposed || prepared is null)
-                    {
-                        prepared?.Dispose();
-                        return;
-                    }
-                    Primary.Prefetched?.Dispose();
-                    Primary.Prefetched = prepared;
-                }
-                finally { Primary.PrefetchPending = false; }
-            });
-        }, ct);
-    }
+    internal void PrefetchPage(int pageIndex) => Primary.PrefetchPage(pageIndex);
 
     /// <summary>
     /// Set to true when a DPI re-render completes. The next animation frame
@@ -366,88 +278,7 @@ public sealed class DocumentState : IDisposable
     /// while scrolling and retried from the animation tick (which polls
     /// <see cref="RenderDpiPending"/>) the moment scrolling stops.
     /// </summary>
-    public bool UpdateRenderDpiIfNeeded()
-    {
-        // Serialize with prefetch to avoid concurrent PDFium access. If a
-        // render-quality change is pending it stays dirty and retries once the
-        // gate frees (from the animation tick or the in-flight render's completion).
-        if (Primary.DpiRenderPending || Primary.PrefetchPending) return false;
-
-        bool force = Primary.RenderDpiDirty;
-
-        // Skip DPI re-renders while the user is actively scrolling. PDFium runs
-        // under a process-wide gate; a 100-200ms re-render at high zoom blocks
-        // any subsequent text/link extraction the scroll path may need and the
-        // bitmap-swap defers a frame. This applies to forced (preset-change)
-        // re-renders too: jumping the gate mid-scroll would stutter the scroll,
-        // so the change stays dirty and the animation tick retries it the moment
-        // scroll velocity drops to zero.
-        if (Rail.ScrollSpeed > 0.1 || Rail.AutoScrolling) return false;
-
-        int neededDpi = CalculateRenderDpi(Camera.Zoom, PageWidth, PageHeight, Primary.RenderDpi);
-        bool trigger = force
-            ? neededDpi != CachedDpi
-            : neededDpi > CachedDpi * Primary.RenderDpi.UpscaleHysteresis
-              || (neededDpi < CachedDpi * Primary.RenderDpi.DownscaleHysteresis && CachedDpi > Primary.RenderDpi.MinDpi);
-
-        // Optimistically mark a forced (preset-change) pass as satisfied now that
-        // it's about to render (or needs no render). If the scheduled re-render
-        // later FAILS, the completion handler re-arms the flag so the tick retries
-        // — without this, a thrown RenderPage would silently strand the page at
-        // the old DPI (the flag was already cleared).
-        if (force) Primary.RenderDpiDirty = false;
-
-        if (trigger)
-        {
-            Primary.DpiRenderPending = true;
-            int page = CurrentPage;
-            var ct = _cts.Token;
-            Task.Run(() =>
-            {
-                IRenderedPage? newPage = null;
-                Exception? error = null;
-                try
-                {
-                    ct.ThrowIfCancellationRequested();
-                    _logger.Debug($"[PDFium] dpi-rerender pg {page} @ {neededDpi}dpi tid={Environment.CurrentManagedThreadId} file={Path.GetFileName(FilePath)}");
-                    newPage = _pdf.RenderPage(page, neededDpi);
-                }
-                catch (OperationCanceledException) { }
-                catch (Exception ex) { error = ex; }
-
-                _marshaller.Post(() =>
-                {
-                    try
-                    {
-                        if (error is not null)
-                            _logger.Error($"Failed to re-render page at {neededDpi} DPI: {error.Message}", error);
-                        if (IsDisposed || CurrentPage != page || newPage is null)
-                        {
-                            newPage?.Dispose();
-                            // Re-arm a forced re-render that FAILED (RenderPage threw →
-                            // error set) so the pending preset change is retried, not
-                            // lost. A page-navigation abort or cancellation leaves error
-                            // null, and GoToPage's LoadPageBitmap already rendered the new
-                            // page at the new DPI, so neither needs a re-arm.
-                            if (force && !IsDisposed && error is not null)
-                                Primary.RenderDpiDirty = true;
-                            return;
-                        }
-                        var oldPage = CachedPage;
-                        CachedPage = newPage;
-                        CachedDpi = neededDpi;
-                        DpiRenderReady = true;
-                        oldPage?.Dispose();
-                        OnDpiRenderComplete?.Invoke();
-                    }
-                    finally { Primary.DpiRenderPending = false; }
-                });
-            }, ct);
-            return true;
-        }
-
-        return false;
-    }
+    public bool UpdateRenderDpiIfNeeded() => Primary.UpdateRenderDpiIfNeeded();
 
     /// <summary>True while a render-quality change is queued but not yet applied
     /// (PDFium was busy, or the user is scrolling). Polled every frame by the
@@ -465,26 +296,7 @@ public sealed class DocumentState : IDisposable
     /// (rasterised at the old DPI) is dropped and the current page is forced to
     /// re-render — deferred via the dirty flag while PDFium is busy or scrolling.
     /// </summary>
-    internal void OnRenderQualityChanged(in RenderDpiSettings settings)
-    {
-        _marshaller.AssertUIThread();
-
-        // Gate on the actual DPI tuning, not "some setting changed" — OnConfigChanged
-        // funnels every settings change here. RenderDpiSettings is a record struct
-        // with value equality, so this is a cheap, correct comparison.
-        if (settings == Primary.RenderDpi) return;
-
-        Primary.RenderDpi = settings;
-
-        // Drop the prefetch buffer — it was rasterised at the previous DPI.
-        Primary.Prefetched?.Dispose();
-        Primary.Prefetched = null;
-
-        // Force the current page to re-render at the new DPI band; if PDFium is
-        // busy or the user is scrolling, mark dirty so the tick retries.
-        Primary.RenderDpiDirty = true;
-        UpdateRenderDpiIfNeeded();
-    }
+    internal void OnRenderQualityChanged(in RenderDpiSettings settings) => Primary.OnRenderQualityChanged(in settings);
 
     public void SubmitAnalysis(AnalysisWorker? worker, IReadOnlySet<BlockRole> navigableRoles)
     {
@@ -969,6 +781,10 @@ public sealed class DocumentState : IDisposable
     {
         if (IsDisposed) return;
         IsDisposed = true;
+        // §6 disposal ordering: cancel the view's in-flight render/prefetch/DPI tasks (and the
+        // doc-level analysis tasks) BEFORE freeing the bitmaps/PDF they touch. Each task's Post
+        // callback re-checks IsDisposed and disposes its own result, so a late one is harmless.
+        Primary.Cts.Cancel();
         _cts.Cancel();
         _annotationManager?.Release(FilePath);
         var page = CachedPage;
@@ -979,6 +795,7 @@ public sealed class DocumentState : IDisposable
         mm?.Dispose();
         Primary.Prefetched?.Dispose();
         Primary.Prefetched = null;
+        Primary.Cts.Dispose();
         _cts.Dispose();
 
         StateChanged = null;
