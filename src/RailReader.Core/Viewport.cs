@@ -27,6 +27,12 @@ public sealed class Viewport
     /// <summary>Smooth zoom/pan animation state for this view.</summary>
     internal ZoomAnimationController Zoom { get; } = new();
 
+    /// <summary>Non-rail page-edge hold state (hold arrow at the page edge → page advance) for this view.</summary>
+    internal EdgeHoldStateMachine PageEdgeHold { get; } = new();
+
+    /// <summary>Active free-pan (Ctrl+drag) rail-pause snapshot for this view, or null when not paused.</summary>
+    internal RailPauseState? RailPause { get; set; }
+
     // --- Page position + dimensions (this view's current page). Backing storage for
     //     DocumentState's delegated CurrentPage/PageWidth/PageHeight, which keep the
     //     SetField/StateChanged/eviction logic and write here via ref (Phase 0). ---

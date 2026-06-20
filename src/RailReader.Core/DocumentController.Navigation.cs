@@ -148,7 +148,7 @@ public sealed partial class DocumentController
         }
         else
         {
-            if (_pageEdgeHold.ShouldSuppressInput) return;
+            if (doc.Primary.PageEdgeHold.ShouldSuppressInput) return;
 
             double prevY = doc.Camera.OffsetY;
             doc.Camera.OffsetY += forward ? -CoreTuning.PanStep : CoreTuning.PanStep;
@@ -157,7 +157,7 @@ public sealed partial class DocumentController
             bool atEdge = Math.Abs(doc.Camera.OffsetY - prevY) < 1.0;
             if (atEdge)
             {
-                if (_pageEdgeHold.OnEdgeHit(forward))
+                if (doc.Primary.PageEdgeHold.OnEdgeHit(forward))
                 {
                     int targetPage = doc.CurrentPage + (forward ? 1 : -1);
                     if (targetPage >= 0 && targetPage < doc.PageCount)
@@ -174,13 +174,13 @@ public sealed partial class DocumentController
             }
             else
             {
-                _pageEdgeHold.OnMoved();
+                doc.Primary.PageEdgeHold.OnMoved();
             }
         }
     }
 
     /// <summary>Clear non-rail edge-hold state (call on key release).</summary>
-    public void ClearPageEdgeHold() => _pageEdgeHold.Reset();
+    public void ClearPageEdgeHold() => ActiveDocument?.Primary.PageEdgeHold.Reset();
 
     /// <summary>Step the rail to the next cell in the current table row (rolling to the next row /
     /// page-end like <see cref="HandleArrowDown"/>), centring it. Returns true if the move applied —

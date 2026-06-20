@@ -56,12 +56,8 @@ public sealed partial class DocumentController : IDisposable
     public bool AutoScrollActive => _autoScroll.AutoScrollActive;
     public bool JumpMode { get => _autoScroll.JumpMode; set => _autoScroll.JumpMode = value; }
 
-    // Rail pause (Ctrl+drag free pan) state
-    private RailPauseState? _railPause;
-    public bool RailPaused => _railPause is not null;
-
-    // Edge-hold page advance (non-rail vertical scrolling)
-    private readonly EdgeHoldStateMachine _pageEdgeHold = new();
+    // Rail pause (Ctrl+drag free pan) state — per-view, lives on Viewport.
+    public bool RailPaused => ActiveDocument?.Primary.RailPause is not null;
 
     /// <summary>
     /// Fired when a property changes. UI can subscribe to update bindings.
@@ -180,7 +176,7 @@ public sealed partial class DocumentController : IDisposable
         Documents.RemoveAt(index);
         doc.Dispose();
         ActiveDocumentIndex = Math.Clamp(ActiveDocumentIndex, 0, Math.Max(Documents.Count - 1, 0));
-        _railPause = null;
+        if (ActiveDocument is { } d) d.Primary.RailPause = null;
         Search.CloseSearch();
     }
 
@@ -188,7 +184,7 @@ public sealed partial class DocumentController : IDisposable
     {
         if (index >= 0 && index < Documents.Count)
         {
-            _railPause = null;
+            if (ActiveDocument is { } d) d.Primary.RailPause = null;
             ActiveDocumentIndex = index;
 
             // Sync the global auto-scroll flag with the newly active document.
@@ -412,7 +408,7 @@ public sealed partial class DocumentController : IDisposable
 
     private void StartRailPause(DocumentState doc)
     {
-        _railPause = new(doc.Rail.CurrentBlock, doc.Rail.CurrentLine, doc.Rail.VerticalBias, doc.Camera.Zoom);
+        doc.Primary.RailPause = new(doc.Rail.CurrentBlock, doc.Rail.CurrentLine, doc.Rail.VerticalBias, doc.Camera.Zoom);
         StatusMessage?.Invoke("Free pan — release Ctrl to return");
     }
 
@@ -421,10 +417,10 @@ public sealed partial class DocumentController : IDisposable
     /// </summary>
     public void ResumeRailFromPause()
     {
-        if (_railPause is not { } pause) return;
-        _railPause = null;
-
         if (ActiveDocument is not { } doc) return;
+        if (doc.Primary.RailPause is not { } pause) return;
+        doc.Primary.RailPause = null;
+
         var (ww, wh) = GetViewportSize();
 
         // Restore zoom if it changed during free pan (may re-enter rail mode)
