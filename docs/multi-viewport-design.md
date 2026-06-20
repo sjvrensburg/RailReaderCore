@@ -13,17 +13,33 @@
 >   viewport size (`Viewport.Width/Height/SetSize`), and auto-scroll (`Viewport.AutoScroll`, built in the
 >   `Viewport(config)` ctor; per-tab now — a tab switch stops the outgoing tab's auto-scroll). Added
 >   `controller.FocusedViewport => ActiveDocument?.Primary` as the single per-view accessor seam.
-> - **Phase 1 remaining (the architectural capstone — to land WITH consumers, not as dead API):**
->   (a) relocate the `Tick` body to `Viewport.Tick(dt)` + extract `controller.PumpAnalysis()` (§5.4).
->   This is **entangled, not mechanical**: the tick's animation drives navigation (`AdvanceLine` →
->   `SkipToNavigablePage`, needing worker/config/events) and the lookahead is gated on the per-frame
->   `animating` flag (PDFium-gate-timing sensitive) — splitting it behaviour-preservingly is real
->   untangling. (b) the additive multi-viewport API — `Viewport.IsLive` (focus-tracking default),
->   `RequestAnimation`, per-viewport events behind focused-viewport facades, `DocumentState.Viewports` +
->   `AddViewport`/`RemoveViewport`. These have **no consumer** until per-surface ticking (a) or the
->   Phase-2 GUI, so they should land alongside that consumer (a multi-viewport test harness or the GUI)
->   rather than as write-only surface. `StateChanged`/`_cts` stay on `DocumentController`/`DocumentState`
->   until (a)/(b).
+> - **Phase 1 — `controller.PumpAnalysis(quiescent)` extracted** from `Tick` (§5.4): the global pump
+>   (drain worker + fan-out + read-ahead) is now callable once per frame independently of per-view
+>   animation; `Tick` delegates to it. Behaviour-preserving.
+>
+> ### Remaining capstone — `Viewport`-threaded geometry/render/tick (sequenced)
+>
+> A second viewport can hold its own `Camera` today, but cannot render or rail-navigate independently
+> because the geometry/render/tick pipeline is hardwired to `doc.Primary`. Making viewports truly
+> independent is one interlocked refactor, best done as its own focused pass in these green slices:
+>
+> 1. **`Viewport.Owner` back-ref** (set in the `DocumentState` ctor) — gives a viewport access to
+>    doc-level data (`Pdf`, caches, `DocumentContentFraction`, marshaller/logger/CTS).
+> 2. **Move camera geometry onto `Viewport`** (delegated from `DocumentState`, so call sites are
+>    untouched): `GetFitRect`, `CenterPage`, `FitWidth(/PreservingTop)`, `ClampCamera`, `ApplyZoom`,
+>    `UpdateRailZoom`, `StartSnap(/PreservingPosition/ToEnd)`, `ComputeBlockFitZoom`,
+>    `ComputeCenteredFrame`. They read `Camera`/`Rail`/`PageWidth/Height` (already on `Viewport`) and
+>    `Owner.DocumentContentFraction`.
+> 3. **Move the render path onto `Viewport`** (delegated): `LoadPageBitmap`, `PrefetchPage`,
+>    `UpdateRenderDpiIfNeeded`, `OnRenderQualityChanged` — they write the per-view `CachedPage`/DPI
+>    state and read `Owner.Pdf`/marshaller/CTS. Per-view CTS (§6 disposal ordering) lands here.
+> 4. **Parameterise the tick on a `Viewport`**: `TickViewport(Viewport vp, dt)` (camera/rail/zoom/
+>    auto-scroll + navigation), with `Tick(dt)` = `PumpAnalysis(); TickViewport(FocusedViewport)`.
+>    Navigation (`AdvanceLine`/`SkipToNavigablePage`) operates on the passed viewport.
+> 5. **`DocumentState.Viewports` + `AddViewport`/`RemoveViewport`**, `Viewport.IsLive` (focus-tracking
+>    default), `RequestAnimation`, per-viewport events behind focused-viewport facades — landed WITH a
+>    multi-viewport test that renders + ticks two viewports on one document (so the API is never
+>    write-only). `StateChanged`/`_cts` finish moving to `Viewport` here.
 
 ## Contents
 
