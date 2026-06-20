@@ -8,15 +8,22 @@
 > - **Phase 0 done** — `DocumentState` → embedded `Viewport`: camera, `RailNav`, current-page + dims,
 >   rasterised-page cache, render-DPI state machine, prefetch buffer, pending rail/skip state, lookahead
 >   queue, back/forward stacks, display prefs. `DocumentState` embeds one `Primary` and delegates.
-> - **Phase 1 partial** — controller per-view singletons relocated onto `Viewport`: `ZoomAnimationController`
->   (`Viewport.Zoom`), rail-pause (`Viewport.RailPause`), page edge-hold (`Viewport.PageEdgeHold`), and
->   viewport size (`Viewport.Width/Height/SetSize`, pushed from the controller's ambient size).
-> - **Phase 1 remaining** — (a) auto-scroll state onto `Viewport` (entangled with the focused-viewport
->   `StateChanged` wiring + the SelectDocument cross-tab sync — deferred to land with the events work);
->   (b) relocate the `Tick` body to `Viewport.Tick(dt)` + add `controller.PumpAnalysis()` (§5.4);
->   (c) the additive API — `IsLive`, `RequestAnimation`, per-viewport events behind focused-viewport
->   facades, `DocumentModel.Viewports` + `AddViewport`/`RemoveViewport`, `controller.FocusedViewport`.
->   `StateChanged`/`_cts` also still live on `DocumentController`/`DocumentState` pending that work.
+> - **Phase 1 — all per-view controller singletons relocated onto `Viewport`**: `ZoomAnimationController`
+>   (`Viewport.Zoom`), rail-pause (`Viewport.RailPause`), page edge-hold (`Viewport.PageEdgeHold`),
+>   viewport size (`Viewport.Width/Height/SetSize`), and auto-scroll (`Viewport.AutoScroll`, built in the
+>   `Viewport(config)` ctor; per-tab now — a tab switch stops the outgoing tab's auto-scroll). Added
+>   `controller.FocusedViewport => ActiveDocument?.Primary` as the single per-view accessor seam.
+> - **Phase 1 remaining (the architectural capstone — to land WITH consumers, not as dead API):**
+>   (a) relocate the `Tick` body to `Viewport.Tick(dt)` + extract `controller.PumpAnalysis()` (§5.4).
+>   This is **entangled, not mechanical**: the tick's animation drives navigation (`AdvanceLine` →
+>   `SkipToNavigablePage`, needing worker/config/events) and the lookahead is gated on the per-frame
+>   `animating` flag (PDFium-gate-timing sensitive) — splitting it behaviour-preservingly is real
+>   untangling. (b) the additive multi-viewport API — `Viewport.IsLive` (focus-tracking default),
+>   `RequestAnimation`, per-viewport events behind focused-viewport facades, `DocumentState.Viewports` +
+>   `AddViewport`/`RemoveViewport`. These have **no consumer** until per-surface ticking (a) or the
+>   Phase-2 GUI, so they should land alongside that consumer (a multi-viewport test harness or the GUI)
+>   rather than as write-only surface. `StateChanged`/`_cts` stay on `DocumentController`/`DocumentState`
+>   until (a)/(b).
 
 ## Contents
 
