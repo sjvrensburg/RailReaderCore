@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.40.0 — Multi-viewport: horizontal nav + click routing through FocusedViewport (additive)
+
+The 0.39.0 input-routing pass moved vertical navigation, zoom, and pan onto `FocusedViewport`, but
+the **horizontal** and **click/frame/role** families were missed — they still operated on
+`ActiveDocument` + `doc.Camera`/`doc.Rail`, i.e. the document's **primary** view facades. So in a
+multi-viewport host (railreader2#180 split panes / tear-off windows), left/right rail movement,
+line Home/End, click-to-snap, double-click framing, semantic role jumps, and the auto-scroll park
+all acted on the primary view even when a secondary view was focused.
+
+Now routed through `FocusedViewport` (reaching the owning document via `Viewport.Owner` for the
+genuinely document-level bits — analysis cache, navigable-role reapply, link hit-test):
+
+- `HandleArrowRight`/`HandleArrowLeft`, `HandleHorizontalArrow`, `TryJump`, `SnapToLineEdge`
+  (line Home/End), `HandleArrowRelease`, `HandleCellNav` (cell left/right)
+- `HandleClick` (rail-snap on click), `ActivateRailAt`, `ForcedRailActive`, `ExitForcedRail`
+- `SmoothlyFrameBlock` / `SmoothlyFrameRole` / `CenterBlockGeometric` (double-click / frame-role)
+- `NavigateToRole` (semantic jumps), `AutoScrollParked`, `ResumeAutoScrollFromPark`
+
+Byte-identical for the single-viewport path (focused == primary). Left document-level by design:
+reading-position persistence, the D-Bus `IsAnimating` "settled" signal, and the `GetDocumentInfo`
+automation snapshot. Link hit-testing remains document-level (uses the document's current page);
+precise per-view link clicking on a detached pane sitting on a different page is a later increment.
+
+New `MultiViewportTests` regression: a horizontal arrow pans the focused secondary view and leaves
+the primary untouched.
+
 ## 0.39.0 — Ruled-table cells + multi-viewport input/display last-mile (additive)
 
 Two threads: better table cell detection (#67), and the Core last-mile that makes a focused
