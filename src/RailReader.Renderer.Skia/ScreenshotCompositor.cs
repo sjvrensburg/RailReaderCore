@@ -231,11 +231,13 @@ public static class ScreenshotCompositor
 
     private static void DrawSearchHighlights(SKCanvas canvas, DocumentController controller)
     {
-        var matches = controller.Search.CurrentPageSearchMatches;
-        if (matches is null || matches.Count == 0) return;
-
         var doc = controller.ActiveDocument;
         if (doc is null) return;
+
+        // Key highlights to the page being composited (issue #74) rather than the focused view's
+        // CurrentPageSearchMatches, so a screenshot of any page draws that page's matches.
+        var matches = controller.Search.MatchesForPage(doc.CurrentPage);
+        if (matches is null || matches.Count == 0) return;
 
         int activeLocalIndex = OverlayRenderer.ComputeActiveLocalIndex(
             controller.Search.SearchMatches, matches, controller.Search.ActiveMatchIndex, doc.CurrentPage);

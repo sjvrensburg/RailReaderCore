@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.41.0 — Multi-viewport: complete per-viewport page + size routing (#74) (breaking)
+
+Completes the multi-viewport migration (railreader2#180 / #69): the last two pieces of per-viewport
+state that Core still resolved against the **primary** view / a single **ambient** size now route
+through the focused / target viewport. These only bit a host showing **multiple live viewports on
+different pages or of different widths** (split panes, tear-off windows over one document).
+
+### Finding 1 — annotations & search now resolve the focused view's page (was always primary)
+
+`DocumentState.CurrentPage` is the *primary* view's page, so a focused **non-primary** pane edited /
+searched the **primary's** page even though it rendered and took clicks against its own page.
+
+- **`AnnotationInteractionHandler` is now keyed to a `Viewport`** (its `CurrentPage` + `Owner`)
+  instead of a `DocumentState`. **Breaking:** every interaction method and the two static helpers
+  (`GetCurrentPageAnnotations`, `FindTextNoteAtPoint`) take a `Viewport` — pass
+  `controller.FocusedViewport` (or the pane being rendered/hit-tested) where you passed
+  `controller.ActiveDocument` before. Single-viewport: pass `doc.Primary` — byte-identical.
+- **`SearchService` resolves the focused viewport's page/camera/size.** "Current page" matches,
+  rail-framed match navigation, and match-centring all use the focused view. New
+  **`SearchService.MatchesForPage(int page)`** lets a host render each pane's own search highlights by
+  its `CurrentPage` (whereas `CurrentPageSearchMatches` tracks the focused view's page). The
+  constructor now takes `Func<Viewport?>` instead of `Func<DocumentState?>` + a viewport-size getter
+  (Core wires this; external callers don't construct it). `ScreenshotCompositor` draws highlights for
+  the composited page via `MatchesForPage`.
+
+### Finding 2 — per-viewport size for tick / clamp / async rail seat (was ambient)
+
+A cache-miss analysis result arriving **asynchronously** seated a waiting pane's rail zoom / centring
+/ snap using the controller's single ambient size (the last-ticked surface), so a pane of a different
+width opened at the wrong rail zoom / line position until a later resize re-clamped. More broadly the
+per-frame tick and the input/camera methods also read the ambient size.
+
+- **`ApplyAnalysisToViewport`** (the §5.4 async seat) now seats each view against its own
+  `Viewport.Width`/`Height`.
+- **`TickViewport`** and the controller **input/camera methods** (`GoToPage`, `FitPage`/`FitWidth`,
+  `HandleZoom`/`HandleZoomKey`/`HandlePan`, rail/jump/cell/line nav, `HandleClick`, `ActivateRailAt`,
+  `SmoothlyFrameBlock`, `NavigateToRole`, `ScrollToDestination`, free-pan resume, …) read the target
+  view's own size rather than the ambient `GetViewportSize()`. A host no longer has to swap the
+  controller's ambient size per surface every frame (the railreader2 v1 frame-loop workaround).
+
+Single-window is **byte-identical**: the primary's size mirrors the ambient (`SetViewportSize`), and
+the focused view is the primary. `GetViewportSize()` stays as the public ambient accessor (still used
+to seed a new document's primary). New `MultiViewportTests`: focused-secondary annotate/hit-test on
+its own page; focused-view current-page search + `MatchesForPage`; async seat frames two
+different-width panes to different camera offsets.
+
+**Migration (railreader2):** update `controller.Annotations.*` call sites to pass
+`controller.FocusedViewport` (single-pane: `controller.ActiveDocument!.Primary`); optionally drop the
+per-frame ambient-size swap and render each pane's search highlights via `Search.MatchesForPage(pane.CurrentPage)`.
+
 ## 0.40.0 — Multi-viewport: horizontal nav + click routing through FocusedViewport (additive)
 
 The 0.39.0 input-routing pass moved vertical navigation, zoom, and pan onto `FocusedViewport`, but

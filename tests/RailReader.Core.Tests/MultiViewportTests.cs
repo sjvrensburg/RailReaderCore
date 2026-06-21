@@ -492,6 +492,128 @@ public class MultiViewportTests : IDisposable
             pos!.HorizontalFraction, 5);
     }
 
+    [Fact]
+    public void FocusedSecondaryViewport_AnnotatesAndHitTestsItsOwnPage_NotPrimary()
+    {
+        // Finding 1 (issue #74): annotation add / hit-test / erase resolve the FOCUSED view's
+        // CurrentPage — not the document's primary. A focused secondary pane on a different page than
+        // the primary must author + hit-test on ITS page.
+        var doc = SetupDoc();                    // Primary focused on page 0
+        var vp2 = doc.AddViewport();
+        vp2.CurrentPage = 1;
+        vp2.LoadPageBitmap();
+        _controller.FocusedViewport = vp2;       // focus the secondary (on page 1)
+        var focus = _controller.FocusedViewport;
+
+        // Author a freehand through the focused view: it lands on page 1, not the primary's page 0.
+        _controller.Annotations.SetAnnotationTool(AnnotationTool.Pen);
+        _controller.Annotations.HandleAnnotationPointerDown(focus, 100, 100);
+        _controller.Annotations.HandleAnnotationPointerMove(focus, 110, 110);
+        _controller.Annotations.HandleAnnotationPointerMove(focus, 120, 120);
+        _controller.Annotations.HandleAnnotationPointerUp(focus, 120, 120);
+
+        Assert.True(doc.Annotations.Pages.ContainsKey(1));   // authored on the focused view's page
+        Assert.Single(doc.Annotations.Pages[1]);
+        Assert.False(doc.Annotations.Pages.ContainsKey(0));  // the primary's page is untouched (the bug)
+
+        // The static page-annotations helper is likewise keyed to the view's page.
+        Assert.Single(AnnotationInteractionHandler.GetCurrentPageAnnotations(vp2)!);
+        Assert.Null(AnnotationInteractionHandler.GetCurrentPageAnnotations(doc.Primary));
+
+        // Eraser hit-tests the focused view's page too: erasing the page-1 markup empties page 1.
+        _controller.Annotations.SetAnnotationTool(AnnotationTool.Eraser);
+        _controller.Annotations.HandleAnnotationPointerDown(focus, 110, 110);
+        Assert.Empty(doc.Annotations.Pages[1]);
+    }
+
+    [Fact]
+    public void Search_ResolvesFocusedViewportsPage_AndExposesPerPageMatches()
+    {
+        // Finding 1 (issue #74): "current page" search matches track the FOCUSED view's page, and a host
+        // can fetch any page's matches via MatchesForPage to render each pane's own highlights.
+        var doc = SetupDoc();                 // Primary focused on page 0
+        var vp2 = doc.AddViewport();
+        vp2.CurrentPage = 1;
+        vp2.LoadPageBitmap();
+
+        var matches = new List<SearchMatch>
+        {
+            new(0, 0, 4, [new RectF(10, 10, 50, 20)]),
+            new(1, 0, 4, [new RectF(10, 10, 50, 20)]),
+            new(1, 30, 4, [new RectF(10, 40, 50, 20)]),
+        };
+        _controller.Search.FinalizeSearch(doc, matches);
+
+        // Per-page accessor exposes each page's matches independently (for per-pane highlight rendering).
+        Assert.Single(_controller.Search.MatchesForPage(0)!);
+        Assert.Equal(2, _controller.Search.MatchesForPage(1)!.Count);
+        Assert.Null(_controller.Search.MatchesForPage(2));
+
+        // Focus is on the primary (page 0): current-page matches reflect page 0.
+        Assert.Single(_controller.Search.CurrentPageSearchMatches!);
+
+        // Focus the secondary (page 1): current-page matches now reflect ITS page, not the primary's.
+        _controller.FocusedViewport = vp2;
+        _controller.Search.UpdateCurrentPageMatches();
+        Assert.Equal(2, _controller.Search.CurrentPageSearchMatches!.Count);
+    }
+
+    [Fact]
+    public void AsyncAnalysisSeat_FramesEachViewportAgainstItsOwnSize()
+    {
+        // Finding 2 (issue #74): a cache-miss analysis result arriving asynchronously must seat each
+        // waiting view's rail against THAT view's size, not the controller's single ambient size. Two
+        // panes of different widths on the same page/zoom therefore frame the block to different camera
+        // offsets; before the fix the shared ambient size landed them identically.
+        var cfg = new AppConfig { PixelSnapping = false, SnapDurationMs = 1 };
+        using var controller = new DocumentController(cfg.ToCoreSettings(), cfg, AnnotationService.Default,
+            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+        controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
+
+        var doc = controller.CreateDocument(_pdfPath);
+        doc.LoadPageBitmap();
+        controller.AddDocument(doc);
+        controller.SetViewportSize(800, 600);    // ambient — distinct from both panes below
+
+        // Two detached panes on the same page at the same zoom but DIFFERENT widths. Zoom 3.2 keeps the
+        // 468pt block (≈1498px) narrower than both widths so neither hard-clamps and the frame is a pure
+        // function of window width.
+        var narrow = doc.AddViewport();
+        narrow.CurrentPage = 1; narrow.LoadPageBitmap();
+        narrow.Camera.Zoom = 3.2; narrow.SetSize(1600, 600);
+
+        var wide = doc.AddViewport();
+        wide.CurrentPage = 1; wide.LoadPageBitmap();
+        wide.Camera.Zoom = 3.2; wide.SetSize(2600, 600);
+
+        doc.SubmitAnalysis(narrow, controller.Worker, controller.Config.NavigableRoles);
+        doc.SubmitAnalysis(wide, controller.Worker, controller.Config.NavigableRoles);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while ((narrow.PendingRailSetup || wide.PendingRailSetup) && sw.ElapsedMilliseconds < 5000)
+        {
+            controller.PollAnalysisResults();
+            Thread.Sleep(10);
+        }
+        Assert.True(narrow.Rail.Active && wide.Rail.Active);
+
+        // Sanity: the frame for this block genuinely depends on window width, so the two per-view targets
+        // differ — guards against an accidental width-insensitive regime.
+        var (narrowTarget, _) = narrow.Rail.ComputeSnapTarget(3.2, narrow.Width, narrow.Height);
+        var (wideTarget, _) = wide.Rail.ComputeSnapTarget(3.2, wide.Width, wide.Height);
+        Assert.NotEqual(narrowTarget, wideTarget);
+
+        // Complete each pane's seat snap (TickViewport drives the per-view size too).
+        Thread.Sleep(10);
+        controller.TickViewport(narrow, 0.1, pumpAnalysis: false);
+        controller.TickViewport(wide, 0.1, pumpAnalysis: false);
+
+        // Each pane landed on the frame computed for ITS own width — not a shared ambient frame.
+        Assert.Equal(narrowTarget, narrow.Camera.OffsetX, 3);
+        Assert.Equal(wideTarget, wide.Camera.OffsetX, 3);
+    }
+
     // A one-block (3-line) navigable Text analysis so a seated rail reports HasAnalysis.
     private static PageAnalysis MakeNavigableAnalysis()
     {

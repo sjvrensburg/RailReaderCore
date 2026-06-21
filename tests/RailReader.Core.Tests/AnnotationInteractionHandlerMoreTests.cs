@@ -65,8 +65,8 @@ public class AnnotationInteractionHandlerMoreTests : IDisposable
     public void CancelAnnotationTool_ClearsActiveToolAndPreview()
     {
         _handler.SetAnnotationTool(AnnotationTool.Pen);
-        _handler.HandleAnnotationPointerDown(_doc, 100, 100);
-        _handler.HandleAnnotationPointerMove(_doc, 120, 120);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 100);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 120, 120);
         Assert.NotNull(_handler.PreviewAnnotation);
 
         _handler.CancelAnnotationTool();
@@ -80,11 +80,11 @@ public class AnnotationInteractionHandlerMoreTests : IDisposable
     public void CancelledPreview_DoesNotCommitOnPointerUp()
     {
         _handler.SetAnnotationTool(AnnotationTool.Pen);
-        _handler.HandleAnnotationPointerDown(_doc, 100, 100);
-        _handler.HandleAnnotationPointerMove(_doc, 120, 120);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 100);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 120, 120);
         _handler.CancelAnnotationTool();
 
-        _handler.HandleAnnotationPointerUp(_doc, 120, 120);
+        _handler.HandleAnnotationPointerUp(_doc.Primary, 120, 120);
 
         Assert.False(_doc.Annotations.Pages.ContainsKey(0)
             && _doc.Annotations.Pages[0].Count > 0);
@@ -123,13 +123,13 @@ public class AnnotationInteractionHandlerMoreTests : IDisposable
         var rect = AddRect(100, 100, 50, 40);
         _doc.UndoStack.Clear();
 
-        bool hit = _handler.HandleBrowsePointerDown(_doc, 120, 120);
+        bool hit = _handler.HandleBrowsePointerDown(_doc.Primary, 120, 120);
         Assert.True(hit);
         Assert.Same(rect, _handler.SelectedAnnotation);
 
         _handler.HandleBrowsePointerMove(130, 130);
         _handler.HandleBrowsePointerMove(140, 140);
-        _handler.HandleBrowsePointerUp(_doc, 140, 140);
+        _handler.HandleBrowsePointerUp(_doc.Primary, 140, 140);
 
         Assert.True(rect.X > 100f);
         Assert.True(rect.Y > 100f);
@@ -144,11 +144,11 @@ public class AnnotationInteractionHandlerMoreTests : IDisposable
         _doc.AddAnnotation(0, underline);
         _doc.UndoStack.Clear();
 
-        Assert.True(_handler.HandleBrowsePointerDown(_doc, 120, 107)); // inside the markup rect
+        Assert.True(_handler.HandleBrowsePointerDown(_doc.Primary, 120, 107)); // inside the markup rect
         Assert.Same(underline, _handler.SelectedAnnotation);
 
         _handler.HandleBrowsePointerMove(140, 127);
-        _handler.HandleBrowsePointerUp(_doc, 140, 127);
+        _handler.HandleBrowsePointerUp(_doc.Primary, 140, 127);
 
         Assert.True(underline.Rects[0].X > 100f);
         Assert.True(underline.Rects[0].Y > 100f);
@@ -159,7 +159,7 @@ public class AnnotationInteractionHandlerMoreTests : IDisposable
     public void BrowsePointerDown_MissesAnnotation_ReturnsFalse()
     {
         AddRect(100, 100, 50, 40);
-        bool hit = _handler.HandleBrowsePointerDown(_doc, 500, 500);
+        bool hit = _handler.HandleBrowsePointerDown(_doc.Primary, 500, 500);
         Assert.False(hit);
         Assert.Null(_handler.SelectedAnnotation);
     }
@@ -170,7 +170,7 @@ public class AnnotationInteractionHandlerMoreTests : IDisposable
     public void CompleteTextNote_AddsToPageAndClearsPreview()
     {
         _handler.SetAnnotationTool(AnnotationTool.TextNote);
-        _handler.CompleteTextNote(_doc, 150, 200, "Hello");
+        _handler.CompleteTextNote(_doc.Primary, 150, 200, "Hello");
 
         var notes = _doc.Annotations.Pages[0].OfType<TextNoteAnnotation>().ToList();
         Assert.Single(notes);
@@ -185,7 +185,7 @@ public class AnnotationInteractionHandlerMoreTests : IDisposable
         var note = new TextNoteAnnotation { X = 100, Y = 100, Text = "original", Color = "#000000" };
         _doc.AddAnnotation(0, note);
 
-        _handler.CompleteTextNoteEdit(_doc, note, "revised");
+        _handler.CompleteTextNoteEdit(_doc.Primary, note, "revised");
 
         Assert.Equal("revised", note.Text);
     }
@@ -196,15 +196,15 @@ public class AnnotationInteractionHandlerMoreTests : IDisposable
     public void UndoRedo_Commit_RoundTrips()
     {
         _handler.SetAnnotationTool(AnnotationTool.Rectangle);
-        _handler.HandleAnnotationPointerDown(_doc, 100, 100);
-        _handler.HandleAnnotationPointerMove(_doc, 150, 150);
-        _handler.HandleAnnotationPointerUp(_doc, 150, 150);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 100);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 150, 150);
+        _handler.HandleAnnotationPointerUp(_doc.Primary, 150, 150);
         Assert.Single(_doc.Annotations.Pages[0]);
 
-        _handler.UndoAnnotation(_doc);
+        _handler.UndoAnnotation(_doc.Primary);
         Assert.Empty(_doc.Annotations.Pages[0]);
 
-        _handler.RedoAnnotation(_doc);
+        _handler.RedoAnnotation(_doc.Primary);
         Assert.Single(_doc.Annotations.Pages[0]);
     }
 
@@ -214,8 +214,8 @@ public class AnnotationInteractionHandlerMoreTests : IDisposable
     public void PointerDownUp_Rect_NoMove_DoesNotLeavePreview()
     {
         _handler.SetAnnotationTool(AnnotationTool.Rectangle);
-        _handler.HandleAnnotationPointerDown(_doc, 100, 100);
-        _handler.HandleAnnotationPointerUp(_doc, 100, 100);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 100);
+        _handler.HandleAnnotationPointerUp(_doc.Primary, 100, 100);
 
         Assert.Null(_handler.PreviewAnnotation);
     }
@@ -227,7 +227,7 @@ public class AnnotationInteractionHandlerMoreTests : IDisposable
     {
         AddFreehand(100, 100);
         _handler.SetAnnotationTool(AnnotationTool.Eraser);
-        _handler.HandleAnnotationPointerDown(_doc, 500, 500);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 500, 500);
 
         Assert.Single(_doc.Annotations.Pages[0]);
     }
@@ -238,10 +238,10 @@ public class AnnotationInteractionHandlerMoreTests : IDisposable
         AddFreehand(100, 100);
         AddFreehand(100, 100); // overlapping
         _handler.SetAnnotationTool(AnnotationTool.Eraser);
-        _handler.HandleAnnotationPointerDown(_doc, 100, 100);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 100);
         Assert.Single(_doc.Annotations.Pages[0]);
 
-        _handler.HandleAnnotationPointerDown(_doc, 100, 100);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 100);
         Assert.Empty(_doc.Annotations.Pages[0]);
     }
 }
