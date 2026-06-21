@@ -554,35 +554,36 @@ public sealed partial class DocumentController : IDisposable
     /// </summary>
     public bool SmoothlyFrameBlock(int pageBlockIndex, double? targetZoom = null, double? durationMs = null, int line = 0)
     {
-        if (ActiveDocument is not { } doc) return false;
-        if (!doc.AnalysisCache.TryGetValue(doc.CurrentPage, out var analysis)) return false;
+        if (FocusedViewport is not { } vp) return false;
+        var doc = vp.Owner;
+        if (!doc.AnalysisCache.TryGetValue(vp.CurrentPage, out var analysis)) return false;
         if (pageBlockIndex < 0 || pageBlockIndex >= analysis.Blocks.Count) return false;
 
         // Sync RailNav to THIS page's analysis so the index space + chunk framing below
         // refer to the current page. Skip the rebuild when it already holds this exact
         // analysis (the common case) — ReapplyNavigableRoles itself always rebuilds.
-        if (!ReferenceEquals(doc.Rail.Analysis, analysis))
-            doc.ReapplyNavigableRoles(_config.NavigableRoles);
+        if (!ReferenceEquals(vp.Rail.Analysis, analysis))
+            doc.ReapplyNavigableRoles(vp, _config.NavigableRoles);
 
         var box = analysis.Blocks[pageBlockIndex].BBox;
 
         // Non-navigable role (figure/table/chart): centre it geometrically instead of failing.
-        if (!doc.Rail.TrySetCurrentByPageIndex(pageBlockIndex, line))
-            return CenterBlockGeometric(doc, box, targetZoom, durationMs);
+        if (!vp.Rail.TrySetCurrentByPageIndex(pageBlockIndex, line))
+            return CenterBlockGeometric(vp, box, targetZoom, durationMs);
 
         // Keep THIS block (and seated line) when the zoom crosses the rail threshold
         // mid-flight, regardless of overlapping block geometry under the focus point.
-        doc.Rail.PinCurrentBlockForActivation();
+        vp.Rail.PinCurrentBlockForActivation();
 
         var (ww, wh) = GetViewportSize();
         // Floor at the rail threshold (not ZoomMin) so rail framing actually applies.
-        double z = Math.Clamp(targetZoom ?? doc.ComputeBlockFitZoom(box, ww, wh),
+        double z = Math.Clamp(targetZoom ?? vp.ComputeBlockFitZoom(box, ww, wh),
             _config.RailZoomThreshold, Camera.ZoomMax);
 
-        var (ox, oy) = doc.Rail.ComputeSnapTarget(z, ww, wh);
-        var lineInfo = doc.Rail.CurrentLineInfo; // seated block's target line
+        var (ox, oy) = vp.Rail.ComputeSnapTarget(z, ww, wh);
+        var lineInfo = vp.Rail.CurrentLineInfo; // seated block's target line
         if (AutoScrollActive) StopAutoScroll();
-        doc.Primary.Zoom.StartTo(doc.Primary, z, ox, oy, lineInfo.X + lineInfo.Width / 2.0, lineInfo.Y, durationMs);
+        vp.Zoom.StartTo(vp, z, ox, oy, lineInfo.X + lineInfo.Width / 2.0, lineInfo.Y, durationMs);
         FireReadingPositionChanged();
         return true;
     }
@@ -594,8 +595,9 @@ public sealed partial class DocumentController : IDisposable
     /// </summary>
     public bool SmoothlyFrameRole(BlockRole role, int occurrence = 0, double? targetZoom = null)
     {
-        if (ActiveDocument is not { } doc) return false;
-        if (!doc.AnalysisCache.TryGetValue(doc.CurrentPage, out var analysis)) return false;
+        if (FocusedViewport is not { } vp) return false;
+        var doc = vp.Owner;
+        if (!doc.AnalysisCache.TryGetValue(vp.CurrentPage, out var analysis)) return false;
         int idx = FindRoleOccurrence(analysis, role, occurrence);
         return idx >= 0 && SmoothlyFrameBlock(idx, targetZoom);
     }
@@ -615,13 +617,13 @@ public sealed partial class DocumentController : IDisposable
 
     /// <summary>Shared geometric centred-frame: ease the camera to fit + centre <paramref name="box"/>
     /// without engaging rail. Always returns true.</summary>
-    private bool CenterBlockGeometric(DocumentState doc, BBox box, double? targetZoom, double? durationMs = null)
+    private bool CenterBlockGeometric(Viewport vp, BBox box, double? targetZoom, double? durationMs = null)
     {
         var (ww, wh) = GetViewportSize();
-        var (z, ox, oy) = doc.ComputeCenteredFrame(box, ww, wh, targetZoom);
+        var (z, ox, oy) = vp.ComputeCenteredFrame(box, ww, wh, targetZoom);
         if (AutoScrollActive) StopAutoScroll();
-        doc.Rail.Deactivate(); // drive the camera directly; no rail seat/snap
-        doc.Primary.Zoom.StartCameraOnly(doc.Primary, z, ox, oy, durationMs);
+        vp.Rail.Deactivate(); // drive the camera directly; no rail seat/snap
+        vp.Zoom.StartCameraOnly(vp, z, ox, oy, durationMs);
         FireReadingPositionChanged(); // rail now inactive → reading position cleared
         return true;
     }
@@ -664,10 +666,10 @@ public sealed partial class DocumentController : IDisposable
     /// surfaces a "parked — press D to continue" affordance.
     /// </summary>
     public bool AutoScrollParked =>
-        AutoScrollActive && (ActiveDocument?.Rail.AutoScrollParked ?? false);
+        AutoScrollActive && (FocusedViewport?.Rail.AutoScrollParked ?? false);
 
     /// <summary>Resume flow from a semi-auto park (the reader pressed the advance key).</summary>
-    public void ResumeAutoScrollFromPark() => ActiveDocument?.Rail.ResumeAutoScrollFromPark();
+    public void ResumeAutoScrollFromPark() => FocusedViewport?.Rail.ResumeAutoScrollFromPark();
 
     // --- Colour effects ---
 
@@ -856,13 +858,13 @@ public sealed partial class DocumentController : IDisposable
     /// </summary>
     public bool NavigateToRole(BlockRole target, bool forward = true)
     {
-        if (ActiveDocument is not { } doc) return false;
-        if (!doc.Rail.Active || !doc.Rail.HasAnalysis) return false;
+        if (FocusedViewport is not { } vp) return false;
+        if (!vp.Rail.Active || !vp.Rail.HasAnalysis) return false;
         if (!_config.NavigableRoles.Contains(target)) return false;
-        if (!doc.Rail.TryNavigateToRole(target, forward)) return false;
+        if (!vp.Rail.TryNavigateToRole(target, forward)) return false;
 
         var (ww, wh) = GetViewportSize();
-        doc.StartSnap(ww, wh);
+        vp.StartSnap(ww, wh);
         FireReadingPositionChanged();
         return true;
     }

@@ -197,14 +197,14 @@ public sealed partial class DocumentController
 
     private bool HandleCellNav(bool forward)
     {
-        if (ActiveDocument is not { } doc) return false;
-        if (!doc.Rail.Active) return false;
+        if (FocusedViewport is not { } vp) return false;
+        if (!vp.Rail.Active) return false;
 
-        var result = forward ? doc.Rail.NextCell() : doc.Rail.PrevCell();
+        var result = forward ? vp.Rail.NextCell() : vp.Rail.PrevCell();
         if (result == NavResult.NotApplicable) return false;
 
         var (ww, wh) = GetViewportSize();
-        doc.Rail.StartSnapToCell(doc.Camera.OffsetX, doc.Camera.OffsetY, doc.Camera.Zoom, ww, wh);
+        vp.Rail.StartSnapToCell(vp.Camera.OffsetX, vp.Camera.OffsetY, vp.Camera.Zoom, ww, wh);
         // PageBoundary at the table's far edge: stay put (no cross-page cell flow in v1) — the snap
         // simply re-centres the current cell. A within-page roll to the next/prev row is a position
         // change, so announce either way.
@@ -214,7 +214,7 @@ public sealed partial class DocumentController
 
     public void HandleArrowRight(bool shortJump = false)
     {
-        if (AutoScrollActive && ActiveDocument is { } d && d.Rail.Active && d.Rail.AutoScrolling)
+        if (AutoScrollActive && FocusedViewport is { } d && d.Rail.Active && d.Rail.AutoScrolling)
         {
             d.Rail.SetAutoScrollBoost(true);
             return;
@@ -232,22 +232,22 @@ public sealed partial class DocumentController
 
     private bool TryJump(bool forward, bool half = false)
     {
-        if (!JumpMode || ActiveDocument is not { } doc || !doc.Rail.Active) return false;
+        if (!JumpMode || FocusedViewport is not { } vp || !vp.Rail.Active) return false;
         var (ww, wh) = GetViewportSize();
-        doc.Rail.Jump(forward, doc.Camera.Zoom, ww, wh, doc.Camera.OffsetX, doc.Camera.OffsetY, half);
+        vp.Rail.Jump(forward, vp.Camera.Zoom, ww, wh, vp.Camera.OffsetX, vp.Camera.OffsetY, half);
         return true;
     }
 
     private void HandleHorizontalArrow(ScrollDirection direction, double panDelta)
     {
-        if (ActiveDocument is not { } doc) return;
-        if (doc.Rail.Active)
-            doc.Rail.StartScroll(direction, doc.Camera.OffsetX);
+        if (FocusedViewport is not { } vp) return;
+        if (vp.Rail.Active)
+            vp.Rail.StartScroll(direction, vp.Camera.OffsetX);
         else
         {
             var (ww, wh) = GetViewportSize();
-            doc.Camera.OffsetX += panDelta;
-            doc.ClampCamera(ww, wh);
+            vp.Camera.OffsetX += panDelta;
+            vp.ClampCamera(ww, wh);
         }
     }
 
@@ -256,17 +256,17 @@ public sealed partial class DocumentController
 
     private void SnapToLineEdge(bool start)
     {
-        if (ActiveDocument is not { } doc || !doc.Rail.Active) return;
+        if (FocusedViewport is not { } vp || !vp.Rail.Active) return;
         var (ww, _) = GetViewportSize();
         var x = start
-            ? doc.Rail.ComputeLineStartX(doc.Camera.Zoom, ww)
-            : doc.Rail.ComputeLineEndX(doc.Camera.Zoom, ww);
+            ? vp.Rail.ComputeLineStartX(vp.Camera.Zoom, ww)
+            : vp.Rail.ComputeLineEndX(vp.Camera.Zoom, ww);
         if (x is { } val)
         {
-            doc.Camera.OffsetX = val;
+            vp.Camera.OffsetX = val;
             // During autoscroll: brief settle pause, then resume from new position
             if (AutoScrollActive)
-                doc.Rail.PauseAutoScroll(_config.AutoScrollLinePauseMs);
+                vp.Rail.PauseAutoScroll(_config.AutoScrollLinePauseMs);
         }
     }
 
@@ -274,9 +274,9 @@ public sealed partial class DocumentController
     {
         if (isHorizontal)
         {
-            ActiveDocument?.Rail.StopScrollAndEdgeHold();
+            FocusedViewport?.Rail.StopScrollAndEdgeHold();
             if (AutoScrollActive)
-                ActiveDocument?.Rail.SetAutoScrollBoost(false);
+                FocusedViewport?.Rail.SetAutoScrollBoost(false);
         }
     }
 
@@ -286,12 +286,15 @@ public sealed partial class DocumentController
     /// </summary>
     public (bool Handled, PdfLinkDestination? Link) HandleClick(double canvasX, double canvasY)
     {
-        if (ActiveDocument is not { } doc) return (false, null);
+        if (FocusedViewport is not { } vp) return (false, null);
+        var doc = vp.Owner;
 
-        double pageX = (canvasX - doc.Camera.OffsetX) / doc.Camera.Zoom;
-        double pageY = (canvasY - doc.Camera.OffsetY) / doc.Camera.Zoom;
+        double pageX = (canvasX - vp.Camera.OffsetX) / vp.Camera.Zoom;
+        double pageY = (canvasY - vp.Camera.OffsetY) / vp.Camera.Zoom;
 
-        // Check for PDF links first (takes priority over rail-mode snap)
+        // Check for PDF links first (takes priority over rail-mode snap). Link hit-testing is
+        // document-level (it uses the document's current page); precise per-view link clicking on a
+        // detached pane sitting on a different page is a later increment.
         var link = doc.HitTestLink(pageX, pageY);
         if (link is not null)
         {
@@ -304,12 +307,12 @@ public sealed partial class DocumentController
             return (true, link.Destination);
         }
 
-        // Fall through to rail-mode block snapping
-        if (!doc.Rail.Active || !doc.Rail.HasAnalysis) return (false, null);
+        // Fall through to rail-mode block snapping on the focused view.
+        if (!vp.Rail.Active || !vp.Rail.HasAnalysis) return (false, null);
 
-        doc.Rail.FindBlockNearPoint(pageX, pageY);
+        vp.Rail.FindBlockNearPoint(pageX, pageY);
         var (ww2, wh2) = GetViewportSize();
-        doc.StartSnap(ww2, wh2);
+        vp.StartSnap(ww2, wh2);
         FireReadingPositionChanged();
         return (true, null);
     }
@@ -329,32 +332,33 @@ public sealed partial class DocumentController
     /// </summary>
     public bool ActivateRailAt(double canvasX, double canvasY)
     {
-        if (ActiveDocument is not { } doc) return false;
-        if (!doc.AnalysisCache.TryGetValue(doc.CurrentPage, out var analysis)) return false;
+        if (FocusedViewport is not { } vp) return false;
+        var doc = vp.Owner;
+        if (!doc.AnalysisCache.TryGetValue(vp.CurrentPage, out var analysis)) return false;
 
         // Sync RailNav to this page's analysis so the navigable index space + line seating
         // refer to the current page (mirrors SmoothlyFrameBlock). Skip when already current.
-        if (!ReferenceEquals(doc.Rail.Analysis, analysis))
-            doc.ReapplyNavigableRoles(_config.NavigableRoles);
-        if (!doc.Rail.HasAnalysis) return false;
+        if (!ReferenceEquals(vp.Rail.Analysis, analysis))
+            doc.ReapplyNavigableRoles(vp, _config.NavigableRoles);
+        if (!vp.Rail.HasAnalysis) return false;
 
-        double pageX = (canvasX - doc.Camera.OffsetX) / doc.Camera.Zoom;
-        double pageY = (canvasY - doc.Camera.OffsetY) / doc.Camera.Zoom;
+        double pageX = (canvasX - vp.Camera.OffsetX) / vp.Camera.Zoom;
+        double pageY = (canvasY - vp.Camera.OffsetY) / vp.Camera.Zoom;
 
         if (AutoScrollActive) StopAutoScroll();
-        doc.Rail.ForceActivateAt(pageX, pageY);
+        vp.Rail.ForceActivateAt(pageX, pageY);
         var (ww, wh) = GetViewportSize();
         // Below the rail threshold (the usual "start rail here" case) the snap is intentionally
         // suppressed (RailNav.SnapSuppressed) so the page doesn't lurch — the seated line is simply
         // highlighted where it is. Above the threshold this frames the line as normal rail does.
-        doc.StartSnap(ww, wh);
+        vp.StartSnap(ww, wh);
         FireReadingPositionChanged();
         return true;
     }
 
     /// <summary>True when rail is currently held active below the zoom threshold by a forced
-    /// <see cref="ActivateRailAt"/> activation on the active document.</summary>
-    public bool ForcedRailActive => ActiveDocument?.Rail is { Active: true, ForceActive: true };
+    /// <see cref="ActivateRailAt"/> activation on the focused view.</summary>
+    public bool ForcedRailActive => FocusedViewport?.Rail is { Active: true, ForceActive: true };
 
     /// <summary>
     /// Release a forced ("start rail here") activation and re-evaluate the zoom gate, so rail
@@ -363,11 +367,11 @@ public sealed partial class DocumentController
     /// </summary>
     public void ExitForcedRail()
     {
-        if (ActiveDocument is not { } doc) return;
-        if (!doc.Rail.ForceActive) return;
-        doc.Rail.ClearForceActive();
+        if (FocusedViewport is not { } vp) return;
+        if (!vp.Rail.ForceActive) return;
+        vp.Rail.ClearForceActive();
         var (ww, wh) = GetViewportSize();
-        doc.UpdateRailZoom(ww, wh);
+        vp.UpdateRailZoom(ww, wh);
         FireReadingPositionChanged();
     }
 }

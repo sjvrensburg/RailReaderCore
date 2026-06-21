@@ -266,6 +266,34 @@ public class MultiViewportTests : IDisposable
     }
 
     [Fact]
+    public void HorizontalArrow_PansFocusedViewport_LeavingPrimaryUntouched()
+    {
+        // Regression (railreader2#180): horizontal arrow nav (and click) must act on the FOCUSED view,
+        // not the document's primary. Vertical nav / zoom / pan were routed through FocusedViewport in
+        // 0.39.0, but horizontal scroll + click were missed, so a focused secondary's left/right moved
+        // the primary instead. Rail inactive here → arrow = a plain horizontal pan.
+        var doc = SetupDoc();                       // focused primary on page 0
+        var vp2 = doc.AddViewport();
+        vp2.CurrentPage = 0;
+        vp2.LoadPageBitmap();
+
+        // Fit, then zoom the focused view far past fit (CenterPage itself resets zoom to fit) so the
+        // small synthetic page overflows the viewport and there is real room to pan; clamp to a valid
+        // start. The primary is left at its fit position and must not move.
+        vp2.CenterPage(800, 600);
+        vp2.Camera.Zoom = 40.0;
+        vp2.ClampCamera(800, 600);
+        double primaryX = doc.Primary.Camera.OffsetX;
+        double vp2X = vp2.Camera.OffsetX;
+
+        _controller.FocusedViewport = vp2;
+        _controller.HandleArrowRight();             // horizontal pan forward on the focused view
+
+        Assert.NotEqual(vp2X, vp2.Camera.OffsetX);             // the focused secondary panned
+        Assert.Equal(primaryX, doc.Primary.Camera.OffsetX, 6); // the primary did NOT move (the bug)
+    }
+
+    [Fact]
     public void PumpedTick_DrainsWorkerAndFansOutToAnUntickedView()
     {
         // Slice D pump-once: the analysis pump is document-global. A host ticks ONE view with
