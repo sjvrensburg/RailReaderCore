@@ -401,6 +401,69 @@ public class MultiViewportTests : IDisposable
         Assert.Equal(primaryZoom, doc.Primary.Camera.Zoom, 3);       // Primary untouched
     }
 
+    [Fact]
+    public void DisplayPrefs_ArePerViewport_AndDocFacadeTracksPrimary()
+    {
+        // railreader2#180 #2: each viewport carries its own display prefs, exposed publicly on
+        // Viewport; the DocumentState facade still reflects the primary's value.
+        var doc = SetupDoc();
+        var vp2 = doc.AddViewport();
+
+        string? vp2Notified = null;
+        vp2.StateChanged = n => vp2Notified = n;
+
+        vp2.LineFocusBlur = true;                              // per-view set fires the view's event
+        Assert.Equal(nameof(Viewport.LineFocusBlur), vp2Notified);
+
+        Assert.True(vp2.LineFocusBlur);
+        Assert.False(doc.Primary.LineFocusBlur);              // independent of the primary
+        Assert.False(doc.LineFocusBlur);                      // doc facade tracks the primary, not vp2
+
+        doc.LineHighlightEnabled = false;                     // facade drives the primary's per-view value
+        Assert.False(doc.Primary.LineHighlightEnabled);
+        Assert.True(vp2.LineHighlightEnabled);                // vp2 keeps its own (default true)
+
+        vp2.DebugOverlay = true;                              // the rest of the per-view set is exposed too
+        vp2.MarginCropping = true;
+        vp2.ColourEffect = ColourEffect.Invert;
+        Assert.True(vp2.DebugOverlay && vp2.MarginCropping);
+        Assert.Equal(ColourEffect.Invert, vp2.ColourEffect);
+        Assert.False(doc.DebugOverlay);                       // primary untouched throughout
+    }
+
+    [Fact]
+    public void ReadingPosition_UsesPerViewWidth_ForHorizontalFraction()
+    {
+        // railreader2#180 #3: a detached pane's horizontal fraction is computed against ITS width
+        // (set via Viewport.SetSize), not the controller's ambient size.
+        _controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
+
+        var doc = SetupDoc();                 // ambient width 800
+        var vp2 = doc.AddViewport();
+        vp2.CurrentPage = 1;
+        vp2.LoadPageBitmap();
+        vp2.Camera.Zoom = 6.0;                // block (468pt) → ~2808px, exceeds both 800 and 1234
+        vp2.SetSize(1234, 600);               // a per-view width distinct from the ambient 800
+
+        ReadingPosition? pos = null;
+        vp2.ReadingPositionChanged += p => pos = p;
+
+        doc.SubmitAnalysis(vp2, _controller.Worker, _controller.Config.NavigableRoles);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (vp2.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
+        {
+            _controller.PollAnalysisResults();
+            Thread.Sleep(10);
+        }
+
+        Assert.NotNull(pos);
+        // The emitted fraction matches the one computed against vp2's OWN width — not the ambient 800.
+        Assert.Equal(
+            vp2.Rail.ComputeHorizontalFraction(vp2.Camera.OffsetX, vp2.Camera.Zoom, vp2.Width),
+            pos!.HorizontalFraction, 5);
+    }
+
     // A one-block (3-line) navigable Text analysis so a seated rail reports HasAnalysis.
     private static PageAnalysis MakeNavigableAnalysis()
     {

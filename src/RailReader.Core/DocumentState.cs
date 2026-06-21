@@ -61,10 +61,13 @@ public sealed class DocumentState : IDisposable
         set => Primary.PageHeight = value;
     }
 
+    // These document-level display prefs delegate to the primary view's public per-view accessors
+    // (Viewport fires StateChanged, forwarded to this StateChanged) — equivalent to the old direct
+    // SetField, and they now share one notification path with the per-view API (railreader2#180 #2).
     public bool DebugOverlay
     {
-        get => Primary.DebugOverlayBacking;
-        set => SetField(ref Primary.DebugOverlayBacking, value, nameof(DebugOverlay));
+        get => Primary.DebugOverlay;
+        set => Primary.DebugOverlay = value;
     }
 
     public bool PendingRailSetup
@@ -75,26 +78,26 @@ public sealed class DocumentState : IDisposable
 
     public ColourEffect ColourEffect
     {
-        get => Primary.ColourEffectBacking;
-        set => SetField(ref Primary.ColourEffectBacking, value, nameof(ColourEffect));
+        get => Primary.ColourEffect;
+        set => Primary.ColourEffect = value;
     }
 
     public bool LineFocusBlur
     {
-        get => Primary.LineFocusBlurBacking;
-        set => SetField(ref Primary.LineFocusBlurBacking, value, nameof(LineFocusBlur));
+        get => Primary.LineFocusBlur;
+        set => Primary.LineFocusBlur = value;
     }
 
     public bool LineHighlightEnabled
     {
-        get => Primary.LineHighlightEnabledBacking;
-        set => SetField(ref Primary.LineHighlightEnabledBacking, value, nameof(LineHighlightEnabled));
+        get => Primary.LineHighlightEnabled;
+        set => Primary.LineHighlightEnabled = value;
     }
 
     public bool MarginCropping
     {
-        get => Primary.MarginCroppingBacking;
-        set => SetField(ref Primary.MarginCroppingBacking, value, nameof(MarginCropping));
+        get => Primary.MarginCropping;
+        set => Primary.MarginCropping = value;
     }
 
     public string FilePath { get; }

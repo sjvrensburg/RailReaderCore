@@ -76,11 +76,12 @@ public sealed class Viewport : IDisposable
     /// <summary>Camera (pan/zoom/offset) for this view.</summary>
     public Camera Camera { get; } = new();
 
-    /// <summary>This view's viewport size in px. The controller keeps an ambient size and pushes it
-    /// here. <b>Not read yet</b> — the controller's <c>GetViewportSize()</c> still feeds all animation
-    /// from its ambient <c>_vpWidth/_vpHeight</c>; this becomes the source of truth when the per-view
-    /// Tick reads it (later increment). In the single-window world it equals the controller's; per-view
-    /// sizing diverges once detached surfaces manage their own dimensions (Phase 2).</summary>
+    /// <summary>This view's viewport size in px. The controller keeps an ambient size and mirrors it
+    /// onto the primary; a host sizes a detached pane via <see cref="SetSize"/>. Consumed by the
+    /// per-view <c>ReadingPosition.HorizontalFraction</c> (railreader2#180 #3); the controller's
+    /// <c>GetViewportSize()</c> still feeds tick/clamp animation from its ambient size, so a pane with
+    /// its own size that must also animate against it is a further increment. Equals the controller's
+    /// size in the single-window world.</summary>
     public double Width { get; private set; } = 1200;
     public double Height { get; private set; } = 900;
 
@@ -147,6 +148,40 @@ public sealed class Viewport : IDisposable
     internal bool LineFocusBlurBacking;
     internal bool LineHighlightEnabledBacking = true;
     internal bool MarginCroppingBacking;
+
+    // --- Public per-view accessors for the display prefs above (design §2; railreader2#180 #2). Each
+    //     fires THIS view's StateChanged — forwarded to DocumentState.StateChanged for the primary, so
+    //     the doc-level facades stay equivalent — letting a detached pane carry its own overlay /
+    //     colour effect / line-focus / highlight / margin-crop independently of the primary. ---
+    public bool DebugOverlay
+    {
+        get => DebugOverlayBacking;
+        set => SetField(ref DebugOverlayBacking, value, nameof(DebugOverlay));
+    }
+
+    public ColourEffect ColourEffect
+    {
+        get => ColourEffectBacking;
+        set => SetField(ref ColourEffectBacking, value, nameof(ColourEffect));
+    }
+
+    public bool LineFocusBlur
+    {
+        get => LineFocusBlurBacking;
+        set => SetField(ref LineFocusBlurBacking, value, nameof(LineFocusBlur));
+    }
+
+    public bool LineHighlightEnabled
+    {
+        get => LineHighlightEnabledBacking;
+        set => SetField(ref LineHighlightEnabledBacking, value, nameof(LineHighlightEnabled));
+    }
+
+    public bool MarginCropping
+    {
+        get => MarginCroppingBacking;
+        set => SetField(ref MarginCroppingBacking, value, nameof(MarginCropping));
+    }
 
     /// <summary>True while this view is waiting on analysis for its current page before its rail can
     /// be seated. Per-view so each viewport tracks its own pending state; fires <see cref="StateChanged"/>.</summary>

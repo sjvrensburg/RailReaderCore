@@ -808,8 +808,11 @@ public sealed partial class DocumentController : IDisposable
         // BlockIndex is the page-level block index (matches BlockSummary.Index from
         // GetPageDescription), NOT the navigable-subset index, so agents can
         // correlate the two even when the page has non-navigable blocks.
-        var (vpW, _) = GetViewportSize();
-        double hFraction = vp.Rail.ComputeHorizontalFraction(vp.Camera.OffsetX, vp.Camera.Zoom, vpW);
+        // Compute the horizontal fraction against THIS view's own width, not the ambient one, so a
+        // detached pane with its own size reports a correct fraction for its AT-SPI / portal line
+        // anchoring (railreader2#180 #3). The primary's Width tracks the ambient size, so the
+        // single-view path is unchanged; a host sizes a detached pane via Viewport.SetSize.
+        double hFraction = vp.Rail.ComputeHorizontalFraction(vp.Camera.OffsetX, vp.Camera.Zoom, vp.Width);
         return new ReadingPosition(
             vp.CurrentPage, vp.Rail.CurrentNavigableArrayIndex, lineIndex,
             block.Role, blockText, lineText, block.BBox,
