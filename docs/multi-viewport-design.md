@@ -1,6 +1,14 @@
 # Multi-viewport design: independent & detachable viewports in RailReader.Core
 
-> **Status:** Phase 0 + Phase 1 (incl. the `Viewport`-threaded capstone) complete on `feat/multi-viewport` (2026-06-20). Phase 2 (railreader2 GUI) and Phase 3 (facade removal + `DocumentState`→`DocumentModel` rename) remain.
+> **Status (2026-06-21):** Phases 0–1 **shipped, merged, and released** across three additive versions —
+> `v0.37.0` (foundation: `Viewport`/`Viewports`/`AddViewport`/`RemoveViewport`/`TickViewport`),
+> `v0.38.0` (§5.4 analysis fan-out, `FocusedViewport` as the settable source of truth, per-`Viewport`
+> `PageChanged`/`ReadingPositionChanged`, config fan-out §8, pump-once `TickViewport(vp, dt, pumpAnalysis)`),
+> and `v0.39.0` (focused-pane interactivity: controller input/camera methods route through `FocusedViewport`,
+> public per-`Viewport` display prefs, per-view `ReadingPosition.HorizontalFraction` width). All on `main`,
+> single-viewport behaviour byte-for-byte unchanged. **Phase 2** (railreader2 split-pane / tear-off GUI) is now
+> in progress against this API; **Phase 3** (facade removal + `DocumentState`→`DocumentModel` rename — the one
+> breaking release) remains.
 > **Scope:** `RailReader.Core` only. **Driver:** support split-pane and detached-window reading —
 > *N* independent, interactive cameras over one open document — without changing the threading model.
 >
@@ -41,12 +49,15 @@
 >    `Viewport`; `DocumentState` forwards `Primary.StateChanged`), union cache eviction. Landed with
 >    `MultiViewportTests` (renders + ticks two viewports on one document).
 >
-> **Known Phase-1 boundary (deferred to the analysis-fan-out phase, §5):** a non-primary view's
-> camera/zoom/rail/auto-scroll/rasterisation are independent, but a *cross-page* transition reached from
-> its tick still routes through doc-level `GoToPage`/`SubmitAnalysis` (Primary-targeted). `TickViewport`
-> also still runs `PumpAnalysis` internally (one pump per ticked view) — the pump-once-globally split is a
-> Phase 2 frame-loop concern. Both are documented on the public API and harmless for the single focused
-> viewport that ships today.
+> **Phase-1 boundary — RESOLVED in 0.38.0 / 0.39.0:** the cross-page transition reached from a non-primary
+> view's tick is now viewport-addressed (`GoToPage(vp, …)` / `SubmitAnalysis(vp, …)` + the §5.4 fan-out);
+> `TickViewport(vp, dt, pumpAnalysis)` lets a host pump the shared worker once per frame instead of once per
+> view; and the controller's input/camera surface routes through `FocusedViewport` (0.39.0), so a focused
+> secondary/detached pane is fully interactive. **Still deferred:** broader per-view geometry — `TickViewport`
+> and clamp still read the controller's *ambient* size via `GetViewportSize()`, so a detached pane that must
+> animate against its *own* dimensions is a further increment (today only `ReadingPosition.HorizontalFraction`
+> consumes the per-view `Viewport.Width`). Also `AutoScrollController.StopAutoScroll` still stops `Primary`'s
+> rail internally (the focus-aware flag is correct; the per-view rail-stop is a follow-up).
 
 ## Contents
 
