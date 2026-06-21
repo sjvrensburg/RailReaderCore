@@ -36,7 +36,9 @@ public sealed partial class DocumentController
     {
         var doc = vp.Owner;
         int step = forward ? 1 : -1;
-        int targetPage = doc.CurrentPage + step;
+        // Walk from THIS view's page — doc.CurrentPage is the Primary facade, so a non-primary
+        // viewport must skip relative to its own page, not the primary's.
+        int targetPage = vp.CurrentPage + step;
 
         // Preserve vertical bias across page transitions so the line stays
         // at the same screen position instead of snapping to center.
@@ -54,7 +56,7 @@ public sealed partial class DocumentController
             }
 
             // Either has navigable blocks (land on it) or needs async analysis
-            if (!doc.GoToPage(targetPage, _worker, _config.NavigableRoles, ww, wh))
+            if (!doc.GoToPage(vp, targetPage, _worker, _config.NavigableRoles, ww, wh))
             {
                 NotifyRenderFailed(targetPage);
                 vp.PendingSkip = null;
@@ -65,17 +67,17 @@ public sealed partial class DocumentController
             if (vp.Rail.Active)
             {
                 vp.PendingSkip = null;
-                doc.QueueLookahead(_config.AnalysisLookaheadPages);
+                doc.QueueLookahead(vp, _config.AnalysisLookaheadPages);
                 ApplySkipLanding(vp, forward, savedBias);
                 vp.StartSnap(ww, wh);
                 if (skipped > 0) NotifyPagesSkipped(skipped);
                 return SkipResult.FoundNavigable;
             }
 
-            if (doc.PendingRailSetup)
+            if (vp.PendingRailSetup)
             {
                 vp.PendingSkip = new(forward, skipped, savedBias);
-                doc.QueueLookahead(_config.AnalysisLookaheadPages);
+                doc.QueueLookahead(vp, _config.AnalysisLookaheadPages);
                 return SkipResult.Deferred;
             }
 
@@ -140,7 +142,7 @@ public sealed partial class DocumentController
             }
             else if (adv is LineAdvanceResult.PageChanged or LineAdvanceResult.PageChangedRailLost)
             {
-                PageChanged?.Invoke(doc.CurrentPage);
+                RaisePageChanged(doc.Primary);
             }
 
             if (adv is LineAdvanceResult.LineAdvanced or LineAdvanceResult.PageChanged)

@@ -1,3 +1,4 @@
+using RailReader.Core.Commands;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
 
@@ -41,6 +42,14 @@ public sealed class Viewport : IDisposable
     /// multi-viewport host can tell "which view changed". <see cref="DocumentState.StateChanged"/>
     /// forwards the primary view's events, so existing single-viewport subscribers are unaffected.</summary>
     public Action<string>? StateChanged;
+
+    /// <summary>Fires when this view's page changes (parameter = new page index). Per-view so a detached
+    /// pane updates its own chrome; the controller-level <c>PageChanged</c> mirrors the focused view.</summary>
+    public Action<int>? PageChanged;
+
+    /// <summary>Fires when this view's rail reading position (block/line) changes. Per-view, mirrored to
+    /// the controller-level <c>ReadingPositionChanged</c> for the focused view.</summary>
+    public Action<ReadingPosition>? ReadingPositionChanged;
 
     /// <summary>Sets a backing field and fires <see cref="StateChanged"/> if the value changed.
     /// Mirrors <c>DocumentState.SetField</c> — UI-thread-only, same change-detection.</summary>
@@ -138,6 +147,14 @@ public sealed class Viewport : IDisposable
     internal bool LineFocusBlurBacking;
     internal bool LineHighlightEnabledBacking = true;
     internal bool MarginCroppingBacking;
+
+    /// <summary>True while this view is waiting on analysis for its current page before its rail can
+    /// be seated. Per-view so each viewport tracks its own pending state; fires <see cref="StateChanged"/>.</summary>
+    public bool PendingRailSetup
+    {
+        get => PendingRailSetupBacking;
+        set => SetField(ref PendingRailSetupBacking, value, nameof(PendingRailSetup));
+    }
 
     /// <summary>When set, this page was reached via rail navigation and should be skipped
     /// if analysis reveals no navigable blocks. Cleared on landing.</summary>
@@ -649,10 +666,16 @@ public sealed class Viewport : IDisposable
         Prefetched = null;
 
         StateChanged = null;
+        PageChanged = null;
+        ReadingPositionChanged = null;
         OnDpiRenderComplete = null;
         RequestAnimation = null;
         AutoScroll.StateChanged = null;
     }
 
     private bool _disposed;
+
+    /// <summary>True once this view has been removed/disposed. Document-level background tasks that
+    /// captured this view check it before seating results or writing per-view state.</summary>
+    internal bool IsDisposed => _disposed;
 }

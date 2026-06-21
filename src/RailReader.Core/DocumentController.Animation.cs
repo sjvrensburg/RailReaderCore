@@ -22,14 +22,23 @@ public sealed partial class DocumentController
     /// <summary>
     /// Advance one animation frame for a specific <paramref name="vp"/>: its camera/rail/zoom/
     /// auto-scroll animation and DPI bitmap swap, plus the global analysis pump. Operates on the
-    /// passed viewport throughout, so a second viewport animates independently of the first. A
-    /// multi-viewport host drives each visible viewport's tick from its own frame callback.
-    /// <para>Note: this still runs <see cref="PumpAnalysis"/> internally (preserving the single-
-    /// viewport <see cref="Tick(double)"/> behaviour exactly). A host ticking several viewports per
-    /// frame therefore pumps once per view — harmless (the worker drains on the first), but the
-    /// pump-once-globally split is a Phase 2 frame-loop concern.</para>
+    /// passed viewport throughout, so a second viewport animates independently of the first.
+    /// <para>Facade that pumps analysis (preserving single-viewport <see cref="Tick(double)"/>
+    /// behaviour exactly). A multi-viewport host that ticks several views per frame should instead
+    /// pump once via the <see cref="TickViewport(Viewport,double,bool)"/> overload — see §5.5.</para>
     /// </summary>
-    public TickResult TickViewport(Viewport vp, double dt)
+    public TickResult TickViewport(Viewport vp, double dt) => TickViewport(vp, dt, pumpAnalysis: true);
+
+    /// <summary>
+    /// Advance one animation frame for <paramref name="vp"/>, with explicit control over the global
+    /// analysis pump. The pump (worker drain + read-ahead scheduling) is document-global, not
+    /// per-view, so a host driving N viewports per frame ticks the focused view with
+    /// <paramref name="pumpAnalysis"/>=<c>true</c> (or calls <see cref="PumpAnalysis"/> once itself)
+    /// and the rest with <c>false</c> — the worker would otherwise be drained redundantly on each
+    /// view (harmless, but wasteful). The single-viewport <see cref="Tick(double)"/> path always
+    /// pumps, so its behaviour is unchanged.
+    /// </summary>
+    public TickResult TickViewport(Viewport vp, double dt, bool pumpAnalysis)
     {
         dt = Math.Min(dt, 1.0 / 30.0);
 
@@ -72,13 +81,17 @@ public sealed partial class DocumentController
                 cameraChanged = true;
         }
 
-        // Drain the analysis worker and schedule read-ahead (global, once per frame).
+        // Drain the analysis worker and schedule read-ahead (document-global, once per frame).
         // `quiescent: !animating` preserves the prior gate: read-ahead only when neither
-        // the camera nor a just-arrived result is animating.
-        var (gotResults, needsAnim, gotPageChange) = PumpAnalysis(quiescent: !animating);
-        animating |= needsAnim;
-        overlayChanged |= gotResults;
-        pageChanged |= gotPageChange;
+        // the camera nor a just-arrived result is animating. A multi-viewport host pumps
+        // once per frame (not once per view) by passing pumpAnalysis:false on the others.
+        if (pumpAnalysis)
+        {
+            var (gotResults, needsAnim, gotPageChange) = PumpAnalysis(quiescent: !animating);
+            animating |= needsAnim;
+            overlayChanged |= gotResults;
+            pageChanged |= gotPageChange;
+        }
 
         // DPI bitmap swap
         if (vp.DpiRenderReady)
@@ -147,7 +160,7 @@ public sealed partial class DocumentController
         var adv = AdvanceLine(vp, forward, ww, wh);
         if (adv is LineAdvanceResult.PageChanged or LineAdvanceResult.PageChangedRailLost)
         {
-            FirePageChanged(ref pageChanged, vp.Owner.CurrentPage);
+            FirePageChanged(ref pageChanged, vp);
             if (!forward && adv == LineAdvanceResult.PageChanged)
                 vp.StartSnapToEnd(ww, wh);
         }
@@ -176,9 +189,11 @@ public sealed partial class DocumentController
 
             if (vp.Rail.NavigableCount > 0
                 && vp.Rail.CurrentBlock >= vp.Rail.NavigableCount - 2
-                && vp.Owner.CurrentPage + 1 < vp.Owner.PageCount)
+                && vp.CurrentPage + 1 < vp.Owner.PageCount)
             {
-                vp.PrefetchPage(vp.Owner.CurrentPage + 1);
+                // Prefetch THIS view's next page into its own buffer — vp.Owner.CurrentPage is the
+                // Primary facade and would prefetch the primary's next page for a secondary view.
+                vp.PrefetchPage(vp.CurrentPage + 1);
             }
 
             double cx = vp.Camera.OffsetX;
@@ -199,7 +214,7 @@ public sealed partial class DocumentController
                 switch (adv)
                 {
                     case LineAdvanceResult.PageChanged:
-                        FirePageChanged(ref pageChanged, vp.Owner.CurrentPage);
+                        FirePageChanged(ref pageChanged, vp);
                         FireReadingPositionChanged();
                         // A page boundary is always a stop unit: restart auto-scroll on the
                         // new page, then park on entry (after the skip-landing snap settles).
@@ -207,7 +222,7 @@ public sealed partial class DocumentController
                         vp.Rail.ParkAutoScroll();
                         break;
                     case LineAdvanceResult.PageChangedRailLost:
-                        FirePageChanged(ref pageChanged, vp.Owner.CurrentPage);
+                        FirePageChanged(ref pageChanged, vp);
                         StopAutoScroll();
                         break;
                     case LineAdvanceResult.LineAdvanced:
@@ -268,10 +283,24 @@ public sealed partial class DocumentController
     {
         var (gotResults, needsAnim, gotPageChange) = PollAnalysisResults();
 
-        if (quiescent && !needsAnim && ActiveDocument is { } doc)
+        if (quiescent && !needsAnim && ActiveDocument is { } doc && FocusedViewport is { } focus)
         {
-            if (!doc.SubmitPendingLookahead(_worker)
-                && !doc.Rail.Active
+            // Eager lookahead is per-view (§5.5): each viewport owns its PendingAnalysis queue, filled
+            // when it rail-navigates across a page. Drain the focused view first, then the doc's other
+            // views; the single worker takes one page per pump, so stop as soon as one bites. (The old
+            // code drained only Primary's queue, so a non-primary view's lookahead never fired.)
+            bool submitted = doc.SubmitPendingLookahead(focus, _worker);
+            if (!submitted)
+                foreach (var vp in doc.Viewports)
+                {
+                    if (ReferenceEquals(vp, focus)) continue;
+                    if (doc.SubmitPendingLookahead(vp, _worker)) { submitted = true; break; }
+                }
+
+            // Otherwise spend idle worker cycles pre-analysing background pages — but only when the
+            // focused view is neither actively rail-reading nor still waiting on its own page (else
+            // background work would contend with the analysis the user is actually waiting for).
+            if (!submitted && !focus.Rail.Active && !focus.PendingRailSetup
                 && _worker is not null && _worker.IsIdle)
                 TrySubmitBackgroundReadAhead();
         }
@@ -300,60 +329,16 @@ public sealed partial class DocumentController
                 if (doc.IsDisposed || doc.FilePath != result.FilePath) continue;
                 matchedLiveDoc = true;
 
+                // Cache once at the model level — every view of this document shares it.
                 doc.SetAnalysis(result.Page, result.Analysis);
 
-                if (doc.CurrentPage != result.Page)
-                    continue;
-
-                if (!doc.PendingRailSetup)
-                    continue;
-
-                // Visual side effects (event fires, page-change / needs-animation
-                // flags) must only reflect the ACTIVE document — a background tab's
-                // analysis completing must not fire events for, or repaint, the tab
-                // the user is actually looking at.
-                bool isActive = doc == ActiveDocument;
-                int prevPage = doc.CurrentPage;
-
-                doc.Rail.SetAnalysis(result.Analysis, _config.NavigableRoles);
-                doc.PendingRailSetup = false;
-                doc.UpdateRailZoom(ww, wh);
-                _logger.Debug($"[Analysis] Rail has {doc.Rail.NavigableCount} navigable blocks, Active={doc.Rail.Active}");
-                if (doc.Rail.Active)
+                // Fan out to every view of this document sitting on the analysed page and waiting
+                // for its rail (§5.4). Two views on the same page each get seated independently.
+                foreach (var vp in doc.Viewports)
                 {
-                    if (doc.PendingSkip is { } pendingSkip)
-                        ApplySkipLanding(doc.Primary, pendingSkip.Forward, pendingSkip.SavedVerticalBias);
-                    doc.PendingSkip = null;
-                    doc.StartSnap(ww, wh);
-                    if (isActive)
-                    {
-                        needsAnim = true;
-                        FireReadingPositionChanged();
-                    }
+                    if (vp.CurrentPage != result.Page || !vp.PendingRailSetup) continue;
+                    ApplyAnalysisToViewport(vp, result.Analysis, ww, wh, ref needsAnim, ref pageChanged);
                 }
-                else if (doc.PendingSkip is not null)
-                {
-                    if (isActive)
-                    {
-                        if (TryResumeSkip(doc.Primary, ww, wh))
-                        {
-                            needsAnim = true;
-                            FireReadingPositionChanged();
-                        }
-                    }
-                    else
-                        doc.PendingSkip = null;
-                }
-
-                // Single chokepoint for the PageChanged event: announce a transition
-                // exactly once, and only if the active document's page actually moved
-                // during this resolution (a deferred skip advancing to a navigable
-                // page — including via re-deferral inside TryResumeSkip, which calls
-                // doc.GoToPage without firing the event). ApplySkipLanding does not
-                // change the page, so a same-page completion (already announced when
-                // the skip first deferred) does not fire again.
-                if (isActive && doc.CurrentPage != prevPage)
-                    FirePageChanged(ref pageChanged, doc.CurrentPage);
             }
 
             // Fire once per result, but only when a live document actually owns it
@@ -363,6 +348,77 @@ public sealed partial class DocumentController
         }
         return (got, needsAnim, pageChanged);
     }
+
+    /// <summary>
+    /// Seats a freshly-arrived page analysis on one viewport — the §5.4 fan-out body. Sets the view's
+    /// rail, clears its pending flag, applies any deferred skip-landing, and starts its snap. Visual
+    /// side effects fire for a <see cref="IsViewportLive">live</see> view (the focused view, an active-
+    /// document pane, or a host-shown detached pane): its own reading-position / page events fire, it
+    /// resumes a deferred skip, and it is woken (focused → the controller tick's needs-animation flag;
+    /// non-focused → its own <see cref="Viewport.RequestAnimation"/>). A background view is seated
+    /// silently so it is ready when shown. The controller-level event facades and the tick's repaint
+    /// flags reflect only the FOCUSED view.
+    /// </summary>
+    private void ApplyAnalysisToViewport(Viewport vp, PageAnalysis analysis, double ww, double wh,
+        ref bool needsAnim, ref bool pageChanged)
+    {
+        bool focused = vp == FocusedViewport;
+        bool live = IsViewportLive(vp);
+        int prevPage = vp.CurrentPage;
+
+        vp.Rail.SetAnalysis(analysis, _config.NavigableRoles);
+        vp.PendingRailSetup = false;
+        vp.UpdateRailZoom(ww, wh);
+        _logger.Debug($"[Analysis] Rail has {vp.Rail.NavigableCount} navigable blocks, Active={vp.Rail.Active}");
+
+        if (vp.Rail.Active)
+        {
+            if (vp.PendingSkip is { } pendingSkip)
+                ApplySkipLanding(vp, pendingSkip.Forward, pendingSkip.SavedVerticalBias);
+            vp.PendingSkip = null;
+            vp.StartSnap(ww, wh);
+            if (live)
+                WakeSeatedView(vp, focused, ref needsAnim);
+        }
+        else if (vp.PendingSkip is not null)
+        {
+            if (live)
+            {
+                if (TryResumeSkip(vp, ww, wh))
+                    WakeSeatedView(vp, focused, ref needsAnim);
+            }
+            else
+                vp.PendingSkip = null;
+        }
+
+        if (vp.CurrentPage != prevPage)
+        {
+            RaisePageChanged(vp);            // the view's own PageChanged; controller facade if focused
+            if (focused) pageChanged = true; // only the focused view drives the controller tick repaint
+        }
+    }
+
+    /// <summary>Announces a freshly-seated reading position and wakes the view: the focused view via the
+    /// controller tick's <paramref name="needsAnim"/> flag, a live non-focused pane via its own
+    /// <see cref="Viewport.RequestAnimation"/> hook.</summary>
+    private void WakeSeatedView(Viewport vp, bool focused, ref bool needsAnim)
+    {
+        FireReadingPositionChanged(vp);
+        if (focused) needsAnim = true;
+        else vp.RequestAnimation?.Invoke();
+    }
+
+    /// <summary>
+    /// Whether a view is "live" — worth firing events for and resuming its own deferred skip. True for
+    /// the focused view; for any other view, true when the host has marked it visible
+    /// (<see cref="Viewport.IsLive"/>) AND it is either a view of the active document (so an active-tab
+    /// split pane stays live) or a non-primary detached pane. A background tab's PRIMARY is therefore
+    /// never live on its own — you focus it to make it active — preserving the single-window rule that
+    /// only the active document announces. The host refines this by toggling IsLive on its panes.
+    /// </summary>
+    private bool IsViewportLive(Viewport vp)
+        => vp == FocusedViewport
+           || (vp.IsLive && (vp.Owner == ActiveDocument || !ReferenceEquals(vp, vp.Owner.Primary)));
 
     /// <summary>
     /// Returns true if any document has unanalysed pages remaining.

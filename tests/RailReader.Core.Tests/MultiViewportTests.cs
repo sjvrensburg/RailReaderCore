@@ -1,3 +1,4 @@
+using RailReader.Core.Commands;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
 using Xunit;
@@ -144,5 +145,245 @@ public class MultiViewportTests : IDisposable
         doc.Primary.CurrentPage = 2;
         Assert.Equal(2, doc.CurrentPage);
         Assert.Same(doc.Primary.Camera, doc.Camera);
+    }
+
+    [Fact]
+    public void Analysis_FansOutToSecondaryViewportOnItsOwnPage()
+    {
+        // The §5.4 fan-out: analysis arriving for a SECONDARY viewport's page seats that view's
+        // own rail (not the primary's), via the real worker pipeline with a fake analyzer.
+        _controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
+
+        var doc = SetupDoc(); // Primary on page 0; AddDocument submits page-0 analysis
+        var vp2 = doc.AddViewport();
+        vp2.CurrentPage = 1;
+        vp2.LoadPageBitmap();
+
+        // Submit analysis for vp2's page (1). Primary stays on page 0.
+        doc.SubmitAnalysis(vp2, _controller.Worker, _controller.Config.NavigableRoles);
+        Assert.True(vp2.PendingRailSetup);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (vp2.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
+        {
+            _controller.PollAnalysisResults();
+            Thread.Sleep(10);
+        }
+
+        Assert.False(vp2.PendingRailSetup);                 // the fan-out cleared it
+        Assert.True(vp2.Rail.HasAnalysis);                  // vp2's OWN rail got seated
+        Assert.Equal(1, vp2.CurrentPage);
+        Assert.True(doc.AnalysisCache.ContainsKey(1));      // cached at the model level
+        Assert.NotSame(doc.Primary.Rail, vp2.Rail);         // independent rails
+    }
+
+    [Fact]
+    public void PerViewportPageChanged_FiresForFocusedViewAndMirrorsToController()
+    {
+        var doc = SetupDoc();
+        int? viewEvent = null, controllerEvent = null;
+        doc.Primary.PageChanged += p => viewEvent = p;          // per-viewport event
+        _controller.PageChanged = p => controllerEvent = p;     // focused-view facade
+
+        _controller.GoToPage(2);
+
+        Assert.Equal(2, doc.Primary.CurrentPage);
+        Assert.Equal(2, viewEvent);        // the view's own PageChanged fired
+        Assert.Equal(2, controllerEvent);  // and the controller-level facade mirrored it
+    }
+
+    [Fact]
+    public void Analysis_FiresPerViewportReadingPosition_ForLiveNonFocusedView()
+    {
+        // A live (IsLive) detached pane that is NOT focused still fires its own ReadingPositionChanged
+        // when the fan-out seats its rail — gap #3 (IsLive consulted), not just the focused view.
+        _controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
+
+        var doc = SetupDoc();                // focus stays on doc.Primary
+        var vp2 = doc.AddViewport();         // a detached pane; IsLive defaults true
+        Assert.NotSame(vp2, _controller.FocusedViewport);
+        vp2.CurrentPage = 1;
+        vp2.LoadPageBitmap();
+        vp2.Camera.Zoom = 6.0;               // above RailZoomThreshold (3.0) so the seated rail activates
+
+        ReadingPosition? vp2Pos = null;
+        vp2.ReadingPositionChanged += p => vp2Pos = p;
+
+        doc.SubmitAnalysis(vp2, _controller.Worker, _controller.Config.NavigableRoles);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (vp2.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
+        {
+            _controller.PollAnalysisResults();
+            Thread.Sleep(10);
+        }
+
+        Assert.True(vp2.Rail.Active);        // seated + activated
+        Assert.NotNull(vp2Pos);              // the live, non-focused view fired its OWN event
+        Assert.Equal(1, vp2Pos!.Page);
+    }
+
+    [Fact]
+    public void FocusedViewport_IsSourceOfTruth_ActiveDocumentFollows()
+    {
+        var docA = SetupDoc(); // single doc; AddDocument focuses its primary
+        Assert.Same(docA, _controller.ActiveDocument);
+        Assert.Same(docA.Primary, _controller.FocusedViewport);
+
+        var docB = _controller.CreateDocument(_pdfPath);
+        docB.LoadPageBitmap();
+        _controller.AddDocument(docB); // focuses docB.Primary
+        Assert.Same(docB, _controller.ActiveDocument);
+        Assert.Equal(1, _controller.ActiveDocumentIndex);
+
+        // Setting focus back to docA's primary moves the active document + index with it.
+        _controller.FocusedViewport = docA.Primary;
+        Assert.Same(docA, _controller.ActiveDocument);
+        Assert.Equal(0, _controller.ActiveDocumentIndex);
+
+        // A view whose document isn't open is rejected (focus unchanged).
+        var orphan = _controller.CreateDocument(_pdfPath);
+        _controller.FocusedViewport = orphan.Primary;
+        Assert.Same(docA, _controller.ActiveDocument);
+        orphan.Dispose();
+    }
+
+    [Fact]
+    public void ConfigChange_PropagatesToEveryViewport()
+    {
+        // Slice C: per-view settings reach EVERY view, not just the primary — a detached pane must
+        // respond to a live settings change too (§8). Rail.ZoomThreshold mirrors RailZoomThreshold.
+        var doc = SetupDoc();
+        var vp2 = doc.AddViewport();
+        Assert.Equal(3.0, vp2.Rail.ZoomThreshold, 3);   // default RailZoomThreshold
+
+        _controller.OnConfigChanged(_controller.Config with { RailZoomThreshold = 7.0 });
+
+        Assert.Equal(7.0, doc.Primary.Rail.ZoomThreshold, 3);  // primary tracks the new config
+        Assert.Equal(7.0, vp2.Rail.ZoomThreshold, 3);          // and the detached pane too
+    }
+
+    [Fact]
+    public void PumpedTick_DrainsWorkerAndFansOutToAnUntickedView()
+    {
+        // Slice D pump-once: the analysis pump is document-global. A host ticks ONE view with
+        // pumpAnalysis:true; that single pump drains the worker and fans results out to every
+        // view of the document — including views never ticked this frame (§5.5).
+        _controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
+
+        var doc = SetupDoc();             // focused primary on page 0
+        var vp1 = doc.Primary;
+        var vp2 = doc.AddViewport();      // never ticked below
+        vp2.CurrentPage = 1;
+        vp2.LoadPageBitmap();
+
+        doc.SubmitAnalysis(vp2, _controller.Worker, _controller.Config.NavigableRoles);
+        Assert.True(vp2.PendingRailSetup);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (vp2.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
+        {
+            _controller.TickViewport(vp1, 0.016, pumpAnalysis: true); // only vp1 is ticked
+            Thread.Sleep(10);
+        }
+
+        Assert.False(vp2.PendingRailSetup);   // vp1's pump fanned out to the un-ticked vp2
+        Assert.True(vp2.Rail.HasAnalysis);
+    }
+
+    [Fact]
+    public void PumplessTickOverload_AdvancesViewOwnAnimation()
+    {
+        // Slice D: the pumpless overload still advances the ticked view's own camera animation —
+        // it only skips the document-global analysis pump (which a host runs once per frame).
+        var doc = SetupDoc();             // no worker initialised → no rail/analysis interference
+        var vp = doc.Primary;
+        vp.CenterPage(800, 600);
+        vp.Camera.Zoom = 1.0;
+        vp.Zoom.Start(vp, 2.0, 400, 300, 800);
+        Thread.Sleep(220);                // past the zoom duration
+
+        var r = _controller.TickViewport(vp, 0.25, pumpAnalysis: false);
+
+        Assert.Equal(2.0, vp.Camera.Zoom, 3);   // the pumpless overload still ticked the view
+        Assert.False(vp.Zoom.IsAnimating);
+        Assert.True(r.CameraChanged);
+    }
+
+    [Fact]
+    public void RemovingFocusedViewport_RepointsFocusToPrimary_AndTickIsSafe()
+    {
+        // Review fix: FocusedViewport is the single source of truth (it backs ActiveDocument and the
+        // per-frame tick). Removing the focused view must re-point focus off the now-disposed view —
+        // otherwise the next Tick dereferences a torn-down viewport (disposed Cts → ObjectDisposedException).
+        var doc = SetupDoc();
+        var vp2 = doc.AddViewport();
+        vp2.LoadPageBitmap();
+        _controller.FocusedViewport = vp2;
+        Assert.Same(vp2, _controller.FocusedViewport);
+
+        doc.RemoveViewport(vp2);
+
+        Assert.Same(doc.Primary, _controller.FocusedViewport);   // re-pointed, not left dangling
+        Assert.Same(doc, _controller.ActiveDocument);
+        Assert.Null(Record.Exception(() => _controller.Tick(0.016))); // ticking after removal is safe
+
+        // The setter also rejects focusing an already-removed view.
+        var vp3 = doc.AddViewport();
+        doc.RemoveViewport(vp3);
+        _controller.FocusedViewport = vp3;
+        Assert.Same(doc.Primary, _controller.FocusedViewport);   // unchanged — rejected
+    }
+
+    [Fact]
+    public void PumpDrainsLookaheadForANonFocusedViewport()
+    {
+        // Review fix (§5.5): eager lookahead is per-view. The pump must drain EVERY live view's
+        // PendingAnalysis queue, not just the focused/primary one — else a secondary view's
+        // read-ahead never fires. Driven entirely by the focused primary's pump.
+        _controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
+
+        var doc = SetupDoc();                  // focused primary on page 0
+        var vp2 = doc.AddViewport();           // never ticked, never focused
+        doc.Primary.PendingAnalysis.Clear();   // isolate: only vp2 has lookahead queued
+        doc.QueueLookahead(vp2, 2);            // enqueue pages 1,2 into vp2's own queue
+        Assert.Equal(2, vp2.PendingAnalysis.Count);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (vp2.PendingAnalysis.Count == 2 && sw.ElapsedMilliseconds < 5000)
+        {
+            _controller.TickViewport(doc.Primary, 0.016, pumpAnalysis: true); // only the primary ticks
+            Thread.Sleep(10);
+        }
+
+        Assert.True(vp2.PendingAnalysis.Count < 2);  // the pump drained the non-focused view's queue
+    }
+
+    // A one-block (3-line) navigable Text analysis so a seated rail reports HasAnalysis.
+    private static PageAnalysis MakeNavigableAnalysis()
+    {
+        var lines = new List<LineInfo>();
+        for (int l = 0; l < 3; l++)
+            lines.Add(new LineInfo(72f + l * 16f, 16f, 72f, 468f));
+        return new PageAnalysis
+        {
+            PageWidth = 612,
+            PageHeight = 792,
+            Blocks =
+            [
+                new LayoutBlock
+                {
+                    BBox = new BBox(72f, 72f, 468f, 48f),
+                    Role = BlockRole.Text,
+                    Confidence = 0.95f,
+                    Order = 0,
+                    Lines = lines,
+                },
+            ],
+        };
     }
 }
