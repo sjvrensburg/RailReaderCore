@@ -335,8 +335,8 @@ public sealed partial class DocumentController : IDisposable
     /// <summary>Pushes the current page onto the back stack and clears forward history.</summary>
     private void PushHistory()
     {
-        if (ActiveDocument is not { } doc) return;
-        doc.PushHistory(doc.CurrentPage);
+        if (FocusedViewport is not { } vp) return;
+        vp.Owner.PushHistory(vp.CurrentPage);
     }
 
     public void NavigateToBookmark(int index)
@@ -350,16 +350,18 @@ public sealed partial class DocumentController : IDisposable
 
     public void NavigateBack()
     {
-        if (ActiveDocument is not { } doc) return;
+        if (FocusedViewport is not { } vp) return;
+        var doc = vp.Owner;
         if (doc.BackStackCount == 0) return;
-        GoToPage(doc.PopBack(doc.CurrentPage));
+        GoToPage(doc.PopBack(vp.CurrentPage));
     }
 
     public void NavigateForward()
     {
-        if (ActiveDocument is not { } doc) return;
+        if (FocusedViewport is not { } vp) return;
+        var doc = vp.Owner;
         if (doc.ForwardStackCount == 0) return;
-        GoToPage(doc.PopForward(doc.CurrentPage));
+        GoToPage(doc.PopForward(vp.CurrentPage));
     }
 
     /// <summary>
@@ -368,45 +370,46 @@ public sealed partial class DocumentController : IDisposable
     /// </summary>
     private void ScrollToDestination(PageDestination dest)
     {
-        if (ActiveDocument is not { } doc) return;
+        if (FocusedViewport is not { } vp) return;
         if (dest.PdfX is null && dest.PdfY is null) return;
 
         var (ww, wh) = GetViewportSize();
 
         if (dest.PdfY is { } pdfY)
         {
-            double pageY = doc.PageHeight - pdfY;
-            doc.Camera.OffsetY = -pageY * doc.Camera.Zoom + wh * CoreTuning.DestMarginTop;
+            double pageY = vp.PageHeight - pdfY;
+            vp.Camera.OffsetY = -pageY * vp.Camera.Zoom + wh * CoreTuning.DestMarginTop;
         }
 
         if (dest.PdfX is { } pdfX)
         {
-            doc.Camera.OffsetX = -pdfX * doc.Camera.Zoom + ww * CoreTuning.DestMarginLeft;
+            vp.Camera.OffsetX = -pdfX * vp.Camera.Zoom + ww * CoreTuning.DestMarginLeft;
         }
 
-        doc.ClampCamera(ww, wh);
-        doc.UpdateRailZoom(ww, wh);
+        vp.ClampCamera(ww, wh);
+        vp.UpdateRailZoom(ww, wh);
     }
 
     // --- Navigation ---
 
     public void GoToPage(int page)
     {
-        FocusedViewport?.Zoom.Cancel();
-        if (ActiveDocument is not { } doc) return;
+        if (FocusedViewport is not { } vp) return;
+        vp.Zoom.Cancel();
+        var doc = vp.Owner;
         var (ww, wh) = GetViewportSize();
-        int prevPage = doc.CurrentPage;
-        if (!doc.GoToPage(page, _worker, _config.NavigableRoles, ww, wh))
+        int prevPage = vp.CurrentPage;
+        if (!doc.GoToPage(vp, page, _worker, _config.NavigableRoles, ww, wh))
         {
             NotifyRenderFailed(page);
             return;
         }
-        doc.QueueLookahead(_config.AnalysisLookaheadPages);
+        doc.QueueLookahead(vp, _config.AnalysisLookaheadPages);
         Search.UpdateCurrentPageMatches();
         // DocumentState.GoToPage returns true without changing anything when the
         // target clamps to the current page; only announce a real transition.
-        if (doc.CurrentPage != prevPage)
-            RaisePageChanged(doc.Primary);
+        if (vp.CurrentPage != prevPage)
+            RaisePageChanged(vp);
     }
 
     private void NotifyRenderFailed(int page)
@@ -414,20 +417,20 @@ public sealed partial class DocumentController : IDisposable
 
     public void FitPage()
     {
-        FocusedViewport?.Zoom.Cancel();
-        if (ActiveDocument is not { } doc) return;
+        if (FocusedViewport is not { } vp) return;
+        vp.Zoom.Cancel();
         var (ww, wh) = GetViewportSize();
-        doc.CenterPage(ww, wh);
-        doc.UpdateRailZoom(ww, wh);
+        vp.CenterPage(ww, wh);
+        vp.UpdateRailZoom(ww, wh);
     }
 
     public void FitWidth()
     {
-        FocusedViewport?.Zoom.Cancel();
-        if (ActiveDocument is not { } doc) return;
+        if (FocusedViewport is not { } vp) return;
+        vp.Zoom.Cancel();
         var (ww, wh) = GetViewportSize();
-        doc.FitWidth(ww, wh);
-        doc.UpdateRailZoom(ww, wh);
+        vp.FitWidth(ww, wh);
+        vp.UpdateRailZoom(ww, wh);
     }
 
     // --- Camera ---
@@ -435,44 +438,44 @@ public sealed partial class DocumentController : IDisposable
     public void HandleZoom(double scrollDelta, double cursorX, double cursorY, bool ctrlHeld)
     {
         if (AutoScrollActive) StopAutoScroll();
-        if (ActiveDocument is not { } doc) return;
+        if (FocusedViewport is not { } vp) return;
         var (ww, wh) = GetViewportSize();
 
-        if (ctrlHeld && doc.Rail.Active && !RailPaused)
+        if (ctrlHeld && vp.Rail.Active && !RailPaused)
         {
-            double step = scrollDelta * 2.0 * doc.Camera.Zoom;
-            doc.Camera.OffsetX += step;
-            doc.ClampCamera(ww, wh);
+            double step = scrollDelta * 2.0 * vp.Camera.Zoom;
+            vp.Camera.OffsetX += step;
+            vp.ClampCamera(ww, wh);
         }
         else
         {
             double factor = 1.0 + scrollDelta * CoreTuning.ZoomScrollSensitivity;
-            double baseZoom = doc.Primary.Zoom.PendingTargetZoom ?? doc.Camera.Zoom;
+            double baseZoom = vp.Zoom.PendingTargetZoom ?? vp.Camera.Zoom;
             double newZoom = Math.Clamp(baseZoom * factor, Camera.ZoomMin, Camera.ZoomMax);
-            doc.Primary.Zoom.Start(doc.Primary, newZoom, cursorX, cursorY, _vpWidth);
+            vp.Zoom.Start(vp, newZoom, cursorX, cursorY, _vpWidth);
         }
     }
 
     public void HandlePan(double dx, double dy, bool ctrlHeld = false)
     {
-        FocusedViewport?.Zoom.Cancel();
-        if (ActiveDocument is not { } doc) return;
+        if (FocusedViewport is not { } vp) return;
+        vp.Zoom.Cancel();
         if (AutoScrollActive) StopAutoScroll();
         var (ww, wh) = GetViewportSize();
 
-        if (ctrlHeld && doc.Rail.Active && !RailPaused)
-            StartRailPause(doc);
+        if (ctrlHeld && vp.Rail.Active && !RailPaused)
+            StartRailPause(vp);
 
-        doc.Camera.OffsetX += dx;
-        doc.Camera.OffsetY += dy;
-        doc.ClampCamera(ww, wh);
-        if (doc.Rail.Active && !RailPaused)
-            doc.Rail.CaptureVerticalBias(doc.Camera.OffsetY, doc.Camera.Zoom, wh);
+        vp.Camera.OffsetX += dx;
+        vp.Camera.OffsetY += dy;
+        vp.ClampCamera(ww, wh);
+        if (vp.Rail.Active && !RailPaused)
+            vp.Rail.CaptureVerticalBias(vp.Camera.OffsetY, vp.Camera.Zoom, wh);
     }
 
-    private void StartRailPause(DocumentState doc)
+    private void StartRailPause(Viewport vp)
     {
-        doc.Primary.RailPause = new(doc.Rail.CurrentBlock, doc.Rail.CurrentLine, doc.Rail.VerticalBias, doc.Camera.Zoom);
+        vp.RailPause = new(vp.Rail.CurrentBlock, vp.Rail.CurrentLine, vp.Rail.VerticalBias, vp.Camera.Zoom);
         StatusMessage?.Invoke("Free pan — release Ctrl to return");
     }
 
@@ -481,45 +484,45 @@ public sealed partial class DocumentController : IDisposable
     /// </summary>
     public void ResumeRailFromPause()
     {
-        if (ActiveDocument is not { } doc) return;
-        if (doc.Primary.RailPause is not { } pause) return;
-        doc.Primary.RailPause = null;
+        if (FocusedViewport is not { } vp) return;
+        if (vp.RailPause is not { } pause) return;
+        vp.RailPause = null;
 
         var (ww, wh) = GetViewportSize();
 
         // Restore zoom if it changed during free pan (may re-enter rail mode)
-        if (Math.Abs(doc.Camera.Zoom - pause.Zoom) > 0.001)
+        if (Math.Abs(vp.Camera.Zoom - pause.Zoom) > 0.001)
         {
-            doc.Camera.Zoom = pause.Zoom;
-            doc.Camera.NotifyZoomChange();
-            doc.UpdateRailZoom(ww, wh);
-            doc.UpdateRenderDpiIfNeeded();
+            vp.Camera.Zoom = pause.Zoom;
+            vp.Camera.NotifyZoomChange();
+            vp.UpdateRailZoom(ww, wh);
+            vp.UpdateRenderDpiIfNeeded();
         }
 
-        if (!doc.Rail.Active) return;
+        if (!vp.Rail.Active) return;
 
         // Clamp indices in case analysis changed while paused
-        doc.Rail.CurrentBlock = Math.Clamp(pause.Block, 0, Math.Max(doc.Rail.NavigableCount - 1, 0));
-        doc.Rail.CurrentLine = Math.Clamp(pause.Line, 0, Math.Max(doc.Rail.CurrentLineCount - 1, 0));
-        doc.Rail.VerticalBias = pause.VerticalBias;
+        vp.Rail.CurrentBlock = Math.Clamp(pause.Block, 0, Math.Max(vp.Rail.NavigableCount - 1, 0));
+        vp.Rail.CurrentLine = Math.Clamp(pause.Line, 0, Math.Max(vp.Rail.CurrentLineCount - 1, 0));
+        vp.Rail.VerticalBias = pause.VerticalBias;
 
-        doc.StartSnap(ww, wh);
+        vp.StartSnap(ww, wh);
         FireReadingPositionChanged();
         StatusMessage?.Invoke("");
     }
 
     public void HandleZoomKey(bool zoomIn)
     {
-        if (ActiveDocument is not { } doc) return;
+        if (FocusedViewport is not { } vp) return;
         var (ww, wh) = GetViewportSize();
 
-        double baseZoom = doc.Primary.Zoom.PendingTargetZoom ?? doc.Camera.Zoom;
+        double baseZoom = vp.Zoom.PendingTargetZoom ?? vp.Camera.Zoom;
         double newZoom = Math.Clamp(
             zoomIn ? baseZoom * CoreTuning.ZoomStep : baseZoom / CoreTuning.ZoomStep,
             Camera.ZoomMin, Camera.ZoomMax);
 
-        doc.Primary.Zoom.Start(doc.Primary, newZoom, ww / 2.0, wh / 2.0, _vpWidth);
-        if (!doc.Rail.Active && AutoScrollActive) StopAutoScroll();
+        vp.Zoom.Start(vp, newZoom, ww / 2.0, wh / 2.0, _vpWidth);
+        if (!vp.Rail.Active && AutoScrollActive) StopAutoScroll();
     }
 
     /// <summary>
@@ -529,12 +532,12 @@ public sealed partial class DocumentController : IDisposable
     public void AnimateCameraTo(double targetZoom, double targetOffsetX, double targetOffsetY)
     {
         if (AutoScrollActive) StopAutoScroll();
-        if (ActiveDocument is not { } doc) return;
+        if (FocusedViewport is not { } vp) return;
         var (ww, wh) = GetViewportSize();
         double z = Math.Clamp(targetZoom, Camera.ZoomMin, Camera.ZoomMax);
         double cpx = (ww / 2.0 - targetOffsetX) / z; // target viewport-centre in page space
         double cpy = (wh / 2.0 - targetOffsetY) / z;
-        doc.Primary.Zoom.StartTo(doc.Primary, z, targetOffsetX, targetOffsetY, cpx, cpy);
+        vp.Zoom.StartTo(vp, z, targetOffsetX, targetOffsetY, cpx, cpy);
     }
 
     /// <summary>
@@ -805,8 +808,11 @@ public sealed partial class DocumentController : IDisposable
         // BlockIndex is the page-level block index (matches BlockSummary.Index from
         // GetPageDescription), NOT the navigable-subset index, so agents can
         // correlate the two even when the page has non-navigable blocks.
-        var (vpW, _) = GetViewportSize();
-        double hFraction = vp.Rail.ComputeHorizontalFraction(vp.Camera.OffsetX, vp.Camera.Zoom, vpW);
+        // Compute the horizontal fraction against THIS view's own width, not the ambient one, so a
+        // detached pane with its own size reports a correct fraction for its AT-SPI / portal line
+        // anchoring (railreader2#180 #3). The primary's Width tracks the ambient size, so the
+        // single-view path is unchanged; a host sizes a detached pane via Viewport.SetSize.
+        double hFraction = vp.Rail.ComputeHorizontalFraction(vp.Camera.OffsetX, vp.Camera.Zoom, vp.Width);
         return new ReadingPosition(
             vp.CurrentPage, vp.Rail.CurrentNavigableArrayIndex, lineIndex,
             block.Role, blockText, lineText, block.BBox,

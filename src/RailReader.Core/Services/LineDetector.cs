@@ -74,6 +74,15 @@ public static class LineDetector
     /// </summary>
     internal const float CellGapMultiplier = 1.0f;
 
+    /// <summary>
+    /// A pixel column whose longest continuous dark run exceeds this fraction of the table crop's
+    /// height is treated as a vertical ruling line (column separator) in <see cref="DetectColumnGrid"/>.
+    /// Rules are continuous top-to-bottom; text/number columns are dark only where glyphs sit, so
+    /// their longest run stays well under this. 0.5 is comfortably below a rule's near-full coverage
+    /// yet above any text column's.
+    /// </summary>
+    internal const float RuleRunFraction = 0.5f;
+
     private static readonly HashSet<BlockRole> MathRoles =
         [BlockRole.DisplayMath, BlockRole.InlineMath, BlockRole.Algorithm];
 
@@ -120,7 +129,9 @@ public static class LineDetector
                 var rows = NormalizeLines(charLines, block.BBox, mergeOverlaps);
                 // Cells are a pure overlay on the validated row geometry — row
                 // Y/Height/X/Width are untouched, so row reading is unregressed.
-                return detectCells ? AssignCells(rows, charBoxes, block.BBox) : rows;
+                return detectCells
+                    ? AssignCells(rows, charBoxes, block.BBox, rgbBytes, imgW, imgH, scaleX, scaleY)
+                    : rows;
             }
         }
 
@@ -204,7 +215,8 @@ public static class LineDetector
     /// so table-row reading is unaffected by whether cells are computed.
     /// </summary>
     internal static List<LineInfo> AssignCells(
-        List<LineInfo> rows, IReadOnlyList<CharBox> charBoxes, BBox block)
+        List<LineInfo> rows, IReadOnlyList<CharBox> charBoxes, BBox block,
+        byte[] rgbBytes, int imgW, int imgH, float scaleX, float scaleY)
     {
         if (rows.Count == 0) return rows;
 
@@ -237,12 +249,125 @@ public static class LineDetector
 
         if (heights.Count == 0) return rows;
         heights.Sort();
-        float gapThreshold = heights[heights.Count / 2] * CellGapMultiplier;
 
+        // Phase 2 (issue #67): prefer the table's own ruled column grid when present. Dense
+        // statistical tables (space-grouped thousands, dash placeholders, right-aligned numerics,
+        // missing cells, hierarchical headers) defeat any glyph-gap heuristic, but they are drawn
+        // with vertical rules — recovering that grid gives a fixed, aligned column count with empty
+        // cells for blanks (stable column index across rows). Unruled tables fall back to the gap
+        // split below, so this is purely additive.
+        var grid = DetectColumnGrid(rgbBytes, imgW, imgH, block, scaleX, scaleY);
+        if (grid is not null)
+        {
+            var gridCells = BuildGridCells(grid); // identical bands for every row → aligned columns
+            for (int r = 0; r < rows.Count; r++)
+                if (rowGlyphs[r] is { Count: > 0 })
+                    rows[r] = rows[r] with { Cells = gridCells };
+            return rows;
+        }
+
+        float gapThreshold = RobustGapThreshold(heights);
         for (int r = 0; r < rows.Count; r++)
             if (rowGlyphs[r] is { Count: > 0 } glyphs)
                 rows[r] = rows[r] with { Cells = SplitRowCells(glyphs, gapThreshold) };
         return rows;
+    }
+
+    /// <summary>
+    /// Recovers a table's column grid from the **vertical ruling lines** drawn on the page. For
+    /// each pixel column of the block crop it measures the longest continuous run of dark pixels;
+    /// a ruled column separator is dark down (nearly) the whole crop, while text/number columns are
+    /// dark only intermittently (gaps between rows), so their longest run is short. Rule columns are
+    /// collapsed to boundary centres (point space) and combined with the block's left/right edges.
+    /// Returns the sorted column boundaries, or <c>null</c> when fewer than two interior rules are
+    /// found (no usable grid → caller falls back to the glyph-gap split). DPI-robust: hairline
+    /// (0.3pt) rules survive rasterisation as continuous dark columns even at 800px-longest-edge
+    /// analysis resolution (verified on SARB Quarterly Bulletin tables).
+    /// </summary>
+    internal static List<float>? DetectColumnGrid(
+        byte[] rgbBytes, int imgW, int imgH, BBox block, float scaleX, float scaleY)
+    {
+        if (rgbBytes is null || rgbBytes.Length == 0 || scaleX <= 0 || scaleY <= 0) return null;
+
+        int pxX = Math.Max(0, Math.Min((int)Math.Round(block.X / scaleX), imgW - 1));
+        int pxY = Math.Max(0, Math.Min((int)Math.Round(block.Y / scaleY), imgH - 1));
+        int pxW = Math.Min((int)Math.Round(block.W / scaleX), imgW - pxX);
+        int pxH = Math.Min((int)Math.Round(block.H / scaleY), imgH - pxY);
+        if (pxW < 4 || pxH < 8) return null;
+
+        int ruleMinRun = (int)(pxH * RuleRunFraction);
+        var ruleColsPx = new List<int>();
+        for (int col = 0; col < pxW; col++)
+        {
+            int x = pxX + col;
+            int run = 0, maxRun = 0;
+            for (int row = 0; row < pxH; row++)
+            {
+                int idx = ((pxY + row) * imgW + x) * 3;
+                bool dark = idx + 2 < rgbBytes.Length
+                    && rgbBytes[idx] * 0.299f + rgbBytes[idx + 1] * 0.587f + rgbBytes[idx + 2] * 0.114f
+                       < LayoutConstants.DarkLuminanceThreshold;
+                run = dark ? run + 1 : 0;
+                if (run > maxRun) maxRun = run;
+            }
+            if (maxRun >= ruleMinRun) ruleColsPx.Add(col);
+        }
+
+        // Collapse adjacent rule columns (a rule rasterises 1–2px wide) into boundary centres.
+        var rules = new List<float>();
+        for (int i = 0; i < ruleColsPx.Count;)
+        {
+            int j = i;
+            while (j + 1 < ruleColsPx.Count && ruleColsPx[j + 1] - ruleColsPx[j] <= 2) j++;
+            float centrePx = pxX + (ruleColsPx[i] + ruleColsPx[j]) * 0.5f;
+            rules.Add(centrePx * scaleX);
+            i = j + 1;
+        }
+
+        // Boundaries = block.left ∪ interior rules ∪ block.right (rules within a hair of an edge
+        // are the table's outer border, folded into the edge).
+        float lp = block.X, rp = block.X + block.W, edgeEps = 2f * scaleX;
+        var bounds = new List<float> { lp };
+        foreach (var x in rules)
+            if (x > lp + edgeEps && x < rp - edgeEps) bounds.Add(x);
+        bounds.Add(rp);
+
+        // Need ≥2 interior rules (≥3 columns) to be confident it is a real ruled grid rather than a
+        // stray vertical streak; simpler tables are served fine by the gap split.
+        return bounds.Count >= 4 ? bounds : null;
+    }
+
+    /// <summary>Cells from grid boundaries: one band per consecutive boundary pair, left to right.
+    /// The same list is shared by every row of the table so column <c>k</c> is the same span on
+    /// every row (empty bands become empty navigable cells).</summary>
+    private static List<CellInfo> BuildGridCells(List<float> bounds)
+    {
+        var cells = new List<CellInfo>(bounds.Count - 1);
+        for (int i = 0; i + 1 < bounds.Count; i++)
+            cells.Add(new CellInfo(bounds[i], Math.Max(0f, bounds[i + 1] - bounds[i])));
+        return cells;
+    }
+
+    /// <summary>
+    /// Gap threshold = median glyph height × <see cref="CellGapMultiplier"/>, but robust to
+    /// short-glyph-dominated rows. Dash/dot/dot-leader-heavy tables (e.g. "- - - - - 6 665" or
+    /// row labels with "............." leaders) otherwise collapse the plain median toward ~1pt —
+    /// at which point a number's intra-thousands space exceeds the threshold and "1 288 272"
+    /// shatters into 1/288/272 (issue #67). We anchor on a tall reference (90th-percentile glyph
+    /// height ≈ a digit/letter, never a dash) and take the median over only glyphs ≥ 40% of it, so
+    /// the punctuation cluster can't drag the threshold down. <paramref name="heights"/> must be
+    /// sorted ascending. For fully-populated tables (no short cluster) this is the plain median.
+    /// </summary>
+    internal static float RobustGapThreshold(List<float> heights)
+    {
+        float tallRef = heights[(int)(heights.Count * 0.9f)];
+        float minRealHeight = 0.4f * tallRef;
+        int lo = 0;
+        while (lo < heights.Count && heights[lo] < minRealHeight) lo++;
+        // Median over the "real" (non-punctuation) glyphs; fall back to the plain median if every
+        // glyph fell below the floor (a row genuinely made only of short marks).
+        int midIdx = lo < heights.Count ? (lo + heights.Count) / 2 : heights.Count / 2;
+        return heights[midIdx] * CellGapMultiplier;
     }
 
     /// <summary>

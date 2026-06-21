@@ -405,6 +405,115 @@ public class LineDetectorTests
     }
 
     [Fact]
+    public void RobustGapThreshold_IgnoresShortGlyphCluster()
+    {
+        // 30 dash-height glyphs (1pt) + 10 digit-height glyphs (8pt): a dash-heavy statistical row.
+        // The plain median lands in the dash cluster (1pt) and would collapse the gap threshold so
+        // the intra-thousands space shatters "1 288 272"; the robust threshold recovers the digit
+        // height. (issue #67 failure-mode #2.)
+        var heights = new List<float>();
+        for (int i = 0; i < 30; i++) heights.Add(1f);
+        for (int i = 0; i < 10; i++) heights.Add(8f);
+        heights.Sort();
+
+        Assert.Equal(1f, heights[heights.Count / 2]);                 // plain median collapses
+        Assert.Equal(8f, LineDetector.RobustGapThreshold(heights), 1f); // robust recovers digit height
+    }
+
+    [Fact]
+    public void RobustGapThreshold_UnchangedForUniformHeights()
+    {
+        // No short cluster → robust threshold equals the plain median × multiplier (no regression
+        // for ordinary fully-populated tables).
+        var heights = new List<float> { 10f, 10f, 10f, 10f, 10f };
+        Assert.Equal(10f * LineDetector.CellGapMultiplier, LineDetector.RobustGapThreshold(heights), 1f);
+    }
+
+    [Fact]
+    public void DetectColumnGrid_FindsVerticalRulesAsBoundaries()
+    {
+        // 100×80 white RGB image with three full-height dark vertical rules at x = 25, 50, 75.
+        const int W = 100, H = 80;
+        var rgb = new byte[W * H * 3];
+        Array.Fill(rgb, (byte)255);
+        foreach (int rx in new[] { 25, 50, 75 })
+            for (int y = 0; y < H; y++)
+            {
+                int idx = (y * W + rx) * 3;
+                rgb[idx] = rgb[idx + 1] = rgb[idx + 2] = 0;
+            }
+
+        // scaleX = scaleY = 1 → point space == pixel space.
+        var bounds = LineDetector.DetectColumnGrid(rgb, W, H, new BBox(0, 0, W, H), 1f, 1f);
+
+        Assert.NotNull(bounds);
+        Assert.Equal(new[] { 0f, 25f, 50f, 75f, 100f }, bounds!.ToArray());
+    }
+
+    [Fact]
+    public void DetectColumnGrid_NullWhenUnruled()
+    {
+        // A blank (text-only) crop has no continuous dark columns → no grid → caller falls back.
+        const int W = 60, H = 40;
+        var rgb = new byte[W * H * 3];
+        Array.Fill(rgb, (byte)255);
+        Assert.Null(LineDetector.DetectColumnGrid(rgb, W, H, new BBox(0, 0, W, H), 1f, 1f));
+    }
+
+    [Fact]
+    public void Table_CellNavigation_SnapsToRuleGrid_WithStableColumnCountAcrossRows()
+    {
+        // A ruled table where the gap heuristic would go ragged: one row has a "missing" cell, yet
+        // every row must report the same 4 columns because the vector grid defines them (#67 #3/#4).
+        const int W = 80, H = 60;
+        var rgb = new byte[W * H * 3];
+        Array.Fill(rgb, (byte)255);
+        foreach (int rx in new[] { 20, 40, 60 })          // 3 interior rules → 4 columns
+            for (int y = 0; y < H; y++)
+            {
+                int idx = (y * W + rx) * 3;
+                rgb[idx] = rgb[idx + 1] = rgb[idx + 2] = 0;
+            }
+
+        // Glyphs (point space == pixel space) forming 3 rows; row 1 deliberately omits band 2.
+        var chars = new List<CharBox>();
+        int idx2 = 0;
+        var rowTops = new[] { 5f, 25f, 45f };
+        float[][] perRowBandLefts =
+        {
+            new[] { 2f, 22f, 42f, 62f },   // full row
+            new[] { 2f, 42f, 62f },        // missing the band starting at 22 (a blank cell)
+            new[] { 2f, 22f, 42f, 62f },   // full row
+        };
+        for (int r = 0; r < rowTops.Length; r++)
+            foreach (var bl in perRowBandLefts[r])
+                chars.Add(new CharBox(idx2++, bl, rowTops[r], bl + 8f, rowTops[r] + 8f));
+
+        var block = new LayoutBlock
+        {
+            BBox = new BBox(0, 0, W, H),
+            Role = BlockRole.Table,
+            Confidence = 0.9f,
+        };
+
+        var lines = LineDetector.DetectLines(block, chars, rgb, W, H, 1f, 1f,
+            tableRowReading: true, cellNavigation: true);
+
+        Assert.Equal(3, lines.Count);
+        // Every row reports the SAME four grid columns — the missing cell becomes an empty band, not
+        // a dropped one, so column index k is the same span on every row.
+        Assert.All(lines, l =>
+        {
+            Assert.NotNull(l.Cells);
+            Assert.Equal(4, l.Cells!.Count);
+            Assert.Equal(0f, l.Cells[0].X, 1f);
+            Assert.Equal(20f, l.Cells[1].X, 1f);
+            Assert.Equal(40f, l.Cells[2].X, 1f);
+            Assert.Equal(60f, l.Cells[3].X, 1f);
+        });
+    }
+
+    [Fact]
     public void AtomicClass_Image_CollapsesToOneLine()
     {
         var (block, chars) = MakeLines(lineCount: 3, charsPerLine: 5);
