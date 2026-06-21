@@ -36,7 +36,9 @@ public sealed partial class DocumentController
     {
         var doc = vp.Owner;
         int step = forward ? 1 : -1;
-        int targetPage = doc.CurrentPage + step;
+        // Walk from THIS view's page — doc.CurrentPage is the Primary facade, so a non-primary
+        // viewport must skip relative to its own page, not the primary's.
+        int targetPage = vp.CurrentPage + step;
 
         // Preserve vertical bias across page transitions so the line stays
         // at the same screen position instead of snapping to center.

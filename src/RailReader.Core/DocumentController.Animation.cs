@@ -189,9 +189,11 @@ public sealed partial class DocumentController
 
             if (vp.Rail.NavigableCount > 0
                 && vp.Rail.CurrentBlock >= vp.Rail.NavigableCount - 2
-                && vp.Owner.CurrentPage + 1 < vp.Owner.PageCount)
+                && vp.CurrentPage + 1 < vp.Owner.PageCount)
             {
-                vp.PrefetchPage(vp.Owner.CurrentPage + 1);
+                // Prefetch THIS view's next page into its own buffer — vp.Owner.CurrentPage is the
+                // Primary facade and would prefetch the primary's next page for a secondary view.
+                vp.PrefetchPage(vp.CurrentPage + 1);
             }
 
             double cx = vp.Camera.OffsetX;
@@ -281,10 +283,24 @@ public sealed partial class DocumentController
     {
         var (gotResults, needsAnim, gotPageChange) = PollAnalysisResults();
 
-        if (quiescent && !needsAnim && ActiveDocument is { } doc)
+        if (quiescent && !needsAnim && ActiveDocument is { } doc && FocusedViewport is { } focus)
         {
-            if (!doc.SubmitPendingLookahead(_worker)
-                && !doc.Rail.Active
+            // Eager lookahead is per-view (§5.5): each viewport owns its PendingAnalysis queue, filled
+            // when it rail-navigates across a page. Drain the focused view first, then the doc's other
+            // views; the single worker takes one page per pump, so stop as soon as one bites. (The old
+            // code drained only Primary's queue, so a non-primary view's lookahead never fired.)
+            bool submitted = doc.SubmitPendingLookahead(focus, _worker);
+            if (!submitted)
+                foreach (var vp in doc.Viewports)
+                {
+                    if (ReferenceEquals(vp, focus)) continue;
+                    if (doc.SubmitPendingLookahead(vp, _worker)) { submitted = true; break; }
+                }
+
+            // Otherwise spend idle worker cycles pre-analysing background pages — but only when the
+            // focused view is neither actively rail-reading nor still waiting on its own page (else
+            // background work would contend with the analysis the user is actually waiting for).
+            if (!submitted && !focus.Rail.Active && !focus.PendingRailSetup
                 && _worker is not null && _worker.IsIdle)
                 TrySubmitBackgroundReadAhead();
         }

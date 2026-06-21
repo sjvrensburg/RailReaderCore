@@ -295,13 +295,24 @@ public sealed class DocumentState : IDisposable
     /// bitmaps). The <see cref="Primary"/> view cannot be removed — it lives for the document's
     /// lifetime. No-op if the view isn't ours. UI-thread only.
     /// </summary>
+    /// <summary>
+    /// Raised after a non-primary viewport is removed and disposed. The controller subscribes so it
+    /// can re-point focus off a view that no longer exists (it owns no list of which view is focused).
+    /// </summary>
+    public Action<Viewport>? ViewportRemoved;
+
     public void RemoveViewport(Viewport vp)
     {
         _marshaller.AssertUIThread();
         if (ReferenceEquals(vp, Primary))
             throw new InvalidOperationException("Cannot remove the primary viewport.");
         if (_viewports.Remove(vp))
+        {
             vp.Dispose();
+            // Tell the controller before the caller's next tick, so a removed focused view can't be
+            // ticked/dereferenced after its Cts and callbacks were torn down.
+            ViewportRemoved?.Invoke(vp);
+        }
     }
 
     /// <summary>
@@ -404,7 +415,10 @@ public sealed class DocumentState : IDisposable
                 _logger.Debug($"[SubmitAnalysis] Page {page}: pixmap ready {pxW}x{pxH}, {pageText.CharBoxes.Count} chars, submitting...");
                 _marshaller.Post(() =>
                 {
-                    if (IsDisposed || vp.CurrentPage != page) return;
+                    // vp.IsDisposed: the view may have been removed (RemoveViewport) while this
+                    // prep task ran — it watches the document CTS, not the view's — so don't submit
+                    // a worker request or write state for a view that's gone.
+                    if (IsDisposed || vp.IsDisposed || vp.CurrentPage != page) return;
                     _textCache[page] = pageText;
                     worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, _tableRowReading, _cellNavigation));
                 });
@@ -413,7 +427,7 @@ public sealed class DocumentState : IDisposable
             catch (Exception ex)
             {
                 _logger.Error($"Failed to prepare analysis input: {ex.Message}", ex);
-                _marshaller.Post(() => { if (!IsDisposed) vp.PendingRailSetup = false; });
+                _marshaller.Post(() => { if (!IsDisposed && !vp.IsDisposed) vp.PendingRailSetup = false; });
             }
         }, ct);
     }

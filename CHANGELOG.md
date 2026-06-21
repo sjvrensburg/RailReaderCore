@@ -5,9 +5,10 @@
 Phase 1's second half: with the `Viewport` foundation in place (0.37.0), this wires **analysis,
 navigation, configuration, and the per-frame tick** to address an arbitrary viewport rather than
 only the document's primary. It is the Core-side work the railreader2 GUI team flagged as a
-prerequisite for the Phase 2 split-pane / tear-off UI (railreader2#180). **Entirely additive and
+prerequisite for the Phase 2 split-pane / tear-off UI (railreader2#180). **Additive and
 backward-compatible** — every new entry point is a viewport-addressed overload alongside an
-unchanged primary-delegating facade, so a single-viewport consumer compiles and behaves identically.
+unchanged primary-delegating facade, so a single-viewport consumer compiles and behaves identically
+(the one exception is the `ActiveDocumentIndex` empty-list value — see Notes).
 
 ### New public surface
 
@@ -42,6 +43,17 @@ unchanged primary-delegating facade, so a single-viewport consumer compiles and 
 
 ### Notes
 
+- **Behaviour change:** `ActiveDocumentIndex` now returns `-1` when no document is open (it derives
+  from `FocusedViewport`); it previously defaulted to `0`. This is the only non-additive change —
+  `-1` matches `ActiveDocument == null`, and no in-tree consumer indexes with it.
+- **Phase-2 boundary (input routing):** the controller-level input/camera methods (`GoToPage`,
+  `FitPage`/`FitWidth`, `HandleZoom`/`HandlePan`, `ScrollToDestination`, `HandleVerticalNav`) still
+  target the document's **primary** view, not an arbitrary focused secondary. The per-frame tick,
+  analysis fan-out, auto-scroll/free-pan teardown, and read-ahead are now focus-/viewport-aware;
+  routing keyboard/mouse input to a focused detached pane is the railreader2 GUI wiring (Phase 2).
+- **Phase-2 boundary (per-view size):** `ReadingPosition.HorizontalFraction` is still computed from
+  the controller's ambient viewport size; a detached pane with its own width needs the Phase-2
+  per-view size plumbing before its horizontal fraction is exact.
 - Phase 2 (railreader2 split-pane / tear-off GUI) and Phase 3 (the breaking
   `DocumentState` → `DocumentModel` rename) remain downstream — tracked in railreader2#180.
 

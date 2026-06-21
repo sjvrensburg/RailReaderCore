@@ -49,9 +49,23 @@ public sealed partial class DocumentController : IDisposable
         get => _focusedViewport;
         set
         {
-            if (value is not null && !Documents.Contains(value.Owner)) return;
+            // Reject a view whose document isn't open, or one already removed from its document
+            // (a disposed/detached view must never become the focus the tick dereferences).
+            if (value is not null
+                && (!Documents.Contains(value.Owner) || !value.Owner.Viewports.Contains(value)))
+                return;
             _focusedViewport = value;
         }
+    }
+
+    /// <summary>Re-points focus to the document's primary view when the currently-focused view is
+    /// removed (<see cref="DocumentState.RemoveViewport"/>), so <see cref="FocusedViewport"/> /
+    /// <see cref="ActiveDocument"/> never reference a disposed view. The owning document is still open
+    /// (only one of its non-primary views was removed), so its primary is a safe fallback.</summary>
+    private void OnViewportRemoved(Viewport removed)
+    {
+        if (ReferenceEquals(_focusedViewport, removed))
+            _focusedViewport = removed.Owner.Primary;
     }
 
     public CoreSettings Config => _config;
@@ -179,6 +193,9 @@ public sealed partial class DocumentController : IDisposable
         // This view's auto-scroll state changes surface through the controller's StateChanged
         // (UI re-reads AutoScrollActive/JumpMode, which delegate to the active view).
         state.Primary.AutoScroll.StateChanged = name => StateChanged?.Invoke(name);
+        // If the focused view is removed, fall back to its document's primary so FocusedViewport is
+        // never left pointing at a disposed view (it backs ActiveDocument and the per-frame tick).
+        state.ViewportRemoved = OnViewportRemoved;
 
         var saved = _recentFiles.GetReadingPosition(state.FilePath);
         bool restoredPage = saved is not null && saved.Page > 0;
@@ -234,10 +251,12 @@ public sealed partial class DocumentController : IDisposable
         // Leaving this tab: drop its free-pan pause and end its auto-scroll session, so a tab
         // switch quiesces the tab you're leaving. With per-view auto-scroll flags there is no
         // shared flag to go stale, so the old post-switch sync is no longer needed.
-        if (ActiveDocument is { } leaving)
+        if (ActiveDocument is { } leaving && _focusedViewport is { } leavingView)
         {
-            leaving.Primary.RailPause = null;
-            leaving.Primary.AutoScroll.StopAutoScroll(leaving);
+            // Quiesce the FOCUSED view of the tab you're leaving — it may be a secondary/detached
+            // pane, not the primary (auto-scroll/free-pan state is per-view).
+            leavingView.RailPause = null;
+            leavingView.AutoScroll.StopAutoScroll(leaving);
         }
         ActiveDocumentIndex = index;
     }

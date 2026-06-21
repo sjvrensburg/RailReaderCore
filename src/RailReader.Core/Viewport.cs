@@ -674,4 +674,8 @@ public sealed class Viewport : IDisposable
     }
 
     private bool _disposed;
+
+    /// <summary>True once this view has been removed/disposed. Document-level background tasks that
+    /// captured this view check it before seating results or writing per-view state.</summary>
+    internal bool IsDisposed => _disposed;
 }

@@ -313,6 +313,56 @@ public class MultiViewportTests : IDisposable
         Assert.True(r.CameraChanged);
     }
 
+    [Fact]
+    public void RemovingFocusedViewport_RepointsFocusToPrimary_AndTickIsSafe()
+    {
+        // Review fix: FocusedViewport is the single source of truth (it backs ActiveDocument and the
+        // per-frame tick). Removing the focused view must re-point focus off the now-disposed view —
+        // otherwise the next Tick dereferences a torn-down viewport (disposed Cts → ObjectDisposedException).
+        var doc = SetupDoc();
+        var vp2 = doc.AddViewport();
+        vp2.LoadPageBitmap();
+        _controller.FocusedViewport = vp2;
+        Assert.Same(vp2, _controller.FocusedViewport);
+
+        doc.RemoveViewport(vp2);
+
+        Assert.Same(doc.Primary, _controller.FocusedViewport);   // re-pointed, not left dangling
+        Assert.Same(doc, _controller.ActiveDocument);
+        Assert.Null(Record.Exception(() => _controller.Tick(0.016))); // ticking after removal is safe
+
+        // The setter also rejects focusing an already-removed view.
+        var vp3 = doc.AddViewport();
+        doc.RemoveViewport(vp3);
+        _controller.FocusedViewport = vp3;
+        Assert.Same(doc.Primary, _controller.FocusedViewport);   // unchanged — rejected
+    }
+
+    [Fact]
+    public void PumpDrainsLookaheadForANonFocusedViewport()
+    {
+        // Review fix (§5.5): eager lookahead is per-view. The pump must drain EVERY live view's
+        // PendingAnalysis queue, not just the focused/primary one — else a secondary view's
+        // read-ahead never fires. Driven entirely by the focused primary's pump.
+        _controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
+
+        var doc = SetupDoc();                  // focused primary on page 0
+        var vp2 = doc.AddViewport();           // never ticked, never focused
+        doc.Primary.PendingAnalysis.Clear();   // isolate: only vp2 has lookahead queued
+        doc.QueueLookahead(vp2, 2);            // enqueue pages 1,2 into vp2's own queue
+        Assert.Equal(2, vp2.PendingAnalysis.Count);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (vp2.PendingAnalysis.Count == 2 && sw.ElapsedMilliseconds < 5000)
+        {
+            _controller.TickViewport(doc.Primary, 0.016, pumpAnalysis: true); // only the primary ticks
+            Thread.Sleep(10);
+        }
+
+        Assert.True(vp2.PendingAnalysis.Count < 2);  // the pump drained the non-focused view's queue
+    }
+
     // A one-block (3-line) navigable Text analysis so a seated rail reports HasAnalysis.
     private static PageAnalysis MakeNavigableAnalysis()
     {
