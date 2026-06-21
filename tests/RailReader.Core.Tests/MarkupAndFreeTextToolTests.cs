@@ -95,15 +95,15 @@ public class MarkupAndFreeTextToolTests : IDisposable
         _handler.SetAnnotationTool(tool);
 
         // Drag across the first text line ("This is a test paragraph…", baseline y≈120).
-        _handler.HandleAnnotationPointerDown(_doc, 74, 116);
-        bool moved = _handler.HandleAnnotationPointerMove(_doc, 300, 116);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 74, 116);
+        bool moved = _handler.HandleAnnotationPointerMove(_doc.Primary, 300, 116);
 
         Assert.True(moved);
         var preview = Assert.IsAssignableFrom<TextMarkupAnnotation>(_handler.PreviewAnnotation);
         Assert.IsType(expected, preview);
         Assert.NotEmpty(preview.Rects);
 
-        _handler.HandleAnnotationPointerUp(_doc, 300, 116);
+        _handler.HandleAnnotationPointerUp(_doc.Primary, 300, 116);
 
         Assert.Null(_handler.PreviewAnnotation);
         var committed = Assert.Single(_doc.Annotations.Pages[_doc.CurrentPage]);
@@ -118,8 +118,8 @@ public class MarkupAndFreeTextToolTests : IDisposable
     public void FreeText_DragBuildsPreview_AndStashesPendingOnUp()
     {
         _handler.SetAnnotationTool(AnnotationTool.FreeText);
-        _handler.HandleAnnotationPointerDown(_doc, 100, 200);
-        _handler.HandleAnnotationPointerMove(_doc, 260, 248);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 200);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 260, 248);
 
         var preview = Assert.IsType<FreeTextAnnotation>(_handler.PreviewAnnotation);
         Assert.Equal(100f, preview.X, 0.5f);
@@ -127,7 +127,7 @@ public class MarkupAndFreeTextToolTests : IDisposable
         Assert.Equal(160f, preview.W, 0.5f);
         Assert.Equal(48f, preview.H, 0.5f);
 
-        _handler.HandleAnnotationPointerUp(_doc, 260, 248);
+        _handler.HandleAnnotationPointerUp(_doc.Primary, 260, 248);
 
         // Nothing committed yet — the box waits for the UI to supply text.
         Assert.Null(_handler.PreviewAnnotation);
@@ -139,11 +139,11 @@ public class MarkupAndFreeTextToolTests : IDisposable
     public void FreeText_CommitPending_AddsAnnotationWithText()
     {
         _handler.SetAnnotationTool(AnnotationTool.FreeText);
-        _handler.HandleAnnotationPointerDown(_doc, 100, 200);
-        _handler.HandleAnnotationPointerMove(_doc, 260, 248);
-        _handler.HandleAnnotationPointerUp(_doc, 260, 248);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 200);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 260, 248);
+        _handler.HandleAnnotationPointerUp(_doc.Primary, 260, 248);
 
-        var created = _handler.CommitPendingFreeText(_doc, "Typed comment");
+        var created = _handler.CommitPendingFreeText(_doc.Primary, "Typed comment");
 
         Assert.NotNull(created);
         Assert.Null(_handler.PendingFreeText);
@@ -157,10 +157,10 @@ public class MarkupAndFreeTextToolTests : IDisposable
     public void FreeText_CommitEmptyText_DiscardsPending()
     {
         _handler.SetAnnotationTool(AnnotationTool.FreeText);
-        _handler.HandleAnnotationPointerDown(_doc, 100, 200);
-        _handler.HandleAnnotationPointerUp(_doc, 110, 205); // tiny drag → default box
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 200);
+        _handler.HandleAnnotationPointerUp(_doc.Primary, 110, 205); // tiny drag → default box
 
-        var created = _handler.CommitPendingFreeText(_doc, "   ");
+        var created = _handler.CommitPendingFreeText(_doc.Primary, "   ");
 
         Assert.Null(created);
         Assert.Null(_handler.PendingFreeText);
@@ -171,8 +171,8 @@ public class MarkupAndFreeTextToolTests : IDisposable
     public void FreeText_Click_FallsBackToDefaultBox()
     {
         _handler.SetAnnotationTool(AnnotationTool.FreeText);
-        _handler.HandleAnnotationPointerDown(_doc, 150, 300);
-        _handler.HandleAnnotationPointerUp(_doc, 152, 301); // sub-threshold → default size
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 150, 300);
+        _handler.HandleAnnotationPointerUp(_doc.Primary, 152, 301); // sub-threshold → default size
 
         var pending = Assert.IsType<FreeTextAnnotation>(_handler.PendingFreeText);
         Assert.Equal(150f, pending.X, 0.5f);
@@ -185,8 +185,8 @@ public class MarkupAndFreeTextToolTests : IDisposable
     public void FreeText_Cancel_ClearsPendingWithoutAdding()
     {
         _handler.SetAnnotationTool(AnnotationTool.FreeText);
-        _handler.HandleAnnotationPointerDown(_doc, 100, 200);
-        _handler.HandleAnnotationPointerUp(_doc, 260, 248);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 200);
+        _handler.HandleAnnotationPointerUp(_doc.Primary, 260, 248);
         Assert.NotNull(_handler.PendingFreeText);
 
         _handler.CancelPendingFreeText();
@@ -199,7 +199,7 @@ public class MarkupAndFreeTextToolTests : IDisposable
     public void AddFreeText_CreatesAnnotationDirectly()
     {
         _handler.SetAnnotationTool(AnnotationTool.FreeText);
-        var ft = _handler.AddFreeText(_doc, 80, 90, 220, 40, "Direct text", fontSize: 16f);
+        var ft = _handler.AddFreeText(_doc.Primary, 80, 90, 220, 40, "Direct text", fontSize: 16f);
 
         Assert.NotNull(ft);
         Assert.Equal(16f, ft!.FontSize);
@@ -212,8 +212,8 @@ public class MarkupAndFreeTextToolTests : IDisposable
     public void SwitchingTool_ClearsPendingFreeText()
     {
         _handler.SetAnnotationTool(AnnotationTool.FreeText);
-        _handler.HandleAnnotationPointerDown(_doc, 100, 200);
-        _handler.HandleAnnotationPointerUp(_doc, 260, 248);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 200);
+        _handler.HandleAnnotationPointerUp(_doc.Primary, 260, 248);
         Assert.NotNull(_handler.PendingFreeText);
 
         _handler.SetAnnotationTool(AnnotationTool.Highlight);

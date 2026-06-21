@@ -21,8 +21,7 @@ public class SearchServiceTests : IDisposable
         _state.LoadPageBitmap();
 
         _search = new SearchService(
-            () => _state,
-            () => (800.0, 600.0),
+            () => _state.Primary,
             page => _lastGoToPage = page);
     }
 
@@ -181,8 +180,7 @@ public class SearchServiceTests : IDisposable
         {
             DocumentState? activeDoc = _state;
             var search = new SearchService(
-                () => activeDoc,
-                () => (800.0, 600.0),
+                () => activeDoc?.Primary,
                 _ => { });
 
             // Establish search results against docA

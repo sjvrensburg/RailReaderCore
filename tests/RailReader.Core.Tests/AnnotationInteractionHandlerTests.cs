@@ -70,11 +70,11 @@ public class AnnotationInteractionHandlerTests : IDisposable
     {
         _handler.SetAnnotationTool(AnnotationTool.Pen);
 
-        _handler.HandleAnnotationPointerDown(_doc, 100, 100);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 100);
 
         // Pen preview is created on PointerMove (PointerDown just records the start point),
         // but we can trigger it by moving immediately after.
-        _handler.HandleAnnotationPointerMove(_doc, 101, 101);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 101, 101);
 
         Assert.NotNull(_handler.PreviewAnnotation);
         Assert.IsType<FreehandAnnotation>(_handler.PreviewAnnotation);
@@ -84,11 +84,11 @@ public class AnnotationInteractionHandlerTests : IDisposable
     public void PointerMove_Pen_UpdatesPreview()
     {
         _handler.SetAnnotationTool(AnnotationTool.Pen);
-        _handler.HandleAnnotationPointerDown(_doc, 100, 100);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 100);
 
-        _handler.HandleAnnotationPointerMove(_doc, 110, 110);
-        _handler.HandleAnnotationPointerMove(_doc, 120, 120);
-        _handler.HandleAnnotationPointerMove(_doc, 130, 130);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 110, 110);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 120, 120);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 130, 130);
 
         var preview = Assert.IsType<FreehandAnnotation>(_handler.PreviewAnnotation);
         Assert.True(preview.Points.Count >= 3);
@@ -98,11 +98,11 @@ public class AnnotationInteractionHandlerTests : IDisposable
     public void PointerUp_Pen_CommitsAnnotation()
     {
         _handler.SetAnnotationTool(AnnotationTool.Pen);
-        _handler.HandleAnnotationPointerDown(_doc, 100, 100);
-        _handler.HandleAnnotationPointerMove(_doc, 110, 110);
-        _handler.HandleAnnotationPointerMove(_doc, 120, 120);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 100);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 110, 110);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 120, 120);
 
-        _handler.HandleAnnotationPointerUp(_doc, 120, 120);
+        _handler.HandleAnnotationPointerUp(_doc.Primary, 120, 120);
 
         Assert.Null(_handler.PreviewAnnotation);
         Assert.True(_doc.Annotations.Pages.ContainsKey(0));
@@ -115,8 +115,8 @@ public class AnnotationInteractionHandlerTests : IDisposable
     {
         _handler.SetAnnotationTool(AnnotationTool.Rectangle);
 
-        _handler.HandleAnnotationPointerDown(_doc, 100, 100);
-        _handler.HandleAnnotationPointerMove(_doc, 150, 150);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 100);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 150, 150);
 
         Assert.NotNull(_handler.PreviewAnnotation);
         Assert.IsType<RectAnnotation>(_handler.PreviewAnnotation);
@@ -126,10 +126,10 @@ public class AnnotationInteractionHandlerTests : IDisposable
     public void PointerUp_Rect_CommitsAnnotation()
     {
         _handler.SetAnnotationTool(AnnotationTool.Rectangle);
-        _handler.HandleAnnotationPointerDown(_doc, 100, 100);
-        _handler.HandleAnnotationPointerMove(_doc, 150, 150);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 100);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 150, 150);
 
-        _handler.HandleAnnotationPointerUp(_doc, 150, 150);
+        _handler.HandleAnnotationPointerUp(_doc.Primary, 150, 150);
 
         Assert.Null(_handler.PreviewAnnotation);
         Assert.True(_doc.Annotations.Pages.ContainsKey(0));
@@ -153,7 +153,7 @@ public class AnnotationInteractionHandlerTests : IDisposable
 
         // Erase at the annotation's location
         _handler.SetAnnotationTool(AnnotationTool.Eraser);
-        _handler.HandleAnnotationPointerDown(_doc, 100, 100);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 100);
 
         Assert.Empty(_doc.Annotations.Pages[0]);
     }
@@ -174,7 +174,7 @@ public class AnnotationInteractionHandlerTests : IDisposable
         _doc.UndoStack.Clear();
 
         _handler.SelectedAnnotation = freehand;
-        bool deleted = _handler.DeleteSelectedAnnotation(_doc);
+        bool deleted = _handler.DeleteSelectedAnnotation(_doc.Primary);
 
         Assert.True(deleted);
         Assert.Empty(_doc.Annotations.Pages[0]);
@@ -210,12 +210,12 @@ public class AnnotationInteractionHandlerTests : IDisposable
     public void ShiftHeld_Pen_ConstrainsStraightLine()
     {
         _handler.SetAnnotationTool(AnnotationTool.Pen);
-        _handler.HandleAnnotationPointerDown(_doc, 100, 100);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 100);
 
         // Draw several moves with Shift held
-        _handler.HandleAnnotationPointerMove(_doc, 110, 115, shiftHeld: true);
-        _handler.HandleAnnotationPointerMove(_doc, 120, 130, shiftHeld: true);
-        _handler.HandleAnnotationPointerMove(_doc, 150, 160, shiftHeld: true);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 110, 115, shiftHeld: true);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 120, 130, shiftHeld: true);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 150, 160, shiftHeld: true);
 
         var preview = Assert.IsType<FreehandAnnotation>(_handler.PreviewAnnotation);
         // Shift constrains to 2 points: start + current
@@ -230,16 +230,16 @@ public class AnnotationInteractionHandlerTests : IDisposable
     public void ShiftReleased_Pen_ResumesFreehand()
     {
         _handler.SetAnnotationTool(AnnotationTool.Pen);
-        _handler.HandleAnnotationPointerDown(_doc, 100, 100);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 100);
 
         // Start with Shift held
-        _handler.HandleAnnotationPointerMove(_doc, 110, 110, shiftHeld: true);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 110, 110, shiftHeld: true);
         var constrained = Assert.IsType<FreehandAnnotation>(_handler.PreviewAnnotation);
         Assert.Equal(2, constrained.Points.Count);
 
         // Release Shift — freehand resumes with all accumulated points
-        _handler.HandleAnnotationPointerMove(_doc, 120, 120, shiftHeld: false);
-        _handler.HandleAnnotationPointerMove(_doc, 130, 130, shiftHeld: false);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 120, 120, shiftHeld: false);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 130, 130, shiftHeld: false);
         var freehand = Assert.IsType<FreehandAnnotation>(_handler.PreviewAnnotation);
         Assert.True(freehand.Points.Count > 2);
     }
@@ -248,10 +248,10 @@ public class AnnotationInteractionHandlerTests : IDisposable
     public void ShiftHeld_Pen_CommitsStraightLine()
     {
         _handler.SetAnnotationTool(AnnotationTool.Pen);
-        _handler.HandleAnnotationPointerDown(_doc, 100, 100);
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 100, 100);
 
-        _handler.HandleAnnotationPointerMove(_doc, 150, 200, shiftHeld: true);
-        _handler.HandleAnnotationPointerUp(_doc, 150, 200);
+        _handler.HandleAnnotationPointerMove(_doc.Primary, 150, 200, shiftHeld: true);
+        _handler.HandleAnnotationPointerUp(_doc.Primary, 150, 200);
 
         Assert.Null(_handler.PreviewAnnotation);
         var committed = Assert.IsType<FreehandAnnotation>(_doc.Annotations.Pages[0][0]);

@@ -17,19 +17,25 @@ namespace RailReader.Core.Services;
 /// </summary>
 public sealed class SearchService
 {
-    private readonly Func<DocumentState?> _getActiveDocument;
-    private readonly Func<(double Width, double Height)> _getViewportSize;
+    private readonly Func<Viewport?> _getFocusedViewport;
     private readonly Action<int> _goToPage;
 
     public SearchService(
-        Func<DocumentState?> getActiveDocument,
-        Func<(double Width, double Height)> getViewportSize,
+        Func<Viewport?> getFocusedViewport,
         Action<int> goToPage)
     {
-        _getActiveDocument = getActiveDocument;
-        _getViewportSize = getViewportSize;
+        _getFocusedViewport = getFocusedViewport;
         _goToPage = goToPage;
     }
+
+    /// <summary>The view search resolves against (issue #74): "current page", rail framing, and
+    /// match-centring all use the focused viewport's page/camera/size, so a focused non-primary pane
+    /// searches and highlights ITS page — not the document's primary. The owning document is reached
+    /// via <see cref="Viewport.Owner"/>. Single-viewport: this is the document's primary.</summary>
+    private Viewport? FocusedView => _getFocusedViewport();
+
+    /// <summary>The document being searched, derived from <see cref="FocusedView"/>.</summary>
+    private DocumentState? ActiveDoc => _getFocusedViewport()?.Owner;
 
     public List<SearchMatch> SearchMatches { get; private set; } = [];
     private Dictionary<int, List<SearchMatch>> _searchMatchesByPage = [];
@@ -38,12 +44,21 @@ public sealed class SearchService
     private DocumentState? _searchedDocument;
 
     /// <summary>
+    /// Search matches on a specific page (issue #74). A multi-viewport host renders each pane's own
+    /// search highlights by passing that pane's <see cref="Viewport.CurrentPage"/> — whereas
+    /// <see cref="CurrentPageSearchMatches"/> tracks only the focused view's page. Null when the page
+    /// has no matches.
+    /// </summary>
+    public IReadOnlyList<SearchMatch>? MatchesForPage(int page)
+        => _searchMatchesByPage.TryGetValue(page, out var matches) ? matches : null;
+
+    /// <summary>
     /// Clears search state when the active document has changed since the last search.
     /// Prevents stale results from a previous document appearing on a newly-opened one.
     /// </summary>
     private void ClearIfDocumentChanged()
     {
-        var current = _getActiveDocument();
+        var current = ActiveDoc;
         if (!ReferenceEquals(current, _searchedDocument))
             CloseSearch();
     }
@@ -61,7 +76,7 @@ public sealed class SearchService
     {
         CloseSearch();
 
-        if (string.IsNullOrEmpty(query) || _getActiveDocument() is not { } doc)
+        if (string.IsNullOrEmpty(query) || ActiveDoc is not { } doc)
             return;
 
         var (regex, comparison, _) = PrepareSearchParams(query, caseSensitive, useRegex);
@@ -145,7 +160,14 @@ public sealed class SearchService
         _searchMatchesByPage = byPage;
         if (allMatches.Count > 0)
         {
-            int firstOnCurrentOrAfter = allMatches.FindIndex(m => m.PageIndex >= doc.CurrentPage);
+            // Seed the active match at/after the FOCUSED view's page (issue #74), not the document's
+            // primary — so a search from a focused non-primary pane jumps relative to that pane. Only
+            // honour the focused view's page when it is actually viewing THIS document; otherwise (a
+            // caller finalising results for a non-focused doc) fall back to the doc's own current page.
+            int fromPage = FocusedView is { } fv && ReferenceEquals(fv.Owner, doc)
+                ? fv.CurrentPage
+                : doc.CurrentPage;
+            int firstOnCurrentOrAfter = allMatches.FindIndex(m => m.PageIndex >= fromPage);
             ActiveMatchIndex = firstOnCurrentOrAfter >= 0 ? firstOnCurrentOrAfter : 0;
             NavigateToActiveMatch();
         }
@@ -182,7 +204,7 @@ public sealed class SearchService
     public (string Pre, string Match, string Post) GetMatchSnippet(SearchMatch match, int contextChars = 40)
     {
         ClearIfDocumentChanged();
-        var text = _getActiveDocument()?.GetOrExtractText(match.PageIndex).Text;
+        var text = ActiveDoc?.GetOrExtractText(match.PageIndex).Text;
         if (text is null) return ("", "", "");
 
         int start = Math.Max(0, match.CharStart - contextChars);
@@ -200,34 +222,34 @@ public sealed class SearchService
 
     private void NavigateToActiveMatch()
     {
-        if (_getActiveDocument() is not { } doc) return;
+        if (FocusedView is not { } vp) return;
         if (ActiveMatchIndex < 0 || ActiveMatchIndex >= SearchMatches.Count) return;
         var match = SearchMatches[ActiveMatchIndex];
-        if (match.PageIndex != doc.CurrentPage)
+        // _goToPage routes through the focused view (controller.GoToPage), so this moves THIS view.
+        if (match.PageIndex != vp.CurrentPage)
             _goToPage(match.PageIndex);
 
-        if (doc.Rail.Active && doc.Rail.HasAnalysis && match.Rects.Count > 0)
+        if (vp.Rail.Active && vp.Rail.HasAnalysis && match.Rects.Count > 0)
         {
             // Set rail to the block/line containing the match, then snap
             // horizontally to center the match rather than the block start
             var rect = match.Rects[0];
             double matchCenterX = (rect.Left + rect.Right) / 2.0;
             double matchCenterY = (rect.Top + rect.Bottom) / 2.0;
-            doc.Rail.FindBlockNearPoint(matchCenterX, matchCenterY);
-            var (ww, wh) = _getViewportSize();
-            doc.Rail.StartSnapToPoint(doc.Camera.OffsetX, doc.Camera.OffsetY,
-                doc.Camera.Zoom, ww, wh, matchCenterX);
+            vp.Rail.FindBlockNearPoint(matchCenterX, matchCenterY);
+            vp.Rail.StartSnapToPoint(vp.Camera.OffsetX, vp.Camera.OffsetY,
+                vp.Camera.Zoom, vp.Width, vp.Height, matchCenterX);
         }
         else
         {
-            ScrollToMatchRect(doc, match);
+            ScrollToMatchRect(vp, match);
         }
     }
 
-    private void ScrollToMatchRect(DocumentState doc, SearchMatch match)
+    private static void ScrollToMatchRect(Viewport vp, SearchMatch match)
     {
         if (match.Rects.Count == 0) return;
-        var (ww, wh) = _getViewportSize();
+        double ww = vp.Width, wh = vp.Height;
 
         // Compute bounding box of all match rects
         float minX = float.MaxValue, minY = float.MaxValue;
@@ -243,19 +265,19 @@ public sealed class SearchService
         // Center the match bounding box in the viewport
         double centerX = (minX + maxX) / 2.0;
         double centerY = (minY + maxY) / 2.0;
-        doc.Camera.OffsetX = ww / 2.0 - centerX * doc.Camera.Zoom;
-        doc.Camera.OffsetY = wh / 2.0 - centerY * doc.Camera.Zoom;
-        doc.ClampCamera(ww, wh);
+        vp.Camera.OffsetX = ww / 2.0 - centerX * vp.Camera.Zoom;
+        vp.Camera.OffsetY = wh / 2.0 - centerY * vp.Camera.Zoom;
+        vp.ClampCamera(ww, wh);
     }
 
     public void UpdateCurrentPageMatches()
     {
-        if (_getActiveDocument() is not { } doc)
+        if (FocusedView is not { } vp)
         {
             CurrentPageSearchMatches = null;
             return;
         }
-        _searchMatchesByPage.TryGetValue(doc.CurrentPage, out var matches);
+        _searchMatchesByPage.TryGetValue(vp.CurrentPage, out var matches);
         CurrentPageSearchMatches = matches;
     }
 

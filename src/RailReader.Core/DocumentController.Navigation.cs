@@ -129,7 +129,7 @@ public sealed partial class DocumentController
         if (!forward && AutoScrollActive) StopAutoScroll();
         if (FocusedViewport is not { } vp) return;
         var doc = vp.Owner;
-        var (ww, wh) = GetViewportSize();
+        var (ww, wh) = (vp.Width, vp.Height);
 
         if (vp.Rail.Active)
         {
@@ -203,7 +203,7 @@ public sealed partial class DocumentController
         var result = forward ? vp.Rail.NextCell() : vp.Rail.PrevCell();
         if (result == NavResult.NotApplicable) return false;
 
-        var (ww, wh) = GetViewportSize();
+        var (ww, wh) = (vp.Width, vp.Height);
         vp.Rail.StartSnapToCell(vp.Camera.OffsetX, vp.Camera.OffsetY, vp.Camera.Zoom, ww, wh);
         // PageBoundary at the table's far edge: stay put (no cross-page cell flow in v1) — the snap
         // simply re-centres the current cell. A within-page roll to the next/prev row is a position
@@ -233,7 +233,7 @@ public sealed partial class DocumentController
     private bool TryJump(bool forward, bool half = false)
     {
         if (!JumpMode || FocusedViewport is not { } vp || !vp.Rail.Active) return false;
-        var (ww, wh) = GetViewportSize();
+        var (ww, wh) = (vp.Width, vp.Height);
         vp.Rail.Jump(forward, vp.Camera.Zoom, ww, wh, vp.Camera.OffsetX, vp.Camera.OffsetY, half);
         return true;
     }
@@ -245,7 +245,7 @@ public sealed partial class DocumentController
             vp.Rail.StartScroll(direction, vp.Camera.OffsetX);
         else
         {
-            var (ww, wh) = GetViewportSize();
+            var (ww, wh) = (vp.Width, vp.Height);
             vp.Camera.OffsetX += panDelta;
             vp.ClampCamera(ww, wh);
         }
@@ -257,7 +257,7 @@ public sealed partial class DocumentController
     private void SnapToLineEdge(bool start)
     {
         if (FocusedViewport is not { } vp || !vp.Rail.Active) return;
-        var (ww, _) = GetViewportSize();
+        var (ww, _) = (vp.Width, vp.Height);
         var x = start
             ? vp.Rail.ComputeLineStartX(vp.Camera.Zoom, ww)
             : vp.Rail.ComputeLineEndX(vp.Camera.Zoom, ww);
@@ -311,7 +311,7 @@ public sealed partial class DocumentController
         if (!vp.Rail.Active || !vp.Rail.HasAnalysis) return (false, null);
 
         vp.Rail.FindBlockNearPoint(pageX, pageY);
-        var (ww2, wh2) = GetViewportSize();
+        var (ww2, wh2) = (vp.Width, vp.Height);
         vp.StartSnap(ww2, wh2);
         FireReadingPositionChanged();
         return (true, null);
@@ -347,7 +347,7 @@ public sealed partial class DocumentController
 
         if (AutoScrollActive) StopAutoScroll();
         vp.Rail.ForceActivateAt(pageX, pageY);
-        var (ww, wh) = GetViewportSize();
+        var (ww, wh) = (vp.Width, vp.Height);
         // Below the rail threshold (the usual "start rail here" case) the snap is intentionally
         // suppressed (RailNav.SnapSuppressed) so the page doesn't lurch — the seated line is simply
         // highlighted where it is. Above the threshold this frames the line as normal rail does.
@@ -370,7 +370,7 @@ public sealed partial class DocumentController
         if (FocusedViewport is not { } vp) return;
         if (!vp.Rail.ForceActive) return;
         vp.Rail.ClearForceActive();
-        var (ww, wh) = GetViewportSize();
+        var (ww, wh) = (vp.Width, vp.Height);
         vp.UpdateRailZoom(ww, wh);
         FireReadingPositionChanged();
     }

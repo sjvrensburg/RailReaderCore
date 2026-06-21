@@ -77,11 +77,13 @@ public sealed class Viewport : IDisposable
     public Camera Camera { get; } = new();
 
     /// <summary>This view's viewport size in px. The controller keeps an ambient size and mirrors it
-    /// onto the primary; a host sizes a detached pane via <see cref="SetSize"/>. Consumed by the
-    /// per-view <c>ReadingPosition.HorizontalFraction</c> (railreader2#180 #3); the controller's
-    /// <c>GetViewportSize()</c> still feeds tick/clamp animation from its ambient size, so a pane with
-    /// its own size that must also animate against it is a further increment. Equals the controller's
-    /// size in the single-window world.</summary>
+    /// onto the primary (<see cref="DocumentState.SetSize"/> via <c>SetViewportSize</c>); a host sizes a
+    /// detached pane via <see cref="SetSize"/>. This is now the single source of size for a view's own
+    /// animation: the controller's per-view tick/clamp/seat and its input/camera methods all read
+    /// <see cref="Width"/>/<see cref="Height"/> off the target view (no longer the ambient
+    /// <c>GetViewportSize()</c>), so panes of differing widths animate and seat correctly without the
+    /// host swapping the controller's ambient size per surface every frame (issue #74). Equals the
+    /// controller's ambient size in the single-window world.</summary>
     public double Width { get; private set; } = 1200;
     public double Height { get; private set; } = 900;
 

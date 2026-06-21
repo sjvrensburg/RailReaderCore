@@ -42,7 +42,11 @@ public sealed partial class DocumentController
     {
         dt = Math.Min(dt, 1.0 / 30.0);
 
-        var (ww, wh) = GetViewportSize();
+        // Per-view geometry: animate/clamp THIS view against its OWN size, not the controller's
+        // ambient size. A host driving several panes of differing widths per frame no longer has to
+        // swap the controller's ambient size before each pane's tick (the railreader2#180 workaround).
+        // Single-window is unchanged — the primary's size mirrors the ambient (see SetViewportSize).
+        var (ww, wh) = (vp.Width, vp.Height);
         // Free-pan pause is this view's own state and can't change within a tick; read it once.
         bool railPaused = vp.RailPause is not null;
         bool cameraChanged = false;
@@ -318,7 +322,6 @@ public sealed partial class DocumentController
         bool needsAnim = false;
         bool pageChanged = false;
         if (_worker is null) return (false, false, false);
-        var (ww, wh) = GetViewportSize();
         while (_worker.Poll() is { } result)
         {
             got = true;
@@ -337,7 +340,7 @@ public sealed partial class DocumentController
                 foreach (var vp in doc.Viewports)
                 {
                     if (vp.CurrentPage != result.Page || !vp.PendingRailSetup) continue;
-                    ApplyAnalysisToViewport(vp, result.Analysis, ww, wh, ref needsAnim, ref pageChanged);
+                    ApplyAnalysisToViewport(vp, result.Analysis, ref needsAnim, ref pageChanged);
                 }
             }
 
@@ -359,12 +362,19 @@ public sealed partial class DocumentController
     /// silently so it is ready when shown. The controller-level event facades and the tick's repaint
     /// flags reflect only the FOCUSED view.
     /// </summary>
-    private void ApplyAnalysisToViewport(Viewport vp, PageAnalysis analysis, double ww, double wh,
+    private void ApplyAnalysisToViewport(Viewport vp, PageAnalysis analysis,
         ref bool needsAnim, ref bool pageChanged)
     {
         bool focused = vp == FocusedViewport;
         bool live = IsViewportLive(vp);
         int prevPage = vp.CurrentPage;
+
+        // Seat THIS view's rail against its OWN size (Finding 2): a cache-miss result arriving
+        // asynchronously must centre/zoom/snap using the view's geometry, not whatever ambient size
+        // the controller last ticked — otherwise a pane of a different width opens at the wrong rail
+        // zoom / line position until a later resize re-clamps. (Cache-hit seating already runs through
+        // the synchronous GoToPage/SubmitAnalysis path the host drives per-view.)
+        var (ww, wh) = (vp.Width, vp.Height);
 
         vp.Rail.SetAnalysis(analysis, _config.NavigableRoles);
         vp.PendingRailSetup = false;

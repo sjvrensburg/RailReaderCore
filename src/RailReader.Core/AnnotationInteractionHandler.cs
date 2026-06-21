@@ -5,7 +5,13 @@ namespace RailReader.Core;
 
 /// <summary>
 /// Owns all annotation tool state and interaction logic.
-/// Methods receive DocumentState as a parameter rather than reading ActiveDocument from a controller.
+///
+/// <para>Interaction methods are keyed to a <see cref="Viewport"/> (issue #74): add / remove /
+/// hit-test / text-extract all resolve that view's <see cref="Viewport.CurrentPage"/> and reach the
+/// document through <see cref="Viewport.Owner"/>. A multi-viewport host passes its focused view
+/// (<c>controller.FocusedViewport</c>) so a focused <em>non-primary</em> pane sitting on a different
+/// page than the document's primary edits annotations on its OWN page — not the primary's. In the
+/// single-viewport world the focused view is the document's primary, so behaviour is unchanged.</para>
 /// </summary>
 public sealed class AnnotationInteractionHandler
 {
@@ -190,22 +196,22 @@ public sealed class AnnotationInteractionHandler
     /// is needed (caller should show dialog and call CompleteTextNote/CompleteTextNoteEdit).
     /// </summary>
     public (bool NeedsTextNoteDialog, bool IsEdit, TextNoteAnnotation? ExistingNote, float PageX, float PageY)
-        HandleAnnotationPointerDown(DocumentState? doc, double pageX, double pageY)
+        HandleAnnotationPointerDown(Viewport? vp, double pageX, double pageY)
     {
-        if (doc is null) return default;
+        if (vp is null) return default;
 
         // The drag-over-text markup tools share one path; the set lives in IsTextMarkupTool
         // so adding a tool can't drift out of sync across the three pointer handlers.
         if (IsTextMarkupTool(ActiveTool))
         {
-            _highlightCharStart = FindNearestCharIndex(doc, (float)pageX, (float)pageY);
+            _highlightCharStart = FindNearestCharIndex(vp, (float)pageX, (float)pageY);
             return default;
         }
 
         switch (ActiveTool)
         {
             case AnnotationTool.TextSelect:
-                _textSelectCharStart = FindNearestCharIndex(doc, (float)pageX, (float)pageY);
+                _textSelectCharStart = FindNearestCharIndex(vp, (float)pageX, (float)pageY);
                 SelectedText = null;
                 TextSelectionRects = null;
                 break;
@@ -219,10 +225,10 @@ public sealed class AnnotationInteractionHandler
                 PendingFreeText = null;
                 break;
             case AnnotationTool.TextNote:
-                var hitNote = FindTextNoteAtPoint(doc, (float)pageX, (float)pageY);
+                var hitNote = FindTextNoteAtPoint(vp, (float)pageX, (float)pageY);
                 return (true, hitNote is not null, hitNote, (float)pageX, (float)pageY);
             case AnnotationTool.Eraser:
-                EraseAtPoint(doc, (float)pageX, (float)pageY);
+                EraseAtPoint(vp, (float)pageX, (float)pageY);
                 break;
         }
         return default;
@@ -231,9 +237,9 @@ public sealed class AnnotationInteractionHandler
     /// <summary>
     /// Complete a text note creation after dialog returns.
     /// </summary>
-    public void CompleteTextNote(DocumentState? doc, float pageX, float pageY, string text)
+    public void CompleteTextNote(Viewport? vp, float pageX, float pageY, string text)
     {
-        if (doc is null || string.IsNullOrEmpty(text)) return;
+        if (vp is null || string.IsNullOrEmpty(text)) return;
         var note = new TextNoteAnnotation
         {
             X = pageX,
@@ -242,34 +248,34 @@ public sealed class AnnotationInteractionHandler
             Opacity = ActiveAnnotationOpacity,
             Text = text,
         };
-        doc.AddAnnotation(doc.CurrentPage, note);
+        vp.Owner.AddAnnotation(vp.CurrentPage, note);
     }
 
     /// <summary>
     /// Complete a text note edit after dialog returns.
     /// </summary>
-    public void CompleteTextNoteEdit(DocumentState? doc, TextNoteAnnotation note, string newText)
+    public void CompleteTextNoteEdit(Viewport? vp, TextNoteAnnotation note, string newText)
     {
-        if (doc is null) return;
-        doc.UpdateAnnotationText(doc.CurrentPage, note, newText);
+        if (vp is null) return;
+        vp.Owner.UpdateAnnotationText(vp.CurrentPage, note, newText);
     }
 
-    public bool HandleAnnotationPointerMove(DocumentState? doc, double pageX, double pageY,
+    public bool HandleAnnotationPointerMove(Viewport? vp, double pageX, double pageY,
         bool shiftHeld = false)
     {
-        if (doc is null) return false;
+        if (vp is null) return false;
         bool changed = false;
 
         if (IsTextMarkupTool(ActiveTool))
         {
             if (_highlightCharStart >= 0)
             {
-                int endChar = FindNearestCharIndex(doc, (float)pageX, (float)pageY);
+                int endChar = FindNearestCharIndex(vp, (float)pageX, (float)pageY);
                 if (endChar >= 0)
                 {
                     int start = Math.Min(_highlightCharStart, endChar);
                     int end = Math.Max(_highlightCharStart, endChar);
-                    var pageText = doc.GetOrExtractText(doc.CurrentPage);
+                    var pageText = vp.Owner.GetOrExtractText(vp.CurrentPage);
                     var rects = BuildHighlightRects(pageText, start, end - start + 1);
                     PreviewAnnotation = CreateTextMarkup(ActiveTool, rects,
                         ActiveAnnotationColor, ActiveAnnotationOpacity);
@@ -282,12 +288,12 @@ public sealed class AnnotationInteractionHandler
         switch (ActiveTool)
         {
             case AnnotationTool.TextSelect when _textSelectCharStart >= 0:
-                int tsEnd = FindNearestCharIndex(doc, (float)pageX, (float)pageY);
+                int tsEnd = FindNearestCharIndex(vp, (float)pageX, (float)pageY);
                 if (tsEnd >= 0)
                 {
                     int tsStart = Math.Min(_textSelectCharStart, tsEnd);
                     int tsLen = Math.Max(_textSelectCharStart, tsEnd) - tsStart + 1;
-                    var pageText = doc.GetOrExtractText(doc.CurrentPage);
+                    var pageText = vp.Owner.GetOrExtractText(vp.CurrentPage);
                     TextSelectionRects = BuildHighlightRects(pageText, tsStart, tsLen);
                     int textEnd = Math.Min(tsStart + tsLen, pageText.Text.Length);
                     SelectedText = tsStart < pageText.Text.Length
@@ -335,16 +341,16 @@ public sealed class AnnotationInteractionHandler
         return changed;
     }
 
-    public bool HandleAnnotationPointerUp(DocumentState? doc, double pageX, double pageY)
+    public bool HandleAnnotationPointerUp(Viewport? vp, double pageX, double pageY)
     {
-        if (doc is null) return false;
+        if (vp is null) return false;
         bool changed = false;
 
         if (IsTextMarkupTool(ActiveTool))
         {
             if (PreviewAnnotation is TextMarkupAnnotation tm)
             {
-                doc.AddAnnotation(doc.CurrentPage, tm);
+                vp.Owner.AddAnnotation(vp.CurrentPage, tm);
                 PreviewAnnotation = null;
                 _highlightCharStart = -1;
                 changed = true;
@@ -358,14 +364,14 @@ public sealed class AnnotationInteractionHandler
                 _textSelectCharStart = -1;
                 break;
             case AnnotationTool.Pen when PreviewAnnotation is FreehandAnnotation f:
-                doc.AddAnnotation(doc.CurrentPage, f);
+                vp.Owner.AddAnnotation(vp.CurrentPage, f);
                 PreviewAnnotation = null;
                 _freehandPoints = null;
                 changed = true;
                 break;
             case AnnotationTool.Rectangle when PreviewAnnotation is RectAnnotation r:
                 if (r.W > 1 && r.H > 1)
-                    doc.AddAnnotation(doc.CurrentPage, r);
+                    vp.Owner.AddAnnotation(vp.CurrentPage, r);
                 PreviewAnnotation = null;
                 changed = true;
                 break;
@@ -393,13 +399,13 @@ public sealed class AnnotationInteractionHandler
     /// collected its text. Empty/whitespace text — or a cancelled dialog — discards the box.
     /// Returns the committed annotation, or null when nothing was added.
     /// </summary>
-    public FreeTextAnnotation? CommitPendingFreeText(DocumentState? doc, string? text)
+    public FreeTextAnnotation? CommitPendingFreeText(Viewport? vp, string? text)
     {
         var pending = PendingFreeText;
         PendingFreeText = null;
-        if (doc is null || pending is null || string.IsNullOrWhiteSpace(text)) return null;
+        if (vp is null || pending is null || string.IsNullOrWhiteSpace(text)) return null;
         pending.Contents = text;
-        doc.AddAnnotation(doc.CurrentPage, pending);
+        vp.Owner.AddAnnotation(vp.CurrentPage, pending);
         return pending;
     }
 
@@ -411,10 +417,10 @@ public sealed class AnnotationInteractionHandler
     /// text up front (or for headless/programmatic creation) rather than via the drag gesture.
     /// Uses the tool's active colour/opacity as the text appearance. No-op for empty text.
     /// </summary>
-    public FreeTextAnnotation? AddFreeText(DocumentState? doc,
+    public FreeTextAnnotation? AddFreeText(Viewport? vp,
         float x, float y, float w, float h, string text, float fontSize = 12f)
     {
-        if (doc is null || string.IsNullOrWhiteSpace(text)) return null;
+        if (vp is null || string.IsNullOrWhiteSpace(text)) return null;
         var ft = new FreeTextAnnotation
         {
             X = x, Y = y, W = w, H = h,
@@ -423,19 +429,19 @@ public sealed class AnnotationInteractionHandler
             FontSize = fontSize,
             Contents = text,
         };
-        doc.AddAnnotation(doc.CurrentPage, ft);
+        vp.Owner.AddAnnotation(vp.CurrentPage, ft);
         return ft;
     }
 
-    private void EraseAtPoint(DocumentState doc, float pageX, float pageY)
+    private void EraseAtPoint(Viewport vp, float pageX, float pageY)
     {
-        var list = GetCurrentPageAnnotations(doc);
+        var list = GetCurrentPageAnnotations(vp);
         if (list is null) return;
         for (int i = list.Count - 1; i >= 0; i--)
         {
             if (AnnotationGeometry.HitTest(list[i], pageX, pageY))
             {
-                doc.RemoveAnnotation(doc.CurrentPage, list[i]);
+                vp.Owner.RemoveAnnotation(vp.CurrentPage, list[i]);
                 return;
             }
         }
@@ -447,18 +453,18 @@ public sealed class AnnotationInteractionHandler
             CopyToClipboard?.Invoke(SelectedText);
     }
 
-    public void UndoAnnotation(DocumentState? doc) => doc?.Undo();
+    public void UndoAnnotation(Viewport? vp) => vp?.Owner.Undo();
 
-    public void RedoAnnotation(DocumentState? doc) => doc?.Redo();
+    public void RedoAnnotation(Viewport? vp) => vp?.Owner.Redo();
 
     /// <summary>
     /// Delete the currently selected annotation (if any) in browse mode.
     /// Returns true if an annotation was deleted.
     /// </summary>
-    public bool DeleteSelectedAnnotation(DocumentState? doc)
+    public bool DeleteSelectedAnnotation(Viewport? vp)
     {
-        if (doc is null || SelectedAnnotation is null) return false;
-        doc.RemoveAnnotation(doc.CurrentPage, SelectedAnnotation);
+        if (vp is null || SelectedAnnotation is null) return false;
+        vp.Owner.RemoveAnnotation(vp.CurrentPage, SelectedAnnotation);
         SelectedAnnotation = null;
         return true;
     }
@@ -469,10 +475,10 @@ public sealed class AnnotationInteractionHandler
     /// Handle pointer down in browse mode. Returns true if an annotation was hit
     /// (caller should not start camera pan).
     /// </summary>
-    public bool HandleBrowsePointerDown(DocumentState? doc, float pageX, float pageY)
+    public bool HandleBrowsePointerDown(Viewport? vp, float pageX, float pageY)
     {
-        if (doc is null) return false;
-        var list = GetCurrentPageAnnotations(doc);
+        if (vp is null) return false;
+        var list = GetCurrentPageAnnotations(vp);
 
         // First check resize handles on selected freehand
         if (SelectedAnnotation is FreehandAnnotation selectedFreehand && list is not null)
@@ -541,16 +547,16 @@ public sealed class AnnotationInteractionHandler
     /// Handle pointer up in browse mode. Creates undo action if moved/resized.
     /// Returns true if annotations changed.
     /// </summary>
-    public bool HandleBrowsePointerUp(DocumentState? doc, float pageX, float pageY)
+    public bool HandleBrowsePointerUp(Viewport? vp, float pageX, float pageY)
     {
-        if (doc is null) return false;
+        if (vp is null) return false;
 
         if (_resizeHandle != ResizeHandle.None && _resizeOriginalPoints is not null
             && SelectedAnnotation is FreehandAnnotation freehand)
         {
             List<PointF> newPoints = [.. freehand.Points];
             if (!PointsEqual(_resizeOriginalPoints, newPoints))
-                doc.PushUndoAction(new ResizeFreehandAction(freehand, _resizeOriginalPoints, newPoints));
+                vp.Owner.PushUndoAction(new ResizeFreehandAction(freehand, _resizeOriginalPoints, newPoints));
             _resizeHandle = ResizeHandle.None;
             _resizeOriginalPoints = null;
             return true;
@@ -562,7 +568,7 @@ public sealed class AnnotationInteractionHandler
             float dx = pageX - _dragStartPageX;
             float dy = pageY - _dragStartPageY;
             if (Math.Abs(dx) > 0.5f || Math.Abs(dy) > 0.5f)
-                doc.PushUndoAction(new MoveAnnotationAction(_dragAnnotation, _dragOriginalPosition, newPosition));
+                vp.Owner.PushUndoAction(new MoveAnnotationAction(_dragAnnotation, _dragOriginalPosition, newPosition));
             _dragAnnotation = null;
             _dragOriginalPosition = null;
             return true;
@@ -575,10 +581,10 @@ public sealed class AnnotationInteractionHandler
     /// Handle click in browse mode on text notes.
     /// Single click: toggle expand/collapse. Double click: open edit dialog.
     /// </summary>
-    public (bool Handled, TextNoteAnnotation? EditNote) HandleBrowseClick(DocumentState? doc, float pageX, float pageY, bool isDoubleClick = false)
+    public (bool Handled, TextNoteAnnotation? EditNote) HandleBrowseClick(Viewport? vp, float pageX, float pageY, bool isDoubleClick = false)
     {
-        if (doc is null) return (false, null);
-        var list = GetCurrentPageAnnotations(doc);
+        if (vp is null) return (false, null);
+        var list = GetCurrentPageAnnotations(vp);
         if (list is null) return (false, null);
 
         for (int i = list.Count - 1; i >= 0; i--)
@@ -662,14 +668,17 @@ public sealed class AnnotationInteractionHandler
         return true;
     }
 
-    public static List<Annotation>? GetCurrentPageAnnotations(DocumentState doc)
+    /// <summary>Annotations on <paramref name="vp"/>'s current page (issue #74): keyed to the view's
+    /// <see cref="Viewport.CurrentPage"/>, reaching the document via <see cref="Viewport.Owner"/>. A
+    /// multi-viewport host passes the pane being rendered/hit-tested so it sees its own page's markup.</summary>
+    public static List<Annotation>? GetCurrentPageAnnotations(Viewport vp)
     {
-        return doc.Annotations.Pages.TryGetValue(doc.CurrentPage, out var list) ? list : null;
+        return vp.Owner.Annotations.Pages.TryGetValue(vp.CurrentPage, out var list) ? list : null;
     }
 
-    public static TextNoteAnnotation? FindTextNoteAtPoint(DocumentState doc, float pageX, float pageY)
+    public static TextNoteAnnotation? FindTextNoteAtPoint(Viewport vp, float pageX, float pageY)
     {
-        if (GetCurrentPageAnnotations(doc) is not { } list) return null;
+        if (GetCurrentPageAnnotations(vp) is not { } list) return null;
         for (int i = list.Count - 1; i >= 0; i--)
         {
             if (list[i] is TextNoteAnnotation tn && AnnotationGeometry.HitTest(tn, pageX, pageY))
@@ -678,9 +687,9 @@ public sealed class AnnotationInteractionHandler
         return null;
     }
 
-    private static int FindNearestCharIndex(DocumentState doc, float pageX, float pageY)
+    private static int FindNearestCharIndex(Viewport vp, float pageX, float pageY)
     {
-        var pageText = doc.GetOrExtractText(doc.CurrentPage);
+        var pageText = vp.Owner.GetOrExtractText(vp.CurrentPage);
         if (pageText.CharBoxes.Count == 0) return -1;
 
         float bestDist = float.MaxValue;

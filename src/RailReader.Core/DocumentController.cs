@@ -134,8 +134,7 @@ public sealed partial class DocumentController : IDisposable
         _annotationManager.OnSaveFailure = msg => StatusMessage?.Invoke(msg);
         Annotations = new AnnotationInteractionHandler();
         Search = new SearchService(
-            () => ActiveDocument,
-            () => GetViewportSize(),
+            () => FocusedViewport,
             GoToPage);
     }
 
@@ -160,9 +159,10 @@ public sealed partial class DocumentController : IDisposable
     {
         if (w > 0) _vpWidth = w;
         if (h > 0) _vpHeight = h;
-        // Mirror the ambient size into every view's Width/Height. Not yet consumed (GetViewportSize
-        // still returns the ambient size below); this primes the per-view size the relocated Tick
-        // will read in a later increment. Single-window today → all equal.
+        // Mirror the ambient size onto every document's PRIMARY view. The per-view tick/clamp/seat and
+        // the input/camera methods now read each view's own Viewport.Width/Height (#74), so this keeps a
+        // single-window host's primary in lock-step with the ambient size it sizes here. A multi-viewport
+        // host sizes its detached/secondary panes directly via Viewport.SetSize. Single-window → all equal.
         foreach (var doc in Documents)
             doc.Primary.SetSize(_vpWidth, _vpHeight);
     }
@@ -373,7 +373,7 @@ public sealed partial class DocumentController : IDisposable
         if (FocusedViewport is not { } vp) return;
         if (dest.PdfX is null && dest.PdfY is null) return;
 
-        var (ww, wh) = GetViewportSize();
+        var (ww, wh) = (vp.Width, vp.Height);
 
         if (dest.PdfY is { } pdfY)
         {
@@ -397,7 +397,7 @@ public sealed partial class DocumentController : IDisposable
         if (FocusedViewport is not { } vp) return;
         vp.Zoom.Cancel();
         var doc = vp.Owner;
-        var (ww, wh) = GetViewportSize();
+        var (ww, wh) = (vp.Width, vp.Height);
         int prevPage = vp.CurrentPage;
         if (!doc.GoToPage(vp, page, _worker, _config.NavigableRoles, ww, wh))
         {
@@ -419,7 +419,7 @@ public sealed partial class DocumentController : IDisposable
     {
         if (FocusedViewport is not { } vp) return;
         vp.Zoom.Cancel();
-        var (ww, wh) = GetViewportSize();
+        var (ww, wh) = (vp.Width, vp.Height);
         vp.CenterPage(ww, wh);
         vp.UpdateRailZoom(ww, wh);
     }
@@ -428,7 +428,7 @@ public sealed partial class DocumentController : IDisposable
     {
         if (FocusedViewport is not { } vp) return;
         vp.Zoom.Cancel();
-        var (ww, wh) = GetViewportSize();
+        var (ww, wh) = (vp.Width, vp.Height);
         vp.FitWidth(ww, wh);
         vp.UpdateRailZoom(ww, wh);
     }
@@ -439,7 +439,7 @@ public sealed partial class DocumentController : IDisposable
     {
         if (AutoScrollActive) StopAutoScroll();
         if (FocusedViewport is not { } vp) return;
-        var (ww, wh) = GetViewportSize();
+        var (ww, wh) = (vp.Width, vp.Height);
 
         if (ctrlHeld && vp.Rail.Active && !RailPaused)
         {
@@ -452,7 +452,7 @@ public sealed partial class DocumentController : IDisposable
             double factor = 1.0 + scrollDelta * CoreTuning.ZoomScrollSensitivity;
             double baseZoom = vp.Zoom.PendingTargetZoom ?? vp.Camera.Zoom;
             double newZoom = Math.Clamp(baseZoom * factor, Camera.ZoomMin, Camera.ZoomMax);
-            vp.Zoom.Start(vp, newZoom, cursorX, cursorY, _vpWidth);
+            vp.Zoom.Start(vp, newZoom, cursorX, cursorY, ww);
         }
     }
 
@@ -461,7 +461,7 @@ public sealed partial class DocumentController : IDisposable
         if (FocusedViewport is not { } vp) return;
         vp.Zoom.Cancel();
         if (AutoScrollActive) StopAutoScroll();
-        var (ww, wh) = GetViewportSize();
+        var (ww, wh) = (vp.Width, vp.Height);
 
         if (ctrlHeld && vp.Rail.Active && !RailPaused)
             StartRailPause(vp);
@@ -488,7 +488,7 @@ public sealed partial class DocumentController : IDisposable
         if (vp.RailPause is not { } pause) return;
         vp.RailPause = null;
 
-        var (ww, wh) = GetViewportSize();
+        var (ww, wh) = (vp.Width, vp.Height);
 
         // Restore zoom if it changed during free pan (may re-enter rail mode)
         if (Math.Abs(vp.Camera.Zoom - pause.Zoom) > 0.001)
@@ -514,14 +514,14 @@ public sealed partial class DocumentController : IDisposable
     public void HandleZoomKey(bool zoomIn)
     {
         if (FocusedViewport is not { } vp) return;
-        var (ww, wh) = GetViewportSize();
+        var (ww, wh) = (vp.Width, vp.Height);
 
         double baseZoom = vp.Zoom.PendingTargetZoom ?? vp.Camera.Zoom;
         double newZoom = Math.Clamp(
             zoomIn ? baseZoom * CoreTuning.ZoomStep : baseZoom / CoreTuning.ZoomStep,
             Camera.ZoomMin, Camera.ZoomMax);
 
-        vp.Zoom.Start(vp, newZoom, ww / 2.0, wh / 2.0, _vpWidth);
+        vp.Zoom.Start(vp, newZoom, ww / 2.0, wh / 2.0, ww);
         if (!vp.Rail.Active && AutoScrollActive) StopAutoScroll();
     }
 
@@ -533,7 +533,7 @@ public sealed partial class DocumentController : IDisposable
     {
         if (AutoScrollActive) StopAutoScroll();
         if (FocusedViewport is not { } vp) return;
-        var (ww, wh) = GetViewportSize();
+        var (ww, wh) = (vp.Width, vp.Height);
         double z = Math.Clamp(targetZoom, Camera.ZoomMin, Camera.ZoomMax);
         double cpx = (ww / 2.0 - targetOffsetX) / z; // target viewport-centre in page space
         double cpy = (wh / 2.0 - targetOffsetY) / z;
@@ -575,7 +575,7 @@ public sealed partial class DocumentController : IDisposable
         // mid-flight, regardless of overlapping block geometry under the focus point.
         vp.Rail.PinCurrentBlockForActivation();
 
-        var (ww, wh) = GetViewportSize();
+        var (ww, wh) = (vp.Width, vp.Height);
         // Floor at the rail threshold (not ZoomMin) so rail framing actually applies.
         double z = Math.Clamp(targetZoom ?? vp.ComputeBlockFitZoom(box, ww, wh),
             _config.RailZoomThreshold, Camera.ZoomMax);
@@ -619,7 +619,7 @@ public sealed partial class DocumentController : IDisposable
     /// without engaging rail. Always returns true.</summary>
     private bool CenterBlockGeometric(Viewport vp, BBox box, double? targetZoom, double? durationMs = null)
     {
-        var (ww, wh) = GetViewportSize();
+        var (ww, wh) = (vp.Width, vp.Height);
         var (z, ox, oy) = vp.ComputeCenteredFrame(box, ww, wh, targetZoom);
         if (AutoScrollActive) StopAutoScroll();
         vp.Rail.Deactivate(); // drive the camera directly; no rail seat/snap
@@ -863,7 +863,7 @@ public sealed partial class DocumentController : IDisposable
         if (!_config.NavigableRoles.Contains(target)) return false;
         if (!vp.Rail.TryNavigateToRole(target, forward)) return false;
 
-        var (ww, wh) = GetViewportSize();
+        var (ww, wh) = (vp.Width, vp.Height);
         vp.StartSnap(ww, wh);
         FireReadingPositionChanged();
         return true;

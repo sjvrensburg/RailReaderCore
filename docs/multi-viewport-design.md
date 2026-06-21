@@ -1,14 +1,17 @@
 # Multi-viewport design: independent & detachable viewports in RailReader.Core
 
-> **Status (2026-06-21):** Phases 0–1 **shipped, merged, and released** across three additive versions —
+> **Status (2026-06-21):** Phases 0–1 **shipped, merged, and released** across several versions —
 > `v0.37.0` (foundation: `Viewport`/`Viewports`/`AddViewport`/`RemoveViewport`/`TickViewport`),
 > `v0.38.0` (§5.4 analysis fan-out, `FocusedViewport` as the settable source of truth, per-`Viewport`
 > `PageChanged`/`ReadingPositionChanged`, config fan-out §8, pump-once `TickViewport(vp, dt, pumpAnalysis)`),
-> and `v0.39.0` (focused-pane interactivity: controller input/camera methods route through `FocusedViewport`,
-> public per-`Viewport` display prefs, per-view `ReadingPosition.HorizontalFraction` width). All on `main`,
-> single-viewport behaviour byte-for-byte unchanged. **Phase 2** (railreader2 split-pane / tear-off GUI) is now
-> in progress against this API; **Phase 3** (facade removal + `DocumentState`→`DocumentModel` rename — the one
-> breaking release) remains.
+> `v0.39.0`/`v0.40.0` (focused-pane interactivity: controller input/camera + horizontal/click families route
+> through `FocusedViewport`, public per-`Viewport` display prefs, per-view `ReadingPosition.HorizontalFraction`
+> width), and **`v0.41.0` (#74 — the last per-view holdouts: annotations + search resolve the focused view's
+> page, not `Primary`; tick/clamp/async-seat + input/camera read each view's own `Viewport.Width/Height`, not
+> the ambient size)**. `v0.41.0` is the one **breaking** step so far (`AnnotationInteractionHandler` keyed to a
+> `Viewport`; `SearchService` ctor takes `Func<Viewport?>`). Single-viewport behaviour byte-for-byte
+> unchanged throughout. **Phase 2** (railreader2 split-pane / tear-off GUI) is now in progress against this API;
+> **Phase 3** (facade removal + `DocumentState`→`DocumentModel` rename) remains.
 > **Scope:** `RailReader.Core` only. **Driver:** support split-pane and detached-window reading —
 > *N* independent, interactive cameras over one open document — without changing the threading model.
 >
@@ -49,15 +52,19 @@
 >    `Viewport`; `DocumentState` forwards `Primary.StateChanged`), union cache eviction. Landed with
 >    `MultiViewportTests` (renders + ticks two viewports on one document).
 >
-> **Phase-1 boundary — RESOLVED in 0.38.0 / 0.39.0:** the cross-page transition reached from a non-primary
-> view's tick is now viewport-addressed (`GoToPage(vp, …)` / `SubmitAnalysis(vp, …)` + the §5.4 fan-out);
+> **Phase-1 boundary — RESOLVED in 0.38.0–0.41.0:** the cross-page transition reached from a non-primary
+> view's tick is viewport-addressed (`GoToPage(vp, …)` / `SubmitAnalysis(vp, …)` + the §5.4 fan-out);
 > `TickViewport(vp, dt, pumpAnalysis)` lets a host pump the shared worker once per frame instead of once per
-> view; and the controller's input/camera surface routes through `FocusedViewport` (0.39.0), so a focused
-> secondary/detached pane is fully interactive. **Still deferred:** broader per-view geometry — `TickViewport`
-> and clamp still read the controller's *ambient* size via `GetViewportSize()`, so a detached pane that must
-> animate against its *own* dimensions is a further increment (today only `ReadingPosition.HorizontalFraction`
-> consumes the per-view `Viewport.Width`). Also `AutoScrollController.StopAutoScroll` still stops `Primary`'s
-> rail internally (the focus-aware flag is correct; the per-view rail-stop is a follow-up).
+> view; the controller's input/camera surface routes through `FocusedViewport` (0.39.0/0.40.0); and in
+> **0.41.0 (#74)** the last two holdouts closed — annotations + search now resolve the **focused view's**
+> page (`AnnotationInteractionHandler` keyed to a `Viewport`; `SearchService` focused-view-aware +
+> `MatchesForPage`), and **per-view geometry is complete**: `TickViewport`, clamp, the async rail seat
+> (`ApplyAnalysisToViewport`), and the input/camera methods all read each view's own `Viewport.Width/Height`
+> rather than the ambient `GetViewportSize()`, so a detached pane animates and seats against its own
+> dimensions and a host no longer swaps the controller's ambient size per surface every frame.
+> **Still deferred:** `AutoScrollController.StopAutoScroll` stops `Primary`'s rail internally (the focus-aware
+> flag is correct; the per-view rail-stop is a follow-up), and link hit-testing remains document-level (uses
+> the document's current page). Both land with Phase 3.
 
 ## Contents
 
@@ -148,7 +155,8 @@ These are `DocumentController` fields today but hold per-view state, so they mov
 `_annotationManager`, the injected services (`_marshaller`, `_pdfFactory`, `_recentFiles`,
 `_annotationStore`, `_logger`), and a new **`FocusedViewport`** pointer (replaces the *role* of
 `ActiveDocumentIndex`). `AnnotationInteractionHandler` and `SearchService` retarget to the focused
-viewport.
+viewport — **done in 0.41.0 (#74)**: the handler's methods take a `Viewport`, and the search service
+resolves its page/camera/size from `FocusedViewport`.
 
 ---
 
