@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.39.0 — Ruled-table cells + multi-viewport input/display last-mile (additive)
+
+Two threads: better table cell detection (#67), and the Core last-mile that makes a focused
+**detached pane** fully interactive (railreader2#180). All additive/behavioural — no public API
+removed, single-viewport behaviour unchanged.
+
+### Table cell detection (#67)
+
+Dense central-bank statistical tables (SARB Quarterly Bulletin) defeated the glyph-gap cell
+splitter — a space means both thousands-separator and column break; dash/dot-leader-heavy rows
+collapsed the median-height threshold so `1 288 272` shattered; right-aligned numerics and missing
+cells went ragged.
+
+- **Robust gap threshold** (`LineDetector.RobustGapThreshold`): anchor on the 90th-percentile glyph
+  height and median only the "real" glyphs, so a punctuation cluster can't collapse the threshold.
+  Identical to the old median for fully-populated tables; fixes the unruled fallback.
+- **Ruled column grid** (`LineDetector.DetectColumnGrid`): these tables are drawn with vertical
+  rules — recover that grid from the rasterised page (longest continuous dark run per column) and
+  snap every row to the shared bands, so column index `k` is the same span on every row (empty
+  bands → empty cells). Structurally fixes right-alignment, ragged/missing cells, and hierarchical
+  headers. Falls back to the gap split when no rules are found (purely additive). DPI-robust:
+  hairline 0.3pt rules survive at 800px analysis resolution.
+
+### Multi-viewport: focused-pane interactivity (railreader2#180)
+
+- **Input routing through `FocusedViewport`:** `GoToPage`, `FitPage`/`FitWidth`, `HandleZoom`/
+  `HandleZoomKey`/`HandlePan`, `ScrollToDestination`, `AnimateCameraTo`, `HandleVerticalNav`,
+  rail-pause, and back/forward history now target the focused view, not the document's primary — so
+  a focused secondary/detached pane can be zoomed/panned/page-jumped/outline-clicked. Byte-identical
+  for the single-view path; `RaisePageChanged` now also fires the controller-level `PageChanged`
+  facade for a focused non-primary view.
+- **Public per-viewport display prefs:** `Viewport.DebugOverlay`, `ColourEffect`, `LineFocusBlur`,
+  `LineHighlightEnabled`, `MarginCropping` are now public get/set per view (each fires the view's
+  `StateChanged`); a detached pane can carry its own. The `DocumentState` facades delegate to the
+  primary's, unchanged.
+- **Per-view `ReadingPosition.HorizontalFraction`:** computed against the view's own
+  `Viewport.Width` (set via `Viewport.SetSize`) instead of the controller's ambient size, so a
+  detached pane's AT-SPI / portal line-anchoring is correct. Single-view path unchanged.
+
+### Notes
+
+- Broader per-view geometry (tick/clamp via `GetViewportSize`) still uses the ambient size; a pane
+  that must also animate against its own bounds is a further increment.
+- Phase 3 (the breaking `DocumentState` → `DocumentModel` rename) remains the only breaking release
+  ahead — coordinated on railreader2#180 first.
+
 ## 0.38.0 — Multi-viewport analysis fan-out (additive)
 
 Phase 1's second half: with the `Viewport` foundation in place (0.37.0), this wires **analysis,
