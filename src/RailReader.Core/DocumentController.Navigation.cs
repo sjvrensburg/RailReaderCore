@@ -127,22 +127,23 @@ public sealed partial class DocumentController
     private void HandleVerticalNav(bool forward)
     {
         if (!forward && AutoScrollActive) StopAutoScroll();
-        if (ActiveDocument is not { } doc) return;
+        if (FocusedViewport is not { } vp) return;
+        var doc = vp.Owner;
         var (ww, wh) = GetViewportSize();
 
-        if (doc.Rail.Active)
+        if (vp.Rail.Active)
         {
-            var adv = AdvanceLine(doc.Primary, forward, ww, wh);
+            var adv = AdvanceLine(vp, forward, ww, wh);
             if (adv == LineAdvanceResult.LineAdvanced)
             {
-                doc.StartSnap(ww, wh);
+                vp.StartSnap(ww, wh);
                 // During autoscroll: pause until snap completes + line pause, then resume
                 if (AutoScrollActive)
-                    doc.Rail.PauseAutoScroll(_config.AutoScrollLinePauseMs);
+                    vp.Rail.PauseAutoScroll(_config.AutoScrollLinePauseMs);
             }
             else if (adv is LineAdvanceResult.PageChanged or LineAdvanceResult.PageChangedRailLost)
             {
-                RaisePageChanged(doc.Primary);
+                RaisePageChanged(vp);
             }
 
             if (adv is LineAdvanceResult.LineAdvanced or LineAdvanceResult.PageChanged)
@@ -150,33 +151,33 @@ public sealed partial class DocumentController
         }
         else
         {
-            if (doc.Primary.PageEdgeHold.ShouldSuppressInput) return;
+            if (vp.PageEdgeHold.ShouldSuppressInput) return;
 
-            double prevY = doc.Camera.OffsetY;
-            doc.Camera.OffsetY += forward ? -CoreTuning.PanStep : CoreTuning.PanStep;
-            doc.ClampCamera(ww, wh);
+            double prevY = vp.Camera.OffsetY;
+            vp.Camera.OffsetY += forward ? -CoreTuning.PanStep : CoreTuning.PanStep;
+            vp.ClampCamera(ww, wh);
 
-            bool atEdge = Math.Abs(doc.Camera.OffsetY - prevY) < 1.0;
+            bool atEdge = Math.Abs(vp.Camera.OffsetY - prevY) < 1.0;
             if (atEdge)
             {
-                if (doc.Primary.PageEdgeHold.OnEdgeHit(forward))
+                if (vp.PageEdgeHold.OnEdgeHit(forward))
                 {
-                    int targetPage = doc.CurrentPage + (forward ? 1 : -1);
+                    int targetPage = vp.CurrentPage + (forward ? 1 : -1);
                     if (targetPage >= 0 && targetPage < doc.PageCount)
                     {
                         GoToPage(targetPage);
-                        var (_, ry, _, rh) = doc.GetFitRect();
-                        double topTarget = -ry * doc.Camera.Zoom;
-                        doc.Camera.OffsetY = forward
+                        var (_, ry, _, rh) = vp.GetFitRect();
+                        double topTarget = -ry * vp.Camera.Zoom;
+                        vp.Camera.OffsetY = forward
                             ? topTarget
-                            : Math.Min(wh - (ry + rh) * doc.Camera.Zoom, topTarget);
-                        doc.ClampCamera(ww, wh);
+                            : Math.Min(wh - (ry + rh) * vp.Camera.Zoom, topTarget);
+                        vp.ClampCamera(ww, wh);
                     }
                 }
             }
             else
             {
-                doc.Primary.PageEdgeHold.OnMoved();
+                vp.PageEdgeHold.OnMoved();
             }
         }
     }

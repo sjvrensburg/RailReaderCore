@@ -363,6 +363,44 @@ public class MultiViewportTests : IDisposable
         Assert.True(vp2.PendingAnalysis.Count < 2);  // the pump drained the non-focused view's queue
     }
 
+    [Fact]
+    public void ControllerNavInput_RoutesToFocusedSecondaryViewport()
+    {
+        // Input routing: with a secondary focused, controller-level GoToPage must move THAT view
+        // (not Primary) and fire the controller-level PageChanged facade for it.
+        var doc = SetupDoc();                 // focus on doc.Primary, page 0
+        var vp2 = doc.AddViewport();
+        vp2.LoadPageBitmap();
+        _controller.FocusedViewport = vp2;
+
+        int? controllerPage = null;
+        _controller.PageChanged = p => controllerPage = p;
+
+        _controller.GoToPage(2);
+
+        Assert.Equal(2, vp2.CurrentPage);          // the FOCUSED secondary moved
+        Assert.Equal(0, doc.Primary.CurrentPage);  // Primary untouched
+        Assert.Equal(2, controllerPage);           // controller PageChanged fired for the focused view
+    }
+
+    [Fact]
+    public void ControllerCameraInput_RoutesToFocusedSecondaryViewport()
+    {
+        // A synchronous camera op (FitWidth) targets the focused secondary, leaving Primary's camera
+        // alone — proving zoom/pan/fit input follows focus, not Primary.
+        var doc = SetupDoc();
+        var vp2 = doc.AddViewport();
+        vp2.LoadPageBitmap();
+        vp2.Camera.Zoom = 5.0;                     // a distinct starting zoom
+        double primaryZoom = doc.Primary.Camera.Zoom;
+        _controller.FocusedViewport = vp2;
+
+        _controller.FitWidth();
+
+        Assert.NotEqual(5.0, vp2.Camera.Zoom);                       // vp2 was refit
+        Assert.Equal(primaryZoom, doc.Primary.Camera.Zoom, 3);       // Primary untouched
+    }
+
     // A one-block (3-line) navigable Text analysis so a seated rail reports HasAnalysis.
     private static PageAnalysis MakeNavigableAnalysis()
     {
