@@ -22,7 +22,7 @@ public static class ScreenshotCompositor
     /// Renders the current page of a document with all requested overlays.
     /// </summary>
     public static SKBitmap RenderPage(
-        DocumentState doc,
+        DocumentModel doc,
         DocumentController controller,
         ColourEffectShaders colourEffects,
         ScreenshotOptions options)
@@ -137,7 +137,7 @@ public static class ScreenshotCompositor
         }
 
         // --- Layer 5: Debug overlay ---
-        if (options.DebugOverlay && doc.AnalysisCache.TryGetValue(doc.CurrentPage, out var analysis))
+        if (options.DebugOverlay && doc.TryGetAnalysis(doc.CurrentPage, out var analysis))
             DrawDebugOverlay(canvas, analysis);
 
         canvas.Restore(); // undo scale
@@ -155,7 +155,7 @@ public static class ScreenshotCompositor
     /// </summary>
     private static SKBitmap CropToViewport(
         SKSurface fullPageSurface,
-        DocumentState doc,
+        DocumentModel doc,
         ScreenshotOptions options,
         float scaleX, float scaleY)
     {
@@ -210,7 +210,7 @@ public static class ScreenshotCompositor
         data.SaveTo(stream);
     }
 
-    private static void DrawRailOverlay(SKCanvas canvas, DocumentState doc, OverlayPalette palette, bool lineFocusBlur,
+    private static void DrawRailOverlay(SKCanvas canvas, DocumentModel doc, OverlayPalette palette, bool lineFocusBlur,
         bool lineHighlightEnabled = true, double linePadding = 0.2, LineHighlightTint tint = LineHighlightTint.Auto, double tintOpacity = 0.25)
     {
         if (doc.Rail.NavigableCount == 0) return;

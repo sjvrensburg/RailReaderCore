@@ -52,7 +52,7 @@ internal sealed class AutoScrollController
     /// <summary>
     /// Toggles auto-scroll on/off. Requires an active document in rail mode to activate.
     /// </summary>
-    public void ToggleAutoScroll(DocumentState? doc)
+    public void ToggleAutoScroll(DocumentModel? doc)
     {
         if (AutoScrollActive)
         {
@@ -68,7 +68,7 @@ internal sealed class AutoScrollController
     /// <summary>
     /// Stops auto-scroll and notifies the UI.
     /// </summary>
-    public void StopAutoScroll(DocumentState? doc)
+    public void StopAutoScroll(DocumentModel? doc)
     {
         doc?.Rail.StopAutoScroll();
         AutoScrollActive = false;
@@ -77,7 +77,7 @@ internal sealed class AutoScrollController
     /// <summary>
     /// Toggles auto-scroll, disabling jump mode first if active.
     /// </summary>
-    public void ToggleAutoScrollExclusive(DocumentState? doc)
+    public void ToggleAutoScrollExclusive(DocumentModel? doc)
     {
         if (JumpMode) JumpMode = false;
         ToggleAutoScroll(doc);
@@ -86,7 +86,7 @@ internal sealed class AutoScrollController
     /// <summary>
     /// Toggles jump mode, stopping auto-scroll first if active.
     /// </summary>
-    public void ToggleJumpModeExclusive(DocumentState? doc)
+    public void ToggleJumpModeExclusive(DocumentModel? doc)
     {
         if (AutoScrollActive) StopAutoScroll(doc);
         JumpMode = !JumpMode;

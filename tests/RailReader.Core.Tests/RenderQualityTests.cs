@@ -62,7 +62,7 @@ public class RenderQualityTests
     [InlineData(10.0, 600)]  // raw 1500 → clamped down to MaxDpi
     public void CalculateRenderDpi_Quality_ReproducesLegacyBehaviour(double zoom, int expected)
     {
-        int dpi = DocumentState.CalculateRenderDpi(zoom, LetterW, LetterH, RenderDpiSettings.Default);
+        int dpi = DocumentModel.CalculateRenderDpi(zoom, LetterW, LetterH, RenderDpiSettings.Default);
         Assert.Equal(expected, dpi);
     }
 
@@ -71,7 +71,7 @@ public class RenderQualityTests
     [InlineData(6.0, 800)]  // raw 900 → snaps to 900 → clamped to the 800 cap
     public void CalculateRenderDpi_Ultra_UsesPresetStepAndCap(double zoom, int expected)
     {
-        int dpi = DocumentState.CalculateRenderDpi(zoom, LetterW, LetterH, RenderDpiSettings.ForPreset(RenderQuality.Ultra));
+        int dpi = DocumentModel.CalculateRenderDpi(zoom, LetterW, LetterH, RenderDpiSettings.ForPreset(RenderQuality.Ultra));
         Assert.Equal(expected, dpi);
     }
 
@@ -96,7 +96,7 @@ public class RenderQualityTests
     {
         // Zoom alone would clamp to the 800 cap, but the 4 MP ceiling on a
         // 10"×10" page caps the effective DPI at 200.
-        int dpi = DocumentState.CalculateRenderDpi(zoom: 6.0, TenInchPt, TenInchPt, Settings(800, 50, maxMp: 4.0));
+        int dpi = DocumentModel.CalculateRenderDpi(zoom: 6.0, TenInchPt, TenInchPt, Settings(800, 50, maxMp: 4.0));
         Assert.Equal(200, dpi);
     }
 
@@ -105,21 +105,21 @@ public class RenderQualityTests
     {
         // A 1 MP ceiling implies 100 DPI on this page, but the readability floor
         // (150) wins — memory yields to legibility for a pathological page.
-        int dpi = DocumentState.CalculateRenderDpi(zoom: 6.0, TenInchPt, TenInchPt, Settings(800, 50, maxMp: 1.0));
+        int dpi = DocumentModel.CalculateRenderDpi(zoom: 6.0, TenInchPt, TenInchPt, Settings(800, 50, maxMp: 1.0));
         Assert.Equal(RenderDpiSettings.DefaultMinDpi, dpi);
     }
 
     [Fact]
     public void CalculateRenderDpi_MegapixelCeiling_DisabledWhenNonPositive()
     {
-        int dpi = DocumentState.CalculateRenderDpi(zoom: 6.0, TenInchPt, TenInchPt, Settings(800, 50, maxMp: 0));
+        int dpi = DocumentModel.CalculateRenderDpi(zoom: 6.0, TenInchPt, TenInchPt, Settings(800, 50, maxMp: 0));
         Assert.Equal(800, dpi); // unconstrained by area → hits the cap
     }
 
     [Fact]
     public void CalculateRenderDpi_MegapixelCeiling_SkippedWhenPageSizeUnknown()
     {
-        int dpi = DocumentState.CalculateRenderDpi(zoom: 6.0, pageWidthPts: 0, pageHeightPts: 0, Settings(800, 50, maxMp: 4.0));
+        int dpi = DocumentModel.CalculateRenderDpi(zoom: 6.0, pageWidthPts: 0, pageHeightPts: 0, Settings(800, 50, maxMp: 4.0));
         Assert.Equal(800, dpi); // no dims → ceiling can't be computed → cap applies
     }
 
@@ -129,7 +129,7 @@ public class RenderQualityTests
         // A default(RenderDpiSettings) has all-zero fields. The public entry point
         // must not return 0 (which would be passed to RenderPage) — it clamps to a
         // positive floor instead.
-        int dpi = DocumentState.CalculateRenderDpi(zoom: 2.0, LetterW, LetterH, default);
+        int dpi = DocumentModel.CalculateRenderDpi(zoom: 2.0, LetterW, LetterH, default);
         Assert.True(dpi >= 1, $"expected positive DPI, got {dpi}");
     }
 
@@ -142,7 +142,7 @@ public class RenderQualityTests
             MinDpi = 200, MaxDpi = 100, TierStep = 75, MaxMegapixels = 0,
             UpscaleHysteresis = 1.5, DownscaleHysteresis = 0.5,
         };
-        var ex = Record.Exception(() => DocumentState.CalculateRenderDpi(2.0, LetterW, LetterH, inverted));
+        var ex = Record.Exception(() => DocumentModel.CalculateRenderDpi(2.0, LetterW, LetterH, inverted));
         Assert.Null(ex);
     }
 

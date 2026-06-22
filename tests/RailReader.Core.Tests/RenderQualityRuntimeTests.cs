@@ -15,7 +15,7 @@ namespace RailReader.Core.Tests;
 public class RenderQualityRuntimeTests : IDisposable
 {
     private readonly DocumentController _controller;
-    private readonly DocumentState _doc;
+    private readonly DocumentModel _doc;
 
     public RenderQualityRuntimeTests()
     {

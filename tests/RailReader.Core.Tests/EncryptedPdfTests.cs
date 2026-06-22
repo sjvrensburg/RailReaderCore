@@ -50,7 +50,7 @@ public class EncryptedPdfTests
     }
 
     [Fact]
-    public void DocumentState_WithPassword_RendersAndExtractsWithoutThrowing()
+    public void DocumentModel_WithPassword_RendersAndExtractsWithoutThrowing()
     {
         var config = new AppConfig();
         var marshaller = new SynchronousThreadMarshaller();
@@ -58,7 +58,7 @@ public class EncryptedPdfTests
         var path = TestFixtures.GetEncryptedTestPdfPath();
 
         var pdf = factory.CreatePdfService(path, Pwd);
-        var state = new DocumentState(path, pdf,
+        var state = new DocumentModel(path, pdf,
             factory.CreatePdfTextService(), factory.CreatePdfLinkService(),
             config.ToCoreSettings(), marshaller);
         state.LoadPageBitmap();

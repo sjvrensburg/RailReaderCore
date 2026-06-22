@@ -58,22 +58,26 @@ internal sealed class BackgroundAnalysisQueue
 
     /// <summary>
     /// Returns the next page to analyse, or null if all pages are covered.
-    /// Tries forward first, then backward, skipping cached/in-flight pages.
+    /// Tries forward first, then backward, skipping pages already analysed
+    /// (<paramref name="isAnalysed"/>) or in flight (<paramref name="isInFlight"/>).
+    /// <paramref name="isAnalysed"/> is a predicate rather than the cache itself because
+    /// the analysis cache is now keyed on <c>(page, params)</c> (railreader2#180 #3): a page
+    /// counts as analysed for background scanning once any variant is cached.
     /// </summary>
-    public int? TryGetNext(IReadOnlyDictionary<int, PageAnalysis> cache,
+    public int? TryGetNext(Func<int, bool> isAnalysed,
         Func<int, bool> isInFlight)
     {
         while (_nextForward < _forwardLimit)
         {
             int page = _nextForward++;
-            if (!cache.ContainsKey(page) && !isInFlight(page))
+            if (!isAnalysed(page) && !isInFlight(page))
                 return page;
         }
 
         while (_nextBackward >= _backwardLimit)
         {
             int page = _nextBackward--;
-            if (!cache.ContainsKey(page) && !isInFlight(page))
+            if (!isAnalysed(page) && !isInFlight(page))
                 return page;
         }
 

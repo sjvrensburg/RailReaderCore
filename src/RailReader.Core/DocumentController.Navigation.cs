@@ -47,7 +47,7 @@ public sealed partial class DocumentController
         while (targetPage >= 0 && targetPage < doc.PageCount)
         {
             // Fast path: skip cached pages with no navigable blocks without rasterizing
-            if (doc.AnalysisCache.TryGetValue(targetPage, out var cached)
+            if (doc.TryGetAnalysis(targetPage, vp.AnalysisParams, out var cached)
                 && !HasNavigableBlocks(cached))
             {
                 skipped++;
@@ -334,7 +334,7 @@ public sealed partial class DocumentController
     {
         if (FocusedViewport is not { } vp) return false;
         var doc = vp.Owner;
-        if (!doc.AnalysisCache.TryGetValue(vp.CurrentPage, out var analysis)) return false;
+        if (!doc.TryGetAnalysis(vp.CurrentPage, vp.AnalysisParams, out var analysis)) return false;
 
         // Sync RailNav to this page's analysis so the navigable index space + line seating
         // refer to the current page (mirrors SmoothlyFrameBlock). Skip when already current.

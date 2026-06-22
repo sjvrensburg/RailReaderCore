@@ -7,19 +7,20 @@ namespace RailReader.Core.Services;
 public sealed record AnalysisRequest(
     string FilePath, int Page, byte[] RgbBytes,
     int PxW, int PxH, double PageW, double PageH,
-    IReadOnlyList<CharBox>? CharBoxes = null,
-    bool TableRowReading = true,
-    bool CellNavigation = false);
+    IReadOnlyList<CharBox>? CharBoxes,
+    AnalysisParams Params);
 
 public sealed record AnalysisResult(
-    string FilePath, int Page, PageAnalysis Analysis);
+    string FilePath, int Page, AnalysisParams Params, PageAnalysis Analysis);
 
 public sealed class AnalysisWorker : IDisposable
 {
     private readonly Channel<AnalysisRequest> _requestChannel;
     private readonly Channel<AnalysisResult> _resultChannel;
     // UI-thread-only: accessed exclusively from Submit/Poll/IsInFlight/IsIdle on the UI thread.
-    private readonly HashSet<(string FilePath, int Page)> _inFlight = [];
+    // Keyed by params too (railreader2#180 #3) so the same page can be in flight under two
+    // different post-processing variants (e.g. cell-nav on for one view, off for another).
+    private readonly HashSet<(string FilePath, int Page, AnalysisParams Params)> _inFlight = [];
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _workerTask;
     private readonly ILogger _logger;
@@ -107,12 +108,12 @@ public sealed class AnalysisWorker : IDisposable
                 float mapScaleY = request.PxH > 0 ? (float)(request.PageH / request.PxH) : 1f;
                 BlockPostProcessor.PostProcess(
                     analysis.Blocks, request.RgbBytes, request.PxW, request.PxH,
-                    mapScaleX, mapScaleY, request.CharBoxes, request.TableRowReading, request.CellNavigation);
+                    mapScaleX, mapScaleY, request.CharBoxes, request.Params.TableRowReading, request.Params.CellNavigation);
 
                 _logger.Debug($"[Worker] Page {request.Page}: {analysis.Blocks.Count} blocks detected");
 
                 await _resultChannel.Writer.WriteAsync(
-                    new AnalysisResult(request.FilePath, request.Page, analysis), ct);
+                    new AnalysisResult(request.FilePath, request.Page, request.Params, analysis), ct);
             }
         }
     }
@@ -121,7 +122,7 @@ public sealed class AnalysisWorker : IDisposable
     public bool Submit(AnalysisRequest request)
     {
         _marshaller.AssertUIThread();
-        var key = (request.FilePath, request.Page);
+        var key = (request.FilePath, request.Page, request.Params);
         if (!_inFlight.Add(key))
             return false;
 
@@ -140,15 +141,16 @@ public sealed class AnalysisWorker : IDisposable
         if (!_resultChannel.Reader.TryRead(out var result))
             return null;
 
-        _inFlight.Remove((result.FilePath, result.Page));
+        _inFlight.Remove((result.FilePath, result.Page, result.Params));
         return result;
     }
 
-    /// <summary>Check if a page is currently being analyzed. Must be called on the UI thread.</summary>
-    public bool IsInFlight(string filePath, int page)
+    /// <summary>Check if a page is currently being analyzed under the given post-processing params.
+    /// Must be called on the UI thread.</summary>
+    public bool IsInFlight(string filePath, int page, AnalysisParams pars)
     {
         _marshaller.AssertUIThread();
-        return _inFlight.Contains((filePath, page));
+        return _inFlight.Contains((filePath, page, pars));
     }
 
     /// <summary>Check if no analysis requests are in flight. Must be called on the UI thread.</summary>

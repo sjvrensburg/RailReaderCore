@@ -5,9 +5,9 @@ using RailReader.Core.Services;
 namespace RailReader.Core;
 
 /// <summary>
-/// Per-view state extracted from <see cref="DocumentState"/> — Phase 0 of the
+/// Per-view state extracted from <see cref="DocumentModel"/> — Phase 0 of the
 /// multi-viewport split (see <c>docs/multi-viewport-design.md</c>). Today each
-/// <see cref="DocumentState"/> embeds exactly one "primary" viewport and delegates
+/// <see cref="DocumentModel"/> embeds exactly one "primary" viewport and delegates
 /// its public camera / rendered-page surface to it, so this change ships invisibly.
 /// Subsequent phases let a document own several of these (split-pane / detached-window
 /// reading), each with an independent camera and rasterised-page cache.
@@ -19,7 +19,7 @@ namespace RailReader.Core;
 /// </summary>
 public sealed class Viewport : IDisposable
 {
-    internal Viewport(CoreSettings config, DocumentState owner)
+    internal Viewport(CoreSettings config, DocumentModel owner)
     {
         // Back-reference to the owning document (set at construction so the camera-geometry /
         // render-path methods that move onto Viewport in later increments can reach doc-level data
@@ -27,19 +27,20 @@ public sealed class Viewport : IDisposable
         Owner = owner;
         // Rail and AutoScroll need config at construction, so build them here rather than leaving the
         // members null-initialised and assigned later by the owner (a NRE footgun once a future phase
-        // constructs viewports outside DocumentState's ctor).
+        // constructs viewports outside DocumentModel's ctor).
         Rail = new RailNav(config);
         AutoScroll = new AutoScrollController(config);
+        AnalysisParams = new AnalysisParams(config.TableRowReading, config.CellNavigation);
     }
 
     /// <summary>The document this view belongs to. Gives the per-view camera/render methods
     /// (moved onto <see cref="Viewport"/> in the capstone) read access to doc-level data:
-    /// <see cref="DocumentState.Pdf"/>, the page caches, <see cref="DocumentState.DocumentContentFraction"/>,
+    /// <see cref="DocumentModel.Pdf"/>, the page caches, <see cref="DocumentModel.DocumentContentFraction"/>,
     /// and the marshaller/logger. Set once in the constructor.</summary>
-    internal DocumentState Owner { get; }
+    public DocumentModel Owner { get; }
 
     /// <summary>Fires when a per-view property changes (parameter is the property name). Per-view so a
-    /// multi-viewport host can tell "which view changed". <see cref="DocumentState.StateChanged"/>
+    /// multi-viewport host can tell "which view changed". <see cref="DocumentModel.StateChanged"/>
     /// forwards the primary view's events, so existing single-viewport subscribers are unaffected.</summary>
     public Action<string>? StateChanged;
 
@@ -52,7 +53,7 @@ public sealed class Viewport : IDisposable
     public Action<ReadingPosition>? ReadingPositionChanged;
 
     /// <summary>Sets a backing field and fires <see cref="StateChanged"/> if the value changed.
-    /// Mirrors <c>DocumentState.SetField</c> — UI-thread-only, same change-detection.</summary>
+    /// Mirrors <c>DocumentModel.SetField</c> — UI-thread-only, same change-detection.</summary>
     private bool SetField<T>(ref T field, T value, string propertyName)
     {
         Owner.Marshaller.AssertUIThread();
@@ -77,7 +78,7 @@ public sealed class Viewport : IDisposable
     public Camera Camera { get; } = new();
 
     /// <summary>This view's viewport size in px. The controller keeps an ambient size and mirrors it
-    /// onto the primary (<see cref="DocumentState.SetSize"/> via <c>SetViewportSize</c>); a host sizes a
+    /// onto the primary (<see cref="DocumentModel.SetSize"/> via <c>SetViewportSize</c>); a host sizes a
     /// detached pane via <see cref="SetSize"/>. This is now the single source of size for a view's own
     /// animation: the controller's per-view tick/clamp/seat and its input/camera methods all read
     /// <see cref="Width"/>/<see cref="Height"/> off the target view (no longer the ambient
@@ -109,8 +110,18 @@ public sealed class Viewport : IDisposable
     /// <summary>Active free-pan (Ctrl+drag) rail-pause snapshot for this view, or null when not paused.</summary>
     internal RailPauseState? RailPause { get; set; }
 
+    /// <summary>True while THIS view has a camera animation (zoom / rail snap) or an active auto-scroll
+    /// running. Replaces the removed controller-level <c>IsAnimating</c> facade (Phase 3): a host's
+    /// "settled" signal reads the focused view's value. A <em>parked</em> semi-auto-scroll is excluded
+    /// — a park is an indefinite idle wait for an explicit advance keypress (no camera motion), so it
+    /// must let the render loop quiesce rather than pin it true forever (issue #62).</summary>
+    public bool IsAnimating =>
+        Zoom.IsAnimating
+        || Rail.SnapProgress < 1.0
+        || (AutoScroll.AutoScrollActive && !Rail.AutoScrollParked);
+
     // --- Page position + dimensions (this view's current page). Per-view properties:
-    //     each viewport sits on its own page rendered at its own size. DocumentState's
+    //     each viewport sits on its own page rendered at its own size. DocumentModel's
     //     CurrentPage/PageWidth/PageHeight delegate here. ---
     internal int CurrentPageBacking;
     internal double PageWidthBacking;
@@ -142,48 +153,51 @@ public sealed class Viewport : IDisposable
         set => SetField(ref PageHeightBacking, value, nameof(PageHeight));
     }
 
-    // --- Per-view display prefs + pending state. Backing storage for DocumentState's
-    //     delegated SetField properties (written via ref). ---
-    internal bool DebugOverlayBacking;
+    // --- Pending state. (Display prefs are document-level now — railreader2#180 #2 — so the
+    //     DebugOverlay / ColourEffect / LineFocusBlur / LineHighlightEnabled / MarginCropping
+    //     accessors below delegate to Owner: every view of a document shares one value.) ---
     internal bool PendingRailSetupBacking;
-    internal ColourEffect ColourEffectBacking;
-    internal bool LineFocusBlurBacking;
-    internal bool LineHighlightEnabledBacking = true;
-    internal bool MarginCroppingBacking;
 
-    // --- Public per-view accessors for the display prefs above (design §2; railreader2#180 #2). Each
-    //     fires THIS view's StateChanged — forwarded to DocumentState.StateChanged for the primary, so
-    //     the doc-level facades stay equivalent — letting a detached pane carry its own overlay /
-    //     colour effect / line-focus / highlight / margin-crop independently of the primary. ---
+    // --- Per-view display-pref accessors that delegate to the document-level value (#2). Reading any
+    //     view sees the document's pref; writing through a view changes the whole document (fires the
+    //     doc-level StateChanged). Kept as instance members so the per-viewport render path can read
+    //     them off the view it is drawing without reaching for Owner at every call site. ---
     public bool DebugOverlay
     {
-        get => DebugOverlayBacking;
-        set => SetField(ref DebugOverlayBacking, value, nameof(DebugOverlay));
+        get => Owner.DebugOverlay;
+        set => Owner.DebugOverlay = value;
     }
 
     public ColourEffect ColourEffect
     {
-        get => ColourEffectBacking;
-        set => SetField(ref ColourEffectBacking, value, nameof(ColourEffect));
+        get => Owner.ColourEffect;
+        set => Owner.ColourEffect = value;
     }
 
     public bool LineFocusBlur
     {
-        get => LineFocusBlurBacking;
-        set => SetField(ref LineFocusBlurBacking, value, nameof(LineFocusBlur));
+        get => Owner.LineFocusBlur;
+        set => Owner.LineFocusBlur = value;
     }
 
     public bool LineHighlightEnabled
     {
-        get => LineHighlightEnabledBacking;
-        set => SetField(ref LineHighlightEnabledBacking, value, nameof(LineHighlightEnabled));
+        get => Owner.LineHighlightEnabled;
+        set => Owner.LineHighlightEnabled = value;
     }
 
     public bool MarginCropping
     {
-        get => MarginCroppingBacking;
-        set => SetField(ref MarginCroppingBacking, value, nameof(MarginCropping));
+        get => Owner.MarginCropping;
+        set => Owner.MarginCropping = value;
     }
+
+    /// <summary>Post-processing params for THIS view's analysis (railreader2#180 #3): table-row
+    /// reading and cell navigation. Per-viewport so two views can post-process the same page
+    /// differently. Seeded from the document default (config); the analysis cache is keyed on these.
+    /// Setting it does not itself trigger re-analysis — the next rail-seating cache lookup misses the
+    /// old variant and submits the new one.</summary>
+    public AnalysisParams AnalysisParams { get; set; }
 
     /// <summary>True while this view is waiting on analysis for its current page before its rail can
     /// be seated. Per-view so each viewport tracks its own pending state; fires <see cref="StateChanged"/>.</summary>
@@ -209,7 +223,7 @@ public sealed class Viewport : IDisposable
     /// <summary>Cancels this view's in-flight render/prefetch/DPI-rerender tasks. Per-view (not the
     /// document's) so removing one viewport (future <c>RemoveViewport</c>) cancels only its own
     /// renders; the document's own CTS still guards the shared analysis-submission tasks. Cancelled
-    /// and disposed by <see cref="DocumentState.Dispose"/> before the cached bitmaps are freed
+    /// and disposed by <see cref="DocumentModel.Dispose"/> before the cached bitmaps are freed
     /// (§6 disposal ordering).</summary>
     internal CancellationTokenSource Cts { get; } = new();
 
@@ -235,7 +249,7 @@ public sealed class Viewport : IDisposable
     /// </summary>
     public Action? OnDpiRenderComplete { get; set; }
 
-    // --- Render-DPI state machine (driven by DocumentState's render methods) ---
+    // --- Render-DPI state machine (driven by DocumentModel's render methods) ---
 
     /// <summary>Active render-quality tuning (DPI cap / tier step / floor / pixel-area
     /// ceiling / hysteresis). Updated at runtime via OnRenderQualityChanged.</summary>
@@ -266,7 +280,7 @@ public sealed class Viewport : IDisposable
     // ---------------------------------------------------------------------------------------------
     //  Render path (capstone slice 3). These rasterise THIS view's page at THIS view's DPI, writing
     //  the per-view CachedPage/DPI/prefetch state and reaching doc-level data (Pdf/marshaller/logger
-    //  /caches) through Owner. Background tasks use this view's own Cts. DocumentState keeps thin
+    //  /caches) through Owner. Background tasks use this view's own Cts. DocumentModel keeps thin
     //  delegating wrappers so call sites are untouched.
     // ---------------------------------------------------------------------------------------------
 
@@ -298,7 +312,7 @@ public sealed class Viewport : IDisposable
             }
 
             var (w, h) = Owner.Pdf.GetPageSize(CurrentPageBacking);
-            int dpi = DocumentState.CalculateRenderDpi(Camera.Zoom, w, h, RenderDpi);
+            int dpi = DocumentModel.CalculateRenderDpi(Camera.Zoom, w, h, RenderDpi);
             var newPage = Owner.Pdf.RenderPage(CurrentPageBacking, dpi);
             var newMinimap = Owner.Pdf.RenderThumbnail(CurrentPageBacking);
 
@@ -349,7 +363,7 @@ public sealed class Viewport : IDisposable
             {
                 ct.ThrowIfCancellationRequested();
                 var (w, h) = Owner.Pdf.GetPageSize(pageIndex);
-                int dpi = DocumentState.CalculateRenderDpi(zoom, w, h, dpiSettings);
+                int dpi = DocumentModel.CalculateRenderDpi(zoom, w, h, dpiSettings);
                 Owner.Logger.Debug($"[PDFium] prefetch pg {pageIndex} @ {dpi}dpi tid={Environment.CurrentManagedThreadId} file={Path.GetFileName(Owner.FilePath)}");
                 var page = Owner.Pdf.RenderPage(pageIndex, dpi);
                 var minimap = Owner.Pdf.RenderThumbnail(pageIndex);
@@ -407,7 +421,7 @@ public sealed class Viewport : IDisposable
         // scroll velocity drops to zero.
         if (Rail.ScrollSpeed > 0.1 || Rail.AutoScrolling) return false;
 
-        int neededDpi = DocumentState.CalculateRenderDpi(Camera.Zoom, PageWidthBacking, PageHeightBacking, RenderDpi);
+        int neededDpi = DocumentModel.CalculateRenderDpi(Camera.Zoom, PageWidthBacking, PageHeightBacking, RenderDpi);
         bool trigger = force
             ? neededDpi != CachedDpi
             : neededDpi > CachedDpi * RenderDpi.UpscaleHysteresis
@@ -509,7 +523,7 @@ public sealed class Viewport : IDisposable
 
     // ---------------------------------------------------------------------------------------------
     //  Camera geometry (capstone slice 2). These read this view's own Camera/Rail/page dimensions
-    //  and the document-wide content fraction (via Owner); DocumentState keeps thin public
+    //  and the document-wide content fraction (via Owner); DocumentModel keeps thin public
     //  delegating wrappers so call sites are untouched.
     // ---------------------------------------------------------------------------------------------
 
@@ -520,7 +534,7 @@ public sealed class Viewport : IDisposable
     /// </summary>
     public (double X, double Y, double W, double H) GetFitRect()
     {
-        if (MarginCroppingBacking && Owner.DocumentContentFraction is { } f)
+        if (Owner.MarginCropping && Owner.DocumentContentFraction is { } f)
         {
             return (f.X * PageWidthBacking, f.Y * PageHeightBacking,
                     f.W * PageWidthBacking, f.H * PageHeightBacking);
@@ -622,7 +636,7 @@ public sealed class Viewport : IDisposable
         // screens. Only caps when the uncropped fit was itself below the rail
         // threshold — if the user would already be in rail without cropping,
         // cropping shouldn't un-rail them.
-        if (MarginCroppingBacking && Rail.ZoomThreshold > 0)
+        if (Owner.MarginCropping && Rail.ZoomThreshold > 0)
         {
             double uncroppedFit = windowWidth / PageWidthBacking;
             if (uncroppedFit < Rail.ZoomThreshold)
@@ -683,8 +697,8 @@ public sealed class Viewport : IDisposable
     /// <summary>
     /// Releases this view's resources: cancels its in-flight render/prefetch/DPI tasks (so a late
     /// one can't touch a freed bitmap — §6 disposal ordering), frees the cached page/minimap/prefetch
-    /// bitmaps, and drops its callbacks. Called by <see cref="DocumentState.RemoveViewport"/> for a
-    /// detached view and by <see cref="DocumentState.Dispose"/> for every view of a closing document.
+    /// bitmaps, and drops its callbacks. Called by <see cref="DocumentModel.RemoveViewport"/> for a
+    /// detached view and by <see cref="DocumentModel.Dispose"/> for every view of a closing document.
     /// Safe to call more than once.
     /// </summary>
     public void Dispose()

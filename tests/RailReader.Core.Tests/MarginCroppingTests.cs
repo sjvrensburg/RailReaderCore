@@ -32,7 +32,7 @@ public class MarginCroppingTests : IDisposable
 
         Assert.Null(state.DocumentContentFraction);
 
-        state.SetAnalysis(0, new PageAnalysis
+        state.SetAnalysis(0, state.DefaultAnalysisParams, new PageAnalysis
         {
             PageWidth = 1000,
             PageHeight = 1000,
@@ -44,7 +44,7 @@ public class MarginCroppingTests : IDisposable
         Assert.Equal(0.1, frac!.Value.X, 6);
         Assert.Equal(0.8, frac.Value.W, 6);
 
-        state.SetAnalysis(1, new PageAnalysis
+        state.SetAnalysis(1, state.DefaultAnalysisParams, new PageAnalysis
         {
             PageWidth = 1000,
             PageHeight = 1000,
@@ -64,7 +64,7 @@ public class MarginCroppingTests : IDisposable
         _controller.AddDocument(state);
         _controller.SetViewportSize(800, 600);
 
-        state.SetAnalysis(0, new PageAnalysis
+        state.SetAnalysis(0, state.DefaultAnalysisParams, new PageAnalysis
         {
             PageWidth = state.PageWidth,
             PageHeight = state.PageHeight,
@@ -94,7 +94,7 @@ public class MarginCroppingTests : IDisposable
         _controller.AddDocument(state);
         _controller.SetViewportSize(800, 600);
 
-        state.SetAnalysis(0, new PageAnalysis
+        state.SetAnalysis(0, state.DefaultAnalysisParams, new PageAnalysis
         {
             PageWidth = state.PageWidth,
             PageHeight = state.PageHeight,

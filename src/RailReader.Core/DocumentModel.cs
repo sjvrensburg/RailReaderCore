@@ -7,7 +7,7 @@ namespace RailReader.Core;
 /// Per-document state: PDF, camera, rail nav, analysis cache, annotations.
 /// UI-free — no Avalonia dependency.
 /// </summary>
-public sealed class DocumentState : IDisposable
+public sealed class DocumentModel : IDisposable
 {
     private readonly IPdfService _pdf;
     private readonly IPdfTextService _pdfText;
@@ -18,8 +18,16 @@ public sealed class DocumentState : IDisposable
     internal bool IsDisposed { get; private set; }
 
     private string _title;
-    private bool _tableRowReading = true;
-    private bool _cellNavigation;
+    // Default post-processing params for this document — used by the background scan and as the
+    // canonical variant for document-wide consumers. Per-viewport params live on Viewport
+    // (railreader2#180 #3); this is the document default seeded from config.
+    private AnalysisParams _defaultAnalysisParams = AnalysisParams.Default;
+    // Document-level display prefs (railreader2#180 #2: inherited by every viewport, not per-view).
+    private bool _debugOverlay;
+    private ColourEffect _colourEffect;
+    private bool _lineFocusBlur;
+    private bool _lineHighlightEnabled = true;
+    private bool _marginCropping;
     /// <summary>Fires when a property changes. Parameter is the property name. Doc-level changes
     /// (e.g. Title) fire directly; per-view page changes are forwarded from the primary
     /// <see cref="Viewport.StateChanged"/> (wired in the constructor) so single-viewport
@@ -61,13 +69,13 @@ public sealed class DocumentState : IDisposable
         set => Primary.PageHeight = value;
     }
 
-    // These document-level display prefs delegate to the primary view's public per-view accessors
-    // (Viewport fires StateChanged, forwarded to this StateChanged) — equivalent to the old direct
-    // SetField, and they now share one notification path with the per-view API (railreader2#180 #2).
+    // Document-level display prefs (railreader2#180 #2): one value per document, inherited by every
+    // viewport. Each fires the doc-level StateChanged; the per-view Viewport accessors read/write
+    // these through Owner, so toggling on any view changes the whole document consistently.
     public bool DebugOverlay
     {
-        get => Primary.DebugOverlay;
-        set => Primary.DebugOverlay = value;
+        get => _debugOverlay;
+        set => SetField(ref _debugOverlay, value, nameof(DebugOverlay));
     }
 
     public bool PendingRailSetup
@@ -78,26 +86,26 @@ public sealed class DocumentState : IDisposable
 
     public ColourEffect ColourEffect
     {
-        get => Primary.ColourEffect;
-        set => Primary.ColourEffect = value;
+        get => _colourEffect;
+        set => SetField(ref _colourEffect, value, nameof(ColourEffect));
     }
 
     public bool LineFocusBlur
     {
-        get => Primary.LineFocusBlur;
-        set => Primary.LineFocusBlur = value;
+        get => _lineFocusBlur;
+        set => SetField(ref _lineFocusBlur, value, nameof(LineFocusBlur));
     }
 
     public bool LineHighlightEnabled
     {
-        get => Primary.LineHighlightEnabled;
-        set => Primary.LineHighlightEnabled = value;
+        get => _lineHighlightEnabled;
+        set => SetField(ref _lineHighlightEnabled, value, nameof(LineHighlightEnabled));
     }
 
     public bool MarginCropping
     {
-        get => Primary.MarginCropping;
-        set => Primary.MarginCropping = value;
+        get => _marginCropping;
+        set => SetField(ref _marginCropping, value, nameof(MarginCropping));
     }
 
     public string FilePath { get; }
@@ -111,7 +119,7 @@ public sealed class DocumentState : IDisposable
     /// <summary>
     /// The single embedded view (Phase 0 of the multi-viewport split — see
     /// <c>docs/multi-viewport-design.md</c>). Holds the camera and the rasterised-page
-    /// cache; <see cref="DocumentState"/>'s camera/render-surface members delegate here.
+    /// cache; <see cref="DocumentModel"/>'s camera/render-surface members delegate here.
     /// </summary>
     public Viewport Primary { get; }
 
@@ -123,12 +131,89 @@ public sealed class DocumentState : IDisposable
 
     public Camera Camera => Primary.Camera;
     public RailNav Rail => Primary.Rail;
-    private readonly Dictionary<int, PageAnalysis> _analysisCache = [];
+    // Analysis cache keyed on (page, params): each page can hold several post-processed variants so
+    // two viewports with different table/cell-nav params see different block structure for the same
+    // page (railreader2#180 #3). Look up a variant with TryGetAnalysis(page, params, …); document-wide
+    // consumers use the canonical TryGetAnalysis(page, …) overload (top-level blocks are param-invariant).
+    private readonly Dictionary<int, Dictionary<AnalysisParams, PageAnalysis>> _analysisCache = [];
     private readonly Dictionary<int, PageText> _textCache = [];
     private readonly Dictionary<int, List<PdfLink>> _linkCache = [];
-    public IReadOnlyDictionary<int, PageAnalysis> AnalysisCache => _analysisCache;
     public IReadOnlyDictionary<int, PageText> TextCache => _textCache;
     public IReadOnlyDictionary<int, List<PdfLink>> LinkCache => _linkCache;
+
+    /// <summary>The document's default post-processing params (from config) — the canonical variant
+    /// used by the background scan and document-wide consumers.</summary>
+    public AnalysisParams DefaultAnalysisParams => _defaultAnalysisParams;
+
+    /// <summary>True if the given page has its <paramref name="pars"/> variant cached.</summary>
+    public bool IsAnalysed(int page, AnalysisParams pars)
+        => _analysisCache.TryGetValue(page, out var byParams) && byParams.ContainsKey(pars);
+
+    /// <summary>True if the given page has any analysis variant cached (background-scan coverage).</summary>
+    public bool IsPageAnalysed(int page) => _analysisCache.ContainsKey(page);
+
+    /// <summary>Page indices with at least one cached analysis variant.</summary>
+    public IReadOnlyCollection<int> AnalysedPages => _analysisCache.Keys;
+
+    /// <summary>Looks up the analysis for a page under the exact post-processing
+    /// <paramref name="pars"/>. Use this for per-viewport rail / table-cell seating.</summary>
+    public bool TryGetAnalysis(int page, AnalysisParams pars, out PageAnalysis analysis)
+    {
+        if (_analysisCache.TryGetValue(page, out var byParams) && byParams.TryGetValue(pars, out var a))
+        {
+            analysis = a;
+            return true;
+        }
+        analysis = null!;
+        return false;
+    }
+
+    /// <summary>Looks up the canonical analysis for a page for document-wide consumers (figure/table/
+    /// equation index, content fraction, page descriptions, debug overlay) that don't care which
+    /// per-viewport variant produced it — top-level blocks are invariant across params. Prefers the
+    /// document-default variant, else any cached variant.</summary>
+    public bool TryGetAnalysis(int page, out PageAnalysis analysis)
+    {
+        if (_analysisCache.TryGetValue(page, out var byParams) && byParams.Count > 0)
+        {
+            if (byParams.TryGetValue(_defaultAnalysisParams, out var a)) { analysis = a; return true; }
+            foreach (var v in byParams.Values) { analysis = v; return true; }
+        }
+        analysis = null!;
+        return false;
+    }
+
+    /// <summary>A fresh snapshot mapping each analysed page to its canonical analysis variant — for
+    /// document-wide consumers (the figure/table/equation index via <c>PeekIndexBuilder</c>) that want
+    /// the whole cache as a page-keyed dictionary. Rebuilt on each call (the cache is now keyed on
+    /// <c>(page, params)</c>), so call it for an index rebuild, not per frame.</summary>
+    public IReadOnlyDictionary<int, PageAnalysis> CanonicalAnalyses
+    {
+        get
+        {
+            var snapshot = new Dictionary<int, PageAnalysis>(_analysisCache.Count);
+            foreach (var page in _analysisCache.Keys)
+                if (TryGetAnalysis(page, out var a))
+                    snapshot[page] = a;
+            return snapshot;
+        }
+    }
+
+    /// <summary>Drops cached analysis for every page outside the inclusive <c>[keepFrom, keepTo]</c>
+    /// window (all param variants), reclaiming memory after a whole-document scan. The text/link caches
+    /// have their own eviction (<see cref="EvictDistantPageCaches"/>); this targets the analysis cache,
+    /// which is otherwise never evicted. UI-thread only.</summary>
+    public void EvictAnalysisOutside(int keepFrom, int keepTo)
+    {
+        _marshaller.AssertUIThread();
+        List<int>? stale = null;
+        foreach (var page in _analysisCache.Keys)
+            if (page < keepFrom || page > keepTo)
+                (stale ??= []).Add(page);
+        if (stale is null) return;
+        foreach (var page in stale)
+            _analysisCache.Remove(page);
+    }
     // Pages farther than this from any view's current page are dropped from the
     // text/link caches; <= 0 disables eviction. See CoreSettings.PageCacheRadius.
     private int _pageCacheRadius;
@@ -188,7 +273,7 @@ public sealed class DocumentState : IDisposable
     // Small pre-scaled thumbnail used by the minimap (≤200×280 px).
     public IRenderedPage? MinimapPage { get => Primary.MinimapPage; private set => Primary.MinimapPage = value; }
 
-    public DocumentState(string filePath, IPdfService pdf, IPdfTextService pdfText, IPdfLinkService pdfLink,
+    public DocumentModel(string filePath, IPdfService pdf, IPdfTextService pdfText, IPdfLinkService pdfLink,
         CoreSettings config, IThreadMarshaller marshaller, ILogger? logger = null)
     {
         _config = config;
@@ -205,12 +290,11 @@ public sealed class DocumentState : IDisposable
         _pdfLink = pdfLink;
         PageCount = _pdf.PageCount;
         _title = Path.GetFileName(filePath);
-        Primary.ColourEffectBacking = config.ColourEffect;
-        Primary.LineFocusBlurBacking = config.LineFocusBlur;
-        Primary.LineHighlightEnabledBacking = config.LineHighlightEnabled;
-        Primary.MarginCroppingBacking = config.MarginCropping;
-        _tableRowReading = config.TableRowReading;
-        _cellNavigation = config.CellNavigation;
+        _colourEffect = config.ColourEffect;
+        _lineFocusBlur = config.LineFocusBlur;
+        _lineHighlightEnabled = config.LineHighlightEnabled;
+        _marginCropping = config.MarginCropping;
+        _defaultAnalysisParams = new AnalysisParams(config.TableRowReading, config.CellNavigation);
         Outline = _pdf.Outline;
         _pageCacheRadius = config.PageCacheRadius;
         Primary.RenderDpi = config.RenderDpi;
@@ -228,8 +312,16 @@ public sealed class DocumentState : IDisposable
         _config = config;
         BackgroundQueue.WindowPages = config.BackgroundAnalysisWindowPages;
         _pageCacheRadius = config.PageCacheRadius;
-        _tableRowReading = config.TableRowReading;
-        _cellNavigation = config.CellNavigation;
+        // When the global table/cell-nav default actually changes, adopt it as the new document
+        // default and apply it to every viewport (matching the old doc-level behaviour). Unrelated
+        // config changes (dark mode, scroll speed, …) leave any per-viewport divergence intact.
+        var newParams = new AnalysisParams(config.TableRowReading, config.CellNavigation);
+        if (newParams != _defaultAnalysisParams)
+        {
+            _defaultAnalysisParams = newParams;
+            foreach (var vp in _viewports)
+                vp.AnalysisParams = newParams;
+        }
         EvictDistantPageCaches();
     }
 
@@ -280,12 +372,11 @@ public sealed class DocumentState : IDisposable
     public Viewport AddViewport()
     {
         _marshaller.AssertUIThread();
+        // Display prefs are document-level now (#2) — the new view reads them via Owner. Its analysis
+        // params are seeded from the document default in the Viewport constructor. Only the per-view
+        // render-DPI tuning needs seeding here.
         var vp = new Viewport(_config, this)
         {
-            ColourEffectBacking = _config.ColourEffect,
-            LineFocusBlurBacking = _config.LineFocusBlur,
-            LineHighlightEnabledBacking = _config.LineHighlightEnabled,
-            MarginCroppingBacking = _config.MarginCropping,
             RenderDpi = _config.RenderDpi,
         };
         vp.SetSize(Primary.Width, Primary.Height);
@@ -384,7 +475,8 @@ public sealed class DocumentState : IDisposable
 
     public void SubmitAnalysis(Viewport vp, AnalysisWorker? worker, IReadOnlySet<BlockRole> navigableRoles)
     {
-        if (_analysisCache.TryGetValue(vp.CurrentPage, out var cached))
+        var pars = vp.AnalysisParams;
+        if (TryGetAnalysis(vp.CurrentPage, pars, out var cached))
         {
             _logger.Debug($"[SubmitAnalysis] Page {vp.CurrentPage}: cache hit, {cached.Blocks.Count} blocks");
             ApplyAnalysis(vp, cached, navigableRoles);
@@ -393,7 +485,7 @@ public sealed class DocumentState : IDisposable
 
         if (worker is null) return;
 
-        if (worker.IsInFlight(FilePath, vp.CurrentPage))
+        if (worker.IsInFlight(FilePath, vp.CurrentPage, pars))
         {
             _logger.Debug($"[SubmitAnalysis] Page {vp.CurrentPage}: already in flight");
             vp.PendingRailSetup = true;
@@ -423,7 +515,7 @@ public sealed class DocumentState : IDisposable
                     // a worker request or write state for a view that's gone.
                     if (IsDisposed || vp.IsDisposed || vp.CurrentPage != page) return;
                     _textCache[page] = pageText;
-                    worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, _tableRowReading, _cellNavigation));
+                    worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, pars));
                 });
             }
             catch (OperationCanceledException) { }
@@ -440,7 +532,7 @@ public sealed class DocumentState : IDisposable
 
     public void ReapplyNavigableRoles(Viewport vp, IReadOnlySet<BlockRole> navigableRoles)
     {
-        if (_analysisCache.TryGetValue(vp.CurrentPage, out var cached))
+        if (TryGetAnalysis(vp.CurrentPage, vp.AnalysisParams, out var cached))
             vp.Rail.SetAnalysis(cached, navigableRoles);
     }
 
@@ -458,10 +550,11 @@ public sealed class DocumentState : IDisposable
         vp.PendingAnalysis.Clear();
         if (_analysisCache.Count < PageCount)
             BackgroundQueue.Reset(vp.CurrentPage);
+        var pars = vp.AnalysisParams;
         for (int i = 1; i <= count; i++)
         {
             int page = vp.CurrentPage + i;
-            if (page < PageCount && !_analysisCache.ContainsKey(page))
+            if (page < PageCount && !IsAnalysed(page, pars))
                 vp.PendingAnalysis.Enqueue(page);
         }
     }
@@ -473,10 +566,11 @@ public sealed class DocumentState : IDisposable
         if (worker is null || !worker.IsIdle) return false;
         if (vp.PendingRailSetup) return false;
 
+        var pars = vp.AnalysisParams;
         while (vp.PendingAnalysis.Count > 0)
         {
             int page = vp.PendingAnalysis.Dequeue();
-            if (_analysisCache.ContainsKey(page) || worker.IsInFlight(FilePath, page)) continue;
+            if (IsAnalysed(page, pars) || worker.IsInFlight(FilePath, page, pars)) continue;
 
             string filePath = FilePath;
             double pageW = vp.PageWidth, pageH = vp.PageHeight;
@@ -493,7 +587,7 @@ public sealed class DocumentState : IDisposable
                         if (!IsDisposed)
                         {
                             _textCache[page] = pageText;
-                            worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, _tableRowReading, _cellNavigation));
+                            worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, pars));
                         }
                     });
                 }
@@ -524,8 +618,12 @@ public sealed class DocumentState : IDisposable
         if (IsPdfiumBusy) return false;
         if (BackgroundQueue.IsExhausted) return false;
 
+        // Background scan produces the document-default variant (the canonical analysis the
+        // document-wide index / content-fraction consume). A page counts as covered once any variant
+        // is cached. Per-viewport non-default variants are produced on demand when a view navigates.
+        var pars = _defaultAnalysisParams;
         int? nextPage = BackgroundQueue.TryGetNext(
-            _analysisCache, page => worker.IsInFlight(FilePath, page));
+            IsPageAnalysed, page => worker.IsInFlight(FilePath, page, pars));
         if (nextPage is not { } page) return false;
 
         try
@@ -533,7 +631,7 @@ public sealed class DocumentState : IDisposable
             var (pageW, pageH) = _pdf.GetPageSize(page);
             var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize);
             var pageText = GetOrExtractText(page);
-            worker.Submit(new AnalysisRequest(FilePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, _tableRowReading, _cellNavigation));
+            worker.Submit(new AnalysisRequest(FilePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, pars));
             return true;
         }
         catch (Exception ex)
@@ -585,7 +683,7 @@ public sealed class DocumentState : IDisposable
 
     // --- Camera geometry: delegated to the view (capstone slice 2). The bodies live on
     //     Viewport (reading its own Camera/Rail/page dims + Owner.DocumentContentFraction);
-    //     these wrappers keep DocumentState's public surface and call sites untouched. ---
+    //     these wrappers keep DocumentModel's public surface and call sites untouched. ---
 
     /// <summary>
     /// Returns the page-space rectangle used by fit/centre operations.
@@ -783,11 +881,15 @@ public sealed class DocumentState : IDisposable
 
     // --- Cache mutation methods ---
 
-    internal void SetAnalysis(int page, PageAnalysis analysis)
+    internal void SetAnalysis(int page, AnalysisParams pars, PageAnalysis analysis)
     {
         _marshaller.AssertUIThread();
-        _analysisCache[page] = analysis;
+        if (!_analysisCache.TryGetValue(page, out var byParams))
+            _analysisCache[page] = byParams = [];
+        byParams[pars] = analysis;
 
+        // Content fraction is param-invariant (top-level blocks don't change with row/cell splitting),
+        // so accumulate from whatever variant lands; the union only grows.
         var frac = PageCropUtil.ComputeFraction(analysis);
         var next = DocumentContentFraction is { } existing ? existing.Union(frac) : frac;
         if (!next.Equals(DocumentContentFraction))

@@ -13,7 +13,7 @@ namespace RailReader.Core.Tests;
 /// </summary>
 public class MarkupAndFreeTextToolTests : IDisposable
 {
-    private readonly DocumentState _doc;
+    private readonly DocumentModel _doc;
     private readonly AnnotationFileManager _manager;
     private readonly AnnotationInteractionHandler _handler;
 
@@ -23,7 +23,7 @@ public class MarkupAndFreeTextToolTests : IDisposable
         var marshaller = new SynchronousThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
-        _doc = new DocumentState(pdfPath, factory.CreatePdfService(pdfPath),
+        _doc = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
             factory.CreatePdfTextService(), factory.CreatePdfLinkService(), config.ToCoreSettings(), marshaller);
         _doc.LoadPageBitmap();
         _manager = new AnnotationFileManager(AnnotationService.Default, marshaller);

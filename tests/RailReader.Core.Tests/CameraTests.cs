@@ -19,19 +19,19 @@ public class CameraTests
     {
         var cam = new Camera();
         cam.Zoom = Camera.ZoomMin - 1;
-        // Camera.Zoom does not auto-clamp; DocumentState.ApplyZoom does
+        // Camera.Zoom does not auto-clamp; DocumentModel.ApplyZoom does
         // But verify the min/max constants are sensible
         Assert.True(Camera.ZoomMin > 0);
         Assert.True(Camera.ZoomMax > Camera.ZoomMin);
     }
 
     [Fact]
-    public void DocumentState_ClampCamera_CentersSmallPage()
+    public void DocumentModel_ClampCamera_CentersSmallPage()
     {
         var config = new RailReader.Core.Services.AppConfig();
         var pdfPath = TestFixtures.GetTestPdfPath();
         var factory = TestFixtures.CreatePdfFactory();
-        var state = new DocumentState(pdfPath, factory.CreatePdfService(pdfPath),
+        var state = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
             factory.CreatePdfTextService(), factory.CreatePdfLinkService(), config.ToCoreSettings(), new SynchronousThreadMarshaller());
         state.LoadPageBitmap();
 
@@ -49,12 +49,12 @@ public class CameraTests
     }
 
     [Fact]
-    public void DocumentState_CenterPage_FitsViewport()
+    public void DocumentModel_CenterPage_FitsViewport()
     {
         var config = new RailReader.Core.Services.AppConfig();
         var pdfPath = TestFixtures.GetTestPdfPath();
         var factory = TestFixtures.CreatePdfFactory();
-        var state = new DocumentState(pdfPath, factory.CreatePdfService(pdfPath),
+        var state = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
             factory.CreatePdfTextService(), factory.CreatePdfLinkService(), config.ToCoreSettings(), new SynchronousThreadMarshaller());
         state.LoadPageBitmap();
 

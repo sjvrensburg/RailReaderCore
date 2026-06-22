@@ -35,13 +35,13 @@ public sealed class SearchService
     private Viewport? FocusedView => _getFocusedViewport();
 
     /// <summary>The document being searched, derived from <see cref="FocusedView"/>.</summary>
-    private DocumentState? ActiveDoc => _getFocusedViewport()?.Owner;
+    private DocumentModel? ActiveDoc => _getFocusedViewport()?.Owner;
 
     public List<SearchMatch> SearchMatches { get; private set; } = [];
     private Dictionary<int, List<SearchMatch>> _searchMatchesByPage = [];
     public List<SearchMatch>? CurrentPageSearchMatches { get; private set; }
     public int ActiveMatchIndex { get; set; }
-    private DocumentState? _searchedDocument;
+    private DocumentModel? _searchedDocument;
 
     /// <summary>
     /// Search matches on a specific page (issue #74). A multi-viewport host renders each pane's own
@@ -114,7 +114,7 @@ public sealed class SearchService
     /// Searches a single page and appends matches to the list.
     /// Uses PDFium's FPDFText_CountRects/GetRect for accurate highlight positioning.
     /// </summary>
-    public static void SearchPage(DocumentState doc, int page, string query,
+    public static void SearchPage(DocumentModel doc, int page, string query,
         Regex? regex, StringComparison comparison, List<SearchMatch> results)
     {
         var pageText = doc.GetOrExtractText(page);
@@ -143,7 +143,7 @@ public sealed class SearchService
     /// <summary>
     /// Finalizes search results: sets active match, navigates, updates current page matches.
     /// </summary>
-    public void FinalizeSearch(DocumentState doc, List<SearchMatch> allMatches)
+    public void FinalizeSearch(DocumentModel doc, List<SearchMatch> allMatches)
     {
         _searchedDocument = doc;
         SearchMatches = allMatches;

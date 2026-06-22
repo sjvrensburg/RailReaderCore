@@ -7,7 +7,7 @@ namespace RailReader.Core.Tests;
 public class ZoomAnimationControllerTests : IDisposable
 {
     private readonly string _pdfPath;
-    private readonly DocumentState _doc;
+    private readonly DocumentModel _doc;
     private readonly ZoomAnimationController _zoom;
 
     public ZoomAnimationControllerTests()
@@ -15,7 +15,7 @@ public class ZoomAnimationControllerTests : IDisposable
         _pdfPath = TestFixtures.GetTestPdfPath();
         var config = new AppConfig();
         var factory = TestFixtures.CreatePdfFactory();
-        _doc = new DocumentState(_pdfPath, factory.CreatePdfService(_pdfPath),
+        _doc = new DocumentModel(_pdfPath, factory.CreatePdfService(_pdfPath),
             factory.CreatePdfTextService(), factory.CreatePdfLinkService(), config.ToCoreSettings(), new SynchronousThreadMarshaller());
         _doc.LoadPageBitmap();
         _doc.CenterPage(800, 600);

@@ -27,7 +27,7 @@ public class MultiViewportTests : IDisposable
 
     public void Dispose() => _controller.Dispose();
 
-    private DocumentState SetupDoc()
+    private DocumentModel SetupDoc()
     {
         var doc = _controller.CreateDocument(_pdfPath);
         doc.LoadPageBitmap();
@@ -137,7 +137,7 @@ public class MultiViewportTests : IDisposable
     [Fact]
     public void PrimaryViewport_StillDrivesTheDocumentFacade()
     {
-        // Adding a second view must not change the single-viewport facade: DocumentState's
+        // Adding a second view must not change the single-viewport facade: DocumentModel's
         // CurrentPage/Camera still reflect the primary view.
         var doc = SetupDoc();
         doc.AddViewport();
@@ -174,7 +174,7 @@ public class MultiViewportTests : IDisposable
         Assert.False(vp2.PendingRailSetup);                 // the fan-out cleared it
         Assert.True(vp2.Rail.HasAnalysis);                  // vp2's OWN rail got seated
         Assert.Equal(1, vp2.CurrentPage);
-        Assert.True(doc.AnalysisCache.ContainsKey(1));      // cached at the model level
+        Assert.True(doc.IsPageAnalysed(1));                 // cached at the model level
         Assert.NotSame(doc.Primary.Rail, vp2.Rail);         // independent rails
     }
 
@@ -182,15 +182,15 @@ public class MultiViewportTests : IDisposable
     public void PerViewportPageChanged_FiresForFocusedViewAndMirrorsToController()
     {
         var doc = SetupDoc();
-        int? viewEvent = null, controllerEvent = null;
-        doc.Primary.PageChanged += p => viewEvent = p;          // per-viewport event
-        _controller.PageChanged = p => controllerEvent = p;     // focused-view facade
+        int? viewEvent = null, focusedEvent = null;
+        doc.Primary.PageChanged += p => viewEvent = p;                       // per-viewport event
+        _controller.FocusedViewport!.PageChanged += p => focusedEvent = p;   // focused-view facade (Phase 3)
 
         _controller.GoToPage(2);
 
         Assert.Equal(2, doc.Primary.CurrentPage);
         Assert.Equal(2, viewEvent);        // the view's own PageChanged fired
-        Assert.Equal(2, controllerEvent);  // and the controller-level facade mirrored it
+        Assert.Equal(2, focusedEvent);     // and the focused-view facade (== Primary here) saw it too
     }
 
     [Fact]
@@ -402,13 +402,13 @@ public class MultiViewportTests : IDisposable
         _controller.FocusedViewport = vp2;
 
         int? controllerPage = null;
-        _controller.PageChanged = p => controllerPage = p;
+        _controller.FocusedViewport!.PageChanged += p => controllerPage = p;
 
         _controller.GoToPage(2);
 
         Assert.Equal(2, vp2.CurrentPage);          // the FOCUSED secondary moved
         Assert.Equal(0, doc.Primary.CurrentPage);  // Primary untouched
-        Assert.Equal(2, controllerPage);           // controller PageChanged fired for the focused view
+        Assert.Equal(2, controllerPage);           // the focused view's (vp2) PageChanged fired
     }
 
     [Fact]
@@ -430,33 +430,37 @@ public class MultiViewportTests : IDisposable
     }
 
     [Fact]
-    public void DisplayPrefs_ArePerViewport_AndDocFacadeTracksPrimary()
+    public void DisplayPrefs_AreDocumentLevel_AndViewportsDelegateToOwner()
     {
-        // railreader2#180 #2: each viewport carries its own display prefs, exposed publicly on
-        // Viewport; the DocumentState facade still reflects the primary's value.
+        // railreader2#180 Phase 3: display prefs (DebugOverlay/ColourEffect/LineFocusBlur/
+        // LineHighlightEnabled/MarginCropping) are document-level on DocumentModel; every
+        // Viewport's same-named property delegates to its Owner, so the prefs are SHARED across
+        // all views of a document. The doc fires the doc-level StateChanged (the primary forwards
+        // its own events there too), so setting through any viewport notifies once at doc level.
         var doc = SetupDoc();
         var vp2 = doc.AddViewport();
 
-        string? vp2Notified = null;
-        vp2.StateChanged = n => vp2Notified = n;
+        string? docNotified = null;
+        doc.StateChanged = n => docNotified = n;
 
-        vp2.LineFocusBlur = true;                              // per-view set fires the view's event
-        Assert.Equal(nameof(Viewport.LineFocusBlur), vp2Notified);
+        vp2.LineFocusBlur = true;                              // delegates to Owner → fires doc StateChanged
+        Assert.Equal(nameof(DocumentModel.LineFocusBlur), docNotified);
 
         Assert.True(vp2.LineFocusBlur);
-        Assert.False(doc.Primary.LineFocusBlur);              // independent of the primary
-        Assert.False(doc.LineFocusBlur);                      // doc facade tracks the primary, not vp2
+        Assert.True(doc.Primary.LineFocusBlur);               // shared: the primary sees it too
+        Assert.True(doc.LineFocusBlur);                       // doc facade IS the shared value
 
-        doc.LineHighlightEnabled = false;                     // facade drives the primary's per-view value
+        doc.LineHighlightEnabled = false;                     // doc facade drives the shared value
         Assert.False(doc.Primary.LineHighlightEnabled);
-        Assert.True(vp2.LineHighlightEnabled);                // vp2 keeps its own (default true)
+        Assert.False(vp2.LineHighlightEnabled);               // vp2 delegates to the same Owner value
 
-        vp2.DebugOverlay = true;                              // the rest of the per-view set is exposed too
+        vp2.DebugOverlay = true;                              // the rest of the set delegates too
         vp2.MarginCropping = true;
         vp2.ColourEffect = ColourEffect.Invert;
         Assert.True(vp2.DebugOverlay && vp2.MarginCropping);
         Assert.Equal(ColourEffect.Invert, vp2.ColourEffect);
-        Assert.False(doc.DebugOverlay);                       // primary untouched throughout
+        Assert.True(doc.DebugOverlay);                        // shared with the doc/primary throughout
+        Assert.Equal(ColourEffect.Invert, doc.ColourEffect);
     }
 
     [Fact]
