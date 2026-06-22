@@ -60,13 +60,13 @@ public class SmoothFrameTests : IDisposable
         return a;
     }
 
-    private DocumentState OpenWithAnalysis()
+    private DocumentModel OpenWithAnalysis()
     {
         var state = _controller.CreateDocument(_pdfPath);
         state.LoadPageBitmap(); // sets real PageWidth/Height so ClampCamera is correct
         _controller.AddDocument(state);
         _controller.SetViewportSize(Vw, Vh);
-        state.SetAnalysis(state.CurrentPage, SampleAnalysis());
+        state.SetAnalysis(state.CurrentPage, state.DefaultAnalysisParams, SampleAnalysis());
         return state;
     }
 
@@ -78,7 +78,7 @@ public class SmoothFrameTests : IDisposable
         {
             _controller.Tick(1.0 / 60.0);
             Thread.Sleep(5);
-        } while (_controller.IsAnimating && sw.ElapsedMilliseconds < timeoutMs);
+        } while (_controller.FocusedViewport!.IsAnimating && sw.ElapsedMilliseconds < timeoutMs);
         _controller.Tick(1.0 / 60.0); // final frame applies any completion snap
     }
 
@@ -174,7 +174,7 @@ public class SmoothFrameTests : IDisposable
 
     /// <summary>Assert the block's page-space centre maps to the viewport centre under the
     /// current camera (post-settle), i.e. screen = offset + pageCentre * zoom == (Vw/2, Vh/2).</summary>
-    private static void AssertBlockCentredInViewport(DocumentState state, BBox box)
+    private static void AssertBlockCentredInViewport(DocumentModel state, BBox box)
     {
         double cx = box.X + box.W / 2.0, cy = box.Y + box.H / 2.0;
         double screenX = state.Camera.OffsetX + cx * state.Camera.Zoom;
@@ -226,9 +226,9 @@ public class SmoothFrameTests : IDisposable
     {
         OpenWithAnalysis();
         _controller.SmoothlyFrameBlock(0, targetZoom: 5.0);
-        Assert.True(_controller.IsAnimating);
+        Assert.True(_controller.FocusedViewport!.IsAnimating);
         Settle();
-        Assert.False(_controller.IsAnimating);
+        Assert.False(_controller.FocusedViewport!.IsAnimating);
     }
 
     [Fact]
@@ -263,7 +263,7 @@ public class SmoothFrameTests : IDisposable
         small.Lines.Add(new LineInfo(308, 16, 72, 200));
         a.Blocks.Add(big);   // page index 0
         a.Blocks.Add(small); // page index 1, inside block 0
-        state.SetAnalysis(state.CurrentPage, a);
+        state.SetAnalysis(state.CurrentPage, state.DefaultAnalysisParams, a);
 
         Assert.True(_controller.SmoothlyFrameBlock(1, targetZoom: 5.0));
         Settle();

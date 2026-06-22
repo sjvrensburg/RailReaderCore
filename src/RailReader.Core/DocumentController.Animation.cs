@@ -8,23 +8,10 @@ public sealed partial class DocumentController
     // --- Tick (animation frame logic) ---
 
     /// <summary>
-    /// Advance one animation frame for the focused viewport. Returns what needs repainting.
-    /// Facade over <see cref="TickViewport"/> — retained as the single-viewport entry point
-    /// through Phase 2 (see <c>docs/multi-viewport-design.md</c> §7). A multi-viewport host
-    /// drives each on-screen viewport's <see cref="TickViewport"/> from its own frame callback.
-    /// </summary>
-    public TickResult Tick(double dt)
-    {
-        if (FocusedViewport is not { } vp) return default;
-        return TickViewport(vp, dt);
-    }
-
-    /// <summary>
     /// Advance one animation frame for a specific <paramref name="vp"/>: its camera/rail/zoom/
     /// auto-scroll animation and DPI bitmap swap, plus the global analysis pump. Operates on the
     /// passed viewport throughout, so a second viewport animates independently of the first.
-    /// <para>Facade that pumps analysis (preserving single-viewport <see cref="Tick(double)"/>
-    /// behaviour exactly). A multi-viewport host that ticks several views per frame should instead
+    /// <para>Pumps analysis. A multi-viewport host that ticks several views per frame should instead
     /// pump once via the <see cref="TickViewport(Viewport,double,bool)"/> overload — see §5.5.</para>
     /// </summary>
     public TickResult TickViewport(Viewport vp, double dt) => TickViewport(vp, dt, pumpAnalysis: true);
@@ -32,20 +19,18 @@ public sealed partial class DocumentController
     /// <summary>
     /// Advance one animation frame for <paramref name="vp"/>, with explicit control over the global
     /// analysis pump. The pump (worker drain + read-ahead scheduling) is document-global, not
-    /// per-view, so a host driving N viewports per frame ticks the focused view with
+    /// per-view, so a host driving N viewports per frame ticks one view with
     /// <paramref name="pumpAnalysis"/>=<c>true</c> (or calls <see cref="PumpAnalysis"/> once itself)
     /// and the rest with <c>false</c> — the worker would otherwise be drained redundantly on each
-    /// view (harmless, but wasteful). The single-viewport <see cref="Tick(double)"/> path always
-    /// pumps, so its behaviour is unchanged.
+    /// view (harmless, but wasteful).
     /// </summary>
     public TickResult TickViewport(Viewport vp, double dt, bool pumpAnalysis)
     {
         dt = Math.Min(dt, 1.0 / 30.0);
 
-        // Per-view geometry: animate/clamp THIS view against its OWN size, not the controller's
-        // ambient size. A host driving several panes of differing widths per frame no longer has to
-        // swap the controller's ambient size before each pane's tick (the railreader2#180 workaround).
-        // Single-window is unchanged — the primary's size mirrors the ambient (see SetViewportSize).
+        // Per-view geometry: animate/clamp THIS view against its OWN size. Every viewport (primary or
+        // detached) is sized by the host via Viewport.SetSize; there is no controller-level ambient
+        // size any more (the single-viewport facade was removed in Phase 3).
         var (ww, wh) = (vp.Width, vp.Height);
         // Free-pan pause is this view's own state and can't change within a tick; read it once.
         bool railPaused = vp.RailPause is not null;
@@ -332,14 +317,17 @@ public sealed partial class DocumentController
                 if (doc.IsDisposed || doc.FilePath != result.FilePath) continue;
                 matchedLiveDoc = true;
 
-                // Cache once at the model level — every view of this document shares it.
-                doc.SetAnalysis(result.Page, result.Analysis);
+                // Cache at the model level under the params it was produced with (railreader2#180 #3).
+                doc.SetAnalysis(result.Page, result.Params, result.Analysis);
 
-                // Fan out to every view of this document sitting on the analysed page and waiting
-                // for its rail (§5.4). Two views on the same page each get seated independently.
+                // Fan out to every view of this document sitting on the analysed page, waiting for its
+                // rail, AND whose post-processing params match this result (§5.4). Two views on the
+                // same page each get seated independently; a view with different params keeps waiting
+                // for its own variant.
                 foreach (var vp in doc.Viewports)
                 {
-                    if (vp.CurrentPage != result.Page || !vp.PendingRailSetup) continue;
+                    if (vp.CurrentPage != result.Page || !vp.PendingRailSetup
+                        || vp.AnalysisParams != result.Params) continue;
                     ApplyAnalysisToViewport(vp, result.Analysis, ref needsAnim, ref pageChanged);
                 }
             }

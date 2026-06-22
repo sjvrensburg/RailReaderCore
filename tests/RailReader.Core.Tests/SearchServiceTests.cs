@@ -7,7 +7,7 @@ namespace RailReader.Core.Tests;
 public class SearchServiceTests : IDisposable
 {
     private readonly string _pdfPath;
-    private readonly DocumentState _state;
+    private readonly DocumentModel _state;
     private readonly SearchService _search;
     private int _lastGoToPage = -1;
 
@@ -16,7 +16,7 @@ public class SearchServiceTests : IDisposable
         var config = new AppConfig();
         var factory = TestFixtures.CreatePdfFactory();
         _pdfPath = TestFixtures.GetTestPdfPath();
-        _state = new DocumentState(_pdfPath, factory.CreatePdfService(_pdfPath),
+        _state = new DocumentModel(_pdfPath, factory.CreatePdfService(_pdfPath),
             factory.CreatePdfTextService(), factory.CreatePdfLinkService(), config.ToCoreSettings(), new SynchronousThreadMarshaller());
         _state.LoadPageBitmap();
 
@@ -167,10 +167,10 @@ public class SearchServiceTests : IDisposable
         _search.FinalizeSearch(_state, matches);
         Assert.Equal(3, _search.SearchMatches.Count);
 
-        // Now the "active document" switches to a new DocumentState (document B).
+        // Now the "active document" switches to a new DocumentModel (document B).
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
-        DocumentState? docB = new DocumentState(pdfPath,
+        DocumentModel? docB = new DocumentModel(pdfPath,
             factory.CreatePdfService(pdfPath),
             factory.CreatePdfTextService(),
             factory.CreatePdfLinkService(),
@@ -178,7 +178,7 @@ public class SearchServiceTests : IDisposable
             new SynchronousThreadMarshaller());
         try
         {
-            DocumentState? activeDoc = _state;
+            DocumentModel? activeDoc = _state;
             var search = new SearchService(
                 () => activeDoc?.Primary,
                 _ => { });

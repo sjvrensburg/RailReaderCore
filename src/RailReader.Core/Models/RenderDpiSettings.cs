@@ -2,15 +2,15 @@ namespace RailReader.Core.Models;
 
 /// <summary>
 /// Immutable tuning parameters for zoom-driven page rasterisation. Consumed by
-/// <see cref="DocumentState.CalculateRenderDpi"/> (DPI selection + pixel-area
+/// <see cref="DocumentModel.CalculateRenderDpi"/> (DPI selection + pixel-area
 /// ceiling) and the hysteresis gate in
-/// <see cref="DocumentState.UpdateRenderDpiIfNeeded"/>. Built from a
+/// <see cref="DocumentModel.UpdateRenderDpiIfNeeded"/>. Built from a
 /// <see cref="RenderQuality"/> preset by the consumer's config layer
 /// (<c>AppConfig.ToCoreSettings</c>) and carried inside <see cref="CoreSettings"/>.
 ///
 /// Before this type existed, the cap (600), tier step (75), floor (150),
 /// hysteresis factors (1.5 / 0.5) and down-guard (150) were hardcoded literals
-/// in <c>DocumentState</c>; the defaults here reproduce that behaviour exactly,
+/// in <c>DocumentModel</c>; the defaults here reproduce that behaviour exactly,
 /// which is the <see cref="RenderQuality.Quality"/> preset.
 /// </summary>
 public readonly record struct RenderDpiSettings

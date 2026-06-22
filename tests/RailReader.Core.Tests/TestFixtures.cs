@@ -40,10 +40,10 @@ public static class TestFixtures
     public static IPdfServiceFactory CreatePdfFactory() => new SkiaPdfServiceFactory();
 
     /// <summary>
-    /// Configures a DocumentState for rail mode testing: injects synthetic analysis,
+    /// Configures a DocumentModel for rail mode testing: injects synthetic analysis,
     /// sets zoom above threshold, and activates rail navigation.
     /// </summary>
-    public static void SetupRailMode(DocumentState doc, CoreSettings config,
+    public static void SetupRailMode(DocumentModel doc, CoreSettings config,
         double vpWidth = 800, double vpHeight = 600)
     {
         var block = new LayoutBlock
@@ -59,12 +59,12 @@ public static class TestFixtures
     }
 
     /// <summary>
-    /// Configures a DocumentState for rail mode testing with multiple blocks of
+    /// Configures a DocumentModel for rail mode testing with multiple blocks of
     /// different roles. Creates one line per block — suitable for block-level
     /// navigation tests only; do not use for line-advance or snap-behaviour tests,
     /// which need multiple lines per block like the single-block overload provides.
     /// </summary>
-    public static void SetupRailMode(DocumentState doc, CoreSettings config,
+    public static void SetupRailMode(DocumentModel doc, CoreSettings config,
         double vpWidth, double vpHeight, params (BlockRole Role, BBox BBox)[] blocks)
     {
         var analysis = new PageAnalysis();
@@ -88,7 +88,7 @@ public static class TestFixtures
     /// need realistic geometry that the one-line-per-block overload cannot express.
     /// Each block's lines are evenly stacked within its bbox (LineInfo.Y = centre).
     /// </summary>
-    public static void SetupRailMode(DocumentState doc, CoreSettings config,
+    public static void SetupRailMode(DocumentModel doc, CoreSettings config,
         double vpWidth, double vpHeight, params (BlockRole Role, BBox BBox, int LineCount)[] blocks)
     {
         var analysis = new PageAnalysis();
@@ -108,10 +108,10 @@ public static class TestFixtures
         ActivateRailMode(doc, config, analysis, vpWidth, vpHeight);
     }
 
-    private static void ActivateRailMode(DocumentState doc, CoreSettings config,
+    private static void ActivateRailMode(DocumentModel doc, CoreSettings config,
         PageAnalysis analysis, double vpWidth, double vpHeight)
     {
-        doc.SetAnalysis(doc.CurrentPage, analysis);
+        doc.SetAnalysis(doc.CurrentPage, doc.DefaultAnalysisParams, analysis);
         doc.Rail.SetAnalysis(analysis, config.NavigableRoles);
         doc.Camera.Zoom = config.RailZoomThreshold + 1;
         doc.Rail.UpdateZoom(doc.Camera.Zoom, doc.Camera.OffsetX, doc.Camera.OffsetY, vpWidth, vpHeight);

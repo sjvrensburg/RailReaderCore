@@ -31,10 +31,7 @@ public sealed partial class DocumentController : IDisposable
     private AnalysisWorker? _worker;
     public bool HasWorker => _worker is not null;
 
-    private double _vpWidth = 1200;
-    private double _vpHeight = 900;
-
-    public List<DocumentState> Documents { get; } = [];
+    public List<DocumentModel> Documents { get; } = [];
 
     private Viewport? _focusedViewport;
 
@@ -59,7 +56,7 @@ public sealed partial class DocumentController : IDisposable
     }
 
     /// <summary>Re-points focus to the document's primary view when the currently-focused view is
-    /// removed (<see cref="DocumentState.RemoveViewport"/>), so <see cref="FocusedViewport"/> /
+    /// removed (<see cref="DocumentModel.RemoveViewport"/>), so <see cref="FocusedViewport"/> /
     /// <see cref="ActiveDocument"/> never reference a disposed view. The owning document is still open
     /// (only one of its non-primary views was removed), so its primary is a safe fallback.</summary>
     private void OnViewportRemoved(Viewport removed)
@@ -75,12 +72,14 @@ public sealed partial class DocumentController : IDisposable
     public AnnotationFileManager AnnotationManager => _annotationManager;
 
     /// <summary>The document the focused view belongs to — the input/search/annotation target.
-    /// Derived from <see cref="FocusedViewport"/>, so setting focus moves it.</summary>
-    public DocumentState? ActiveDocument => _focusedViewport?.Owner;
+    /// Derived from <see cref="FocusedViewport"/>. <b>Internal (Phase 3):</b> the public
+    /// single-viewport facade was removed — external hosts read <c>FocusedViewport?.Owner</c>.</summary>
+    internal DocumentModel? ActiveDocument => _focusedViewport?.Owner;
 
     /// <summary>Index of <see cref="ActiveDocument"/> in <see cref="Documents"/> (-1 if none). Setting
-    /// it focuses that document's primary view — the tab-switch entry point.</summary>
-    public int ActiveDocumentIndex
+    /// it focuses that document's primary view. <b>Internal (Phase 3):</b> external hosts set
+    /// <see cref="FocusedViewport"/> directly.</summary>
+    internal int ActiveDocumentIndex
     {
         get => _focusedViewport?.Owner is { } d ? Documents.IndexOf(d) : -1;
         set => _focusedViewport = (uint)value < (uint)Documents.Count ? Documents[value].Primary : null;
@@ -111,11 +110,9 @@ public sealed partial class DocumentController : IDisposable
     /// </summary>
     public Action<string>? StatusMessage;
 
-    /// <summary>Fired when the active document's page changes. Parameter = new page index.</summary>
-    public Action<int>? PageChanged;
-
-    /// <summary>Fired when the reading position (block/line) changes in rail mode.</summary>
-    public Action<ReadingPosition>? ReadingPositionChanged;
+    // Phase 3: the controller-level PageChanged / ReadingPositionChanged facades were removed.
+    // A host subscribes per-viewport via Viewport.PageChanged / Viewport.ReadingPositionChanged
+    // (the focused view, plus any detached panes it shows).
 
     /// <summary>Fired when analysis completes for a page. Parameter = page index.</summary>
     public Action<int>? AnalysisPageReady;
@@ -155,30 +152,16 @@ public sealed partial class DocumentController : IDisposable
         _logger.Debug("[Analysis] Worker started (analyzer loading in background)");
     }
 
-    public void SetViewportSize(double w, double h)
-    {
-        if (w > 0) _vpWidth = w;
-        if (h > 0) _vpHeight = h;
-        // Mirror the ambient size onto every document's PRIMARY view. The per-view tick/clamp/seat and
-        // the input/camera methods now read each view's own Viewport.Width/Height (#74), so this keeps a
-        // single-window host's primary in lock-step with the ambient size it sizes here. A multi-viewport
-        // host sizes its detached/secondary panes directly via Viewport.SetSize. Single-window → all equal.
-        foreach (var doc in Documents)
-            doc.Primary.SetSize(_vpWidth, _vpHeight);
-    }
-
-    public (double Width, double Height) GetViewportSize() => (_vpWidth, _vpHeight);
-
     // --- Document management ---
 
     /// <summary>
-    /// Creates a DocumentState for the given path (synchronous). Call LoadDocumentAsync for bitmap loading.
+    /// Creates a DocumentModel for the given path (synchronous). Call LoadDocumentAsync for bitmap loading.
     /// For an encrypted PDF, pass the
     /// <paramref name="password"/>; this throws <see cref="Services.PdfPasswordRequiredException"/>
     /// when the document is encrypted and the password is missing or wrong, so the
     /// caller can prompt the user and retry.
     /// </summary>
-    public DocumentState CreateDocument(string path, string? password = null)
+    public DocumentModel CreateDocument(string path, string? password = null)
         => new(path, _pdfFactory.CreatePdfService(path, password), _pdfFactory.CreatePdfTextService(),
             _pdfFactory.CreatePdfLinkService(), _config, _marshaller, _logger);
 
@@ -186,10 +169,13 @@ public sealed partial class DocumentController : IDisposable
     /// Adds a document to the tab list, restores reading position, and submits analysis.
     /// Call after bitmap is loaded.
     /// </summary>
-    public void AddDocument(DocumentState state)
+    public void AddDocument(DocumentModel state)
     {
-        var (ww, wh) = GetViewportSize();
-        state.Primary.SetSize(ww, wh); // seed this view's size from the ambient size
+        // The host sizes the primary view (via state.Primary.SetSize) before adding the document;
+        // the controller no longer keeps an ambient size (Phase 3). Initial centre / restore use
+        // the primary's own size — it falls back to the Viewport default until the host resizes it,
+        // at which point the host re-centres.
+        var (ww, wh) = (state.Primary.Width, state.Primary.Height);
         // This view's auto-scroll state changes surface through the controller's StateChanged
         // (UI re-reads AutoScrollActive/JumpMode, which delegate to the active view).
         state.Primary.AutoScroll.StateChanged = name => StateChanged?.Invoke(name);
@@ -327,7 +313,7 @@ public sealed partial class DocumentController : IDisposable
     }
 
     // --- Navigation history (back/forward) ---
-    // Stacks live on DocumentState so each tab has independent history.
+    // Stacks live on DocumentModel so each tab has independent history.
 
     public bool CanGoBack => ActiveDocument is { } d && d.BackStackCount > 0;
     public bool CanGoForward => ActiveDocument is { } d && d.ForwardStackCount > 0;
@@ -406,7 +392,7 @@ public sealed partial class DocumentController : IDisposable
         }
         doc.QueueLookahead(vp, _config.AnalysisLookaheadPages);
         Search.UpdateCurrentPageMatches();
-        // DocumentState.GoToPage returns true without changing anything when the
+        // DocumentModel.GoToPage returns true without changing anything when the
         // target clamps to the current page; only announce a real transition.
         if (vp.CurrentPage != prevPage)
             RaisePageChanged(vp);
@@ -556,7 +542,7 @@ public sealed partial class DocumentController : IDisposable
     {
         if (FocusedViewport is not { } vp) return false;
         var doc = vp.Owner;
-        if (!doc.AnalysisCache.TryGetValue(vp.CurrentPage, out var analysis)) return false;
+        if (!doc.TryGetAnalysis(vp.CurrentPage, vp.AnalysisParams, out var analysis)) return false;
         if (pageBlockIndex < 0 || pageBlockIndex >= analysis.Blocks.Count) return false;
 
         // Sync RailNav to THIS page's analysis so the index space + chunk framing below
@@ -597,7 +583,7 @@ public sealed partial class DocumentController : IDisposable
     {
         if (FocusedViewport is not { } vp) return false;
         var doc = vp.Owner;
-        if (!doc.AnalysisCache.TryGetValue(vp.CurrentPage, out var analysis)) return false;
+        if (!doc.TryGetAnalysis(vp.CurrentPage, vp.AnalysisParams, out var analysis)) return false;
         int idx = FindRoleOccurrence(analysis, role, occurrence);
         return idx >= 0 && SmoothlyFrameBlock(idx, targetZoom);
     }
@@ -626,27 +612,6 @@ public sealed partial class DocumentController : IDisposable
         vp.Zoom.StartCameraOnly(vp, z, ox, oy, durationMs);
         FireReadingPositionChanged(); // rail now inactive → reading position cleared
         return true;
-    }
-
-    /// <summary>
-    /// True while any camera animation (zoom, rail snap) or auto-scroll is running — the
-    /// D-Bus control layer derives its "Settled" signal from the true→false transition
-    /// of this across <see cref="Tick"/>.
-    /// A <em>parked</em> semi-auto-scroll is excluded: a park is an indefinite idle wait
-    /// for an explicit advance keypress (no camera motion — <see cref="Tick"/> returns
-    /// early with <c>StillAnimating == false</c>), so it must let the render loop quiesce
-    /// rather than pin it true forever (issue #62).
-    /// </summary>
-    public bool IsAnimating
-    {
-        get
-        {
-            if (ActiveDocument is not { } d)
-                return false; // no active document → nothing (zoom/rail/auto-scroll is all per-view) can animate
-            return d.Primary.Zoom.IsAnimating
-                || d.Rail.SnapProgress < 1.0
-                || (d.Primary.AutoScroll.AutoScrollActive && !d.Rail.AutoScrollParked);
-        }
     }
 
     // --- Auto-scroll (delegated to AutoScrollController) ---
@@ -736,7 +701,7 @@ public sealed partial class DocumentController : IDisposable
 
     // --- Query methods (for agent / headless use) ---
 
-    private DocumentState? ResolveDocument(int? index)
+    private DocumentModel? ResolveDocument(int? index)
     {
         if (!index.HasValue) return ActiveDocument;
         if (index.Value < 0 || index.Value >= Documents.Count) return null;
@@ -784,7 +749,7 @@ public sealed partial class DocumentController : IDisposable
     /// single source of truth shared by the pull query and the push event so the
     /// two cannot drift.
     /// </summary>
-    private ReadingPosition? BuildReadingPosition(DocumentState doc, bool withText)
+    private ReadingPosition? BuildReadingPosition(DocumentModel doc, bool withText)
         => BuildReadingPosition(doc.Primary, withText);
 
     private ReadingPosition? BuildReadingPosition(Viewport vp, bool withText)
@@ -833,7 +798,7 @@ public sealed partial class DocumentController : IDisposable
         if (doc is null) return null;
         int targetPage = page ?? doc.CurrentPage;
         if (targetPage < 0 || targetPage >= doc.PageCount) return null;
-        if (!doc.AnalysisCache.TryGetValue(targetPage, out var analysis)) return null;
+        if (!doc.TryGetAnalysis(targetPage, out var analysis)) return null;
 
         PageText? pageText = doc.TextCache.TryGetValue(targetPage, out var pt) ? pt : null;
         var blocks = new List<BlockSummary>(analysis.Blocks.Count);
@@ -871,8 +836,7 @@ public sealed partial class DocumentController : IDisposable
 
     /// <summary>
     /// Sets the pageChanged flag and announces the page change for <paramref name="vp"/> in one call,
-    /// so a code path can't forget one or the other. Fires the view's own <see cref="Viewport.PageChanged"/>
-    /// and — when <paramref name="vp"/> is the focused view — the controller-level <c>PageChanged</c> facade.
+    /// so a code path can't forget one or the other. Fires the view's own <see cref="Viewport.PageChanged"/>.
     /// </summary>
     private void FirePageChanged(ref bool pageChanged, Viewport vp)
     {
@@ -880,13 +844,11 @@ public sealed partial class DocumentController : IDisposable
         RaisePageChanged(vp);
     }
 
-    /// <summary>Announces a page change for <paramref name="vp"/> (no TickResult flag): the view's own
-    /// <see cref="Viewport.PageChanged"/>, plus the controller-level facade when it is the focused view.</summary>
+    /// <summary>Announces a page change for <paramref name="vp"/> (no TickResult flag) via the view's
+    /// own <see cref="Viewport.PageChanged"/>.</summary>
     private void RaisePageChanged(Viewport vp)
     {
         vp.PageChanged?.Invoke(vp.CurrentPage);
-        if (vp == FocusedViewport)
-            PageChanged?.Invoke(vp.CurrentPage);
     }
 
     private void FireReadingPositionChanged()
@@ -894,16 +856,13 @@ public sealed partial class DocumentController : IDisposable
         if (FocusedViewport is { } vp) FireReadingPositionChanged(vp);
     }
 
-    /// <summary>Announces a rail reading-position change for <paramref name="vp"/>: the view's own
-    /// <see cref="Viewport.ReadingPositionChanged"/>, plus the controller-level facade when it is the
-    /// focused view. Builds the position lazily and only when someone is listening.</summary>
+    /// <summary>Announces a rail reading-position change for <paramref name="vp"/> via the view's own
+    /// <see cref="Viewport.ReadingPositionChanged"/>. Builds the position lazily and only when someone
+    /// is listening.</summary>
     private void FireReadingPositionChanged(Viewport vp)
     {
-        bool focused = vp == FocusedViewport;
-        if (vp.ReadingPositionChanged is null && (!focused || ReadingPositionChanged is null)) return;
+        if (vp.ReadingPositionChanged is null) return;
         if (BuildReadingPosition(vp, withText: false) is not { } pos) return;
         vp.ReadingPositionChanged?.Invoke(pos);
-        if (focused)
-            ReadingPositionChanged?.Invoke(pos);
     }
 }

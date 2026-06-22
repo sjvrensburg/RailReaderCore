@@ -6,13 +6,14 @@ namespace RailReader.Core.Tests;
 
 public class BackgroundAnalysisAndCacheTests
 {
-    private static readonly IReadOnlyDictionary<int, PageAnalysis> EmptyCache =
-        new Dictionary<int, PageAnalysis>();
+    // Phase 3: TryGetNext now takes an isAnalysed predicate (no ambient cache dict).
+    // An empty cache means nothing is analysed yet.
+    private static readonly Func<int, bool> NothingAnalysed = _ => false;
 
     private static List<int> DrainAll(BackgroundAnalysisQueue queue)
     {
         var pages = new List<int>();
-        while (queue.TryGetNext(EmptyCache, _ => false) is { } page)
+        while (queue.TryGetNext(NothingAnalysed, _ => false) is { } page)
             pages.Add(page);
         return pages;
     }
@@ -22,7 +23,7 @@ public class BackgroundAnalysisAndCacheTests
     {
         var queue = new BackgroundAnalysisQueue(pageCount: 100, windowPages: 12);
         Assert.True(queue.IsExhausted);
-        Assert.Null(queue.TryGetNext(EmptyCache, _ => false));
+        Assert.Null(queue.TryGetNext(NothingAnalysed, _ => false));
     }
 
     [Fact]
@@ -83,12 +84,12 @@ public class BackgroundAnalysisAndCacheTests
         Assert.All(DrainAll(queue), p => Assert.InRange(p, 78, 82));
     }
 
-    private static DocumentState NewDoc(CoreSettings settings)
+    private static DocumentModel NewDoc(CoreSettings settings)
     {
         var marshaller = new SynchronousThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
-        return new DocumentState(pdfPath, factory.CreatePdfService(pdfPath),
+        return new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
             factory.CreatePdfTextService(), factory.CreatePdfLinkService(), settings, marshaller);
     }
 
@@ -121,12 +122,12 @@ public class BackgroundAnalysisAndCacheTests
         var state = NewDoc(new CoreSettings { PageCacheRadius = 1 });
 
         for (int p = 0; p <= 6; p++)
-            state.SetAnalysis(p, new PageAnalysis());
+            state.SetAnalysis(p, state.DefaultAnalysisParams, new PageAnalysis());
 
         state.CurrentPage = 3;
 
         // Analysis cache is intentionally retained (expensive to recompute).
-        Assert.Equal(Enumerable.Range(0, 7), state.AnalysisCache.Keys.OrderBy(x => x));
+        Assert.Equal(Enumerable.Range(0, 7), state.AnalysedPages.OrderBy(x => x));
 
         state.Dispose();
     }

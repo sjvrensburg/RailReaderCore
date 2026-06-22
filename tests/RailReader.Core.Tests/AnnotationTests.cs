@@ -6,7 +6,7 @@ namespace RailReader.Core.Tests;
 
 public class AnnotationTests : IDisposable
 {
-    private readonly DocumentState _state;
+    private readonly DocumentModel _state;
     private readonly AnnotationFileManager _manager;
 
     public AnnotationTests()
@@ -15,7 +15,7 @@ public class AnnotationTests : IDisposable
         var marshaller = new SynchronousThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
-        _state = new DocumentState(pdfPath, factory.CreatePdfService(pdfPath),
+        _state = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
             factory.CreatePdfTextService(), factory.CreatePdfLinkService(), config.ToCoreSettings(), marshaller);
         _state.LoadPageBitmap();
         _manager = new AnnotationFileManager(AnnotationService.Default, marshaller);
@@ -122,12 +122,12 @@ public class AnnotationTests : IDisposable
 
         using var manager = new AnnotationFileManager(AnnotationService.Default, marshaller);
 
-        var stateA = new DocumentState(pdfPath, factory.CreatePdfService(pdfPath),
+        var stateA = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
             factory.CreatePdfTextService(), factory.CreatePdfLinkService(), config.ToCoreSettings(), marshaller);
         stateA.LoadPageBitmap();
         stateA.LoadAnnotations(manager);
 
-        var stateB = new DocumentState(pdfPath, factory.CreatePdfService(pdfPath),
+        var stateB = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
             factory.CreatePdfTextService(), factory.CreatePdfLinkService(), config.ToCoreSettings(), marshaller);
         stateB.LoadPageBitmap();
         stateB.LoadAnnotations(manager);

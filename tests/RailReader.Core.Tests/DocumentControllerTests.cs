@@ -125,23 +125,23 @@ public class DocumentControllerTests : IDisposable
         Assert.Same(s2, _controller.Documents[0]);
     }
 
-    private void SetupRailMode(DocumentState doc)
+    private void SetupRailMode(DocumentModel doc)
     {
-        var (ww, wh) = _controller.GetViewportSize();
+        var (ww, wh) = (doc.Primary.Width, doc.Primary.Height);
         TestFixtures.SetupRailMode(doc, _controller.Config, ww, wh);
     }
 
-    private void SetupMultiBlockRailMode(DocumentState doc, params (BlockRole Role, BBox BBox)[] blocks)
+    private void SetupMultiBlockRailMode(DocumentModel doc, params (BlockRole Role, BBox BBox)[] blocks)
     {
-        var (ww, wh) = _controller.GetViewportSize();
+        var (ww, wh) = (doc.Primary.Width, doc.Primary.Height);
         TestFixtures.SetupRailMode(doc, _controller.Config, ww, wh, blocks);
     }
 
     /// <summary>
     /// Creates, loads, adds, and sets viewport for a standard test document.
-    /// Returns the DocumentState ready for further setup (e.g., <see cref="SetupRailMode"/>).
+    /// Returns the DocumentModel ready for further setup (e.g., <see cref="SetupRailMode"/>).
     /// </summary>
-    private DocumentState CreateAndAddDocument()
+    private DocumentModel CreateAndAddDocument()
     {
         var state = _controller.CreateDocument(_pdfPath);
         state.LoadPageBitmap();
@@ -201,7 +201,7 @@ public class DocumentControllerTests : IDisposable
         _controller.ToggleAutoScroll();
         Assert.True(_controller.AutoScrollActive);
         // Actively scrolling counts as animating.
-        Assert.True(_controller.IsAnimating);
+        Assert.True(_controller.FocusedViewport!.IsAnimating);
 
         // Park, then tick until the deferred park settles into the indefinite hold
         // (the park engages once any pending snap completes).
@@ -213,13 +213,13 @@ public class DocumentControllerTests : IDisposable
         // Regression (issue #62): a parked auto-scroll is an idle wait, not motion.
         // IsAnimating must go false so the consumer's render loop can quiesce — it must
         // not stay pinned true via AutoScrollActive while parked.
-        Assert.False(_controller.IsAnimating);
+        Assert.False(_controller.FocusedViewport!.IsAnimating);
 
         // Resuming flow re-engages animation.
         _controller.ResumeAutoScrollFromPark();
         Assert.True(_controller.AutoScrollActive);
         Assert.False(_controller.AutoScrollParked);
-        Assert.True(_controller.IsAnimating);
+        Assert.True(_controller.FocusedViewport!.IsAnimating);
     }
 
     [Fact]
@@ -715,7 +715,7 @@ public class DocumentControllerTests : IDisposable
         CreateAndAddDocument();
 
         int? receivedPage = null;
-        _controller.PageChanged = page => receivedPage = page;
+        _controller.FocusedViewport!.PageChanged = page => receivedPage = page;
 
         _controller.GoToPage(1);
         Assert.Equal(1, receivedPage);
@@ -728,7 +728,7 @@ public class DocumentControllerTests : IDisposable
         SetupRailMode(state);
 
         ReadingPosition? received = null;
-        _controller.ReadingPositionChanged = pos => received = pos;
+        _controller.FocusedViewport!.ReadingPositionChanged = pos => received = pos;
 
         _controller.HandleArrowDown();
 
@@ -750,7 +750,7 @@ public class DocumentControllerTests : IDisposable
         double canvasY = pageY * state.Camera.Zoom + state.Camera.OffsetY;
 
         ReadingPosition? received = null;
-        _controller.ReadingPositionChanged = pos => received = pos;
+        _controller.FocusedViewport!.ReadingPositionChanged = pos => received = pos;
 
         _controller.HandleClick(canvasX, canvasY);
 
@@ -843,7 +843,7 @@ public class DocumentControllerTests : IDisposable
         // No rail mode — zoom is below threshold
 
         ReadingPosition? received = null;
-        _controller.ReadingPositionChanged = pos => received = pos;
+        _controller.FocusedViewport!.ReadingPositionChanged = pos => received = pos;
 
         _controller.HandleArrowDown();
         Assert.Null(received);
@@ -868,7 +868,7 @@ public class DocumentControllerTests : IDisposable
         double canvasY = 100 * state.Camera.Zoom + state.Camera.OffsetY;
 
         int? receivedPage = null;
-        _controller.PageChanged = page => receivedPage = page;
+        _controller.FocusedViewport!.PageChanged = page => receivedPage = page;
 
         _controller.HandleClick(canvasX, canvasY);
         Assert.Equal(2, receivedPage);
@@ -951,7 +951,7 @@ public class DocumentControllerTests : IDisposable
 
         int fireCount = 0;
         int lastPage = -1;
-        _controller.PageChanged = page => { fireCount++; lastPage = page; };
+        _controller.FocusedViewport!.PageChanged = page => { fireCount++; lastPage = page; };
 
         _controller.GoToPage(0); // no-op (already on page 0)
         Assert.Equal(0, fireCount);
@@ -985,7 +985,7 @@ public class DocumentControllerTests : IDisposable
         state.SetText(0, new PageText("Hello world and more", chars));
 
         ReadingPosition? evt = null;
-        _controller.ReadingPositionChanged = p => evt = p;
+        _controller.FocusedViewport!.ReadingPositionChanged = p => evt = p;
         _controller.HandleArrowDown(); // fires ReadingPositionChanged
 
         Assert.NotNull(evt);

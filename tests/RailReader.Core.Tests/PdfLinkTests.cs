@@ -14,7 +14,7 @@ public class PdfLinkTests
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
 
-        var state = new DocumentState(pdfPath, factory.CreatePdfService(pdfPath),
+        var state = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
             factory.CreatePdfTextService(), factory.CreatePdfLinkService(), config.ToCoreSettings(), marshaller);
         state.LoadPageBitmap();
 
@@ -64,7 +64,7 @@ public class PdfLinkTests
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
 
-        var state = new DocumentState(pdfPath, factory.CreatePdfService(pdfPath),
+        var state = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
             factory.CreatePdfTextService(), factory.CreatePdfLinkService(), config.ToCoreSettings(), marshaller);
         state.LoadPageBitmap();
 

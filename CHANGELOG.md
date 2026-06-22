@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.42.0 — Multi-viewport Phase 3: DocumentModel rename, facade removal, per-viewport analysis params (breaking)
+
+The one documented breaking release that completes the multi-viewport arc (railreader2#180 Phase 3).
+After this, the public surface is multi-viewport-only — no single-viewport facades — and a few
+long-standing open decisions are resolved.
+
+### `DocumentState` renamed to `DocumentModel`
+
+Pure rename of the per-document type (PDF handle, identity, caches, annotations, background queue,
+analysis params). Update all `DocumentState` references to `DocumentModel`. `CreateDocument` now
+returns `DocumentModel`.
+
+### Single-viewport facades removed
+
+A host drives each on-screen viewport explicitly; the single-window shims are gone:
+
+- **`controller.Tick(double)` removed** — call `controller.TickViewport(vp, dt)` per visible viewport
+  (it pumps analysis), or `PumpAnalysis()` once + `TickViewport(vp, dt, pumpAnalysis: false)` for the rest.
+- **`controller.IsAnimating` removed** — replaced by **`Viewport.IsAnimating`** (each view reports its
+  own zoom/rail-snap/auto-scroll motion; parked auto-scroll excluded). A host's "settled" signal reads
+  `FocusedViewport.IsAnimating`.
+- **`controller.SetViewportSize` / `GetViewportSize` removed** along with the controller's ambient size.
+  Every viewport is sized by the host via `Viewport.SetSize(w, h)`; size a new document's primary
+  before `AddDocument` (which now seeds initial centre/restore from the primary's own size).
+- **Controller-level `PageChanged` / `ReadingPositionChanged` events removed** — subscribe per-viewport
+  via `Viewport.PageChanged` / `Viewport.ReadingPositionChanged` (the focused view plus any detached
+  panes the host shows). `AnalysisPageReady` (genuinely model-level) stays.
+- `ActiveDocument` / `ActiveDocumentIndex` are now **internal** (focused-view derivation kept for Core
+  internals); external hosts read `FocusedViewport?.Owner` / set `FocusedViewport`.
+
+### Decision #2 — display preferences are document-level (were per-viewport)
+
+`DebugOverlay`, `ColourEffect`, `LineFocusBlur`, `LineHighlightEnabled`, and `MarginCropping` now live
+on `DocumentModel` and are inherited by every viewport (the 0.39.0 per-view divergence is reverted).
+`Viewport`'s same-named accessors delegate to `Owner`, so setting through any view changes the whole
+document and fires the **doc-level** `StateChanged`.
+
+### Decision #3 — per-viewport analysis params + `(page, params)` cache
+
+`TableRowReading` / `CellNavigation` move onto **`Viewport.AnalysisParams`** (new
+`readonly record struct AnalysisParams(bool TableRowReading, bool CellNavigation)`), so two viewports
+can post-process the same page differently (e.g. one splits a table into navigable rows/cells while
+another keeps it whole). The analysis cache is re-keyed `(page, AnalysisParams)`:
+
+- **`DocumentModel.AnalysisCache` (the `IReadOnlyDictionary` property) removed.** Use
+  `TryGetAnalysis(page, params, out a)` for a per-view variant, `TryGetAnalysis(page, out a)` for the
+  canonical variant (document-wide index / portals / content-fraction — top-level blocks are
+  param-invariant), `IsPageAnalysed(page)`, `IsAnalysed(page, params)`, `AnalysedPages`,
+  `AnalysedPageCount`, `DefaultAnalysisParams`.
+- **`AnalysisRequest`** now carries `AnalysisParams Params` (replacing the two trailing bools);
+  **`AnalysisResult`** carries `AnalysisParams Params`; **`AnalysisWorker.IsInFlight`** takes the params
+  (so the same page can be in flight under two variants). `SetAnalysis` takes the params.
+- The background scan produces the document-default variant; per-viewport non-default variants are
+  produced on demand when a view navigates. A live config change to the global table/cell-nav default
+  re-applies to every viewport (unrelated config changes leave per-view divergence intact).
+
+`BackgroundAnalysisQueue.TryGetNext` now takes an `isAnalysed` predicate instead of the cache dict.
+
+### Tests
+
+`MultiViewportTests` extended; the per-viewport display-prefs test is re-expressed to assert the new
+document-level contract. Full suite green (740 tests).
+
 ## 0.41.0 — Multi-viewport: complete per-viewport page + size routing (#74) (breaking)
 
 Completes the multi-viewport migration (railreader2#180 / #69): the last two pieces of per-viewport

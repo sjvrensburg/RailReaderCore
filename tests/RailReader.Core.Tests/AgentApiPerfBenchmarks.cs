@@ -28,18 +28,18 @@ public class AgentApiPerfBenchmarks : IDisposable
 
     public void Dispose() => _controller.Dispose();
 
-    private DocumentState SetupDocWithRailMode()
+    private DocumentModel SetupDocWithRailMode()
     {
         var state = _controller.CreateDocument(_pdfPath);
         state.LoadPageBitmap();
         _controller.AddDocument(state);
         _controller.SetViewportSize(800, 600);
-        var (ww, wh) = _controller.GetViewportSize();
+        var (ww, wh) = (state.Primary.Width, state.Primary.Height);
         TestFixtures.SetupRailMode(state, _controller.Config, ww, wh);
         return state;
     }
 
-    private DocumentState SetupDocWithMultiBlock(int blockCount)
+    private DocumentModel SetupDocWithMultiBlock(int blockCount)
     {
         var state = _controller.CreateDocument(_pdfPath);
         state.LoadPageBitmap();
@@ -49,18 +49,18 @@ public class AgentApiPerfBenchmarks : IDisposable
         var blocks = new (BlockRole Role, BBox BBox)[blockCount];
         for (int i = 0; i < blockCount; i++)
             blocks[i] = (i % 4 == 0 ? BlockRole.Heading : BlockRole.Text, new BBox(72, 72 + i * 30, 468, 25));
-        var (ww, wh) = _controller.GetViewportSize();
+        var (ww, wh) = (state.Primary.Width, state.Primary.Height);
         TestFixtures.SetupRailMode(state, _controller.Config, ww, wh, blocks);
         return state;
     }
 
-    private DocumentState SetupDocWithText(int charCount)
+    private DocumentModel SetupDocWithText(int charCount)
     {
         var state = _controller.CreateDocument(_pdfPath);
         state.LoadPageBitmap();
         _controller.AddDocument(state);
         _controller.SetViewportSize(800, 600);
-        var (ww, wh) = _controller.GetViewportSize();
+        var (ww, wh) = (state.Primary.Width, state.Primary.Height);
         TestFixtures.SetupRailMode(state, _controller.Config, ww, wh);
 
         // Inject synthetic text with CharBoxes
@@ -102,7 +102,7 @@ public class AgentApiPerfBenchmarks : IDisposable
         var state = SetupDocWithRailMode();
         const int iterations = 100_000;
         ReadingPosition? lastPos = null;
-        _controller.ReadingPositionChanged = pos => lastPos = pos;
+        _controller.FocusedViewport!.ReadingPositionChanged = pos => lastPos = pos;
 
         // Warmup
         for (int i = 0; i < 1000; i++)
@@ -291,7 +291,7 @@ public class AgentApiPerfBenchmarks : IDisposable
     {
         var state = SetupDocWithRailMode();
         int fireCount = 0;
-        _controller.ReadingPositionChanged = _ => fireCount++;
+        _controller.FocusedViewport!.ReadingPositionChanged = _ => fireCount++;
 
         const int iterations = 10_000;
 
@@ -351,7 +351,7 @@ public class AgentApiPerfBenchmarks : IDisposable
     public void Benchmark_Tick_WithSubscriber()
     {
         var state = SetupDocWithRailMode();
-        _controller.ReadingPositionChanged = _ => { };
+        _controller.FocusedViewport!.ReadingPositionChanged = _ => { };
         const int iterations = 100_000;
 
         // Warmup
