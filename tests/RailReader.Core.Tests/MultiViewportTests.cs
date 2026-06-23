@@ -118,7 +118,7 @@ public class MultiViewportTests : IDisposable
     }
 
     [Fact]
-    public void RemoveViewport_ShrinksAndRejectsPrimary()
+    public void RemoveViewport_ShrinksAndRejectsLastView()
     {
         var doc = SetupDoc();
         var vp2 = doc.AddViewport();
@@ -131,7 +131,8 @@ public class MultiViewportTests : IDisposable
 
         Assert.Single(doc.Viewports);
         Assert.Same(doc.Primary, doc.Viewports[0]);
-        // The primary view lives for the document's lifetime and cannot be removed.
+        // The model needs ≥1 view for its lifetime, so the LAST remaining view can't be removed (Phase 4
+        // — the current primary CAN be removed when a sibling exists; see RemoveViewport_OnPrimaryWithSibling).
         Assert.Throws<InvalidOperationException>(() => doc.RemoveViewport(doc.Primary));
     }
 
@@ -1024,6 +1025,40 @@ public class MultiViewportTests : IDisposable
 
         // The last remaining view cannot be removed.
         Assert.Throws<InvalidOperationException>(() => doc.RemoveViewport(vp2));
+    }
+
+    [Fact]
+    public void PromotePrimary_FiresStateChanged_ForTheFacadeSwitch()
+    {
+        // Review fix: promotion changes what the Primary-delegating facade (CurrentPage/PageWidth/
+        // PageHeight) returns, so it must announce the swap — else a facade-bound UI reads a stale page.
+        var doc = SetupDoc();                 // Primary on page 0
+        var vp2 = doc.AddViewport();
+        vp2.CurrentPage = 2;
+        vp2.LoadPageBitmap();
+
+        var notes = new List<string>();
+        doc.StateChanged = n => notes.Add(n);  // subscribe BEFORE the promotion
+
+        doc.PromotePrimary(vp2);
+
+        Assert.Equal(2, doc.CurrentPage);                              // facade now reflects vp2
+        Assert.Contains(nameof(DocumentModel.CurrentPage), notes);    // the swap itself announced it (the fix)
+    }
+
+    [Fact]
+    public void RemoveViewport_ForeignViewOnSingleViewDoc_IsNoOpNotThrow()
+    {
+        // Review fix: the "no-op if the view isn't ours" contract must hold even when only one view
+        // remains — the membership check precedes the last-view guard.
+        var docA = SetupDoc();                 // exactly one viewport
+        var docB = _controller.CreateDocument(_pdfPath);
+        docB.LoadPageBitmap();
+        var foreign = docB.Primary;            // not docA's
+
+        Assert.Null(Record.Exception(() => docA.RemoveViewport(foreign)));  // no throw (was: "last viewport")
+        Assert.Single(docA.Viewports);
+        docB.Dispose();
     }
 
     [Fact]

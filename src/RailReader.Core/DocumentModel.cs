@@ -416,16 +416,19 @@ public sealed class DocumentModel : IDisposable
     public void RemoveViewport(Viewport vp)
     {
         _marshaller.AssertUIThread();
+        // No-op if the view isn't ours (checked first, so removing a foreign/stale view never throws —
+        // matching the documented contract even when only one view remains).
+        if (!_viewports.Contains(vp)) return;
         if (_viewports.Count == 1)
             throw new InvalidOperationException("Cannot remove the last viewport.");
 
         bool wasPrimary = ReferenceEquals(vp, _viewports[0]);
-        if (!_viewports.Remove(vp)) return;
+        _viewports.Remove(vp);
 
-        // If the primary was removed, the new index-0 view inherits the doc-level StateChanged forwarder
-        // (vp.Dispose() drops vp's own handlers, so the old forwarder goes with it).
+        // If the primary was removed, the new index-0 view becomes Primary: re-home the forwarder and
+        // announce the facade switch. (vp.Dispose() below also drops vp's own handlers.)
         if (wasPrimary)
-            _viewports[0].StateChanged += _primaryStateForwarder;
+            OnPrimaryChanged(vp, _viewports[0]);
 
         vp.Dispose();
         // Tell the controller before the caller's next tick, so a removed focused view can't be
@@ -435,9 +438,10 @@ public sealed class DocumentModel : IDisposable
 
     /// <summary>
     /// Promotes <paramref name="vp"/> to <see cref="Primary"/> (moves it to <c>Viewports[0]</c>),
-    /// re-homing the doc-level StateChanged forwarder. Lets the host keep a chosen surviving surface as
-    /// primary before closing the original primary's surface, so the model is never left with an
-    /// orphaned primary. No-op if already primary; throws if the view isn't ours. UI-thread only.
+    /// re-homing the doc-level StateChanged forwarder and announcing the facade switch. Lets the host
+    /// keep a chosen surviving surface as primary before closing the original primary's surface, so the
+    /// model is never left with an orphaned primary. No-op if already primary; throws if the view isn't
+    /// ours. UI-thread only.
     /// </summary>
     public void PromotePrimary(Viewport vp)
     {
@@ -447,10 +451,26 @@ public sealed class DocumentModel : IDisposable
         if (!_viewports.Contains(vp))
             throw new InvalidOperationException("Viewport does not belong to this document.");
 
-        old.StateChanged -= _primaryStateForwarder;
-        vp.StateChanged += _primaryStateForwarder;
         _viewports.Remove(vp);
-        _viewports.Insert(0, vp);
+        _viewports.Insert(0, vp);   // reorder first so the facade getters below see the new primary
+        OnPrimaryChanged(old, vp);
+    }
+
+    /// <summary>
+    /// Re-homes the doc-level StateChanged forwarder from <paramref name="oldPrimary"/> to
+    /// <paramref name="newPrimary"/> and notifies subscribers that the Primary-delegating facade
+    /// (<see cref="CurrentPage"/>/<see cref="PageWidth"/>/<see cref="PageHeight"/>) now reflects a
+    /// different view. Called whenever <c>Viewports[0]</c> changes (promotion / primary removal) so a
+    /// facade-bound consumer doesn't read a stale page across the swap. Caller has already updated
+    /// <c>_viewports</c>.
+    /// </summary>
+    private void OnPrimaryChanged(Viewport oldPrimary, Viewport newPrimary)
+    {
+        oldPrimary.StateChanged -= _primaryStateForwarder;
+        newPrimary.StateChanged += _primaryStateForwarder;
+        StateChanged?.Invoke(nameof(CurrentPage));
+        StateChanged?.Invoke(nameof(PageWidth));
+        StateChanged?.Invoke(nameof(PageHeight));
     }
 
     /// <summary>
@@ -964,27 +984,10 @@ public sealed class DocumentModel : IDisposable
         _linkCache[page] = links;
     }
 
-    // --- Navigation history mutation ---
-
-    // Document-level history facades delegate to the Primary view (per-view history lives on Viewport;
-    // the controller routes Back/Forward through FocusedViewport — these keep the public surface).
-    internal void PushHistory(int currentPage)
-    {
-        _marshaller.AssertUIThread();
-        Primary.PushHistory(currentPage);
-    }
-
-    internal int PopBack(int currentPage)
-    {
-        _marshaller.AssertUIThread();
-        return Primary.PopBack(currentPage);
-    }
-
-    internal int PopForward(int currentPage)
-    {
-        _marshaller.AssertUIThread();
-        return Primary.PopForward(currentPage);
-    }
+    // Navigation history is per-view: mutation lives on Viewport (PushHistory/PopBack/PopForward) and
+    // the controller routes Back/Forward through FocusedViewport. The read-only BackStackCount /
+    // ForwardStackCount / PeekBack / PeekForward facades above remain Primary-scoped for the existing
+    // single-view query surface.
 
     /// <summary>
     /// Base render DPI at zoom 1.0 (before the tier-step quantisation and
