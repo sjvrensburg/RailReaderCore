@@ -38,7 +38,7 @@ public class AutoScrollControllerTests : IDisposable
     {
         Assert.False(_autoScroll.AutoScrollActive);
 
-        _autoScroll.ToggleAutoScroll(_doc);
+        _autoScroll.ToggleAutoScroll(_doc.Primary);
 
         Assert.True(_autoScroll.AutoScrollActive);
     }
@@ -46,10 +46,10 @@ public class AutoScrollControllerTests : IDisposable
     [Fact]
     public void ToggleAutoScroll_Deactivates()
     {
-        _autoScroll.ToggleAutoScroll(_doc);
+        _autoScroll.ToggleAutoScroll(_doc.Primary);
         Assert.True(_autoScroll.AutoScrollActive);
 
-        _autoScroll.ToggleAutoScroll(_doc);
+        _autoScroll.ToggleAutoScroll(_doc.Primary);
 
         Assert.False(_autoScroll.AutoScrollActive);
     }
@@ -57,10 +57,10 @@ public class AutoScrollControllerTests : IDisposable
     [Fact]
     public void StopAutoScroll_ClearsState()
     {
-        _autoScroll.ToggleAutoScroll(_doc);
+        _autoScroll.ToggleAutoScroll(_doc.Primary);
         Assert.True(_autoScroll.AutoScrollActive);
 
-        _autoScroll.StopAutoScroll(_doc);
+        _autoScroll.StopAutoScroll(_doc.Primary);
 
         Assert.False(_autoScroll.AutoScrollActive);
     }
@@ -71,7 +71,7 @@ public class AutoScrollControllerTests : IDisposable
         _autoScroll.JumpMode = true;
         Assert.True(_autoScroll.JumpMode);
 
-        _autoScroll.ToggleAutoScrollExclusive(_doc);
+        _autoScroll.ToggleAutoScrollExclusive(_doc.Primary);
 
         Assert.False(_autoScroll.JumpMode);
         Assert.True(_autoScroll.AutoScrollActive);
@@ -80,10 +80,10 @@ public class AutoScrollControllerTests : IDisposable
     [Fact]
     public void ToggleJumpModeExclusive_StopsAutoScroll()
     {
-        _autoScroll.ToggleAutoScroll(_doc);
+        _autoScroll.ToggleAutoScroll(_doc.Primary);
         Assert.True(_autoScroll.AutoScrollActive);
 
-        _autoScroll.ToggleJumpModeExclusive(_doc);
+        _autoScroll.ToggleJumpModeExclusive(_doc.Primary);
 
         Assert.False(_autoScroll.AutoScrollActive);
         Assert.True(_autoScroll.JumpMode);

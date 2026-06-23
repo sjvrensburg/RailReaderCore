@@ -251,12 +251,12 @@ public sealed partial class DocumentController : IDisposable
         // Leaving this tab: drop its free-pan pause and end its auto-scroll session, so a tab
         // switch quiesces the tab you're leaving. With per-view auto-scroll flags there is no
         // shared flag to go stale, so the old post-switch sync is no longer needed.
-        if (ActiveDocument is { } leaving && _focusedViewport is { } leavingView)
+        if (_focusedViewport is { } leavingView)
         {
             // Quiesce the FOCUSED view of the tab you're leaving — it may be a secondary/detached
-            // pane, not the primary (auto-scroll/free-pan state is per-view).
+            // pane, not the primary (auto-scroll/free-pan state is per-view), so stop ITS own rail.
             leavingView.RailPause = null;
-            leavingView.AutoScroll.StopAutoScroll(leaving);
+            leavingView.AutoScroll.StopAutoScroll(leavingView);
         }
         ActiveDocumentIndex = index;
     }
@@ -630,13 +630,15 @@ public sealed partial class DocumentController : IDisposable
 
     // --- Auto-scroll (delegated to AutoScrollController) ---
 
-    public void ToggleAutoScroll() => FocusedViewport?.AutoScroll.ToggleAutoScroll(ActiveDocument);
+    // All route through the FOCUSED view (which may be a secondary/detached pane), acting on that
+    // view's own rail — not the document's Primary facade.
+    public void ToggleAutoScroll() { if (FocusedViewport is { } vp) vp.AutoScroll.ToggleAutoScroll(vp); }
 
-    public void StopAutoScroll() => FocusedViewport?.AutoScroll.StopAutoScroll(ActiveDocument);
+    public void StopAutoScroll() { if (FocusedViewport is { } vp) vp.AutoScroll.StopAutoScroll(vp); }
 
-    public void ToggleAutoScrollExclusive() => FocusedViewport?.AutoScroll.ToggleAutoScrollExclusive(ActiveDocument);
+    public void ToggleAutoScrollExclusive() { if (FocusedViewport is { } vp) vp.AutoScroll.ToggleAutoScrollExclusive(vp); }
 
-    public void ToggleJumpModeExclusive() => FocusedViewport?.AutoScroll.ToggleJumpModeExclusive(ActiveDocument);
+    public void ToggleJumpModeExclusive() { if (FocusedViewport is { } vp) vp.AutoScroll.ToggleJumpModeExclusive(vp); }
 
     /// <summary>
     /// True when semi-automatic auto-scroll is parked on a stop unit (non-prose block, new

@@ -49,36 +49,30 @@ internal sealed class AutoScrollController
     /// </summary>
     public Action<string>? StateChanged;
 
+    // These operate on a specific Viewport's own rail. Each AutoScrollController instance belongs to
+    // one Viewport, so they take the owning view rather than the document — driving DocumentModel.Rail
+    // (the Primary facade) would start/stop/gate the WRONG rail when the focused view is a
+    // secondary/detached pane.
+
     /// <summary>
-    /// Toggles auto-scroll on/off. Requires an active document in rail mode to activate.
+    /// Toggles auto-scroll on/off for <paramref name="vp"/>. Requires that view to be in rail mode
+    /// to activate.
     /// </summary>
-    public void ToggleAutoScroll(DocumentModel? doc)
+    public void ToggleAutoScroll(Viewport vp)
     {
         if (AutoScrollActive)
         {
-            StopAutoScroll(doc);
+            StopAutoScroll(vp);
             return;
         }
-        if (doc is null || !doc.Rail.Active) return;
+        if (!vp.Rail.Active) return;
 
-        doc.Rail.StartAutoScroll(_config.DefaultAutoScrollSpeed);
+        vp.Rail.StartAutoScroll(_config.DefaultAutoScrollSpeed);
         AutoScrollActive = true;
     }
 
     /// <summary>
-    /// Stops auto-scroll and notifies the UI.
-    /// </summary>
-    public void StopAutoScroll(DocumentModel? doc)
-    {
-        doc?.Rail.StopAutoScroll();
-        AutoScrollActive = false;
-    }
-
-    /// <summary>
-    /// Stops auto-scroll on a specific <paramref name="vp"/>'s own rail (the multi-viewport tick
-    /// path). The doc-level overload stops <see cref="DocumentModel.Rail"/>, which is the Primary
-    /// facade — wrong for a secondary/detached pane. Use this from the per-view tick so a boundary
-    /// reached on a non-focused pane stops that pane, not the focused one.
+    /// Stops auto-scroll on <paramref name="vp"/>'s own rail and notifies the UI.
     /// </summary>
     public void StopAutoScroll(Viewport vp)
     {
@@ -87,20 +81,20 @@ internal sealed class AutoScrollController
     }
 
     /// <summary>
-    /// Toggles auto-scroll, disabling jump mode first if active.
+    /// Toggles auto-scroll for <paramref name="vp"/>, disabling jump mode first if active.
     /// </summary>
-    public void ToggleAutoScrollExclusive(DocumentModel? doc)
+    public void ToggleAutoScrollExclusive(Viewport vp)
     {
         if (JumpMode) JumpMode = false;
-        ToggleAutoScroll(doc);
+        ToggleAutoScroll(vp);
     }
 
     /// <summary>
-    /// Toggles jump mode, stopping auto-scroll first if active.
+    /// Toggles jump mode, stopping <paramref name="vp"/>'s auto-scroll first if active.
     /// </summary>
-    public void ToggleJumpModeExclusive(DocumentModel? doc)
+    public void ToggleJumpModeExclusive(Viewport vp)
     {
-        if (AutoScrollActive) StopAutoScroll(doc);
+        if (AutoScrollActive) StopAutoScroll(vp);
         JumpMode = !JumpMode;
     }
 

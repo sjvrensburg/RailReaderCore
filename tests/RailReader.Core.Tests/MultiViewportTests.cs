@@ -805,6 +805,36 @@ public class MultiViewportTests : IDisposable
         Assert.Equal(nameof(_controller.JumpMode), notified); // the forwarder fired (null before the fix)
     }
 
+    [Fact]
+    public void ToggleAutoScroll_ActivatesFocusedSecondary_EvenWhenPrimaryNotInRailMode()
+    {
+        // Review finding (multi-viewport): ToggleAutoScroll gated on the document's Primary rail (the
+        // facade), so a focused secondary pane in rail mode couldn't start auto-scroll while Primary
+        // sat at low zoom. Each AutoScrollController now acts on ITS OWN view's rail.
+        var cfg = new AppConfig { PixelSnapping = false, SnapDurationMs = 1 };
+        using var controller = new DocumentController(cfg.ToCoreSettings(), cfg, AnnotationService.Default,
+            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+        controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
+
+        var doc = controller.CreateDocument(_pdfPath);
+        doc.LoadPageBitmap();
+        controller.AddDocument(doc);              // Primary on page 0 at default zoom → rail inactive
+        controller.SetViewportSize(800, 600);
+
+        var vp2 = doc.AddViewport();
+        SeatAndActivate(controller, doc, vp2, page: 1);   // vp2's rail is active (zoom 6)
+        Assert.True(vp2.Rail.Active);
+        Assert.False(doc.Primary.Rail.Active);    // Primary is NOT in rail mode — the gate the bug used
+
+        controller.FocusedViewport = vp2;
+        controller.ToggleAutoScroll();
+
+        Assert.True(controller.AutoScrollActive); // activated against the focused secondary (the fix)
+        Assert.True(vp2.Rail.AutoScrolling);      // on vp2's own rail
+        Assert.False(doc.Primary.Rail.AutoScrolling); // Primary untouched
+    }
+
     // Seats a viewport's analysis (cache-miss → real worker pipeline with the fake analyzer) and activates
     // its rail by zooming above the rail threshold, so auto-scroll / reading-position paths are exercisable.
     private static void SeatAndActivate(DocumentController controller, DocumentModel doc, Viewport vp, int page)
