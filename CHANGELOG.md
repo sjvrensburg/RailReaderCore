@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.44.0 — Multi-viewport Phase 4: per-view history, IsLive-honoring eviction, primary promotion
+
+Completes the per-view lifecycle layer (issue #77). All **additive / non-breaking** — single-viewport
+hosts are unaffected (the focused view is the primary, `IsLive` defaults true).
+
+### Note for the railreader2 team / external consumers
+
+New capabilities for hosts that drive N viewports per `DocumentModel` (split panes, tear-off windows,
+duplicate tabs):
+
+- **`DocumentModel.PromotePrimary(Viewport)`** — make a chosen surviving surface the primary, so closing
+  the surface that shows the current primary needn't leave an orphan. **`RemoveViewport` now promotes a
+  sibling instead of throwing** when the current primary is removed (it throws only on the *last*
+  remaining view — the message changed from "Cannot remove the primary viewport" to "Cannot remove the
+  last viewport"). `Primary` is now whichever view sits at `Viewports[0]`, not a fixed embedded view; a
+  host that **caches** a `doc.Primary` reference should read it live instead, since promotion/removal can
+  change its identity.
+- **Back/Forward is per-view** — `NavigateBack`/`NavigateForward`/`CanGoBack`/`CanGoForward` act on the
+  focused view's own history. (The `DocumentModel.BackStackCount`/`PeekBack`/… read facades remain
+  Primary-scoped for the single-view query surface.)
+- **Parked views cost nothing** — set `Viewport.IsLive = false` on a hidden/orphaned view and its page
+  caches are now evictable; reading-position persistence skips it (persists the focused/first-live view).
+
+### Added
+
+- `DocumentModel.PromotePrimary(Viewport)`; per-view navigation history on `Viewport`
+  (`PushHistory`/`PopBack`/`PopForward`/`BackStackCount`/`ForwardStackCount`).
+
+### Changed
+
+- `RemoveViewport` promotes a sibling when the current primary is removed; throws only on the last view.
+- `AnyViewportNeeds` (cache eviction) and reading-position persistence honor `Viewport.IsLive`.
+- `PromotePrimary` / primary-removal fire `DocumentModel.StateChanged` for the `CurrentPage`/`PageWidth`/
+  `PageHeight` facade so a facade-bound UI re-reads after the swap.
+
 ## 0.43.0 — Multi-viewport routing fixes (focused-view correctness)
 
 A correctness pass over the multi-viewport surface built up across 0.37–0.42. A multi-agent review
