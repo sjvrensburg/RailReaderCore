@@ -200,6 +200,49 @@ public class RailNavTests
         Assert.Equal(0, _nav.CurrentLine);
     }
 
+    // ===== Equation framing (regression) =====
+
+    [Fact]
+    public void DisplayMathEquation_CentersOnOwnBounds_NotChunkLeftEdge()
+    {
+        // Regression (chunk framing, 4d890b6): a DisplayMath equation tightly following a paragraph in
+        // the same column shares its reading chunk. It must still frame/centre on ITS OWN bounds, not
+        // left-align to the wide chunk's left edge (the symptom: "snap to the super-block left edge,
+        // equations no longer centred"). Prose stays chunk-framed.
+        const float colX = 72f, colW = 468f;                    // a full-column paragraph
+        const float eqW = 150f, eqX = colX + (colW - eqW) / 2f; // a narrow equation centred in the column
+        var para = new LayoutBlock
+        {
+            BBox = new BBox(colX, 72f, colW, 48f), Role = BlockRole.Text, Confidence = 0.95f, Order = 0,
+            Lines = [new LineInfo(80f, 16f, colX, colW)],
+        };
+        var eq = new LayoutBlock
+        {
+            BBox = new BBox(eqX, 130f, eqW, 16f), Role = BlockRole.DisplayMath, Confidence = 0.95f, Order = 1,
+            Lines = [new LineInfo(138f, 16f, eqX, eqW)],
+        };
+        var analysis = new PageAnalysis { Blocks = [para, eq], PageWidth = 612, PageHeight = 792 };
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { BlockRole.Text, BlockRole.DisplayMath });
+        _nav.Active = true;
+
+        // The paragraph and equation are one reading chunk (tight gap, overlapping column).
+        Assert.Equal(1, _nav.ChunkCount);
+
+        // Seat on the equation and frame it.
+        _nav.CurrentBlock = 1;
+        Assert.Equal(BlockRole.DisplayMath, _nav.CurrentNavigableBlock.Role);
+
+        const double z = 3.0;
+        var (x, _) = _nav.ComputeSnapTarget(z, WindowWidth, WindowHeight);
+
+        // Centred on the equation's OWN centre (its 5% margin is symmetric, so the centre is unchanged).
+        double eqCenter = eqX + eqW / 2.0;
+        Assert.Equal(WindowWidth / 2.0 - eqCenter * z, x, 3);
+
+        // And NOT left-aligned to the chunk's (paragraph) left edge — the regression.
+        Assert.NotEqual(WindowWidth * 0.05 - colX * z, x, 3);
+    }
+
     // ===== SetAnalysis (4 tests) =====
 
     [Fact]

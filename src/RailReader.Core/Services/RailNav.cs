@@ -67,6 +67,32 @@ public sealed partial class RailNav : ICameraClamp
         _config.CenteringRoles.Contains(CurrentNavigableBlock.Role);
 
     /// <summary>
+    /// Set-off display units (equations, algorithms) that are framed on their OWN bounds even when
+    /// they sit inside a reading chunk — so they centre on themselves rather than left-align to the
+    /// wide column run they belong to (regression introduced when chunk framing replaced per-block
+    /// framing in 4d890b6). Prose centring roles (Text/Caption/Footnote) deliberately stay
+    /// chunk-framed: framing each narrow column paragraph on its own bounds would re-introduce the
+    /// per-block camera shift the chunk model exists to remove on multi-column pages.
+    /// </summary>
+    private static readonly HashSet<BlockRole> SelfFramedRoles =
+        [BlockRole.DisplayMath, BlockRole.Algorithm];
+
+    /// <summary>Whether the current block frames on its own bounds (a set-off display unit) rather
+    /// than the chunk's.</summary>
+    private bool FrameOnOwnBlock() => SelfFramedRoles.Contains(CurrentNavigableBlock.Role);
+
+    /// <summary>
+    /// Horizontal framing bounds for the current unit: the whole chunk for prose (so crossing block
+    /// boundaries within a column doesn't shift the camera), but the current BLOCK's own bounds for a
+    /// set-off display unit (<see cref="SelfFramedRoles"/>) so an equation/algorithm embedded in a
+    /// prose chunk centres on itself instead of left-aligning to the chunk's left edge. Shared by the
+    /// snap target, the per-frame clamp, the hard-edge test and the horizontal-fraction maths so they
+    /// all agree on the framed unit.
+    /// </summary>
+    private (double Left, double Right, double WidthPx) GetFramingBounds(double zoom) =>
+        FrameOnOwnBlock() ? GetBlockBounds(zoom) : GetChunkBounds(zoom);
+
+    /// <summary>
     /// Single centering predicate shared by the snap target and the per-frame
     /// clamp, so they agree: a centering-role unit is centred only when it is
     /// narrower than <see cref="CoreTuning.CenterBlockThreshold"/> of the window.
@@ -423,9 +449,9 @@ public sealed partial class RailNav : ICameraClamp
     internal bool IsAtHardEdge(double cameraX, double zoom, double windowWidth, ScrollDirection dir)
     {
         if (_navigableIndices.Count == 0) return false;
-        var (blockLeft, _, blockWidthPx) = GetChunkBounds(zoom);
+        var (blockLeft, _, blockWidthPx) = GetFramingBounds(zoom);
 
-        // If the whole chunk fits in the window it is centred and cannot scroll at all.
+        // If the whole framed unit fits in the window it is centred and cannot scroll at all.
         if (blockWidthPx <= windowWidth) return true;
 
         const double epsilon = 2.0; // pixels of tolerance
@@ -513,7 +539,7 @@ public sealed partial class RailNav : ICameraClamp
     {
         if (_navigableIndices.Count == 0) return cameraX;
 
-        var (blockLeft, blockRight, blockWidthPx) = GetChunkBounds(zoom);
+        var (blockLeft, blockRight, blockWidthPx) = GetFramingBounds(zoom);
 
         double result;
         if (blockWidthPx <= windowWidth)
