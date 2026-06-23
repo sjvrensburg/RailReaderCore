@@ -223,12 +223,26 @@ public sealed partial class DocumentController : IDisposable
         state.QueueLookahead(_config.AnalysisLookaheadPages);
     }
 
+    /// <summary>The viewport whose position is worth persisting for <paramref name="doc"/>: the focused
+    /// view if it belongs to this document, else its first live view, else the Primary. Avoids persisting
+    /// an orphaned/parked Primary (Phase 4 #4) — single-position-per-file is kept by design.</summary>
+    private Viewport PersistableViewport(DocumentModel doc) =>
+        (FocusedViewport is { } f && ReferenceEquals(f.Owner, doc)) ? f
+        : doc.Viewports.FirstOrDefault(v => v.IsLive) ?? doc.Primary;
+
+    private void SavePosition(DocumentModel doc)
+    {
+        // Page + camera from a meaningful view; ColourEffect is a document-level display pref.
+        var vp = PersistableViewport(doc);
+        _recentFiles.SaveReadingPosition(doc.FilePath, vp.CurrentPage,
+            vp.Camera.Zoom, vp.Camera.OffsetX, vp.Camera.OffsetY, doc.ColourEffect);
+    }
+
     public void CloseDocument(int index)
     {
         if (index < 0 || index >= Documents.Count) return;
         var doc = Documents[index];
-        _recentFiles.SaveReadingPosition(doc.FilePath, doc.CurrentPage,
-            doc.Camera.Zoom, doc.Camera.OffsetX, doc.Camera.OffsetY, doc.ColourEffect);
+        SavePosition(doc);
 
         // Re-point focus only when the closed document held it; a surviving focused view (another
         // tab, or a detached pane) keeps focus, and ActiveDocumentIndex follows it automatically.
@@ -283,8 +297,7 @@ public sealed partial class DocumentController : IDisposable
     public void SaveAllReadingPositions()
     {
         foreach (var doc in Documents)
-            _recentFiles.SaveReadingPosition(doc.FilePath, doc.CurrentPage,
-                doc.Camera.Zoom, doc.Camera.OffsetX, doc.Camera.OffsetY, doc.ColourEffect);
+            SavePosition(doc);
         _annotationManager.FlushAll();
     }
 
@@ -339,14 +352,14 @@ public sealed partial class DocumentController : IDisposable
     // --- Navigation history (back/forward) ---
     // Stacks live on DocumentModel so each tab has independent history.
 
-    public bool CanGoBack => ActiveDocument is { } d && d.BackStackCount > 0;
-    public bool CanGoForward => ActiveDocument is { } d && d.ForwardStackCount > 0;
+    public bool CanGoBack => FocusedViewport is { } vp && vp.BackStackCount > 0;
+    public bool CanGoForward => FocusedViewport is { } vp && vp.ForwardStackCount > 0;
 
     /// <summary>Pushes the current page onto the back stack and clears forward history.</summary>
     private void PushHistory()
     {
         if (FocusedViewport is not { } vp) return;
-        vp.Owner.PushHistory(vp.CurrentPage);
+        vp.PushHistory(vp.CurrentPage);
     }
 
     public void NavigateToBookmark(int index)
@@ -361,17 +374,15 @@ public sealed partial class DocumentController : IDisposable
     public void NavigateBack()
     {
         if (FocusedViewport is not { } vp) return;
-        var doc = vp.Owner;
-        if (doc.BackStackCount == 0) return;
-        GoToPage(doc.PopBack(vp.CurrentPage));
+        if (vp.BackStackCount == 0) return;
+        GoToPage(vp.PopBack(vp.CurrentPage));
     }
 
     public void NavigateForward()
     {
         if (FocusedViewport is not { } vp) return;
-        var doc = vp.Owner;
-        if (doc.ForwardStackCount == 0) return;
-        GoToPage(doc.PopForward(vp.CurrentPage));
+        if (vp.ForwardStackCount == 0) return;
+        GoToPage(vp.PopForward(vp.CurrentPage));
     }
 
     /// <summary>

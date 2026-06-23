@@ -222,6 +222,34 @@ public sealed class Viewport : IDisposable
     internal readonly Stack<int> BackStack = new();
     internal readonly Stack<int> ForwardStack = new();
 
+    /// <summary>Depth of this view's back / forward stacks.</summary>
+    public int BackStackCount => BackStack.Count;
+    public int ForwardStackCount => ForwardStack.Count;
+
+    /// <summary>Record a navigation away from <paramref name="currentPage"/> on this view: push it
+    /// onto the back stack and clear the forward stack (a new branch).</summary>
+    public void PushHistory(int currentPage)
+    {
+        BackStack.Push(currentPage);
+        ForwardStack.Clear();
+    }
+
+    /// <summary>Pop the back stack for this view, pushing <paramref name="currentPage"/> onto forward.
+    /// Caller guards on <see cref="BackStackCount"/> &gt; 0.</summary>
+    public int PopBack(int currentPage)
+    {
+        ForwardStack.Push(currentPage);
+        return BackStack.Pop();
+    }
+
+    /// <summary>Pop the forward stack for this view, pushing <paramref name="currentPage"/> onto back.
+    /// Caller guards on <see cref="ForwardStackCount"/> &gt; 0.</summary>
+    public int PopForward(int currentPage)
+    {
+        BackStack.Push(currentPage);
+        return ForwardStack.Pop();
+    }
+
     // --- Rasterised page output (rendered at THIS view's DPI) ---
 
     /// <summary>Cancels this view's in-flight render/prefetch/DPI-rerender tasks. Per-view (not the

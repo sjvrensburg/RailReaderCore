@@ -117,13 +117,19 @@ public sealed class DocumentModel : IDisposable
     internal ILogger Logger => _logger;
 
     /// <summary>
-    /// The single embedded view (Phase 0 of the multi-viewport split — see
-    /// <c>docs/multi-viewport-design.md</c>). Holds the camera and the rasterised-page
-    /// cache; <see cref="DocumentModel"/>'s camera/render-surface members delegate here.
+    /// The document's primary view — always <c>Viewports[0]</c>. Holds a camera and rasterised-page
+    /// cache like any view; <see cref="DocumentModel"/>'s camera/render-surface members delegate here.
+    /// Originally the single embedded view; as of Phase 4 it is whichever view sits at index 0, so the
+    /// host can <see cref="PromotePrimary"/> another view (or remove the current primary's surface) and
+    /// the model is never left with an orphaned primary.
     /// </summary>
-    public Viewport Primary { get; }
+    public Viewport Primary => _viewports[0];
 
     private readonly List<Viewport> _viewports;
+    // Forwards the primary view's per-view property changes (CurrentPage/PageWidth/PageHeight) to the
+    // doc-level StateChanged facade. Stored (not an inline lambda) so it can be re-homed onto a newly
+    // promoted primary. Wired to the initial primary in the constructor.
+    private readonly Action<string> _primaryStateForwarder;
     /// <summary>All views of this document — always ≥1, with <c>Viewports[0] == <see cref="Primary"/></c>.
     /// A document starts with just <see cref="Primary"/>; <see cref="AddViewport"/> appends detached
     /// views (split-pane / tear-off windows), each with its own camera and rasterised-page cache.</summary>
@@ -280,11 +286,13 @@ public sealed class DocumentModel : IDisposable
         CoreSettings config, IThreadMarshaller marshaller, ILogger? logger = null)
     {
         _config = config;
-        Primary = new Viewport(config, this);
-        _viewports = [Primary];
+        var primary = new Viewport(config, this);
+        _viewports = [primary];
         // Forward the primary view's per-view property changes to the doc-level StateChanged facade
         // so existing single-viewport subscribers keep seeing CurrentPage/PageWidth/PageHeight events.
-        Primary.StateChanged += name => StateChanged?.Invoke(name);
+        // Stored so PromotePrimary/RemoveViewport can move it onto a new primary.
+        _primaryStateForwarder = name => StateChanged?.Invoke(name);
+        primary.StateChanged += _primaryStateForwarder;
         _marshaller = marshaller;
         _logger = logger ?? NullLogger.Instance;
         FilePath = filePath;
@@ -360,8 +368,12 @@ public sealed class DocumentModel : IDisposable
 
     private bool AnyViewportNeeds(int page)
     {
+        // Only LIVE viewports pin caches: a parked view (IsLive=false — an orphaned Primary or a hidden
+        // background tab) costs nothing, so its frozen page's text/link caches can be evicted. The host
+        // owns the flag (visible/focused views are IsLive=true by default), mirroring the analysis
+        // fan-out's IsViewportLive visibility gate; this method is model-level so it trusts the flag.
         foreach (var vp in _viewports)
-            if (Math.Abs(page - vp.CurrentPage) <= _pageCacheRadius)
+            if (vp.IsLive && Math.Abs(page - vp.CurrentPage) <= _pageCacheRadius)
                 return true;
         return false;
     }
@@ -390,28 +402,55 @@ public sealed class DocumentModel : IDisposable
     }
 
     /// <summary>
-    /// Removes and disposes a detached view (cancelling its in-flight renders and freeing its
-    /// bitmaps). The <see cref="Primary"/> view cannot be removed — it lives for the document's
-    /// lifetime. No-op if the view isn't ours. UI-thread only.
-    /// </summary>
-    /// <summary>
-    /// Raised after a non-primary viewport is removed and disposed. The controller subscribes so it
-    /// can re-point focus off a view that no longer exists (it owns no list of which view is focused).
+    /// Raised after a viewport is removed and disposed. The controller subscribes so it can re-point
+    /// focus off a view that no longer exists (it owns no list of which view is focused).
     /// </summary>
     public Action<Viewport>? ViewportRemoved;
 
+    /// <summary>
+    /// Removes and disposes a view (cancelling its in-flight renders and freeing its bitmaps). The
+    /// <b>last</b> remaining view cannot be removed — the model needs ≥1 view for its lifetime. Removing
+    /// the current <see cref="Primary"/> while siblings remain is allowed: the next view becomes Primary
+    /// (Phase 4 — no orphaned primary). No-op if the view isn't ours. UI-thread only.
+    /// </summary>
     public void RemoveViewport(Viewport vp)
     {
         _marshaller.AssertUIThread();
-        if (ReferenceEquals(vp, Primary))
-            throw new InvalidOperationException("Cannot remove the primary viewport.");
-        if (_viewports.Remove(vp))
-        {
-            vp.Dispose();
-            // Tell the controller before the caller's next tick, so a removed focused view can't be
-            // ticked/dereferenced after its Cts and callbacks were torn down.
-            ViewportRemoved?.Invoke(vp);
-        }
+        if (_viewports.Count == 1)
+            throw new InvalidOperationException("Cannot remove the last viewport.");
+
+        bool wasPrimary = ReferenceEquals(vp, _viewports[0]);
+        if (!_viewports.Remove(vp)) return;
+
+        // If the primary was removed, the new index-0 view inherits the doc-level StateChanged forwarder
+        // (vp.Dispose() drops vp's own handlers, so the old forwarder goes with it).
+        if (wasPrimary)
+            _viewports[0].StateChanged += _primaryStateForwarder;
+
+        vp.Dispose();
+        // Tell the controller before the caller's next tick, so a removed focused view can't be
+        // ticked/dereferenced after its Cts and callbacks were torn down.
+        ViewportRemoved?.Invoke(vp);
+    }
+
+    /// <summary>
+    /// Promotes <paramref name="vp"/> to <see cref="Primary"/> (moves it to <c>Viewports[0]</c>),
+    /// re-homing the doc-level StateChanged forwarder. Lets the host keep a chosen surviving surface as
+    /// primary before closing the original primary's surface, so the model is never left with an
+    /// orphaned primary. No-op if already primary; throws if the view isn't ours. UI-thread only.
+    /// </summary>
+    public void PromotePrimary(Viewport vp)
+    {
+        _marshaller.AssertUIThread();
+        var old = _viewports[0];
+        if (ReferenceEquals(vp, old)) return;
+        if (!_viewports.Contains(vp))
+            throw new InvalidOperationException("Viewport does not belong to this document.");
+
+        old.StateChanged -= _primaryStateForwarder;
+        vp.StateChanged += _primaryStateForwarder;
+        _viewports.Remove(vp);
+        _viewports.Insert(0, vp);
     }
 
     /// <summary>
@@ -927,25 +966,24 @@ public sealed class DocumentModel : IDisposable
 
     // --- Navigation history mutation ---
 
+    // Document-level history facades delegate to the Primary view (per-view history lives on Viewport;
+    // the controller routes Back/Forward through FocusedViewport — these keep the public surface).
     internal void PushHistory(int currentPage)
     {
         _marshaller.AssertUIThread();
-        Primary.BackStack.Push(currentPage);
-        Primary.ForwardStack.Clear();
+        Primary.PushHistory(currentPage);
     }
 
     internal int PopBack(int currentPage)
     {
         _marshaller.AssertUIThread();
-        Primary.ForwardStack.Push(currentPage);
-        return Primary.BackStack.Pop();
+        return Primary.PopBack(currentPage);
     }
 
     internal int PopForward(int currentPage)
     {
         _marshaller.AssertUIThread();
-        Primary.BackStack.Push(currentPage);
-        return Primary.ForwardStack.Pop();
+        return Primary.PopForward(currentPage);
     }
 
     /// <summary>
