@@ -145,7 +145,12 @@ public static class ScreenshotCompositor
         }
 
         // --- Layer 5: Debug overlay ---
-        if (options.DebugOverlay && doc.TryGetAnalysis(vp.CurrentPage, out var analysis))
+        // Use THIS view's analysis variant (vp.AnalysisParams) so the debug boxes match the rail
+        // overlay above (which is seated under the same variant); fall back to the canonical variant
+        // if the view's exact variant isn't cached.
+        if (options.DebugOverlay
+            && (doc.TryGetAnalysis(vp.CurrentPage, vp.AnalysisParams, out var analysis)
+                || doc.TryGetAnalysis(vp.CurrentPage, out analysis)))
             DrawDebugOverlay(canvas, analysis);
 
         canvas.Restore(); // undo scale

@@ -212,12 +212,12 @@ public sealed partial class DocumentController
                         break;
                     case LineAdvanceResult.PageChangedRailLost:
                         FirePageChanged(ref pageChanged, vp);
-                        vp.AutoScroll.StopAutoScroll(vp);
+                        vp.AutoScroll.StopAutoScroll();
                         break;
                     case LineAdvanceResult.LineAdvanced:
                         if (vp.Rail.CurrentBlock == prevBlock && vp.Rail.CurrentLine == prevLine)
                         {
-                            vp.AutoScroll.StopAutoScroll(vp);
+                            vp.AutoScroll.StopAutoScroll();
                             break;
                         }
                         vp.StartSnap(ww, wh);
@@ -365,7 +365,7 @@ public sealed partial class DocumentController
         // the synchronous GoToPage/SubmitAnalysis path the host drives per-view.)
         var (ww, wh) = (vp.Width, vp.Height);
 
-        vp.Rail.SetAnalysis(analysis, _config.NavigableRoles);
+        vp.Rail.SetAnalysis(analysis, _config.NavigableRoles, vp.PreserveRailOnSeat);
         vp.PendingRailSetup = false;
         vp.UpdateRailZoom(ww, wh);
         _logger.Debug($"[Analysis] Rail has {vp.Rail.NavigableCount} navigable blocks, Active={vp.Rail.Active}");

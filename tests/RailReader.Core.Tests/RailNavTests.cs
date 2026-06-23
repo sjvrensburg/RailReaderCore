@@ -276,6 +276,29 @@ public class RailNavTests
     }
 
     [Fact]
+    public void SetAnalysis_PreservePosition_KeepsBlockAndClampsLine()
+    {
+        // Review finding #1: a same-page reseat under a new analysis variant (table/cell-nav toggle)
+        // must keep the reader's block/line rather than reset to block 0. CurrentLine is clamped to the
+        // new block's line count (a table may un-collapse into more/fewer rows).
+        ActivateWithAnalysis(3, 3);
+        _nav.CurrentBlock = 2;
+        _nav.CurrentLine = 2;
+
+        // A DIFFERENT analysis object (the new variant), reseated with preservePosition.
+        var newVariant = CreateAnalysis(3, 2);   // same 3 blocks, but only 2 lines each now
+        _nav.SetAnalysis(newVariant, new HashSet<BlockRole> { TextRole }, preservePosition: true);
+
+        Assert.Equal(2, _nav.CurrentBlock);      // block preserved (not reset to 0)
+        Assert.Equal(1, _nav.CurrentLine);       // clamped from 2 to the new last line (1)
+
+        // And the default (no preserve) still resets, proving the flag is the discriminator.
+        _nav.CurrentBlock = 2;
+        _nav.SetAnalysis(CreateAnalysis(3, 2), new HashSet<BlockRole> { TextRole });
+        Assert.Equal(0, _nav.CurrentBlock);
+    }
+
+    [Fact]
     public void HasAnalysis_TrueWithBlocks()
     {
         var analysis = CreateAnalysis(2, 3);

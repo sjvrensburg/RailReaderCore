@@ -20,7 +20,7 @@ public class AutoScrollControllerTests : IDisposable
             factory.CreatePdfTextService(), factory.CreatePdfLinkService(), _config.ToCoreSettings(), new SynchronousThreadMarshaller());
         _doc.LoadPageBitmap();
         _doc.CenterPage(800, 600);
-        _autoScroll = new AutoScrollController(_config.ToCoreSettings());
+        _autoScroll = new AutoScrollController(_config.ToCoreSettings(), _doc.Primary);
 
         // Set up rail mode so auto-scroll can activate
         SetupRailMode();
@@ -38,7 +38,7 @@ public class AutoScrollControllerTests : IDisposable
     {
         Assert.False(_autoScroll.AutoScrollActive);
 
-        _autoScroll.ToggleAutoScroll(_doc.Primary);
+        _autoScroll.ToggleAutoScroll();
 
         Assert.True(_autoScroll.AutoScrollActive);
     }
@@ -46,10 +46,10 @@ public class AutoScrollControllerTests : IDisposable
     [Fact]
     public void ToggleAutoScroll_Deactivates()
     {
-        _autoScroll.ToggleAutoScroll(_doc.Primary);
+        _autoScroll.ToggleAutoScroll();
         Assert.True(_autoScroll.AutoScrollActive);
 
-        _autoScroll.ToggleAutoScroll(_doc.Primary);
+        _autoScroll.ToggleAutoScroll();
 
         Assert.False(_autoScroll.AutoScrollActive);
     }
@@ -57,10 +57,10 @@ public class AutoScrollControllerTests : IDisposable
     [Fact]
     public void StopAutoScroll_ClearsState()
     {
-        _autoScroll.ToggleAutoScroll(_doc.Primary);
+        _autoScroll.ToggleAutoScroll();
         Assert.True(_autoScroll.AutoScrollActive);
 
-        _autoScroll.StopAutoScroll(_doc.Primary);
+        _autoScroll.StopAutoScroll();
 
         Assert.False(_autoScroll.AutoScrollActive);
     }
@@ -71,7 +71,7 @@ public class AutoScrollControllerTests : IDisposable
         _autoScroll.JumpMode = true;
         Assert.True(_autoScroll.JumpMode);
 
-        _autoScroll.ToggleAutoScrollExclusive(_doc.Primary);
+        _autoScroll.ToggleAutoScrollExclusive();
 
         Assert.False(_autoScroll.JumpMode);
         Assert.True(_autoScroll.AutoScrollActive);
@@ -80,10 +80,10 @@ public class AutoScrollControllerTests : IDisposable
     [Fact]
     public void ToggleJumpModeExclusive_StopsAutoScroll()
     {
-        _autoScroll.ToggleAutoScroll(_doc.Primary);
+        _autoScroll.ToggleAutoScroll();
         Assert.True(_autoScroll.AutoScrollActive);
 
-        _autoScroll.ToggleJumpModeExclusive(_doc.Primary);
+        _autoScroll.ToggleJumpModeExclusive();
 
         Assert.False(_autoScroll.AutoScrollActive);
         Assert.True(_autoScroll.JumpMode);

@@ -235,15 +235,10 @@ public sealed class DocumentModel : IDisposable
     /// calls (text/link extraction) the user is about to need — a detached pane's in-flight
     /// render contends for the same gate, so it must count too.
     /// </summary>
-    public bool IsPdfiumBusy
-    {
-        get
-        {
-            foreach (var v in _viewports)
-                if (v.DpiRenderPending || v.PrefetchPending) return true;
-            return false;
-        }
-    }
+    public bool IsPdfiumBusy => _viewports.Any(v => v.DpiRenderPending || v.PrefetchPending);
+
+    /// <summary>True if any viewport is still awaiting its foreground rail analysis seat.</summary>
+    private bool AnyViewportPendingRailSetup() => _viewports.Any(v => v.PendingRailSetup);
 
     /// <summary>Fires on the UI thread when a new page analysis result is cached.</summary>
     public event Action? AnalysisCacheUpdated;
@@ -543,7 +538,7 @@ public sealed class DocumentModel : IDisposable
     public void ReapplyNavigableRoles(Viewport vp, IReadOnlySet<BlockRole> navigableRoles)
     {
         if (TryGetAnalysis(vp.CurrentPage, vp.AnalysisParams, out var cached))
-            vp.Rail.SetAnalysis(cached, navigableRoles);
+            vp.Rail.SetAnalysis(cached, navigableRoles, vp.PreserveRailOnSeat);
     }
 
     public void ReapplyNavigableRoles(IReadOnlySet<BlockRole> navigableRoles)
@@ -551,7 +546,7 @@ public sealed class DocumentModel : IDisposable
 
     private void ApplyAnalysis(Viewport vp, PageAnalysis analysis, IReadOnlySet<BlockRole> navigableRoles)
     {
-        vp.Rail.SetAnalysis(analysis, navigableRoles);
+        vp.Rail.SetAnalysis(analysis, navigableRoles, vp.PreserveRailOnSeat);
         vp.PendingRailSetup = false;
     }
 
@@ -624,7 +619,10 @@ public sealed class DocumentModel : IDisposable
     {
         _marshaller.AssertUIThread();
         if (!worker.IsIdle) return false;
-        if (PendingRailSetup) return false;
+        // Defer while ANY viewport is still waiting on its own foreground rail analysis — not just the
+        // Primary facade — so a background page can't jump the worker queue ahead of the page a focused
+        // secondary/detached pane is actively waiting to read (mirrors IsPdfiumBusy's all-viewport gate).
+        if (AnyViewportPendingRailSetup()) return false;
         if (IsPdfiumBusy) return false;
         if (BackgroundQueue.IsExhausted) return false;
 
@@ -687,6 +685,9 @@ public sealed class DocumentModel : IDisposable
     {
         vp.PendingRailSetup = false;
         vp.PendingSkip = null;
+        // A genuine page change resets rail position, so a lingering config-toggle preserve request
+        // must not carry onto the new page.
+        vp.PreserveRailOnSeat = false;
         vp.Prefetched?.Dispose();
         vp.Prefetched = null;
     }

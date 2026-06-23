@@ -29,7 +29,7 @@ public sealed class Viewport : IDisposable
         // members null-initialised and assigned later by the owner (a NRE footgun once a future phase
         // constructs viewports outside DocumentModel's ctor).
         Rail = new RailNav(config);
-        AutoScroll = new AutoScrollController(config);
+        AutoScroll = new AutoScrollController(config, this);
         AnalysisParams = new AnalysisParams(config.TableRowReading, config.CellNavigation);
     }
 
@@ -95,6 +95,12 @@ public sealed class Viewport : IDisposable
 
     /// <summary>Rail navigation state for this view (built in the constructor).</summary>
     public RailNav Rail { get; }
+
+    /// <summary>When set, the next rail reseat (a config-driven re-analysis of the page this view is
+    /// already on — e.g. a table-row/cell-nav toggle) keeps the reader's block/line position instead of
+    /// resetting to block 0. Set by the config-changed path; cleared by genuine page navigation
+    /// (<see cref="DocumentModel.ClearPendingState"/>), so a normal page change still resets.</summary>
+    internal bool PreserveRailOnSeat { get; set; }
 
     /// <summary>Smooth zoom/pan animation state for this view.</summary>
     internal ZoomAnimationController Zoom { get; } = new();
