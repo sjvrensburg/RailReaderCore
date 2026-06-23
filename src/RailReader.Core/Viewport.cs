@@ -29,7 +29,7 @@ public sealed class Viewport : IDisposable
         // members null-initialised and assigned later by the owner (a NRE footgun once a future phase
         // constructs viewports outside DocumentModel's ctor).
         Rail = new RailNav(config);
-        AutoScroll = new AutoScrollController(config);
+        AutoScroll = new AutoScrollController(config, this);
         AnalysisParams = new AnalysisParams(config.TableRowReading, config.CellNavigation);
     }
 
@@ -77,14 +77,12 @@ public sealed class Viewport : IDisposable
     /// <summary>Camera (pan/zoom/offset) for this view.</summary>
     public Camera Camera { get; } = new();
 
-    /// <summary>This view's viewport size in px. The controller keeps an ambient size and mirrors it
-    /// onto the primary (<see cref="DocumentModel.SetSize"/> via <c>SetViewportSize</c>); a host sizes a
-    /// detached pane via <see cref="SetSize"/>. This is now the single source of size for a view's own
-    /// animation: the controller's per-view tick/clamp/seat and its input/camera methods all read
-    /// <see cref="Width"/>/<see cref="Height"/> off the target view (no longer the ambient
-    /// <c>GetViewportSize()</c>), so panes of differing widths animate and seat correctly without the
-    /// host swapping the controller's ambient size per surface every frame (issue #74). Equals the
-    /// controller's ambient size in the single-window world.</summary>
+    /// <summary>This view's viewport size in px. The host sizes every view — including the primary —
+    /// via <see cref="SetSize"/>; there is no controller-level ambient size any more (removed in
+    /// Phase 3). This is the single source of size for the view's own animation: the per-view
+    /// tick/clamp/seat and the controller's input/camera methods all read <see cref="Width"/>/
+    /// <see cref="Height"/> off the target view, so panes of differing widths animate and seat
+    /// correctly without the host swapping a shared ambient size per surface each frame (issue #74).</summary>
     public double Width { get; private set; } = 1200;
     public double Height { get; private set; } = 900;
 
@@ -97,6 +95,12 @@ public sealed class Viewport : IDisposable
 
     /// <summary>Rail navigation state for this view (built in the constructor).</summary>
     public RailNav Rail { get; }
+
+    /// <summary>When set, the next rail reseat (a config-driven re-analysis of the page this view is
+    /// already on — e.g. a table-row/cell-nav toggle) keeps the reader's block/line position instead of
+    /// resetting to block 0. Set by the config-changed path; cleared by genuine page navigation
+    /// (<see cref="DocumentModel.ClearPendingState"/>), so a normal page change still resets.</summary>
+    internal bool PreserveRailOnSeat { get; set; }
 
     /// <summary>Smooth zoom/pan animation state for this view.</summary>
     internal ZoomAnimationController Zoom { get; } = new();

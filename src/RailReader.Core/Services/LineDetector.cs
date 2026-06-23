@@ -360,7 +360,9 @@ public static class LineDetector
     /// </summary>
     internal static float RobustGapThreshold(List<float> heights)
     {
-        float tallRef = heights[(int)(heights.Count * 0.9f)];
+        // Clamp the percentile index: float rounding of Count*0.9f can land on Count for large
+        // inputs, and the caller only guarantees Count > 0.
+        float tallRef = heights[Math.Min(heights.Count - 1, (int)(heights.Count * 0.9f))];
         float minRealHeight = 0.4f * tallRef;
         int lo = 0;
         while (lo < heights.Count && heights[lo] < minRealHeight) lo++;

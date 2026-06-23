@@ -292,10 +292,9 @@ public sealed partial class DocumentController
         double pageX = (canvasX - vp.Camera.OffsetX) / vp.Camera.Zoom;
         double pageY = (canvasY - vp.Camera.OffsetY) / vp.Camera.Zoom;
 
-        // Check for PDF links first (takes priority over rail-mode snap). Link hit-testing is
-        // document-level (it uses the document's current page); precise per-view link clicking on a
-        // detached pane sitting on a different page is a later increment.
-        var link = doc.HitTestLink(pageX, pageY);
+        // Check for PDF links first (takes priority over rail-mode snap). Hit-test the FOCUSED view's
+        // own page so a detached pane sitting on a different page than the primary clicks its own links.
+        var link = doc.HitTestLink(vp.CurrentPage, pageX, pageY);
         if (link is not null)
         {
             if (link.Destination is PageDestination pageDest)
@@ -318,10 +317,10 @@ public sealed partial class DocumentController
     }
 
     /// <summary>
-    /// Hit-tests a point (in page-point space) against PDF links on the active document.
+    /// Hit-tests a point (in page-point space) against PDF links on the focused view's page.
     /// </summary>
     public PdfLink? HitTestLink(double pageX, double pageY)
-        => ActiveDocument?.HitTestLink(pageX, pageY);
+        => FocusedViewport is { } vp ? vp.Owner.HitTestLink(vp.CurrentPage, pageX, pageY) : null;
 
     /// <summary>
     /// Force rail mode active at the clicked point regardless of zoom ("start rail here"),

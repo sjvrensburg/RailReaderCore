@@ -220,7 +220,6 @@ public sealed class DocumentModel : IDisposable
     // Latest settings snapshot — kept so AddViewport can build a new view from current config.
     private CoreSettings _config;
 
-    public Queue<int> PendingAnalysis => Primary.PendingAnalysis;
     internal BackgroundAnalysisQueue BackgroundQueue { get; private set; } = null!;
 
     /// <summary>Number of pages with cached analysis results.</summary>
@@ -231,11 +230,15 @@ public sealed class DocumentModel : IDisposable
 
     /// <summary>
     /// True when a user-initiated PDFium render (DPI re-render or page prefetch)
-    /// is in flight. Background work should defer while this is true to keep
+    /// is in flight on ANY viewport. Background work should defer while this is true to keep
     /// the PDFium gate free for the in-flight task and any follow-up scroll-path
-    /// calls (text/link extraction) the user is about to need.
+    /// calls (text/link extraction) the user is about to need — a detached pane's in-flight
+    /// render contends for the same gate, so it must count too.
     /// </summary>
-    public bool IsPdfiumBusy => Primary.DpiRenderPending || Primary.PrefetchPending;
+    public bool IsPdfiumBusy => _viewports.Any(v => v.DpiRenderPending || v.PrefetchPending);
+
+    /// <summary>True if any viewport is still awaiting its foreground rail analysis seat.</summary>
+    private bool AnyViewportPendingRailSetup() => _viewports.Any(v => v.PendingRailSetup);
 
     /// <summary>Fires on the UI thread when a new page analysis result is cached.</summary>
     public event Action? AnalysisCacheUpdated;
@@ -306,7 +309,10 @@ public sealed class DocumentModel : IDisposable
     /// snapshot. Mirrors how <see cref="RailNav.UpdateConfig"/> propagates rail
     /// settings; called from the controller's config-changed path.
     /// </summary>
-    internal void UpdateBackgroundSettings(CoreSettings config)
+    /// <summary>Returns true if the table/cell-nav analysis params changed, so the caller can
+    /// re-fetch each viewport's current page under the new variant (the cache is keyed by params,
+    /// so the on-screen structure would otherwise stay stale until the user navigates away and back).</summary>
+    internal bool UpdateBackgroundSettings(CoreSettings config)
     {
         _marshaller.AssertUIThread();
         _config = config;
@@ -316,13 +322,15 @@ public sealed class DocumentModel : IDisposable
         // default and apply it to every viewport (matching the old doc-level behaviour). Unrelated
         // config changes (dark mode, scroll speed, …) leave any per-viewport divergence intact.
         var newParams = new AnalysisParams(config.TableRowReading, config.CellNavigation);
-        if (newParams != _defaultAnalysisParams)
+        bool paramsChanged = newParams != _defaultAnalysisParams;
+        if (paramsChanged)
         {
             _defaultAnalysisParams = newParams;
             foreach (var vp in _viewports)
                 vp.AnalysisParams = newParams;
         }
         EvictDistantPageCaches();
+        return paramsChanged;
     }
 
     /// <summary>
@@ -362,12 +370,9 @@ public sealed class DocumentModel : IDisposable
     /// Adds a detached view of this document (split-pane / tear-off window): a fresh
     /// <see cref="Viewport"/> seeded from the current settings and the primary view's size, starting
     /// on page 0 with a default camera. The caller positions it (page / centre / zoom). Its render
-    /// cache and camera are independent of the primary's. UI-thread only.
-    /// <para><b>Scope (Phase 1):</b> a non-primary view's camera, zoom, rail-snap, auto-scroll and
-    /// rasterisation are fully independent, but a <em>cross-page</em> transition reached from its
-    /// tick (rail page-advance / edge-hold) still routes through the document-level
-    /// <see cref="GoToPage"/>, which moves the <see cref="Primary"/> view. Per-view page navigation
-    /// and analysis fan-out land with the analysis-fan-out phase (see <c>docs/multi-viewport-design.md</c> §5).</para>
+    /// cache and camera are independent of the primary's. UI-thread only. A non-primary view's camera,
+    /// zoom, rail-snap, auto-scroll, rasterisation, per-view page navigation and analysis fan-out are
+    /// all fully independent (see <c>docs/multi-viewport-design.md</c> §5).
     /// </summary>
     public Viewport AddViewport()
     {
@@ -533,7 +538,7 @@ public sealed class DocumentModel : IDisposable
     public void ReapplyNavigableRoles(Viewport vp, IReadOnlySet<BlockRole> navigableRoles)
     {
         if (TryGetAnalysis(vp.CurrentPage, vp.AnalysisParams, out var cached))
-            vp.Rail.SetAnalysis(cached, navigableRoles);
+            vp.Rail.SetAnalysis(cached, navigableRoles, vp.PreserveRailOnSeat);
     }
 
     public void ReapplyNavigableRoles(IReadOnlySet<BlockRole> navigableRoles)
@@ -541,7 +546,7 @@ public sealed class DocumentModel : IDisposable
 
     private void ApplyAnalysis(Viewport vp, PageAnalysis analysis, IReadOnlySet<BlockRole> navigableRoles)
     {
-        vp.Rail.SetAnalysis(analysis, navigableRoles);
+        vp.Rail.SetAnalysis(analysis, navigableRoles, vp.PreserveRailOnSeat);
         vp.PendingRailSetup = false;
     }
 
@@ -614,7 +619,10 @@ public sealed class DocumentModel : IDisposable
     {
         _marshaller.AssertUIThread();
         if (!worker.IsIdle) return false;
-        if (PendingRailSetup) return false;
+        // Defer while ANY viewport is still waiting on its own foreground rail analysis — not just the
+        // Primary facade — so a background page can't jump the worker queue ahead of the page a focused
+        // secondary/detached pane is actively waiting to read (mirrors IsPdfiumBusy's all-viewport gate).
+        if (AnyViewportPendingRailSetup()) return false;
         if (IsPdfiumBusy) return false;
         if (BackgroundQueue.IsExhausted) return false;
 
@@ -677,6 +685,9 @@ public sealed class DocumentModel : IDisposable
     {
         vp.PendingRailSetup = false;
         vp.PendingSkip = null;
+        // A genuine page change resets rail position, so a lingering config-toggle preserve request
+        // must not carry onto the new page.
+        vp.PreserveRailOnSeat = false;
         vp.Prefetched?.Dispose();
         vp.Prefetched = null;
     }
@@ -865,12 +876,13 @@ public sealed class DocumentModel : IDisposable
     }
 
     /// <summary>
-    /// Hit-tests a point against PDF links on the current page.
-    /// Uses the cached link list for fast in-memory lookup.
+    /// Hit-tests a point (page-point space) against PDF links on <paramref name="page"/>.
+    /// Uses the cached link list for fast in-memory lookup. Per-page so a focused detached pane
+    /// can hit-test links on ITS page, not the Primary facade's.
     /// </summary>
-    public PdfLink? HitTestLink(double pageX, double pageY)
+    public PdfLink? HitTestLink(int page, double pageX, double pageY)
     {
-        var links = GetOrExtractLinks(CurrentPage);
+        var links = GetOrExtractLinks(page);
         foreach (var link in links)
         {
             if (link.Rect.Contains((float)pageX, (float)pageY))
@@ -878,6 +890,9 @@ public sealed class DocumentModel : IDisposable
         }
         return null;
     }
+
+    /// <summary>Hit-tests links on the current (Primary-facade) page. See the per-page overload.</summary>
+    public PdfLink? HitTestLink(double pageX, double pageY) => HitTestLink(CurrentPage, pageX, pageY);
 
     // --- Cache mutation methods ---
 

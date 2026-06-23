@@ -51,8 +51,27 @@ public sealed partial class DocumentController : IDisposable
             if (value is not null
                 && (!Documents.Contains(value.Owner) || !value.Owner.Viewports.Contains(value)))
                 return;
-            _focusedViewport = value;
+            SetFocus(value);
         }
+    }
+
+    /// <summary>The single focus-assignment seam. Routes the focused view's auto-scroll/jump state
+    /// changes to the controller's <see cref="StateChanged"/> (which the UI reads via the focus-
+    /// delegating <see cref="AutoScrollActive"/>/<see cref="JumpMode"/>), unwiring the previously-
+    /// focused view first. This is why a detached pane (created via <see cref="DocumentModel.AddViewport"/>,
+    /// which can't reach the controller) still drives the UI once focused — the forwarder is wired
+    /// here, not at view creation.</summary>
+    private void SetFocus(Viewport? value)
+    {
+        if (ReferenceEquals(_focusedViewport, value)) return;
+        if (_focusedViewport is { } prev) prev.AutoScroll.StateChanged = null;
+        _focusedViewport = value;
+        if (value is not null) value.AutoScroll.StateChanged = name => StateChanged?.Invoke(name);
+        // AutoScrollActive/JumpMode delegate to the focused view, so a focus switch can change the value
+        // the UI reads without the old view's forwarder ever firing. Publish the transition so an
+        // event-bound UI re-reads the now-focused view's state instead of showing the prior view's.
+        StateChanged?.Invoke(nameof(AutoScrollActive));
+        StateChanged?.Invoke(nameof(JumpMode));
     }
 
     /// <summary>Re-points focus to the document's primary view when the currently-focused view is
@@ -62,7 +81,7 @@ public sealed partial class DocumentController : IDisposable
     private void OnViewportRemoved(Viewport removed)
     {
         if (ReferenceEquals(_focusedViewport, removed))
-            _focusedViewport = removed.Owner.Primary;
+            SetFocus(removed.Owner.Primary);
     }
 
     public CoreSettings Config => _config;
@@ -82,7 +101,7 @@ public sealed partial class DocumentController : IDisposable
     internal int ActiveDocumentIndex
     {
         get => _focusedViewport?.Owner is { } d ? Documents.IndexOf(d) : -1;
-        set => _focusedViewport = (uint)value < (uint)Documents.Count ? Documents[value].Primary : null;
+        set => SetFocus((uint)value < (uint)Documents.Count ? Documents[value].Primary : null);
     }
 
     // Annotation and search subsystems
@@ -176,9 +195,9 @@ public sealed partial class DocumentController : IDisposable
         // the primary's own size — it falls back to the Viewport default until the host resizes it,
         // at which point the host re-centres.
         var (ww, wh) = (state.Primary.Width, state.Primary.Height);
-        // This view's auto-scroll state changes surface through the controller's StateChanged
-        // (UI re-reads AutoScrollActive/JumpMode, which delegate to the active view).
-        state.Primary.AutoScroll.StateChanged = name => StateChanged?.Invoke(name);
+        // Auto-scroll/jump state changes of the FOCUSED view surface through the controller's
+        // StateChanged — wired centrally in SetFocus when this document becomes focused below
+        // (ActiveDocumentIndex setter), so detached panes get the same treatment once focused.
         // If the focused view is removed, fall back to its document's primary so FocusedViewport is
         // never left pointing at a disposed view (it backs ActiveDocument and the per-frame tick).
         state.ViewportRemoved = OnViewportRemoved;
@@ -217,7 +236,7 @@ public sealed partial class DocumentController : IDisposable
         Documents.RemoveAt(index);
         doc.Dispose();
         if (closingFocused)
-            _focusedViewport = Documents.Count > 0 ? Documents[Math.Min(index, Documents.Count - 1)].Primary : null;
+            SetFocus(Documents.Count > 0 ? Documents[Math.Min(index, Documents.Count - 1)].Primary : null);
         // Free-pan pause is per-view now: the closed doc's pause died with its disposal, and any
         // other tab is already cleared on switch-away (SelectDocument). The surviving active doc
         // keeps its own pause — so nothing to clear here. (The old global `_railPause = null` was a
@@ -237,12 +256,12 @@ public sealed partial class DocumentController : IDisposable
         // Leaving this tab: drop its free-pan pause and end its auto-scroll session, so a tab
         // switch quiesces the tab you're leaving. With per-view auto-scroll flags there is no
         // shared flag to go stale, so the old post-switch sync is no longer needed.
-        if (ActiveDocument is { } leaving && _focusedViewport is { } leavingView)
+        if (_focusedViewport is { } leavingView)
         {
             // Quiesce the FOCUSED view of the tab you're leaving — it may be a secondary/detached
-            // pane, not the primary (auto-scroll/free-pan state is per-view).
+            // pane, not the primary (auto-scroll/free-pan state is per-view), so stop ITS own rail.
             leavingView.RailPause = null;
-            leavingView.AutoScroll.StopAutoScroll(leaving);
+            leavingView.AutoScroll.StopAutoScroll();
         }
         ActiveDocumentIndex = index;
     }
@@ -289,16 +308,21 @@ public sealed partial class DocumentController : IDisposable
     /// </summary>
     public bool AddBookmark(string name)
     {
-        if (ActiveDocument is not { Annotations: { } annotations } doc) return false;
+        // Bookmark the FOCUSED view's page (it may be a secondary/detached pane on a different page
+        // than the primary), consistent with how links/search/annotations now resolve the page.
+        if (FocusedViewport is not { } vp) return false;
+        var doc = vp.Owner;
+        if (doc.Annotations is not { } annotations) return false;
+        int page = vp.CurrentPage;
 
-        var existing = annotations.Bookmarks.FindIndex(b => b.Page == doc.CurrentPage);
+        var existing = annotations.Bookmarks.FindIndex(b => b.Page == page);
         if (existing >= 0)
         {
             doc.RenameBookmark(existing, name);
             return false;
         }
 
-        doc.AddBookmark(name, doc.CurrentPage);
+        doc.AddBookmark(name, page);
         return true;
     }
 
@@ -616,13 +640,15 @@ public sealed partial class DocumentController : IDisposable
 
     // --- Auto-scroll (delegated to AutoScrollController) ---
 
-    public void ToggleAutoScroll() => FocusedViewport?.AutoScroll.ToggleAutoScroll(ActiveDocument);
+    // All route through the FOCUSED view's own AutoScrollController, which acts on that view's own rail
+    // (it may be a secondary/detached pane) — not the document's Primary facade.
+    public void ToggleAutoScroll() => FocusedViewport?.AutoScroll.ToggleAutoScroll();
 
-    public void StopAutoScroll() => FocusedViewport?.AutoScroll.StopAutoScroll(ActiveDocument);
+    public void StopAutoScroll() => FocusedViewport?.AutoScroll.StopAutoScroll();
 
-    public void ToggleAutoScrollExclusive() => FocusedViewport?.AutoScroll.ToggleAutoScrollExclusive(ActiveDocument);
+    public void ToggleAutoScrollExclusive() => FocusedViewport?.AutoScroll.ToggleAutoScrollExclusive();
 
-    public void ToggleJumpModeExclusive() => FocusedViewport?.AutoScroll.ToggleJumpModeExclusive(ActiveDocument);
+    public void ToggleJumpModeExclusive() => FocusedViewport?.AutoScroll.ToggleJumpModeExclusive();
 
     /// <summary>
     /// True when semi-automatic auto-scroll is parked on a stop unit (non-prose block, new
@@ -665,16 +691,32 @@ public sealed partial class DocumentController : IDisposable
         _config = newConfig;
         foreach (var doc in Documents)
         {
+            // Flip the doc-level analysis params (and caches/queue) FIRST, once per document, so the
+            // per-view loop below sees the new table/cell-nav variant.
+            bool paramsChanged = doc.UpdateBackgroundSettings(_config);
+
             // Per-view settings reach EVERY view (rail, auto-scroll, render-DPI); a detached pane
             // must respond to a live settings change too (§8).
             foreach (var vp in doc.Viewports)
             {
                 vp.AutoScroll.UpdateConfig(newConfig);
                 vp.Rail.UpdateConfig(_config);
-                doc.ReapplyNavigableRoles(vp, _config.NavigableRoles);
                 vp.OnRenderQualityChanged(_config.RenderDpi);
+
+                // A config change must never reset the reader's rail position — preserve it across the
+                // reseat(s) below (cleared by genuine navigation).
+                vp.PreserveRailOnSeat = true;
+                // Always re-seat the current-params variant with the (possibly changed) navigable-role
+                // set — a no-op when the page isn't analysed under the new params. This is also the
+                // fallback that keeps the role change applying when the re-fetch below can't run.
+                doc.ReapplyNavigableRoles(vp, _config.NavigableRoles);
+                // A table-row / cell-nav toggle changes the cached variant: fetch the new one for the
+                // on-screen page (cache hit re-seats now; miss schedules a re-analysis and the §5.4
+                // fan-out re-seats when it lands). Only for already-analysed pages — don't trigger fresh
+                // analysis on a page that wasn't being shown with structure.
+                if (paramsChanged && doc.IsPageAnalysed(vp.CurrentPage))
+                    doc.SubmitAnalysis(vp, _worker, _config.NavigableRoles);
             }
-            doc.UpdateBackgroundSettings(_config); // doc-level caches/queue — once per document
         }
     }
 
@@ -708,6 +750,14 @@ public sealed partial class DocumentController : IDisposable
         return Documents[index.Value];
     }
 
+    /// <summary>The viewport a pull-query should describe: with no index, the focused view (the single
+    /// source of truth — it may be a secondary/detached pane); with an explicit index, that tab's
+    /// Primary (a non-focused tab has no notion of "the focused view"). Every "where am I" query
+    /// (<see cref="GetReadingPosition"/>/<see cref="GetDocumentInfo"/>/<see cref="GetPageDescription"/>)
+    /// resolves through here so they can't disagree about which page/view is current.</summary>
+    private Viewport? ResolveViewport(int? index)
+        => index is null ? FocusedViewport : ResolveDocument(index)?.Primary;
+
     public DocumentList ListDocuments()
     {
         var summaries = Documents.Select((d, i) => new DocumentSummary(
@@ -717,14 +767,17 @@ public sealed partial class DocumentController : IDisposable
 
     public DocumentInfo? GetDocumentInfo(int? index = null)
     {
-        var doc = ResolveDocument(index);
-        if (doc is null) return null;
+        // Describe one viewport coherently: page/camera/rail AND auto-scroll/jump all come from the
+        // resolved view (the focused view for no-index), so the record can't mix the Primary facade's
+        // page with the focused view's auto-scroll state.
+        if (ResolveViewport(index) is not { } vp) return null;
+        var doc = vp.Owner;
 
         return new DocumentInfo(
-            doc.FilePath, doc.Title, doc.PageCount, doc.CurrentPage,
-            doc.Camera.Zoom, doc.Camera.OffsetX, doc.Camera.OffsetY,
-            doc.Rail.Active, doc.Rail.HasAnalysis, doc.Rail.NavigableCount,
-            AutoScrollActive, JumpMode);
+            doc.FilePath, doc.Title, doc.PageCount, vp.CurrentPage,
+            vp.Camera.Zoom, vp.Camera.OffsetX, vp.Camera.OffsetY,
+            vp.Rail.Active, vp.Rail.HasAnalysis, vp.Rail.NavigableCount,
+            vp.AutoScroll.AutoScrollActive, vp.AutoScroll.JumpMode);
     }
 
     public SearchResult GetSearchState() => Search.GetSearchState();
@@ -736,12 +789,13 @@ public sealed partial class DocumentController : IDisposable
     /// </summary>
     public ReadingPosition? GetReadingPosition(int? index = null)
     {
-        var doc = ResolveDocument(index);
-        return doc is null ? null : BuildReadingPosition(doc, withText: true);
+        // Resolve through the shared seam: the focused view for no-index (matching the push event
+        // FireReadingPositionChanged(vp)), else the indexed tab's Primary.
+        return ResolveViewport(index) is { } vp ? BuildReadingPosition(vp, withText: true) : null;
     }
 
     /// <summary>
-    /// Builds a <see cref="ReadingPosition"/> for the given document's current rail
+    /// Builds a <see cref="ReadingPosition"/> for the given viewport's current rail
     /// position, or null if rail mode is inactive / has no navigable block / the
     /// block has no lines. When <paramref name="withText"/> is false the text
     /// fields are left empty (the push path skips text extraction for performance);
@@ -749,9 +803,6 @@ public sealed partial class DocumentController : IDisposable
     /// single source of truth shared by the pull query and the push event so the
     /// two cannot drift.
     /// </summary>
-    private ReadingPosition? BuildReadingPosition(DocumentModel doc, bool withText)
-        => BuildReadingPosition(doc.Primary, withText);
-
     private ReadingPosition? BuildReadingPosition(Viewport vp, bool withText)
     {
         if (!vp.Rail.Active || !vp.Rail.HasAnalysis) return null;
@@ -794,9 +845,11 @@ public sealed partial class DocumentController : IDisposable
     /// </summary>
     public PageDescription? GetPageDescription(int? index = null, int? page = null)
     {
-        var doc = ResolveDocument(index);
-        if (doc is null) return null;
-        int targetPage = page ?? doc.CurrentPage;
+        // Default to the resolved view's page (the focused view for no-index), consistent with
+        // GetReadingPosition — not the Primary facade's page.
+        if (ResolveViewport(index) is not { } vp) return null;
+        var doc = vp.Owner;
+        int targetPage = page ?? vp.CurrentPage;
         if (targetPage < 0 || targetPage >= doc.PageCount) return null;
         if (!doc.TryGetAnalysis(targetPage, out var analysis)) return null;
 

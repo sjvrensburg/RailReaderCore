@@ -10,10 +10,15 @@ namespace RailReader.Core;
 internal sealed class AutoScrollController
 {
     private CoreSettings _config;
+    // The view this controller drives. One AutoScrollController is built per Viewport (in the Viewport
+    // ctor), so it acts on its OWN rail rather than taking a per-call target — passing a foreign view's
+    // rail was a footgun, and driving DocumentModel.Rail (the Primary facade) was the multi-viewport bug.
+    private readonly Viewport _owner;
 
-    public AutoScrollController(CoreSettings config)
+    public AutoScrollController(CoreSettings config, Viewport owner)
     {
         _config = config;
+        _owner = owner;
     }
 
     public void UpdateConfig(CoreSettings config) => _config = config;
@@ -49,46 +54,48 @@ internal sealed class AutoScrollController
     /// </summary>
     public Action<string>? StateChanged;
 
+    // All operate on the owning view's own rail (_owner.Rail).
+
     /// <summary>
-    /// Toggles auto-scroll on/off. Requires an active document in rail mode to activate.
+    /// Toggles auto-scroll on/off for the owning view. Requires it to be in rail mode to activate.
     /// </summary>
-    public void ToggleAutoScroll(DocumentModel? doc)
+    public void ToggleAutoScroll()
     {
         if (AutoScrollActive)
         {
-            StopAutoScroll(doc);
+            StopAutoScroll();
             return;
         }
-        if (doc is null || !doc.Rail.Active) return;
+        if (!_owner.Rail.Active) return;
 
-        doc.Rail.StartAutoScroll(_config.DefaultAutoScrollSpeed);
+        _owner.Rail.StartAutoScroll(_config.DefaultAutoScrollSpeed);
         AutoScrollActive = true;
     }
 
     /// <summary>
-    /// Stops auto-scroll and notifies the UI.
+    /// Stops auto-scroll on the owning view's rail and notifies the UI.
     /// </summary>
-    public void StopAutoScroll(DocumentModel? doc)
+    public void StopAutoScroll()
     {
-        doc?.Rail.StopAutoScroll();
+        _owner.Rail.StopAutoScroll();
         AutoScrollActive = false;
     }
 
     /// <summary>
-    /// Toggles auto-scroll, disabling jump mode first if active.
+    /// Toggles auto-scroll for the owning view, disabling jump mode first if active.
     /// </summary>
-    public void ToggleAutoScrollExclusive(DocumentModel? doc)
+    public void ToggleAutoScrollExclusive()
     {
         if (JumpMode) JumpMode = false;
-        ToggleAutoScroll(doc);
+        ToggleAutoScroll();
     }
 
     /// <summary>
-    /// Toggles jump mode, stopping auto-scroll first if active.
+    /// Toggles jump mode, stopping the owning view's auto-scroll first if active.
     /// </summary>
-    public void ToggleJumpModeExclusive(DocumentModel? doc)
+    public void ToggleJumpModeExclusive()
     {
-        if (AutoScrollActive) StopAutoScroll(doc);
+        if (AutoScrollActive) StopAutoScroll();
         JumpMode = !JumpMode;
     }
 

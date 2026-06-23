@@ -26,7 +26,7 @@ public sealed partial class RailNav
     {
         if (!CanNavigate || SnapSuppressed(zoom)) return;
 
-        var (blockLeft, blockRight, blockWidthPx) = GetChunkBounds(zoom);
+        var (blockLeft, blockRight, blockWidthPx) = GetFramingBounds(zoom);
         double targetX;
         if (ShouldCenterUnit(blockWidthPx, windowWidth))
             targetX = windowWidth / 2.0 - (blockLeft + blockRight) / 2.0 * zoom;
@@ -75,7 +75,7 @@ public sealed partial class RailNav
     public double ComputeHorizontalFraction(double cameraX, double zoom, double windowWidth)
     {
         if (!CanNavigate) return 0;
-        var (blockLeft, blockRight, blockWidthPx) = GetChunkBounds(zoom);
+        var (blockLeft, blockRight, blockWidthPx) = GetFramingBounds(zoom);
         if (blockWidthPx <= windowWidth) return 0;
 
         double maxX = -blockLeft * zoom;
@@ -100,7 +100,7 @@ public sealed partial class RailNav
         double centeredY = windowHeight / 2.0 - line.Y * zoom;
         VerticalBias = targetY - centeredY;
 
-        var (blockLeft, blockRight, blockWidthPx) = GetChunkBounds(zoom);
+        var (blockLeft, blockRight, blockWidthPx) = GetFramingBounds(zoom);
         double targetX;
         if (blockWidthPx <= windowWidth)
         {
@@ -162,9 +162,10 @@ public sealed partial class RailNav
         var line = CurrentLineInfo;
         double targetY = windowHeight / 2.0 - line.Y * zoom + VerticalBias;
 
-        // Frame the whole chunk (column run) so crossing block boundaries within
-        // a column doesn't shift the camera horizontally.
-        var (chunkLeft, chunkRight, chunkWidthPx) = GetChunkBounds(zoom);
+        // Frame the current unit: the whole chunk (column run) for prose, so crossing block
+        // boundaries within a column doesn't shift the camera horizontally — but a set-off display
+        // unit (equation/algorithm) frames on its own bounds so it centres on itself (GetFramingBounds).
+        var (chunkLeft, chunkRight, chunkWidthPx) = GetFramingBounds(zoom);
         double targetX;
         if (ShouldCenterUnit(chunkWidthPx, windowWidth))
         {

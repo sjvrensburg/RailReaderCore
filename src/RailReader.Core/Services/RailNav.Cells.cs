@@ -57,6 +57,10 @@ public sealed partial class RailNav
             CurrentCell = cell + 1;
             return NavResult.Ok;
         }
+        // Roll to the next row. NextLine seats cell 0 (CurrentLine's setter zeroes CurrentCell), so a
+        // cell-bearing row resumes at its first cell — the forward mirror of PrevCell seating the
+        // previous row's LAST cell. If the next line is prose (no cells), the move still applies and
+        // the consumer's StartSnapToCell falls back to a plain line snap (graceful, same as PrevCell).
         return NextLine();
     }
 
