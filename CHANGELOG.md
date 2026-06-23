@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.43.0 — Multi-viewport routing fixes (focused-view correctness)
+
+A correctness pass over the multi-viewport surface built up across 0.37–0.42. A multi-agent review
+found a cluster of operations that still resolved against the document's `Primary` facade instead of
+the focused viewport, plus a couple of newly-introduced side-effects. All are fixed here with
+regression tests; the headline fix also affects single-viewport hosts.
+
+### ⚠ Note for the railreader2 team / external consumers
+
+The "where am I" pull-queries now follow the **focused viewport**, not the document's `Primary`:
+**`GetReadingPosition()`**, **`GetDocumentInfo()`**, and **`GetPageDescription()`** (the no-index
+forms) describe the focused view's page / camera / rail, resolved through a shared `ResolveViewport`
+seam (matching the push event `Viewport.ReadingPositionChanged`). In a single-viewport host the
+focused view *is* the primary, so these are **byte-identical today** — no action needed for the
+current desktop build. But once split-pane / detached panes ship, any automation-peer or agent code
+that gates on the primary's state (e.g. `tab.Rail.Active`) and then reads these queries should read
+the focused view consistently; mixing the two will report a different page than the user is on.
+`GetDocumentInfo` previously mixed the primary's page/camera/rail with the focused view's
+auto-scroll/jump flags — it is now coherent for one viewport.
+
+### Fixed
+
+- **Toggling table-row reading / cell-navigation while rail-reading no longer jumps to the top of the
+  page** — the reseat under the new analysis variant preserves the reader's block/line position (top-
+  level block indices are param-invariant). This affected single-viewport hosts too.
+- **Auto-scroll**, the rail **reading-position event**, **link / bookmark / search / annotation** page
+  resolution, and **`ToggleAutoScroll`/jump** now all act on the **focused** viewport's own rail and
+  page rather than the document's primary facade.
+- **Equations / algorithms** set between paragraphs **centre on their own bounds** again instead of
+  left-aligning to the column run they share a navigation chunk with (a regression from the 0.30-era
+  chunk-framing change). Self-framing is gated on the role being in `CenteringRoles`, so the
+  framing/centering role sets can't diverge.
+- **Background analysis** defers while *any* viewport awaits its rail seat (not just the primary), and
+  `IsPdfiumBusy` accounts for all viewports — so a background page can't jump the worker queue ahead of
+  the page a focused secondary pane is waiting to read.
+- **Focus changes publish `StateChanged`** (`AutoScrollActive`/`JumpMode`) so an event-bound UI
+  re-reads the now-focused view's state instead of showing the previous view's.
+
+### Added
+
+- **`ScreenshotCompositor.RenderPage`** takes an optional `Viewport?` (defaults to the primary, so
+  existing calls are unchanged): pass a viewport to composite that pane's page / camera / rail /
+  annotations / search highlights instead of the primary's.
+- **`DocumentModel.HitTestLink(int page, double x, double y)`** overload for per-page link hit-testing.
+
+### Breaking
+
+- **`DocumentModel.PendingAnalysis` removed** (a `Primary`-facade property; no known external callers).
+  Per-view eager lookahead lives on `Viewport.PendingAnalysis`.
+
 ## 0.42.0 — Multi-viewport Phase 3: DocumentModel rename, facade removal, per-viewport analysis params (breaking)
 
 The one documented breaking release that completes the multi-viewport arc (railreader2#180 Phase 3).
