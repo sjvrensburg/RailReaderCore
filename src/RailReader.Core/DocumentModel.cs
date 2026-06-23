@@ -220,7 +220,6 @@ public sealed class DocumentModel : IDisposable
     // Latest settings snapshot — kept so AddViewport can build a new view from current config.
     private CoreSettings _config;
 
-    public Queue<int> PendingAnalysis => Primary.PendingAnalysis;
     internal BackgroundAnalysisQueue BackgroundQueue { get; private set; } = null!;
 
     /// <summary>Number of pages with cached analysis results.</summary>
@@ -231,11 +230,20 @@ public sealed class DocumentModel : IDisposable
 
     /// <summary>
     /// True when a user-initiated PDFium render (DPI re-render or page prefetch)
-    /// is in flight. Background work should defer while this is true to keep
+    /// is in flight on ANY viewport. Background work should defer while this is true to keep
     /// the PDFium gate free for the in-flight task and any follow-up scroll-path
-    /// calls (text/link extraction) the user is about to need.
+    /// calls (text/link extraction) the user is about to need — a detached pane's in-flight
+    /// render contends for the same gate, so it must count too.
     /// </summary>
-    public bool IsPdfiumBusy => Primary.DpiRenderPending || Primary.PrefetchPending;
+    public bool IsPdfiumBusy
+    {
+        get
+        {
+            foreach (var v in _viewports)
+                if (v.DpiRenderPending || v.PrefetchPending) return true;
+            return false;
+        }
+    }
 
     /// <summary>Fires on the UI thread when a new page analysis result is cached.</summary>
     public event Action? AnalysisCacheUpdated;
@@ -367,12 +375,9 @@ public sealed class DocumentModel : IDisposable
     /// Adds a detached view of this document (split-pane / tear-off window): a fresh
     /// <see cref="Viewport"/> seeded from the current settings and the primary view's size, starting
     /// on page 0 with a default camera. The caller positions it (page / centre / zoom). Its render
-    /// cache and camera are independent of the primary's. UI-thread only.
-    /// <para><b>Scope (Phase 1):</b> a non-primary view's camera, zoom, rail-snap, auto-scroll and
-    /// rasterisation are fully independent, but a <em>cross-page</em> transition reached from its
-    /// tick (rail page-advance / edge-hold) still routes through the document-level
-    /// <see cref="GoToPage"/>, which moves the <see cref="Primary"/> view. Per-view page navigation
-    /// and analysis fan-out land with the analysis-fan-out phase (see <c>docs/multi-viewport-design.md</c> §5).</para>
+    /// cache and camera are independent of the primary's. UI-thread only. A non-primary view's camera,
+    /// zoom, rail-snap, auto-scroll, rasterisation, per-view page navigation and analysis fan-out are
+    /// all fully independent (see <c>docs/multi-viewport-design.md</c> §5).
     /// </summary>
     public Viewport AddViewport()
     {
@@ -870,12 +875,13 @@ public sealed class DocumentModel : IDisposable
     }
 
     /// <summary>
-    /// Hit-tests a point against PDF links on the current page.
-    /// Uses the cached link list for fast in-memory lookup.
+    /// Hit-tests a point (page-point space) against PDF links on <paramref name="page"/>.
+    /// Uses the cached link list for fast in-memory lookup. Per-page so a focused detached pane
+    /// can hit-test links on ITS page, not the Primary facade's.
     /// </summary>
-    public PdfLink? HitTestLink(double pageX, double pageY)
+    public PdfLink? HitTestLink(int page, double pageX, double pageY)
     {
-        var links = GetOrExtractLinks(CurrentPage);
+        var links = GetOrExtractLinks(page);
         foreach (var link in links)
         {
             if (link.Rect.Contains((float)pageX, (float)pageY))
@@ -883,6 +889,9 @@ public sealed class DocumentModel : IDisposable
         }
         return null;
     }
+
+    /// <summary>Hit-tests links on the current (Primary-facade) page. See the per-page overload.</summary>
+    public PdfLink? HitTestLink(double pageX, double pageY) => HitTestLink(CurrentPage, pageX, pageY);
 
     // --- Cache mutation methods ---
 

@@ -51,8 +51,22 @@ public sealed partial class DocumentController : IDisposable
             if (value is not null
                 && (!Documents.Contains(value.Owner) || !value.Owner.Viewports.Contains(value)))
                 return;
-            _focusedViewport = value;
+            SetFocus(value);
         }
+    }
+
+    /// <summary>The single focus-assignment seam. Routes the focused view's auto-scroll/jump state
+    /// changes to the controller's <see cref="StateChanged"/> (which the UI reads via the focus-
+    /// delegating <see cref="AutoScrollActive"/>/<see cref="JumpMode"/>), unwiring the previously-
+    /// focused view first. This is why a detached pane (created via <see cref="DocumentModel.AddViewport"/>,
+    /// which can't reach the controller) still drives the UI once focused — the forwarder is wired
+    /// here, not at view creation.</summary>
+    private void SetFocus(Viewport? value)
+    {
+        if (ReferenceEquals(_focusedViewport, value)) return;
+        if (_focusedViewport is { } prev) prev.AutoScroll.StateChanged = null;
+        _focusedViewport = value;
+        if (value is not null) value.AutoScroll.StateChanged = name => StateChanged?.Invoke(name);
     }
 
     /// <summary>Re-points focus to the document's primary view when the currently-focused view is
@@ -62,7 +76,7 @@ public sealed partial class DocumentController : IDisposable
     private void OnViewportRemoved(Viewport removed)
     {
         if (ReferenceEquals(_focusedViewport, removed))
-            _focusedViewport = removed.Owner.Primary;
+            SetFocus(removed.Owner.Primary);
     }
 
     public CoreSettings Config => _config;
@@ -82,7 +96,7 @@ public sealed partial class DocumentController : IDisposable
     internal int ActiveDocumentIndex
     {
         get => _focusedViewport?.Owner is { } d ? Documents.IndexOf(d) : -1;
-        set => _focusedViewport = (uint)value < (uint)Documents.Count ? Documents[value].Primary : null;
+        set => SetFocus((uint)value < (uint)Documents.Count ? Documents[value].Primary : null);
     }
 
     // Annotation and search subsystems
@@ -176,9 +190,9 @@ public sealed partial class DocumentController : IDisposable
         // the primary's own size — it falls back to the Viewport default until the host resizes it,
         // at which point the host re-centres.
         var (ww, wh) = (state.Primary.Width, state.Primary.Height);
-        // This view's auto-scroll state changes surface through the controller's StateChanged
-        // (UI re-reads AutoScrollActive/JumpMode, which delegate to the active view).
-        state.Primary.AutoScroll.StateChanged = name => StateChanged?.Invoke(name);
+        // Auto-scroll/jump state changes of the FOCUSED view surface through the controller's
+        // StateChanged — wired centrally in SetFocus when this document becomes focused below
+        // (ActiveDocumentIndex setter), so detached panes get the same treatment once focused.
         // If the focused view is removed, fall back to its document's primary so FocusedViewport is
         // never left pointing at a disposed view (it backs ActiveDocument and the per-frame tick).
         state.ViewportRemoved = OnViewportRemoved;
@@ -217,7 +231,7 @@ public sealed partial class DocumentController : IDisposable
         Documents.RemoveAt(index);
         doc.Dispose();
         if (closingFocused)
-            _focusedViewport = Documents.Count > 0 ? Documents[Math.Min(index, Documents.Count - 1)].Primary : null;
+            SetFocus(Documents.Count > 0 ? Documents[Math.Min(index, Documents.Count - 1)].Primary : null);
         // Free-pan pause is per-view now: the closed doc's pause died with its disposal, and any
         // other tab is already cleared on switch-away (SelectDocument). The surviving active doc
         // keeps its own pause — so nothing to clear here. (The old global `_railPause = null` was a

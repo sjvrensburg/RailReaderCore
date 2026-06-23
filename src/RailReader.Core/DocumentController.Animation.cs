@@ -266,7 +266,8 @@ public sealed partial class DocumentController
     /// is whether the caller's frame has no in-progress camera animation; read-ahead is
     /// suppressed unless quiescent and no freshly-arrived result needs animating (so a
     /// PDFium re-render can't jump the gate mid-scroll). Returns the same flags as
-    /// <see cref="PollAnalysisResults"/> so a facade <see cref="Tick"/> can fold them in.
+    /// <see cref="PollAnalysisResults"/> so the caller's <see cref="TickViewport(Viewport,double,bool)"/>
+    /// frame can fold them in.
     /// </summary>
     public (bool GotResults, bool NeedsAnimation, bool PageChanged) PumpAnalysis(bool quiescent = true)
     {

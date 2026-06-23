@@ -19,23 +19,31 @@ public static class ScreenshotCompositor
     private static readonly SKSamplingOptions s_sampling = new(SKCubicResampler.Mitchell);
 
     /// <summary>
-    /// Renders the current page of a document with all requested overlays.
+    /// Renders a page of a document with all requested overlays. By default it composites the
+    /// document's primary view; pass <paramref name="viewport"/> to composite a specific (e.g.
+    /// detached/secondary) pane so its page, camera, rail, annotations and search highlights all
+    /// come from that view rather than the primary facade.
     /// </summary>
     public static SKBitmap RenderPage(
         DocumentModel doc,
         DocumentController controller,
         ColourEffectShaders colourEffects,
-        ScreenshotOptions options)
+        ScreenshotOptions options,
+        Viewport? viewport = null)
     {
+        // All page/camera/rail/annotation reads go through the target view (primary by default), so a
+        // single-viewport caller is byte-identical and a detached pane composites its own state.
+        var vp = viewport ?? doc.Primary;
+
         // Render PDF page at requested DPI
         int dpi = Math.Clamp(options.Dpi, 72, 600);
-        using var renderedPage = doc.Pdf.RenderPage(doc.CurrentPage, dpi);
+        using var renderedPage = doc.Pdf.RenderPage(vp.CurrentPage, dpi);
         var pageBitmap = ((SkiaRenderedPage)renderedPage).Bitmap;
 
         int bitmapW = pageBitmap.Width;
         int bitmapH = pageBitmap.Height;
-        float pageW = (float)doc.PageWidth;
-        float pageH = (float)doc.PageHeight;
+        float pageW = (float)vp.PageWidth;
+        float pageH = (float)vp.PageHeight;
 
         if (pageW <= 0 || pageH <= 0)
             return pageBitmap.Copy();
@@ -67,9 +75,9 @@ public static class ScreenshotCompositor
 
         bool didLineFocusBlur = false;
         if (options.LineFocusBlur && options.LineFocusBlurIntensity > 0
-            && doc.Rail is { Active: true, NavigableCount: > 0 })
+            && vp.Rail is { Active: true, NavigableCount: > 0 })
         {
-            var line = doc.Rail.CurrentLineInfo;
+            var line = vp.Rail.CurrentLineInfo;
             float pad = line.Height * (float)options.LinePadding;
             // Line rect in page-point space — use the line's own horizontal extent
             // (not full page width) so only the active line's column stays sharp.
@@ -118,33 +126,33 @@ public static class ScreenshotCompositor
         canvas.Scale(scaleX, scaleY);
 
         // --- Layer 2: Rail overlay ---
-        if (options.RailOverlay && doc.Rail.Active && doc.Rail.HasAnalysis)
+        if (options.RailOverlay && vp.Rail.Active && vp.Rail.HasAnalysis)
         {
-            DrawRailOverlay(canvas, doc, activeEffect.GetOverlayPalette(), options.LineFocusBlur,
+            DrawRailOverlay(canvas, vp, activeEffect.GetOverlayPalette(), options.LineFocusBlur,
                 options.LineHighlightEnabled, options.LinePadding, options.LineHighlightTint, options.LineHighlightOpacity);
         }
 
         // --- Layer 3: Search highlights ---
         if (options.SearchHighlights)
-            DrawSearchHighlights(canvas, controller, doc);
+            DrawSearchHighlights(canvas, controller, vp);
 
         // --- Layer 4: Annotations ---
         if (options.Annotations)
         {
-            var pageAnnotations = doc.Annotations.Pages.TryGetValue(doc.CurrentPage, out var list) ? list : null;
+            var pageAnnotations = doc.Annotations.Pages.TryGetValue(vp.CurrentPage, out var list) ? list : null;
             if (pageAnnotations is not null && pageAnnotations.Count > 0)
                 AnnotationRenderer.DrawAnnotations(canvas, pageAnnotations, null);
         }
 
         // --- Layer 5: Debug overlay ---
-        if (options.DebugOverlay && doc.TryGetAnalysis(doc.CurrentPage, out var analysis))
+        if (options.DebugOverlay && doc.TryGetAnalysis(vp.CurrentPage, out var analysis))
             DrawDebugOverlay(canvas, analysis);
 
         canvas.Restore(); // undo scale
 
         // --- Viewport cropping ---
         if (options.SimulateViewport)
-            return CropToViewport(surface, doc, options, scaleX, scaleY);
+            return CropToViewport(surface, vp, options, scaleX, scaleY);
 
         using var snapshot = surface.Snapshot();
         return SKBitmap.FromImage(snapshot);
@@ -155,13 +163,13 @@ public static class ScreenshotCompositor
     /// </summary>
     private static SKBitmap CropToViewport(
         SKSurface fullPageSurface,
-        DocumentModel doc,
+        Viewport vp,
         ScreenshotOptions options,
         float scaleX, float scaleY)
     {
-        double zoom = doc.Camera.Zoom;
-        double offsetX = doc.Camera.OffsetX;
-        double offsetY = doc.Camera.OffsetY;
+        double zoom = vp.Camera.Zoom;
+        double offsetX = vp.Camera.OffsetX;
+        double offsetY = vp.Camera.OffsetY;
         int vpW = options.ViewportWidth;
         int vpH = options.ViewportHeight;
 
@@ -210,12 +218,12 @@ public static class ScreenshotCompositor
         data.SaveTo(stream);
     }
 
-    private static void DrawRailOverlay(SKCanvas canvas, DocumentModel doc, OverlayPalette palette, bool lineFocusBlur,
+    private static void DrawRailOverlay(SKCanvas canvas, Viewport vp, OverlayPalette palette, bool lineFocusBlur,
         bool lineHighlightEnabled = true, double linePadding = 0.2, LineHighlightTint tint = LineHighlightTint.Auto, double tintOpacity = 0.25)
     {
-        if (doc.Rail.NavigableCount == 0) return;
-        OverlayRenderer.DrawRailOverlays(canvas, doc.Rail.CurrentNavigableBlock, doc.Rail.CurrentLineInfo,
-            (float)doc.PageWidth, (float)doc.PageHeight, palette, lineFocusBlur, lineHighlightEnabled,
+        if (vp.Rail.NavigableCount == 0) return;
+        OverlayRenderer.DrawRailOverlays(canvas, vp.Rail.CurrentNavigableBlock, vp.Rail.CurrentLineInfo,
+            (float)vp.PageWidth, (float)vp.PageHeight, palette, lineFocusBlur, lineHighlightEnabled,
             linePadding, tint, tintOpacity,
             OverlayRenderer.GetDimPaint(), OverlayRenderer.GetRevealPaint(),
             OverlayRenderer.GetOutlinePaint(), OverlayRenderer.GetLinePaint());
@@ -229,16 +237,16 @@ public static class ScreenshotCompositor
             OverlayRenderer.GetDebugTextPaint());
     }
 
-    private static void DrawSearchHighlights(SKCanvas canvas, DocumentController controller, DocumentModel doc)
+    private static void DrawSearchHighlights(SKCanvas canvas, DocumentController controller, Viewport vp)
     {
-        // Key highlights to the SAME document/page being composited (issue #74) rather than a
-        // re-resolved ActiveDocument or the focused view's CurrentPageSearchMatches, so a screenshot
-        // of any document/page draws exactly that page's matches.
-        var matches = controller.Search.MatchesForPage(doc.CurrentPage);
+        // Key highlights to the SAME page being composited (issue #74) rather than a re-resolved
+        // ActiveDocument or the focused view's CurrentPageSearchMatches, so a screenshot of any
+        // view/page draws exactly that page's matches.
+        var matches = controller.Search.MatchesForPage(vp.CurrentPage);
         if (matches is null || matches.Count == 0) return;
 
         int activeLocalIndex = OverlayRenderer.ComputeActiveLocalIndex(
-            controller.Search.SearchMatches, matches, controller.Search.ActiveMatchIndex, doc.CurrentPage);
+            controller.Search.SearchMatches, matches, controller.Search.ActiveMatchIndex, vp.CurrentPage);
         OverlayRenderer.DrawSearchHighlights(canvas, matches, activeLocalIndex,
             OverlayRenderer.GetHighlightPaint(), OverlayRenderer.GetActivePaint());
     }

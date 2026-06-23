@@ -77,14 +77,12 @@ public sealed class Viewport : IDisposable
     /// <summary>Camera (pan/zoom/offset) for this view.</summary>
     public Camera Camera { get; } = new();
 
-    /// <summary>This view's viewport size in px. The controller keeps an ambient size and mirrors it
-    /// onto the primary (<see cref="DocumentModel.SetSize"/> via <c>SetViewportSize</c>); a host sizes a
-    /// detached pane via <see cref="SetSize"/>. This is now the single source of size for a view's own
-    /// animation: the controller's per-view tick/clamp/seat and its input/camera methods all read
-    /// <see cref="Width"/>/<see cref="Height"/> off the target view (no longer the ambient
-    /// <c>GetViewportSize()</c>), so panes of differing widths animate and seat correctly without the
-    /// host swapping the controller's ambient size per surface every frame (issue #74). Equals the
-    /// controller's ambient size in the single-window world.</summary>
+    /// <summary>This view's viewport size in px. The host sizes every view — including the primary —
+    /// via <see cref="SetSize"/>; there is no controller-level ambient size any more (removed in
+    /// Phase 3). This is the single source of size for the view's own animation: the per-view
+    /// tick/clamp/seat and the controller's input/camera methods all read <see cref="Width"/>/
+    /// <see cref="Height"/> off the target view, so panes of differing widths animate and seat
+    /// correctly without the host swapping a shared ambient size per surface each frame (issue #74).</summary>
     public double Width { get; private set; } = 1200;
     public double Height { get; private set; } = 900;
 

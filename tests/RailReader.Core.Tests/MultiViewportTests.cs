@@ -766,6 +766,45 @@ public class MultiViewportTests : IDisposable
         Assert.False(primaryFired); // the focused primary did NOT
     }
 
+    [Fact]
+    public void IsPdfiumBusy_ReflectsAnyViewportsInFlightRender()
+    {
+        // Review finding (multi-viewport): a detached pane's in-flight PDFium render contends for the
+        // same gate, so the background-analysis "is the gate busy" check must OR across ALL viewports,
+        // not just Primary.
+        var doc = SetupDoc();
+        var vp2 = doc.AddViewport();
+        Assert.False(doc.IsPdfiumBusy);
+
+        vp2.DpiRenderPending = true;        // a secondary pane is mid-render; Primary is idle
+        Assert.True(doc.IsPdfiumBusy);      // the doc-level gate check sees it (the fix)
+
+        vp2.DpiRenderPending = false;
+        Assert.False(doc.IsPdfiumBusy);
+        doc.Primary.PrefetchPending = true; // and Primary still counts
+        Assert.True(doc.IsPdfiumBusy);
+    }
+
+    [Fact]
+    public void FocusedDetachedPane_DrivesControllerStateChanged()
+    {
+        // Review finding (multi-viewport): a detached pane created via AddViewport can't reach the
+        // controller to wire its auto-scroll/jump StateChanged forwarder. Focusing it must wire it
+        // (centralised in SetFocus) so the focused pane drives the controller's StateChanged — the UI
+        // re-reads AutoScrollActive/JumpMode (which delegate to the focused view).
+        var doc = SetupDoc();
+        var vp2 = doc.AddViewport();
+        _controller.FocusedViewport = vp2;
+
+        string? notified = null;
+        _controller.StateChanged = n => notified = n;
+
+        _controller.JumpMode = true;        // routes to the focused pane's AutoScroll → fires StateChanged
+
+        Assert.True(vp2.AutoScroll.JumpMode);
+        Assert.Equal(nameof(_controller.JumpMode), notified); // the forwarder fired (null before the fix)
+    }
+
     // Seats a viewport's analysis (cache-miss → real worker pipeline with the fake analyzer) and activates
     // its rail by zooming above the rail threshold, so auto-scroll / reading-position paths are exercisable.
     private static void SeatAndActivate(DocumentController controller, DocumentModel doc, Viewport vp, int page)
