@@ -15,12 +15,13 @@ public class MultiViewportTests : IDisposable
 {
     private readonly string _pdfPath;
     private readonly DocumentController _controller;
+    private readonly AppConfig _appConfig;
 
     public MultiViewportTests()
     {
         _pdfPath = TestFixtures.GetTestPdfPath(); // 3-page synthetic PDF
-        var config = new AppConfig();
-        _controller = new DocumentController(config.ToCoreSettings(), config, AnnotationService.Default,
+        _appConfig = new AppConfig();
+        _controller = new DocumentController(_appConfig.ToCoreSettings(), _appConfig, AnnotationService.Default,
             new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
         // No analysis worker — these tests exercise rendering + camera ticking, not analysis.
     }
@@ -117,7 +118,7 @@ public class MultiViewportTests : IDisposable
     }
 
     [Fact]
-    public void RemoveViewport_ShrinksAndRejectsPrimary()
+    public void RemoveViewport_ShrinksAndRejectsLastView()
     {
         var doc = SetupDoc();
         var vp2 = doc.AddViewport();
@@ -130,7 +131,8 @@ public class MultiViewportTests : IDisposable
 
         Assert.Single(doc.Viewports);
         Assert.Same(doc.Primary, doc.Viewports[0]);
-        // The primary view lives for the document's lifetime and cannot be removed.
+        // The model needs ≥1 view for its lifetime, so the LAST remaining view can't be removed (Phase 4
+        // — the current primary CAN be removed when a sibling exists; see RemoveViewport_OnPrimaryWithSibling).
         Assert.Throws<InvalidOperationException>(() => doc.RemoveViewport(doc.Primary));
     }
 
@@ -926,6 +928,153 @@ public class MultiViewportTests : IDisposable
         var desc = _controller.GetPageDescription();
         Assert.NotNull(desc);
         Assert.Equal(1, desc!.Page);          // defaults to the focused view's page
+    }
+
+    [Fact]
+    public void NavigationHistory_IsPerViewport_NotPrimary()
+    {
+        // Phase 4 #1: Back/Forward operate on the FOCUSED view's own history stacks, not Primary's.
+        var doc = SetupDoc();                 // Primary focused, page 0
+        var vp2 = doc.AddViewport();
+        vp2.CurrentPage = 1;
+        vp2.LoadPageBitmap();
+        _controller.FocusedViewport = vp2;
+
+        // Record a nav away from page 0 on the focused secondary (as a link/bookmark jump would).
+        vp2.PushHistory(0);
+
+        Assert.True(_controller.CanGoBack);              // reads the focused view's stack
+        Assert.Equal(0, doc.Primary.BackStackCount);     // Primary's stack is untouched (the bug)
+
+        _controller.NavigateBack();                      // pops vp2's back → page 0
+
+        Assert.Equal(0, vp2.CurrentPage);                // the focused secondary moved
+        Assert.True(_controller.CanGoForward);           // page 1 went onto vp2's forward stack
+        Assert.Equal(0, doc.Primary.ForwardStackCount);  // Primary untouched throughout
+    }
+
+    [Fact]
+    public void CacheEviction_DropsParkedViewportsPages()
+    {
+        // Phase 4 #2: a parked (IsLive=false) viewport must not pin its frozen page's caches.
+        var cfg = new AppConfig { PageCacheRadius = 1 };
+        using var controller = new DocumentController(cfg.ToCoreSettings(), cfg, AnnotationService.Default,
+            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+        var doc = controller.CreateDocument(_pdfPath);
+        doc.LoadPageBitmap();
+        controller.AddDocument(doc);
+        controller.SetViewportSize(800, 600);
+
+        var vp2 = doc.AddViewport();         // Primary stays on page 0
+        vp2.CurrentPage = 2;
+        vp2.LoadPageBitmap();
+        vp2.IsLive = false;                  // host parks it
+
+        doc.GetOrExtractLinks(2);            // prime page 2's link cache
+        Assert.True(doc.LinkCache.ContainsKey(2));
+
+        doc.EvictDistantPageCaches();        // Primary(0)±1 keeps 0/1; page 2 is only "needed" by the parked view
+
+        Assert.False(doc.LinkCache.ContainsKey(2));   // parked view didn't pin it (the fix)
+    }
+
+    [Fact]
+    public void SaveReadingPosition_UsesFocusedView_NotPrimary()
+    {
+        // Phase 4 #4: persistence records the focused view's page, not the Primary facade's.
+        var doc = SetupDoc();                 // Primary on page 0, focused
+        var vp2 = doc.AddViewport();
+        vp2.CurrentPage = 2;
+        vp2.LoadPageBitmap();
+        _controller.FocusedViewport = vp2;
+
+        _controller.SaveAllReadingPositions();
+
+        Assert.Equal(2, _appConfig.GetReadingPosition(doc.FilePath)!.Page);  // focused view's page, not 0
+    }
+
+    [Fact]
+    public void PromotePrimary_AndRemovePrimary_ReassignPrimaryAndRehomeEvents()
+    {
+        // Phase 4 #3: a viewport can be promoted to Primary; removing the current Primary promotes a
+        // sibling rather than throwing; only the LAST view can't be removed. The doc-level StateChanged
+        // forwarder follows the promoted primary.
+        var doc = SetupDoc();
+        var original = doc.Primary;
+        var vp2 = doc.AddViewport();
+        vp2.CurrentPage = 2;
+        vp2.LoadPageBitmap();
+
+        doc.PromotePrimary(vp2);
+        Assert.Same(vp2, doc.Primary);
+        Assert.Same(vp2, doc.Viewports[0]);
+        Assert.Equal(2, doc.CurrentPage);                 // the facade follows the new primary
+
+        // The StateChanged forwarder re-homed: the NEW primary drives doc StateChanged; the old one no longer does.
+        string? note = null;
+        doc.StateChanged = n => note = n;
+        original.CurrentPage = 1;                          // old primary, demoted → must NOT forward
+        Assert.Null(note);
+        vp2.CurrentPage = 0;                               // new primary → forwards
+        Assert.Equal(nameof(DocumentModel.CurrentPage), note);
+
+        // Removing the now-demoted original is allowed (siblings remain).
+        doc.RemoveViewport(original);
+        Assert.Single(doc.Viewports);
+        Assert.Same(vp2, doc.Primary);
+
+        // The last remaining view cannot be removed.
+        Assert.Throws<InvalidOperationException>(() => doc.RemoveViewport(vp2));
+    }
+
+    [Fact]
+    public void PromotePrimary_FiresStateChanged_ForTheFacadeSwitch()
+    {
+        // Review fix: promotion changes what the Primary-delegating facade (CurrentPage/PageWidth/
+        // PageHeight) returns, so it must announce the swap — else a facade-bound UI reads a stale page.
+        var doc = SetupDoc();                 // Primary on page 0
+        var vp2 = doc.AddViewport();
+        vp2.CurrentPage = 2;
+        vp2.LoadPageBitmap();
+
+        var notes = new List<string>();
+        doc.StateChanged = n => notes.Add(n);  // subscribe BEFORE the promotion
+
+        doc.PromotePrimary(vp2);
+
+        Assert.Equal(2, doc.CurrentPage);                              // facade now reflects vp2
+        Assert.Contains(nameof(DocumentModel.CurrentPage), notes);    // the swap itself announced it (the fix)
+    }
+
+    [Fact]
+    public void RemoveViewport_ForeignViewOnSingleViewDoc_IsNoOpNotThrow()
+    {
+        // Review fix: the "no-op if the view isn't ours" contract must hold even when only one view
+        // remains — the membership check precedes the last-view guard.
+        var docA = SetupDoc();                 // exactly one viewport
+        var docB = _controller.CreateDocument(_pdfPath);
+        docB.LoadPageBitmap();
+        var foreign = docB.Primary;            // not docA's
+
+        Assert.Null(Record.Exception(() => docA.RemoveViewport(foreign)));  // no throw (was: "last viewport")
+        Assert.Single(docA.Viewports);
+        docB.Dispose();
+    }
+
+    [Fact]
+    public void RemoveViewport_OnPrimaryWithSibling_PromotesSibling()
+    {
+        // Phase 4 #3: closing the surface showing Primary (while a sibling is alive) promotes the
+        // sibling instead of throwing — no orphaned Primary.
+        var doc = SetupDoc();
+        var original = doc.Primary;
+        var sibling = doc.AddViewport();
+        sibling.LoadPageBitmap();
+
+        doc.RemoveViewport(original);                      // remove the current primary
+
+        Assert.Single(doc.Viewports);
+        Assert.Same(sibling, doc.Primary);                 // sibling promoted to primary
     }
 
     // A 3-block (each 3-line) navigable Text analysis so the rail has multiple navigable blocks to seat on.
