@@ -126,7 +126,7 @@ public static class ScreenshotCompositor
 
         // --- Layer 3: Search highlights ---
         if (options.SearchHighlights)
-            DrawSearchHighlights(canvas, controller);
+            DrawSearchHighlights(canvas, controller, doc);
 
         // --- Layer 4: Annotations ---
         if (options.Annotations)
@@ -229,13 +229,11 @@ public static class ScreenshotCompositor
             OverlayRenderer.GetDebugTextPaint());
     }
 
-    private static void DrawSearchHighlights(SKCanvas canvas, DocumentController controller)
+    private static void DrawSearchHighlights(SKCanvas canvas, DocumentController controller, DocumentModel doc)
     {
-        var doc = controller.ActiveDocument;
-        if (doc is null) return;
-
-        // Key highlights to the page being composited (issue #74) rather than the focused view's
-        // CurrentPageSearchMatches, so a screenshot of any page draws that page's matches.
+        // Key highlights to the SAME document/page being composited (issue #74) rather than a
+        // re-resolved ActiveDocument or the focused view's CurrentPageSearchMatches, so a screenshot
+        // of any document/page draws exactly that page's matches.
         var matches = controller.Search.MatchesForPage(doc.CurrentPage);
         if (matches is null || matches.Count == 0) return;
 

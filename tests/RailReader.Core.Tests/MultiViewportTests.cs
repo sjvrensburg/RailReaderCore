@@ -618,6 +618,171 @@ public class MultiViewportTests : IDisposable
         Assert.Equal(wideTarget, wide.Camera.OffsetX, 3);
     }
 
+    [Fact]
+    public void GetReadingPosition_ReportsFocusedSecondaryView_NotPrimary()
+    {
+        // Review finding (multi-viewport): the pull query GetReadingPosition() must report the FOCUSED
+        // view (the single source of truth, matching the push event), not the document's Primary. With a
+        // secondary focused on an analysed page while the unanalysed Primary sits on page 0, the old code
+        // built from Primary and returned null; the fix reports the focused view's page.
+        _controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
+
+        var doc = SetupDoc();                 // Primary focused on page 0 (left unanalysed below)
+        var vp2 = doc.AddViewport();
+        SeatAndActivate(_controller, doc, vp2, page: 1);
+        Assert.True(vp2.Rail.Active);
+        Assert.False(doc.Primary.Rail.Active); // Primary has no rail → a Primary-based query yields null
+
+        _controller.FocusedViewport = vp2;
+
+        var pos = _controller.GetReadingPosition();
+        Assert.NotNull(pos);
+        Assert.Equal(1, pos!.Page);           // the FOCUSED secondary's page, not Primary's page 0
+    }
+
+    [Fact]
+    public void TogglingCellNavigation_ReanalysesEachViewportsCurrentPage()
+    {
+        // Review finding (multi-viewport): toggling TableRowReading / CellNavigation changes the cached
+        // analysis variant (the cache is keyed on (page, AnalysisParams)). The on-screen page must be
+        // re-fetched under the new params — the old OnConfigChanged left it stale until the user navigated
+        // away and back. After the fix every viewport adopts the new params AND its current page is
+        // re-analysed under them.
+        _controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
+
+        var doc = SetupDoc();
+        var vp = doc.Primary;
+        SeatAndActivate(_controller, doc, vp, page: 0);
+
+        var defaultParams = doc.DefaultAnalysisParams;
+        Assert.False(defaultParams.CellNavigation);
+        Assert.True(doc.IsAnalysed(0, defaultParams));
+
+        // Toggle CellNavigation on → a new analysis variant.
+        _controller.OnConfigChanged(_controller.Config with { CellNavigation = true });
+
+        var newParams = doc.DefaultAnalysisParams;
+        Assert.True(newParams.CellNavigation);
+        Assert.Equal(newParams, vp.AnalysisParams);   // every view adopted the new params
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (vp.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
+        {
+            _controller.PollAnalysisResults();
+            Thread.Sleep(10);
+        }
+        Assert.True(doc.IsAnalysed(0, newParams));    // the current page re-analysed under the new variant (the fix)
+    }
+
+    [Fact]
+    public void AutoScrollEnd_StopsTheTickedViewport_NotTheFocusedOne()
+    {
+        // Critical (multi-viewport review): TickAutoScroll runs per visible pane. At a stop boundary it
+        // must stop THAT pane — the old parameterless StopAutoScroll() resolved to the FOCUSED view, so a
+        // non-focused pane reaching its end never stopped (per-frame spin) while the focused view was
+        // wrongly torn down. Drive a non-focused pane to its final line on the last page.
+        var cfg = new AppConfig { PixelSnapping = false, SnapDurationMs = 1, ScrollSpeedMax = 100000.0 };
+        using var controller = new DocumentController(cfg.ToCoreSettings(), cfg, AnnotationService.Default,
+            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+        controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
+
+        var doc = controller.CreateDocument(_pdfPath);
+        doc.LoadPageBitmap();
+        controller.AddDocument(doc);                 // focuses doc.Primary (page 0)
+        controller.SetViewportSize(800, 600);
+
+        // The FOCUSED primary auto-scrolls on page 0 and is never ticked below — it must stay scrolling.
+        SeatAndActivate(controller, doc, doc.Primary, page: 0);
+        doc.Primary.Rail.StartAutoScroll(50.0);
+        doc.Primary.AutoScroll.ActivateAutoScroll();
+        Assert.True(doc.Primary.Rail.AutoScrolling);
+
+        // A non-focused secondary parked at the final line of the LAST page: its next advance can't progress.
+        var vp2 = doc.AddViewport();
+        SeatAndActivate(controller, doc, vp2, page: 2);
+        Assert.NotSame(vp2, controller.FocusedViewport);
+        vp2.Rail.JumpToEnd();
+        vp2.Rail.StartAutoScroll(50.0);
+        vp2.AutoScroll.ActivateAutoScroll();
+        vp2.Rail.AutoScrollElapsedSecondsOverride = () => 10.0;  // ramp straight to max → reach the line end fast
+        Assert.True(vp2.Rail.AutoScrolling);           // precondition: the ticked pane is genuinely auto-scrolling
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        bool stopped = false;
+        while (sw.ElapsedMilliseconds < 3000)
+        {
+            controller.TickViewport(vp2, 0.1, pumpAnalysis: false);
+            if (!vp2.Rail.AutoScrolling) { stopped = true; break; }
+        }
+
+        Assert.True(stopped);                          // the ticked pane reached its end and stopped (the fix)
+        Assert.False(vp2.Rail.AutoScrolling);          // the TICKED pane stopped (the fix)
+        Assert.True(doc.Primary.Rail.AutoScrolling);   // the FOCUSED primary was NOT torn down (the bug)
+    }
+
+    [Fact]
+    public void AutoScrollLineAdvance_FiresReadingPositionForTheTickedView_NotTheFocusedOne()
+    {
+        // Review finding (multi-viewport): a per-pane auto-scroll line advance must fire the TICKED view's
+        // ReadingPositionChanged — the old parameterless FireReadingPositionChanged() resolved to the
+        // focused view, so a non-focused pane's advance announced the focused view's position instead.
+        var cfg = new AppConfig { PixelSnapping = false, SnapDurationMs = 1, ScrollSpeedMax = 100000.0 };
+        using var controller = new DocumentController(cfg.ToCoreSettings(), cfg, AnnotationService.Default,
+            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+        controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
+
+        var doc = controller.CreateDocument(_pdfPath);
+        doc.LoadPageBitmap();
+        controller.AddDocument(doc);                  // focuses doc.Primary
+        controller.SetViewportSize(800, 600);
+
+        var vp2 = doc.AddViewport();                  // non-focused
+        SeatAndActivate(controller, doc, vp2, page: 1);
+        Assert.NotSame(vp2, controller.FocusedViewport);
+
+        vp2.Rail.StartAutoScroll(50.0);
+        vp2.AutoScroll.ActivateAutoScroll();
+        vp2.Rail.AutoScrollElapsedSecondsOverride = () => 10.0;
+
+        // Subscribe AFTER seating (the seat itself fires a reading-position event). Capture the FIRST
+        // announced page (robust to later overwrites — at high scroll speed the pane keeps advancing).
+        bool vp2Fired = false;
+        bool primaryFired = false;
+        vp2.ReadingPositionChanged += _ => vp2Fired = true;
+        doc.Primary.ReadingPositionChanged += _ => primaryFired = true;
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (!vp2Fired && sw.ElapsedMilliseconds < 3000)
+            controller.TickViewport(vp2, 0.1, pumpAnalysis: false);
+
+        // Under the bug the parameterless FireReadingPositionChanged() resolves to the FOCUSED view:
+        // the primary would announce vp2's advance and vp2 itself would never fire. The fix routes the
+        // event to the ticked view instead.
+        Assert.True(vp2Fired);      // the ticked (non-focused) view announced its OWN advance
+        Assert.False(primaryFired); // the focused primary did NOT
+    }
+
+    // Seats a viewport's analysis (cache-miss → real worker pipeline with the fake analyzer) and activates
+    // its rail by zooming above the rail threshold, so auto-scroll / reading-position paths are exercisable.
+    private static void SeatAndActivate(DocumentController controller, DocumentModel doc, Viewport vp, int page)
+    {
+        vp.CurrentPage = page;
+        vp.LoadPageBitmap();
+        vp.Camera.Zoom = 6.0;                         // above RailZoomThreshold (3.0)
+        doc.SubmitAnalysis(vp, controller.Worker, controller.Config.NavigableRoles);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (vp.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
+        {
+            controller.PollAnalysisResults();
+            Thread.Sleep(10);
+        }
+        vp.UpdateRailZoom(vp.Width, vp.Height);       // activate the rail at the current zoom (cache-hit seat skips this)
+    }
+
     // A one-block (3-line) navigable Text analysis so a seated rail reports HasAnalysis.
     private static PageAnalysis MakeNavigableAnalysis()
     {

@@ -306,7 +306,10 @@ public sealed class DocumentModel : IDisposable
     /// snapshot. Mirrors how <see cref="RailNav.UpdateConfig"/> propagates rail
     /// settings; called from the controller's config-changed path.
     /// </summary>
-    internal void UpdateBackgroundSettings(CoreSettings config)
+    /// <summary>Returns true if the table/cell-nav analysis params changed, so the caller can
+    /// re-fetch each viewport's current page under the new variant (the cache is keyed by params,
+    /// so the on-screen structure would otherwise stay stale until the user navigates away and back).</summary>
+    internal bool UpdateBackgroundSettings(CoreSettings config)
     {
         _marshaller.AssertUIThread();
         _config = config;
@@ -316,13 +319,15 @@ public sealed class DocumentModel : IDisposable
         // default and apply it to every viewport (matching the old doc-level behaviour). Unrelated
         // config changes (dark mode, scroll speed, …) leave any per-viewport divergence intact.
         var newParams = new AnalysisParams(config.TableRowReading, config.CellNavigation);
-        if (newParams != _defaultAnalysisParams)
+        bool paramsChanged = newParams != _defaultAnalysisParams;
+        if (paramsChanged)
         {
             _defaultAnalysisParams = newParams;
             foreach (var vp in _viewports)
                 vp.AnalysisParams = newParams;
         }
         EvictDistantPageCaches();
+        return paramsChanged;
     }
 
     /// <summary>

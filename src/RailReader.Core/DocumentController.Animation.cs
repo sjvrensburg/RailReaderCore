@@ -161,7 +161,7 @@ public sealed partial class DocumentController
         overlayChanged = true;
         cameraChanged = true;
         if (adv is LineAdvanceResult.LineAdvanced or LineAdvanceResult.PageChanged)
-            FireReadingPositionChanged();
+            FireReadingPositionChanged(vp);
     }
 
     /// <summary>Auto-scroll tick: advance along the current line, then advance to the next line/page.</summary>
@@ -204,7 +204,7 @@ public sealed partial class DocumentController
                 {
                     case LineAdvanceResult.PageChanged:
                         FirePageChanged(ref pageChanged, vp);
-                        FireReadingPositionChanged();
+                        FireReadingPositionChanged(vp);
                         // A page boundary is always a stop unit: restart auto-scroll on the
                         // new page, then park on entry (after the skip-landing snap settles).
                         vp.Rail.StartAutoScroll(vp.AutoScroll.AutoScrollSpeed);
@@ -212,12 +212,12 @@ public sealed partial class DocumentController
                         break;
                     case LineAdvanceResult.PageChangedRailLost:
                         FirePageChanged(ref pageChanged, vp);
-                        StopAutoScroll();
+                        vp.AutoScroll.StopAutoScroll(vp);
                         break;
                     case LineAdvanceResult.LineAdvanced:
                         if (vp.Rail.CurrentBlock == prevBlock && vp.Rail.CurrentLine == prevLine)
                         {
-                            StopAutoScroll();
+                            vp.AutoScroll.StopAutoScroll(vp);
                             break;
                         }
                         vp.StartSnap(ww, wh);
@@ -238,7 +238,7 @@ public sealed partial class DocumentController
                             vp.Rail.ParkAutoScroll();
                         else
                             vp.Rail.PauseAutoScroll(0);
-                        FireReadingPositionChanged();
+                        FireReadingPositionChanged(vp);
                         break;
                 }
                 overlayChanged = true;

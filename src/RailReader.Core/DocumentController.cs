@@ -665,16 +665,29 @@ public sealed partial class DocumentController : IDisposable
         _config = newConfig;
         foreach (var doc in Documents)
         {
+            // Flip the doc-level analysis params (and caches/queue) FIRST, once per document, so the
+            // per-view loop below sees the new table/cell-nav variant.
+            bool paramsChanged = doc.UpdateBackgroundSettings(_config);
+
             // Per-view settings reach EVERY view (rail, auto-scroll, render-DPI); a detached pane
             // must respond to a live settings change too (§8).
             foreach (var vp in doc.Viewports)
             {
                 vp.AutoScroll.UpdateConfig(newConfig);
                 vp.Rail.UpdateConfig(_config);
-                doc.ReapplyNavigableRoles(vp, _config.NavigableRoles);
                 vp.OnRenderQualityChanged(_config.RenderDpi);
+
+                // A table-row / cell-nav toggle changes the cached analysis variant: re-fetch the
+                // current page under the new params so the on-screen rail reflects it now (cache hit
+                // re-seats synchronously; miss schedules a re-analysis and the §5.4 fan-out re-seats
+                // when it lands). Only for pages already analysed — don't trigger fresh analysis on a
+                // page that wasn't being shown with structure. Otherwise just re-seat the existing
+                // analysis with the (possibly changed) navigable-role set.
+                if (paramsChanged && doc.IsPageAnalysed(vp.CurrentPage))
+                    doc.SubmitAnalysis(vp, _worker, _config.NavigableRoles);
+                else
+                    doc.ReapplyNavigableRoles(vp, _config.NavigableRoles);
             }
-            doc.UpdateBackgroundSettings(_config); // doc-level caches/queue — once per document
         }
     }
 
@@ -736,12 +749,15 @@ public sealed partial class DocumentController : IDisposable
     /// </summary>
     public ReadingPosition? GetReadingPosition(int? index = null)
     {
-        var doc = ResolveDocument(index);
-        return doc is null ? null : BuildReadingPosition(doc, withText: true);
+        // No index → the focused view is the single source of truth (it may be a secondary/detached
+        // pane of the active document), matching the push event FireReadingPositionChanged(vp). An
+        // explicit index targets another tab, which has no focused view, so report its Primary.
+        Viewport? vp = index is null ? FocusedViewport : ResolveDocument(index)?.Primary;
+        return vp is null ? null : BuildReadingPosition(vp, withText: true);
     }
 
     /// <summary>
-    /// Builds a <see cref="ReadingPosition"/> for the given document's current rail
+    /// Builds a <see cref="ReadingPosition"/> for the given viewport's current rail
     /// position, or null if rail mode is inactive / has no navigable block / the
     /// block has no lines. When <paramref name="withText"/> is false the text
     /// fields are left empty (the push path skips text extraction for performance);
@@ -749,9 +765,6 @@ public sealed partial class DocumentController : IDisposable
     /// single source of truth shared by the pull query and the push event so the
     /// two cannot drift.
     /// </summary>
-    private ReadingPosition? BuildReadingPosition(DocumentModel doc, bool withText)
-        => BuildReadingPosition(doc.Primary, withText);
-
     private ReadingPosition? BuildReadingPosition(Viewport vp, bool withText)
     {
         if (!vp.Rail.Active || !vp.Rail.HasAnalysis) return null;

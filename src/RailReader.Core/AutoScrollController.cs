@@ -75,6 +75,18 @@ internal sealed class AutoScrollController
     }
 
     /// <summary>
+    /// Stops auto-scroll on a specific <paramref name="vp"/>'s own rail (the multi-viewport tick
+    /// path). The doc-level overload stops <see cref="DocumentModel.Rail"/>, which is the Primary
+    /// facade — wrong for a secondary/detached pane. Use this from the per-view tick so a boundary
+    /// reached on a non-focused pane stops that pane, not the focused one.
+    /// </summary>
+    public void StopAutoScroll(Viewport vp)
+    {
+        vp.Rail.StopAutoScroll();
+        AutoScrollActive = false;
+    }
+
+    /// <summary>
     /// Toggles auto-scroll, disabling jump mode first if active.
     /// </summary>
     public void ToggleAutoScrollExclusive(DocumentModel? doc)
