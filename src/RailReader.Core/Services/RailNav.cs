@@ -126,7 +126,8 @@ public sealed partial class RailNav : ICameraClamp
     double ICameraClamp.ClampX(double cameraX, double zoom, double windowWidth)
         => ClampX(cameraX, zoom, windowWidth);
 
-    public void SetAnalysis(PageAnalysis analysis, IReadOnlySet<BlockRole> navigable, bool preservePosition = false)
+    public void SetAnalysis(PageAnalysis analysis, IReadOnlySet<BlockRole> navigable,
+        bool preservePosition = false, int? focusBlockIndex = null)
     {
         // Preserve the current navigation position when re-applying the same analysis (a config change
         // that didn't affect navigable roles) OR when the caller asks to (preservePosition) — the latter
@@ -141,6 +142,18 @@ public sealed partial class RailNav : ICameraClamp
             if (navigable.Contains(analysis.Blocks[i].Role))
                 _navigableIndices.Add(i);
         }
+
+        // Block confinement (portal view): when the owning viewport pins a single focus block, rail must
+        // not leave it — collapse the navigable set to just that block so block-advance, edge-hold, and
+        // role jumps all clamp to it (they each key off _navigableIndices). The block is force-included
+        // even if its role isn't in `navigable`, so a focused figure/table/equation is still line-
+        // steppable. An out-of-range index (stale focus) is ignored, leaving the normal navigable set.
+        if (focusBlockIndex is { } fi && fi >= 0 && fi < analysis.Blocks.Count)
+        {
+            _navigableIndices.Clear();
+            _navigableIndices.Add(fi);
+        }
+
         _analysis = analysis;
         BuildChunks();
 
