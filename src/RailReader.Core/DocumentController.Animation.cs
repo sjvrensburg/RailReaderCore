@@ -365,7 +365,7 @@ public sealed partial class DocumentController
         // the synchronous GoToPage/SubmitAnalysis path the host drives per-view.)
         var (ww, wh) = (vp.Width, vp.Height);
 
-        vp.Rail.SetAnalysis(analysis, _config.NavigableRoles, vp.PreserveRailOnSeat);
+        vp.Rail.SetAnalysis(analysis, _config.NavigableRoles, vp.PreserveRailOnSeat, vp.CurrentFocusBlockIndex);
         vp.PendingRailSetup = false;
         vp.UpdateRailZoom(ww, wh);
         _logger.Debug($"[Analysis] Rail has {vp.Rail.NavigableCount} navigable blocks, Active={vp.Rail.Active}");

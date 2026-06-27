@@ -597,7 +597,7 @@ public sealed class DocumentModel : IDisposable
     public void ReapplyNavigableRoles(Viewport vp, IReadOnlySet<BlockRole> navigableRoles)
     {
         if (TryGetAnalysis(vp.CurrentPage, vp.AnalysisParams, out var cached))
-            vp.Rail.SetAnalysis(cached, navigableRoles, vp.PreserveRailOnSeat);
+            vp.Rail.SetAnalysis(cached, navigableRoles, vp.PreserveRailOnSeat, vp.CurrentFocusBlockIndex);
     }
 
     public void ReapplyNavigableRoles(IReadOnlySet<BlockRole> navigableRoles)
@@ -605,7 +605,7 @@ public sealed class DocumentModel : IDisposable
 
     private void ApplyAnalysis(Viewport vp, PageAnalysis analysis, IReadOnlySet<BlockRole> navigableRoles)
     {
-        vp.Rail.SetAnalysis(analysis, navigableRoles, vp.PreserveRailOnSeat);
+        vp.Rail.SetAnalysis(analysis, navigableRoles, vp.PreserveRailOnSeat, vp.CurrentFocusBlockIndex);
         vp.PendingRailSetup = false;
     }
 

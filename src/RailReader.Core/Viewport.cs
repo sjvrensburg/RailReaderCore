@@ -203,6 +203,20 @@ public sealed class Viewport : IDisposable
     /// old variant and submits the new one.</summary>
     public AnalysisParams AnalysisParams { get; set; }
 
+    /// <summary>When set, confines this view to a single layout block (a "portal" view): the camera
+    /// clamps to the block's rectangle and rail navigation is restricted to that one block. See
+    /// <see cref="FocusBlock"/>. Null (default) = normal whole-page navigation, so an unconfined
+    /// viewport behaves exactly as before. Set by a host pinning a viewport to a block; clear to
+    /// release it.</summary>
+    public FocusBlock? Focus { get; set; }
+
+    /// <summary>The focus block's index for the page this view is currently on, or null when there is
+    /// no confinement (or it targets another page). Passed to <c>RailNav.SetAnalysis</c> at every rail
+    /// seat so the navigable set collapses to the focus block while — and only while — the view sits on
+    /// its page.</summary>
+    internal int? CurrentFocusBlockIndex =>
+        Focus is { } f && f.Page == CurrentPageBacking ? f.BlockIndex : null;
+
     /// <summary>True while this view is waiting on analysis for its current page before its rail can
     /// be seated. Per-view so each viewport tracks its own pending state; fires <see cref="StateChanged"/>.</summary>
     public bool PendingRailSetup
@@ -679,6 +693,17 @@ public sealed class Viewport : IDisposable
 
     public void ClampCamera(double windowWidth, double windowHeight)
     {
+        // Block-confined (portal) view: clamp pan — and floor zoom — to the focus block's rectangle
+        // instead of the whole page, so the view can never wander off the pinned block. Inert while a
+        // zoom animation runs (e.g. the host framing the block) so it doesn't fight the in-flight tween;
+        // it re-asserts the instant motion settles. Only engaged when a focus targets THIS page, so an
+        // unconfined viewport (Focus == null) keeps the exact whole-page clamp below.
+        if (Focus is { } f && f.Page == CurrentPageBacking && !Zoom.IsAnimating)
+        {
+            ClampCameraToBlock(f.Bounds, windowWidth, windowHeight);
+            return;
+        }
+
         double scaledW = PageWidthBacking * Camera.Zoom;
         double scaledH = PageHeightBacking * Camera.Zoom;
 
@@ -691,6 +716,33 @@ public sealed class Viewport : IDisposable
             Camera.OffsetY = (windowHeight - scaledH) / 2.0;
         else
             Camera.OffsetY = Math.Clamp(Camera.OffsetY, windowHeight - scaledH, 0);
+    }
+
+    /// <summary>
+    /// Confinement clamp for a <see cref="Focus"/>ed (portal) view: floors zoom at the block's
+    /// fit-zoom (so the user can't zoom out past the whole block) and clamps the pan so the visible
+    /// region stays within <paramref name="b"/>. The axis-by-axis offset logic mirrors the page clamp
+    /// in <see cref="ClampCamera"/>, but against the block rectangle rather than the full page: when the
+    /// block is smaller than the viewport on an axis it is centred; otherwise the offset is clamped so
+    /// neither block edge pulls inside the viewport.
+    /// </summary>
+    private void ClampCameraToBlock(BBox b, double windowWidth, double windowHeight)
+    {
+        // Fit is the floor — match the margin ComputeCenteredFrame uses so a freshly framed block sits
+        // exactly at the floor with no visible rebound. Only ever raises zoom, never lowers it.
+        double fitZoom = ComputeBlockFitZoom(b, windowWidth, windowHeight);
+        if (Camera.Zoom < fitZoom) Camera.Zoom = fitZoom;
+
+        double scaledW = b.W * Camera.Zoom;
+        double scaledH = b.H * Camera.Zoom;
+
+        Camera.OffsetX = scaledW <= windowWidth
+            ? (windowWidth - scaledW) / 2.0 - b.X * Camera.Zoom
+            : Math.Clamp(Camera.OffsetX, windowWidth - (b.X + b.W) * Camera.Zoom, -b.X * Camera.Zoom);
+
+        Camera.OffsetY = scaledH <= windowHeight
+            ? (windowHeight - scaledH) / 2.0 - b.Y * Camera.Zoom
+            : Math.Clamp(Camera.OffsetY, windowHeight - (b.Y + b.H) * Camera.Zoom, -b.Y * Camera.Zoom);
     }
 
     public void ApplyZoom(double newZoom, double windowWidth, double windowHeight)
