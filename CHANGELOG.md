@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.45.0 — Viewport block confinement (`FocusBlock`) for portal views
+
+Adds an opt-in per-`Viewport` confinement primitive so a host can pin a viewport to a single layout
+block — a "portal" view that keeps one figure/table/equation in view while the rest of the document
+reads on elsewhere. All **additive / non-breaking** — `Viewport.Focus` defaults to `null`, which leaves
+every existing camera/rail path byte-for-byte unchanged.
+
+### Note for the railreader2 team / external consumers
+
+To pin a viewport to a block, set **`Viewport.Focus = new FocusBlock(page, blockIndex, bounds)`**; assign
+`null` to release it back to normal whole-page navigation. While a focus targets the view's current page:
+
+- **Camera is clamped to the block** — `ClampCamera` bounds pan to `bounds` (PDF points) and floors zoom
+  at the block's fit-zoom, so the view can neither pan to reveal neighbouring page content nor zoom out
+  past the whole block. It stays inert while a zoom animation runs, so it won't fight a framing tween
+  (e.g. `SmoothlyFrameBlock`) — it re-asserts the instant motion settles.
+- **Rail is restricted to the block** — the navigable set collapses to that one block, so block-advance,
+  edge-hold, and semantic role jumps all clamp to it (line stepping within the block is unaffected). The
+  block is force-included even if its role isn't in the navigable set, so a focused figure/table/equation
+  is still seatable. A stale (out-of-range) `BlockIndex` is ignored, leaving the normal navigable set.
+
+Both clamps gate on `FocusBlock.Page` matching the view's current page, so a confinement authored for
+page N is inert while the viewport sits elsewhere. Set `Focus` **before** the rail seats (the host's
+re-aim already re-seats) for it to take effect.
+
+### Added
+
+- **`FocusBlock(int Page, int BlockIndex, BBox Bounds)`** record and **`Viewport.Focus`** property.
+
+### Changed
+
+- `Viewport.ClampCamera` clamps to the focus block's rectangle (pan + zoom floor) when `Focus` targets
+  the current page; unchanged (whole-page clamp) otherwise.
+- `RailNav.SetAnalysis` gained an optional `int? focusBlockIndex` that collapses the navigable set to the
+  given block; the per-view rail seat sites pass it from `Viewport.Focus`.
+
 ## 0.44.0 — Multi-viewport Phase 4: per-view history, IsLive-honoring eviction, primary promotion
 
 Completes the per-view lifecycle layer (issue #77). All **additive / non-breaking** — single-viewport
