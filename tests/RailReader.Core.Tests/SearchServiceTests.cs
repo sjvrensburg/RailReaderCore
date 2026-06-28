@@ -218,6 +218,56 @@ public class SearchServiceTests : IDisposable
     }
 
     // ---------------------------------------------------------------
+    // Confined (portal) view search — skip off-block matches in the cycle
+    // ---------------------------------------------------------------
+
+    [Fact]
+    public void ConfinedSearch_SeedsAndStepsOnlyInBlockMatches()
+    {
+        // Confine the focused view to a block over the top-left of page 0. No analysis is seated, so a
+        // page-matching focus defaults to CONFINED (CurrentFocusBlockIndex non-null).
+        _state.Primary.Focus = new FocusBlock(0, 0, new BBox(0, 0, 100, 100));
+
+        // Three matches on page 0: idx0 in-block (centre 30,15), idx1 OFF-block (centre 530,415),
+        // idx2 in-block (centre 30,55).
+        var matches = new List<SearchMatch>
+        {
+            new(0, 0, 4, [new RectF(10, 10, 50, 20)]),
+            new(0, 4, 4, [new RectF(500, 400, 560, 430)]),
+            new(0, 8, 4, [new RectF(10, 50, 50, 60)]),
+        };
+        _search.FinalizeSearch(_state, matches);
+
+        // Seed lands on the first in-block match, not the (earlier-or-equal) off-block one.
+        Assert.Equal(0, _search.ActiveMatchIndex);
+
+        _search.NextMatch();                 // skips the off-block idx1
+        Assert.Equal(2, _search.ActiveMatchIndex);
+
+        _search.NextMatch();                 // wraps, still skipping idx1
+        Assert.Equal(0, _search.ActiveMatchIndex);
+
+        _search.PreviousMatch();             // backwards also skips idx1
+        Assert.Equal(2, _search.ActiveMatchIndex);
+    }
+
+    [Fact]
+    public void ConfinedSearch_NoInBlockMatches_StepIsNoOp()
+    {
+        _state.Primary.Focus = new FocusBlock(0, 0, new BBox(0, 0, 100, 100));
+        var matches = new List<SearchMatch>
+        {
+            new(0, 0, 4, [new RectF(500, 400, 560, 430)]),  // off block
+            new(0, 4, 4, [new RectF(520, 420, 560, 440)]),  // off block
+        };
+        _search.FinalizeSearch(_state, matches);
+
+        int before = _search.ActiveMatchIndex;
+        _search.NextMatch();                 // nothing reachable inside the block → stay put
+        Assert.Equal(before, _search.ActiveMatchIndex);
+    }
+
+    // ---------------------------------------------------------------
     // GetMatchSnippet
     // ---------------------------------------------------------------
 

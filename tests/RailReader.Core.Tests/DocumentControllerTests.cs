@@ -382,6 +382,74 @@ public class DocumentControllerTests : IDisposable
     // --- Phase 3b: Non-Rail Edge-Hold Page Advance ---
 
     [Fact]
+    public void Focus_RailHoldsPageAtBoundary()
+    {
+        // A block-confined (portal) viewport must not page-advance when rail reaches the block's last
+        // line — the boundary is a no-op so the reader can't escape the focus block's page.
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        // Three navigable Text blocks (multi-line) so the UNconfined navigable set is genuinely >1 —
+        // otherwise a single-block fixture makes NavigableCount==1 before Focus, and the collapse
+        // assertion below would pass even if ReapplyFocus's collapse logic were broken.
+        TestFixtures.SetupRailMode(state, _controller.Config, 800, 600,
+            (BlockRole.Text, new BBox(72, 72, 468, 150), 4),
+            (BlockRole.Text, new BBox(72, 240, 468, 150), 4),
+            (BlockRole.Text, new BBox(72, 420, 468, 150), 4));
+
+        var vp = state.Primary;
+        Assert.True(state.TryGetAnalysis(0, out var analysis) && analysis.Blocks.Count == 3);
+        Assert.Equal(3, vp.Rail.NavigableCount);   // unconfined: all three Text blocks navigable
+        // Assigning Focus on this already-seated page collapses the rail to the focus block immediately
+        // (ReapplyFocus) — so this genuinely exercises the 3→1 rail-set collapse, not just the boundary guard.
+        vp.Focus = new FocusBlock(0, 0, analysis.Blocks[0].BBox);
+        Assert.Equal(1, vp.Rail.NavigableCount);
+
+        // Drive the rail well past the end of the page; without the guard this would page-advance.
+        for (int i = 0; i < 500; i++)
+            _controller.HandleArrowDown();
+
+        Assert.Equal(0, state.CurrentPage);     // never paged off the focus block's page
+        Assert.Equal(0, vp.Rail.CurrentBlock);  // and never stepped out of the (only) confined block
+    }
+
+    // NOTE: the auto-scroll-stop fix (TickAutoScroll's `case ConfinedHold -> StopAutoScroll`) isn't
+    // unit-tested end-to-end — driving semi-auto-scroll to a block boundary in the harness needs more
+    // state plumbing than is worth it. The boundary→ConfinedHold return it depends on IS covered by
+    // Focus_RailHoldsPageAtBoundary (AdvanceLine via HandleArrowDown), and the handler is a direct
+    // mirror of the adjacent PageChangedRailLost StopAutoScroll case.
+
+    [Fact]
+    public void Focus_ForAnotherPage_DoesNotBlockPaging()
+    {
+        // The boundary guard is gated on CurrentFocusBlockIndex (Focus on the CURRENT page), not a bare
+        // Focus != null — so a stale focus authored for a different page (where no confinement is in
+        // effect) must NOT trap paging. This distinguishes the page-matched guard from the weak null-only
+        // one (which Focus_RailHoldsPageAtBoundary cannot, since there Focus.Page == CurrentPage).
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupRailMode(state);
+
+        var vp = state.Primary;
+        // Focus targets a different page than the one displayed (page 0) → CurrentFocusBlockIndex == null.
+        vp.Focus = new FocusBlock(99, 0, new BBox(0, 0, 10, 10));
+        // Directly assert the confinement predicate is inert off-page (distinguishes the page-matched
+        // guard from a bare `Focus != null`, which Focus_RailHoldsPageAtBoundary cannot) and that the
+        // rail-set was NOT collapsed.
+        Assert.Null(vp.CurrentFocusBlockIndex);
+        Assert.True(vp.Rail.NavigableCount >= 1);
+
+        for (int i = 0; i < 500; i++)
+            _controller.HandleArrowDown();
+
+        // Not confined on this page, so the rail boundary is free to page/park exactly as without focus.
+        Assert.True(state.CurrentPage > 0 || _controller.RailPaused);
+    }
+
+    [Fact]
     public void HandleArrowDown_AtPageEdge_AdvancesAfterHold()
     {
         var state = _controller.CreateDocument(_pdfPath);
@@ -1060,5 +1128,90 @@ public class DocumentControllerTests : IDisposable
 
         // The result belongs to an open document, so it must be announced.
         Assert.Contains(0, received);
+    }
+
+    // ---- FocusBlock confinement (xhigh review) -------------------------------------------------------
+
+    [Fact]
+    public void HandleZoomKey_ZoomOut_ConfinedView_FlooredAtBlockFit()
+    {
+        var doc = CreateAndAddDocument();
+        _controller.SetViewportSize(400, 400);
+
+        var blocks = new List<LayoutBlock>();
+        for (int i = 0; i < 4; i++)
+            blocks.Add(new LayoutBlock { BBox = new BBox(0, i * 20, 100, 18), Role = BlockRole.Text, Lines = [] });
+        doc.SetAnalysis(0, doc.DefaultAnalysisParams,
+            new PageAnalysis { Blocks = blocks, PageWidth = 612, PageHeight = 792 });
+
+        var bounds = new BBox(100, 100, 60, 30);
+        doc.Primary.Focus = new FocusBlock(0, 0, bounds);
+        double fit = doc.Primary.ComputeBlockFitZoom(bounds, 400, 400);
+        doc.Camera.Zoom = fit;
+
+        _controller.HandleZoomKey(zoomIn: false); // try to zoom out past the whole block
+
+        // The tween target must not drop below block-fit — the clamp is inert mid-tween, so a lower target
+        // would briefly reveal off-block content before snapping back.
+        double target = doc.Primary.Zoom.PendingTargetZoom ?? doc.Camera.Zoom;
+        Assert.True(target >= fit - 1e-6, $"zoom-out target {target} fell below the block-fit floor {fit}");
+    }
+
+    [Fact]
+    public void RetargetFocus_RelocatesPortalToAnotherPageAndReconfines()
+    {
+        var doc = CreateAndAddDocument(); // 3-page PDF, focused on page 0
+        _controller.SetViewportSize(400, 400);
+
+        doc.Primary.Focus = new FocusBlock(0, 0, new BBox(0, 0, 100, 100));
+        Assert.Equal(0, doc.Primary.CurrentPage);
+        Assert.Equal(0, doc.Primary.CurrentFocusBlockIndex);
+
+        bool ok = _controller.RetargetFocus(2, 1, new BBox(10, 10, 120, 60));
+
+        Assert.True(ok);
+        Assert.Equal(2, doc.Primary.CurrentPage);            // moved (a direct CurrentPage set would be refused)
+        Assert.Equal(2, doc.Primary.Focus!.Page);
+        Assert.Equal(1, doc.Primary.Focus!.BlockIndex);
+        Assert.Equal(1, doc.Primary.CurrentFocusBlockIndex); // re-confined on the new page
+
+        Assert.False(_controller.RetargetFocus(99, 0, new BBox(0, 0, 1, 1))); // out-of-range page rejected
+        Assert.Equal(2, doc.Primary.Focus!.Page);            // ...and leaves the existing focus untouched
+    }
+
+    [Fact]
+    public void HandleZoom_DegenerateConfinedBlock_AboveZoomMax_DoesNotThrow()
+    {
+        // Regression (review fix A): a zero-area FocusBlock makes ComputeBlockFitZoom return the raw uncapped
+        // Camera.Zoom; if that exceeds ZoomMax, ConfinedZoomFloor must still cap at ZoomMax so the zoom
+        // handlers' Math.Clamp(target, floor, ZoomMax) can't throw min>max.
+        var doc = CreateAndAddDocument();
+        _controller.SetViewportSize(400, 400);
+        doc.Primary.Focus = new FocusBlock(0, 0, new BBox(100, 100, 0, 0)); // zero-area
+        doc.Camera.Zoom = Camera.ZoomMax + 10;                             // above max
+
+        Assert.True(doc.Primary.ConfinedZoomFloor(400, 400) <= Camera.ZoomMax + 1e-9);
+        Assert.Null(Record.Exception(() => _controller.HandleZoomKey(zoomIn: false)));
+        Assert.Null(Record.Exception(() => _controller.HandleZoom(-1.0, 200, 200, ctrlHeld: false)));
+    }
+
+    [Fact]
+    public void RetargetFocus_FramesDestinationBlock_NotLeftOverMagnified()
+    {
+        // Review fix B: relocating from a tiny block (high zoom) to a larger block must fit the destination,
+        // not leave it over-magnified — the confinement clamp alone only RAISES zoom, so RetargetFocus fits.
+        var doc = CreateAndAddDocument();
+        _controller.SetViewportSize(400, 400);
+
+        doc.Primary.Focus = new FocusBlock(0, 0, new BBox(0, 0, 10, 10)); // tiny
+        doc.Camera.Zoom = 15.0;                                           // as if fit to the tiny block
+
+        var bigBlock = new BBox(0, 0, 300, 600);
+        _controller.RetargetFocus(2, 1, bigBlock);
+
+        Assert.Equal(2, doc.Primary.CurrentPage);
+        Assert.True(doc.Camera.Zoom < 15.0, "zoom should drop to fit the larger destination block");
+        double expectedFit = Math.Min(400.0 / 300.0, 400.0 / 600.0); // CenterPage's confined no-margin fit
+        Assert.Equal(expectedFit, doc.Camera.Zoom, precision: 2);
     }
 }

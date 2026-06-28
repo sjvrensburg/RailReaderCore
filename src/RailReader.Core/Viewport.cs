@@ -138,6 +138,12 @@ public sealed class Viewport : IDisposable
         get => CurrentPageBacking;
         set
         {
+            // Confinement chokepoint (the deepest one): a confined viewport must not change page — this
+            // catches the Primary-facade `doc.CurrentPage = N` path that bypasses GoToPage. A host
+            // re-aims a portal by setting Focus to the NEW page FIRST (so the page no longer matches and
+            // this is not yet confined), then assigning CurrentPage; clearing/moving focus is the only
+            // way to page a confined view.
+            if (CurrentFocusBlockIndex is not null) return;
             if (SetField(ref CurrentPageBacking, value, nameof(CurrentPage)))
                 Owner.EvictDistantPageCaches();
         }
@@ -203,19 +209,97 @@ public sealed class Viewport : IDisposable
     /// old variant and submits the new one.</summary>
     public AnalysisParams AnalysisParams { get; set; }
 
+    private FocusBlock? _focus;
+
     /// <summary>When set, confines this view to a single layout block (a "portal" view): the camera
     /// clamps to the block's rectangle and rail navigation is restricted to that one block. See
     /// <see cref="FocusBlock"/>. Null (default) = normal whole-page navigation, so an unconfined
     /// viewport behaves exactly as before. Set by a host pinning a viewport to a block; clear to
-    /// release it.</summary>
-    public FocusBlock? Focus { get; set; }
+    /// release it. Assigning it immediately (re)collapses this view's rail to the focus block (or
+    /// restores the full set when cleared) against the already-seated analysis, so a host needn't also
+    /// trigger a reseat — confinement and the rail's navigable set never drift.</summary>
+    public FocusBlock? Focus
+    {
+        get => _focus;
+        set
+        {
+            // UI-thread-only, like every other Viewport mutation (SetField). This setter mutates Rail
+            // (ReapplyFocus rebuilds the navigable set) and Camera (ClampCamera), so an off-thread assign
+            // would race the UI-thread tick and tear that state — assert up front instead of proceeding.
+            Owner.Marshaller.AssertUIThread();
+            var prev = _focus;
+            // Always store the latest value (so refined/moved Bounds from a fresh analysis are tracked — the
+            // camera clamp reads _focus.Bounds live), and re-clamp the camera below EITHER way so the view
+            // follows a block whose bounds shifted. But the heavier teardown (auto-scroll stop, rail
+            // re-collapse, line snap) runs only on a real LOGICAL block change: re-running it on a same-block
+            // re-pin (e.g. ULP-jittered bounds from re-analysis) would tear down the in-flight rail snap and
+            // lurch the reading line on what should be a no-op. (Record value-equality on FocusBlock can't be
+            // used to tell "same block" — it hinges on bit-exact BBox floats.)
+            _focus = value;
+            bool sameBlock = SameLogicalBlock(prev, value);
+            if (!sameBlock)
+            {
+                // Pinning/clearing Focus changes the navigable set; stop any in-flight auto-scroll over the
+                // OLD set cleanly — at the controller level so RailNav's state machine AND
+                // AutoScrollController.AutoScrollActive clear in lockstep (a RailNav-only stop would leave
+                // the controller flag stuck true).
+                AutoScroll.StopAutoScroll();
+                // Collapse/restore the rail to the focus block. Only re-collapse NOW when the rail is already
+                // seated with THIS page's analysis: collapsing against a stale (previous-page) seated analysis
+                // would pin the wrong block. When the rail isn't on this page yet (pending reseat / no
+                // resident analysis), the upcoming SetAnalysis(..., CurrentFocusBlockIndex) collapses it.
+                if (Owner.TryGetAnalysis(CurrentPageBacking, AnalysisParams, out var cur)
+                    && ReferenceEquals(Rail.Analysis, cur))
+                    Rail.ReapplyFocus(CurrentFocusBlockIndex);
+                // A confined view must never page off its focus block. A page-skip deferred before pinning
+                // would otherwise survive and, when its analysis lands, jump the rail cursor to the block end.
+                // Drop it here, mirroring the page-leaving guards in AdvanceLine / SkipToNavigablePage.
+                if (CurrentFocusBlockIndex is not null) PendingSkip = null;
+            }
+            if (Width > 0 && Height > 0)
+            {
+                // Re-clamp on EVERY re-pin so the camera tracks moved bounds: idempotent for ULP jitter,
+                // corrective when a re-analysis materially shifts the same block's rectangle. ClampCameraToBlock
+                // may raise the zoom to the block's fit-zoom (possibly across the rail threshold), so refresh
+                // the rail's zoom-derived Active/threshold state after.
+                ClampCamera(Width, Height);
+                UpdateRailZoom(Width, Height);
+                // Frame the seated line only on a real block change — UpdateRailZoom just flips Active/seats
+                // the block, so without this the rail engages centred on the block rather than line-framed
+                // (mirrors ApplyZoom). Gated on !sameBlock so a same-block re-pin doesn't re-snap and lurch.
+                if (!sameBlock && Rail.Active) StartSnap(Width, Height);
+            }
+        }
+    }
 
-    /// <summary>The focus block's index for the page this view is currently on, or null when there is
-    /// no confinement (or it targets another page). Passed to <c>RailNav.SetAnalysis</c> at every rail
-    /// seat so the navigable set collapses to the focus block while — and only while — the view sits on
-    /// its page.</summary>
-    internal int? CurrentFocusBlockIndex =>
-        Focus is { } f && f.Page == CurrentPageBacking ? f.BlockIndex : null;
+    /// <summary>True when two focus targets denote the same LOGICAL block — same null-ness, page, and
+    /// block index — irrespective of <see cref="BBox"/> float jitter. The setter uses this to skip a
+    /// no-op re-pin's teardown while still storing the refined bounds.</summary>
+    private static bool SameLogicalBlock(FocusBlock? a, FocusBlock? b)
+        => a is null ? b is null
+           : b is not null && a.Page == b.Page && a.BlockIndex == b.BlockIndex;
+
+    /// <summary>The focus block's index for the page this view is currently on, or null when there is no
+    /// confinement in effect — Focus is null, targets another page, or (when the page's analysis is
+    /// resident) its block index is out of range for that analysis. This is THE confinement predicate:
+    /// every confinement site gates on this
+    /// — camera clamp, GetFitRect, the page-leaving guards, and the rail-set collapse — so confinement is
+    /// all-or-nothing and a resident-but-out-of-range focus is fully inert rather than half-confined.
+    /// When the analysis is NOT resident (pending or evicted) it DEFAULTS TO CONFINED (page-match only):
+    /// a live portal must not silently un-confine just because its analysis isn't currently cached.</summary>
+    internal int? CurrentFocusBlockIndex
+    {
+        get
+        {
+            if (_focus is not { } f || f.Page != CurrentPageBacking) return null;
+            if (f.BlockIndex < 0) return null;   // a negative index is never a valid block → unconfined
+                                                 // regardless of analysis residency (no half-confined state)
+            if (Owner.TryGetAnalysis(CurrentPageBacking, AnalysisParams, out var a)
+                && f.BlockIndex >= a.Blocks.Count)
+                return null;   // analysis resident AND index out of range → unconfined
+            return f.BlockIndex; // resident + in-range, OR not resident → confined
+        }
+    }
 
     /// <summary>True while this view is waiting on analysis for its current page before its rail can
     /// be seated. Per-view so each viewport tracks its own pending state; fires <see cref="StateChanged"/>.</summary>
@@ -580,6 +664,12 @@ public sealed class Viewport : IDisposable
     /// </summary>
     public (double X, double Y, double W, double H) GetFitRect()
     {
+        // A block-confined (portal) view fits/centres the focus block, not the page — so reset-zoom
+        // (FitPage), fit-width, and margin-crop toggles re-frame the block instead of escaping the
+        // confinement. Gated on CurrentFocusBlockIndex (range-checked), like the camera clamp.
+        if (CurrentFocusBlockIndex is not null && _focus is { } fb)
+            return (fb.Bounds.X, fb.Bounds.Y, fb.Bounds.W, fb.Bounds.H);
+
         if (Owner.MarginCropping && Owner.DocumentContentFraction is { } f)
         {
             return (f.X * PageWidthBacking, f.Y * PageHeightBacking,
@@ -630,7 +720,12 @@ public sealed class Viewport : IDisposable
         if (PageWidthBacking <= 0 || PageHeightBacking <= 0 || windowWidth <= 0 || windowHeight <= 0) return;
         var (rx, ry, rw, rh) = GetFitRect();
         if (rw <= 0 || rh <= 0) return;
-        Camera.Zoom = Math.Min(windowWidth / rw, windowHeight / rh);
+        // Confined (portal) view ONLY: cap the fit zoom at ZoomMax. GetFitRect returns a small focus
+        // block there, so the raw fit can exceed ZoomMax — and the block clamp only ever raises zoom,
+        // never lowers it, so an un-capped overshoot would strand the user over-magnified. Unconfined
+        // (whole-page) fit is left exactly as before (no cap), preserving the Primary-facade contract.
+        double fitZoom = Math.Min(windowWidth / rw, windowHeight / rh);
+        Camera.Zoom = CurrentFocusBlockIndex is not null ? Math.Min(fitZoom, Camera.ZoomMax) : fitZoom;
         Camera.OffsetX = CenteredOffsetX(windowWidth, rx, rw, Camera.Zoom);
         Camera.OffsetY = (windowHeight - rh * Camera.Zoom) / 2.0 - ry * Camera.Zoom;
     }
@@ -658,6 +753,10 @@ public sealed class Viewport : IDisposable
     public void FitWidthPreservingTop(double windowWidth, double windowHeight)
     {
         if (PageWidthBacking <= 0 || windowWidth <= 0 || Camera.Zoom <= 0) return;
+        // Confined (portal) view: GetFitRect returns the BLOCK rect, so the page-width fit + page-space
+        // top-y anchor below would re-frame against the block and jump the view on a margin-crop toggle.
+        // Just re-assert the block clamp instead — confinement already fixes this view's zoom/pan.
+        if (CurrentFocusBlockIndex is not null) { ClampCamera(windowWidth, windowHeight); return; }
         double pageTopY = -Camera.OffsetY / Camera.Zoom;
 
         var (rx, _, rw, _) = GetFitRect();
@@ -681,8 +780,10 @@ public sealed class Viewport : IDisposable
         // Keep margin cropping from pushing the user into rail mode on large
         // screens. Only caps when the uncropped fit was itself below the rail
         // threshold — if the user would already be in rail without cropping,
-        // cropping shouldn't un-rail them.
-        if (Owner.MarginCropping && Rail.ZoomThreshold > 0)
+        // cropping shouldn't un-rail them. Skipped for a confined (portal) view:
+        // there GetFitRect returns the BLOCK, so this page-width-derived cap would
+        // pin the (much narrower) block fit below threshold, under-magnifying it.
+        if (Owner.MarginCropping && Rail.ZoomThreshold > 0 && CurrentFocusBlockIndex is null)
         {
             double uncroppedFit = windowWidth / PageWidthBacking;
             if (uncroppedFit < Rail.ZoomThreshold)
@@ -691,6 +792,20 @@ public sealed class Viewport : IDisposable
         return Math.Clamp(windowWidth / rectW, Camera.ZoomMin, maxZoom);
     }
 
+    /// <summary>The lowest zoom a zoom gesture may target for this view: the focus block's fit-zoom when
+    /// confined (so a zoom-out can't reveal page content outside the pinned block), else <see
+    /// cref="Camera"/>.ZoomMin. Zoom entry points clamp their target to this floor because the confinement
+    /// clamp (<see cref="ClampCameraToBlock"/>) is inert during the zoom tween and only re-asserts the floor
+    /// when the tween ends — without it the camera animates past block-fit and breaches confinement mid-tween.
+    /// <para>Capped at <see cref="Camera"/>.ZoomMax so this floor is always a valid <c>Math.Clamp</c> min:
+    /// a degenerate (zero/negative-area) focus block makes <see cref="ComputeBlockFitZoom"/> return the raw
+    /// uncapped <c>Camera.Zoom</c>, which could exceed ZoomMax and make the caller's <c>Math.Clamp(.., floor,
+    /// ZoomMax)</c> throw min&gt;max.</para></summary>
+    internal double ConfinedZoomFloor(double windowWidth, double windowHeight)
+        => CurrentFocusBlockIndex is not null && _focus is { } f
+            ? Math.Min(ComputeBlockFitZoom(f.Bounds, windowWidth, windowHeight), Camera.ZoomMax)
+            : Camera.ZoomMin;
+
     public void ClampCamera(double windowWidth, double windowHeight)
     {
         // Block-confined (portal) view: clamp pan — and floor zoom — to the focus block's rectangle
@@ -698,7 +813,14 @@ public sealed class Viewport : IDisposable
         // zoom animation runs (e.g. the host framing the block) so it doesn't fight the in-flight tween;
         // it re-asserts the instant motion settles. Only engaged when a focus targets THIS page, so an
         // unconfined viewport (Focus == null) keeps the exact whole-page clamp below.
-        if (Focus is { } f && f.Page == CurrentPageBacking && !Zoom.IsAnimating)
+        //
+        // This stays in force during rail too — ClampCameraToBlock owns the block bound on BOTH axes,
+        // rather than splitting confinement with rail (which would leave a manual-pan / zoom escape while
+        // rail is active). It runs only on explicit clamp calls (pan / zoom / resize), not per scroll
+        // frame, so it doesn't override the rail's own SoftEase horizontal easing during a hold-scroll.
+        // Gated on CurrentFocusBlockIndex (range-checked), so it engages on exactly the pages/indices the
+        // rail-set collapse and page-leaving guards do — never a half-confined state.
+        if (CurrentFocusBlockIndex is not null && _focus is { } f && !Zoom.IsAnimating)
         {
             ClampCameraToBlock(f.Bounds, windowWidth, windowHeight);
             return;
@@ -736,13 +858,18 @@ public sealed class Viewport : IDisposable
         double scaledW = b.W * Camera.Zoom;
         double scaledH = b.H * Camera.Zoom;
 
+        // Derive the clamp bounds from the SAME scaledW/scaledH the branch tests (like the page clamp
+        // above), so lo and hi can't disagree with the branch by a float ULP: in the else-branch
+        // scaledW > windowWidth, so hi − lo = scaledW − windowWidth ≥ 0 — the range is always valid.
+        double hiX = -b.X * Camera.Zoom;
         Camera.OffsetX = scaledW <= windowWidth
             ? (windowWidth - scaledW) / 2.0 - b.X * Camera.Zoom
-            : Math.Clamp(Camera.OffsetX, windowWidth - (b.X + b.W) * Camera.Zoom, -b.X * Camera.Zoom);
+            : Math.Clamp(Camera.OffsetX, hiX - (scaledW - windowWidth), hiX);
 
+        double hiY = -b.Y * Camera.Zoom;
         Camera.OffsetY = scaledH <= windowHeight
             ? (windowHeight - scaledH) / 2.0 - b.Y * Camera.Zoom
-            : Math.Clamp(Camera.OffsetY, windowHeight - (b.Y + b.H) * Camera.Zoom, -b.Y * Camera.Zoom);
+            : Math.Clamp(Camera.OffsetY, hiY - (scaledH - windowHeight), hiY);
     }
 
     public void ApplyZoom(double newZoom, double windowWidth, double windowHeight)

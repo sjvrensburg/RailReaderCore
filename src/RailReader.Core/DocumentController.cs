@@ -366,6 +366,9 @@ public sealed partial class DocumentController : IDisposable
     {
         if (ActiveDocument is not { Annotations: { } annotations } doc) return;
         if ((uint)index >= (uint)annotations.Bookmarks.Count) return;
+        // Confined (portal) view: GoToPage would no-op, but PushHistory()/FitPage() would still run and
+        // corrupt the focused view's back/forward stacks. Bail before any mutation (mirrors NavigateBack/Forward).
+        if (FocusedViewport is { CurrentFocusBlockIndex: not null }) return;
         PushHistory();
         GoToPage(annotations.Bookmarks[index].Page);
         FitPage();
@@ -374,6 +377,7 @@ public sealed partial class DocumentController : IDisposable
     public void NavigateBack()
     {
         if (FocusedViewport is not { } vp) return;
+        if (vp.CurrentFocusBlockIndex is not null) return;   // confined: don't pop/page (would corrupt history)
         if (vp.BackStackCount == 0) return;
         GoToPage(vp.PopBack(vp.CurrentPage));
     }
@@ -381,6 +385,7 @@ public sealed partial class DocumentController : IDisposable
     public void NavigateForward()
     {
         if (FocusedViewport is not { } vp) return;
+        if (vp.CurrentFocusBlockIndex is not null) return;   // confined: don't pop/page (would corrupt history)
         if (vp.ForwardStackCount == 0) return;
         GoToPage(vp.PopForward(vp.CurrentPage));
     }
@@ -416,6 +421,11 @@ public sealed partial class DocumentController : IDisposable
     public void GoToPage(int page)
     {
         if (FocusedViewport is not { } vp) return;
+        // Confined (portal) view: bail BEFORE cancelling the zoom tween / any other work — the
+        // DocumentModel.GoToPage chokepoint would refuse the page change anyway, but only after this
+        // method already aborted an in-flight block-framing animation. Bookmarks / links / role jumps
+        // all funnel through here, so one guard covers them.
+        if (vp.CurrentFocusBlockIndex is not null) return;
         vp.Zoom.Cancel();
         var doc = vp.Owner;
         var (ww, wh) = (vp.Width, vp.Height);
@@ -436,13 +446,39 @@ public sealed partial class DocumentController : IDisposable
     private void NotifyRenderFailed(int page)
         => StatusMessage?.Invoke($"Page {page + 1} could not be rendered (corrupted?)");
 
+    /// <summary>
+    /// Re-aim the focused (portal) viewport at a block on another page. This performs the only
+    /// bitmap/analysis-correct relocation sequence so a host can't get the ordering wrong: it assigns
+    /// <see cref="Viewport.Focus"/> for the destination FIRST — which momentarily un-confines the view
+    /// (the new page doesn't match the current one yet) — and only THEN navigates, so confinement
+    /// re-engages on landing and the rail reseats + re-collapses to <paramref name="blockIndex"/>. It
+    /// finishes by framing the destination block (<see cref="FitPage"/>, which for a confined view fits
+    /// the focus block) so a relocation from a small block to a larger one isn't left over-magnified on a
+    /// corner — the confinement clamp alone only ever RAISES zoom, so it can't fit a bigger block.
+    /// <para>Use this instead of setting <see cref="Viewport.CurrentPage"/> directly: a confined view
+    /// refuses page moves, so the intuitive "move first, then re-pin" order silently strands the portal
+    /// on its old page. Like every other controller input method this targets the FOCUSED view — focus the
+    /// portal pane before calling to re-aim a non-focused one.</para>
+    /// </summary>
+    /// <returns>False when there is no focused view or <paramref name="page"/> is out of range; true otherwise.</returns>
+    public bool RetargetFocus(int page, int blockIndex, BBox bounds)
+    {
+        if (FocusedViewport is not { } vp) return false;
+        if (page < 0 || page >= vp.Owner.PageCount) return false;
+        vp.Focus = new FocusBlock(page, blockIndex, bounds);
+        if (page != vp.CurrentPage)
+            GoToPage(page); // not confined yet (Focus targets the new page) → allowed; re-confines on landing
+        FitPage();          // frame the destination block (confinement-aware: CenterPage fits the block rect)
+        return true;
+    }
+
     public void FitPage()
     {
         if (FocusedViewport is not { } vp) return;
         vp.Zoom.Cancel();
         var (ww, wh) = (vp.Width, vp.Height);
         vp.CenterPage(ww, wh);
-        vp.UpdateRailZoom(ww, wh);
+        ReclampConfinedAfterFit(vp, ww, wh);
     }
 
     public void FitWidth()
@@ -451,6 +487,19 @@ public sealed partial class DocumentController : IDisposable
         vp.Zoom.Cancel();
         var (ww, wh) = (vp.Width, vp.Height);
         vp.FitWidth(ww, wh);
+        ReclampConfinedAfterFit(vp, ww, wh);
+    }
+
+    /// <summary>
+    /// Shared tail of <see cref="FitPage"/> / <see cref="FitWidth"/>: for a confined (portal) view only,
+    /// re-apply the block clamp's zoom floor + pan clamp after the fit; then refresh rail zoom either way.
+    /// The clamp is gated on confinement because for an UNconfined view <see cref="Viewport.ClampCamera"/>
+    /// does a whole-page clamp that would override the fit's content-rect centering (e.g. a margin-cropped
+    /// fit) — pre-confinement these methods never clamped, so an unconfined view must stay un-clamped here.
+    /// </summary>
+    private static void ReclampConfinedAfterFit(Viewport vp, double ww, double wh)
+    {
+        if (vp.CurrentFocusBlockIndex is not null) vp.ClampCamera(ww, wh);
         vp.UpdateRailZoom(ww, wh);
     }
 
@@ -472,7 +521,9 @@ public sealed partial class DocumentController : IDisposable
         {
             double factor = 1.0 + scrollDelta * CoreTuning.ZoomScrollSensitivity;
             double baseZoom = vp.Zoom.PendingTargetZoom ?? vp.Camera.Zoom;
-            double newZoom = Math.Clamp(baseZoom * factor, Camera.ZoomMin, Camera.ZoomMax);
+            // Floor at the confined block-fit zoom (not ZoomMin) so a portal zoom-out can't animate past the
+            // whole-block fit and reveal off-block content mid-tween.
+            double newZoom = Math.Clamp(baseZoom * factor, vp.ConfinedZoomFloor(ww, wh), Camera.ZoomMax);
             vp.Zoom.Start(vp, newZoom, cursorX, cursorY, ww);
         }
     }
@@ -520,6 +571,10 @@ public sealed partial class DocumentController : IDisposable
             vp.UpdateRenderDpiIfNeeded();
         }
 
+        // Confined (portal) view: free pan may have zoomed/panned outside the focus block. Re-clamp to
+        // it on Ctrl release — independent of Rail.Active (a confined view can sit below the rail threshold).
+        if (vp.CurrentFocusBlockIndex is not null) vp.ClampCamera(ww, wh);
+
         if (!vp.Rail.Active) return;
 
         // Clamp indices in case analysis changed while paused
@@ -538,9 +593,11 @@ public sealed partial class DocumentController : IDisposable
         var (ww, wh) = (vp.Width, vp.Height);
 
         double baseZoom = vp.Zoom.PendingTargetZoom ?? vp.Camera.Zoom;
+        // Floor at the confined block-fit zoom (see HandleZoom) so a portal zoom-out keypress can't breach
+        // confinement during the tween.
         double newZoom = Math.Clamp(
             zoomIn ? baseZoom * CoreTuning.ZoomStep : baseZoom / CoreTuning.ZoomStep,
-            Camera.ZoomMin, Camera.ZoomMax);
+            vp.ConfinedZoomFloor(ww, wh), Camera.ZoomMax);
 
         vp.Zoom.Start(vp, newZoom, ww / 2.0, wh / 2.0, ww);
         if (!vp.Rail.Active && AutoScrollActive) StopAutoScroll();
@@ -579,6 +636,10 @@ public sealed partial class DocumentController : IDisposable
         var doc = vp.Owner;
         if (!doc.TryGetAnalysis(vp.CurrentPage, vp.AnalysisParams, out var analysis)) return false;
         if (pageBlockIndex < 0 || pageBlockIndex >= analysis.Blocks.Count) return false;
+        // Confined (portal) view: only allow re-framing the pinned focus block — framing any OTHER block
+        // would Deactivate the rail and fly the camera off the block (CenterBlockGeometric), breaking
+        // confinement. SmoothlyFrameRole funnels through here, so this guard covers it too.
+        if (vp.CurrentFocusBlockIndex is { } fbi && pageBlockIndex != fbi) return false;
 
         // Sync RailNav to THIS page's analysis so the index space + chunk framing below
         // refer to the current page. Skip the rebuild when it already holds this exact

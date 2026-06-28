@@ -147,6 +147,10 @@ public sealed partial class DocumentController
 
         bool forward = edgeDir == ScrollDirection.Forward;
         var adv = AdvanceLine(vp, forward, ww, wh);
+        // A block-confined (portal) viewport can't advance past its focus block: the camera never moves, so
+        // the edge-hold keeps re-firing while the key is held. Bail without flagging a repaint — otherwise
+        // the unconditional cameraChanged/overlayChanged below spin a per-frame repaint for nothing.
+        if (adv == LineAdvanceResult.ConfinedHold) return;
         if (adv is LineAdvanceResult.PageChanged or LineAdvanceResult.PageChangedRailLost)
         {
             FirePageChanged(ref pageChanged, vp);
@@ -176,7 +180,8 @@ public sealed partial class DocumentController
             if (vp.Rail.AutoScrollParked)
                 return;
 
-            if (vp.Rail.NavigableCount > 0
+            if (vp.CurrentFocusBlockIndex is null   // a confined view can never page — don't prefetch
+                && vp.Rail.NavigableCount > 0
                 && vp.Rail.CurrentBlock >= vp.Rail.NavigableCount - 2
                 && vp.CurrentPage + 1 < vp.Owner.PageCount)
             {
@@ -212,6 +217,12 @@ public sealed partial class DocumentController
                         break;
                     case LineAdvanceResult.PageChangedRailLost:
                         FirePageChanged(ref pageChanged, vp);
+                        vp.AutoScroll.StopAutoScroll();
+                        break;
+                    case LineAdvanceResult.ConfinedHold:
+                        // A block-confined (portal) viewport can't advance past its focus block and
+                        // can't page — so there's nowhere to flow. Stop auto-scroll, otherwise reachedEnd
+                        // stays true and animating is pinned every tick (a repaint spin at the last line).
                         vp.AutoScroll.StopAutoScroll();
                         break;
                     case LineAdvanceResult.LineAdvanced:
@@ -369,6 +380,21 @@ public sealed partial class DocumentController
         vp.PendingRailSetup = false;
         vp.UpdateRailZoom(ww, wh);
         _logger.Debug($"[Analysis] Rail has {vp.Rail.NavigableCount} navigable blocks, Active={vp.Rail.Active}");
+
+        // A portal pinned to an out-of-range block defaulted to CONFINED while its analysis was pending
+        // (camera clamped + zoom raised to the guessed block rect). Now that analysis is resident and proves
+        // the index invalid, the view un-confines — but the camera is still parked on the stale block region.
+        // Recover it to the whole page. Gated so it fires ONLY on this genuine confined→unconfined flip:
+        // Focus on THIS page (off-page focus is always unconfined), a non-negative index (a negative index
+        // was never confined), and now resident-but-out-of-range (CurrentFocusBlockIndex null). A view with
+        // no focus, an in-range focus, or an off-page focus is untouched.
+        if (vp.Focus is { } fb && fb.Page == vp.CurrentPage && fb.BlockIndex >= 0
+            && vp.CurrentFocusBlockIndex is null)
+        {
+            vp.CenterPage(ww, wh);
+            vp.ClampCamera(ww, wh);
+            vp.UpdateRailZoom(ww, wh);
+        }
 
         if (vp.Rail.Active)
         {
