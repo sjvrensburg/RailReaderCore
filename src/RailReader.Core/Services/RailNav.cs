@@ -215,6 +215,11 @@ public sealed partial class RailNav : ICameraClamp
         _scroll.Stop();
         ScrollSpeed = 0.0;
         VerticalBias = 0;
+        // A Focus (re)pin/clear establishes its own rail state — end any forced ("start rail here") low-zoom
+        // session so it can't leak across the confine/un-confine cycle (e.g. leaving rail stuck active below
+        // threshold after un-pinning). Mirrors SetAnalysis's reset; rail Active is re-derived by the caller's
+        // UpdateRailZoom against the (possibly raised) post-clamp zoom.
+        _forceActive = false;
 
         if (_navigableIndices.Count == 0) { CurrentBlock = 0; CurrentLine = 0; return; }
         int pos = currentPageBlock >= 0 ? _navigableIndices.IndexOf(currentPageBlock) : -1;

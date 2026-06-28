@@ -1129,4 +1129,89 @@ public class DocumentControllerTests : IDisposable
         // The result belongs to an open document, so it must be announced.
         Assert.Contains(0, received);
     }
+
+    // ---- FocusBlock confinement (xhigh review) -------------------------------------------------------
+
+    [Fact]
+    public void HandleZoomKey_ZoomOut_ConfinedView_FlooredAtBlockFit()
+    {
+        var doc = CreateAndAddDocument();
+        _controller.SetViewportSize(400, 400);
+
+        var blocks = new List<LayoutBlock>();
+        for (int i = 0; i < 4; i++)
+            blocks.Add(new LayoutBlock { BBox = new BBox(0, i * 20, 100, 18), Role = BlockRole.Text, Lines = [] });
+        doc.SetAnalysis(0, doc.DefaultAnalysisParams,
+            new PageAnalysis { Blocks = blocks, PageWidth = 612, PageHeight = 792 });
+
+        var bounds = new BBox(100, 100, 60, 30);
+        doc.Primary.Focus = new FocusBlock(0, 0, bounds);
+        double fit = doc.Primary.ComputeBlockFitZoom(bounds, 400, 400);
+        doc.Camera.Zoom = fit;
+
+        _controller.HandleZoomKey(zoomIn: false); // try to zoom out past the whole block
+
+        // The tween target must not drop below block-fit — the clamp is inert mid-tween, so a lower target
+        // would briefly reveal off-block content before snapping back.
+        double target = doc.Primary.Zoom.PendingTargetZoom ?? doc.Camera.Zoom;
+        Assert.True(target >= fit - 1e-6, $"zoom-out target {target} fell below the block-fit floor {fit}");
+    }
+
+    [Fact]
+    public void RetargetFocus_RelocatesPortalToAnotherPageAndReconfines()
+    {
+        var doc = CreateAndAddDocument(); // 3-page PDF, focused on page 0
+        _controller.SetViewportSize(400, 400);
+
+        doc.Primary.Focus = new FocusBlock(0, 0, new BBox(0, 0, 100, 100));
+        Assert.Equal(0, doc.Primary.CurrentPage);
+        Assert.Equal(0, doc.Primary.CurrentFocusBlockIndex);
+
+        bool ok = _controller.RetargetFocus(2, 1, new BBox(10, 10, 120, 60));
+
+        Assert.True(ok);
+        Assert.Equal(2, doc.Primary.CurrentPage);            // moved (a direct CurrentPage set would be refused)
+        Assert.Equal(2, doc.Primary.Focus!.Page);
+        Assert.Equal(1, doc.Primary.Focus!.BlockIndex);
+        Assert.Equal(1, doc.Primary.CurrentFocusBlockIndex); // re-confined on the new page
+
+        Assert.False(_controller.RetargetFocus(99, 0, new BBox(0, 0, 1, 1))); // out-of-range page rejected
+        Assert.Equal(2, doc.Primary.Focus!.Page);            // ...and leaves the existing focus untouched
+    }
+
+    [Fact]
+    public void HandleZoom_DegenerateConfinedBlock_AboveZoomMax_DoesNotThrow()
+    {
+        // Regression (review fix A): a zero-area FocusBlock makes ComputeBlockFitZoom return the raw uncapped
+        // Camera.Zoom; if that exceeds ZoomMax, ConfinedZoomFloor must still cap at ZoomMax so the zoom
+        // handlers' Math.Clamp(target, floor, ZoomMax) can't throw min>max.
+        var doc = CreateAndAddDocument();
+        _controller.SetViewportSize(400, 400);
+        doc.Primary.Focus = new FocusBlock(0, 0, new BBox(100, 100, 0, 0)); // zero-area
+        doc.Camera.Zoom = Camera.ZoomMax + 10;                             // above max
+
+        Assert.True(doc.Primary.ConfinedZoomFloor(400, 400) <= Camera.ZoomMax + 1e-9);
+        Assert.Null(Record.Exception(() => _controller.HandleZoomKey(zoomIn: false)));
+        Assert.Null(Record.Exception(() => _controller.HandleZoom(-1.0, 200, 200, ctrlHeld: false)));
+    }
+
+    [Fact]
+    public void RetargetFocus_FramesDestinationBlock_NotLeftOverMagnified()
+    {
+        // Review fix B: relocating from a tiny block (high zoom) to a larger block must fit the destination,
+        // not leave it over-magnified — the confinement clamp alone only RAISES zoom, so RetargetFocus fits.
+        var doc = CreateAndAddDocument();
+        _controller.SetViewportSize(400, 400);
+
+        doc.Primary.Focus = new FocusBlock(0, 0, new BBox(0, 0, 10, 10)); // tiny
+        doc.Camera.Zoom = 15.0;                                           // as if fit to the tiny block
+
+        var bigBlock = new BBox(0, 0, 300, 600);
+        _controller.RetargetFocus(2, 1, bigBlock);
+
+        Assert.Equal(2, doc.Primary.CurrentPage);
+        Assert.True(doc.Camera.Zoom < 15.0, "zoom should drop to fit the larger destination block");
+        double expectedFit = Math.Min(400.0 / 300.0, 400.0 / 600.0); // CenterPage's confined no-margin fit
+        Assert.Equal(expectedFit, doc.Camera.Zoom, precision: 2);
+    }
 }

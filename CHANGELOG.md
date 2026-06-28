@@ -66,6 +66,60 @@ Follow-up review pass (sealing regressions the consolidation introduced):
 - **The `Focus` setter asserts the UI thread**, like every other `Viewport` mutation, since it mutates rail
   and camera state.
 
+Second review pass (xhigh code review — sealing the remaining confinement escapes):
+
+- **Find-Next works inside a portal.** Confined search now navigates only to matches *inside* the focus
+  block: `NextMatch`/`PreviousMatch` skip off-block matches in the cycle (and the initial seed picks the
+  first in-block match), so the active match is always one the block clamp can show. Previously an on-page
+  but off-block match was centered and then yanked back, so the term was never displayed.
+- **Pinning `Focus` while auto-scrolling stops it cleanly** (state machine + controller flag in lockstep)
+  instead of letting auto-scroll burst into the freshly-collapsed block.
+- **Pinning `Focus` frames the active line.** When the auto-fit activates rail, the setter now snaps to the
+  seated line rather than leaving the camera centered on the block.
+- **Re-pinning the same block is a true no-op.** The setter's idempotency check compares the *logical* block
+  (page + index), not bit-exact `BBox` floats, so a re-pin with re-computed bounds no longer tears down the
+  in-flight snap/scroll (it still stores the refined bounds for the live camera clamp).
+- **`Focus` collapses against the right page's analysis.** The immediate rail re-collapse runs only when the
+  rail is already seated with the current page's analysis; otherwise the pending reseat handles it, so a
+  focus pinned in the window after a page change can't collapse against the previous page.
+- **A forced ("start rail here") session no longer leaks across a confine/un-confine cycle** —
+  `ReapplyFocus` clears it, mirroring `SetAnalysis`.
+- **Confined edge-hold no longer spins repaints.** The manual edge-hold path (not just auto-scroll) now
+  recognises the `ConfinedHold` result and bails without flagging a frame.
+- **Analysis landing un-confines the camera too.** When async analysis proves a pending focus index
+  out-of-range, the view un-confines its rail *and* re-fits the camera to the page, instead of stranding it
+  on the stale guessed-block region until the next pan/zoom.
+- **Zoom-out can't breach confinement mid-tween.** Wheel- and key-zoom floor their target at the block's
+  fit-zoom for a confined view, so the tween can't animate past the whole block (the clamp is inert while
+  the tween runs).
+- **Margin-crop toggle no longer jumps a confined view.** `FitWidthPreservingTop` re-asserts the block
+  clamp for a confined view instead of re-fitting width to the block against a page-space top anchor.
+
+**New public API.**
+
+- `DocumentController.RetargetFocus(int page, int blockIndex, BBox bounds)` — relocate the focused portal to
+  a block on another page in the only bitmap/analysis-correct order (set `Focus` for the destination, then
+  navigate). Use it instead of setting `Viewport.CurrentPage` directly, which a confined view refuses.
+- `RailNav.ReapplyFocus(int?)` — (re)collapse or restore the navigable set against the already-seated
+  analysis when a host pins/clears `Viewport.Focus`. New public method this release (previously listed only
+  as the mechanism behind the `Focus` setter).
+
+**Behaviour change for hosts.** `Viewport.Focus` is now a **UI-thread-only** setter (`AssertUIThread`) — it
+mutates rail and camera state, so a host assigning `Focus` off the UI thread (e.g. from an async
+analysis-completion continuation) must marshal onto the UI thread first.
+
+Third review pass (hardening the second pass):
+
+- **`RetargetFocus` frames the destination block.** It now finishes with a block fit, so relocating from a
+  small block (high zoom) to a larger one lands the portal fitting the new block instead of over-magnified
+  on a corner (the confinement clamp alone only ever raises zoom, so it can't fit a bigger block).
+- **Re-pinning the same block with *moved* bounds re-clamps the camera.** The same-logical-block no-op
+  short-circuit still skips the rail/auto-scroll teardown (no lurch on ULP jitter), but the camera is now
+  re-clamped on every re-pin so it tracks a block whose bounds shifted materially after a re-analysis.
+- **Confined zoom floor can't make `Math.Clamp` throw.** A degenerate (zero/negative-area) `FocusBlock`
+  makes the block-fit zoom fall back to the raw uncapped camera zoom; `ConfinedZoomFloor` now caps it at
+  `ZoomMax` so the zoom handlers' `Math.Clamp(target, floor, ZoomMax)` can never hit `min > max`.
+
 ## 0.45.0 — Viewport block confinement (`FocusBlock`) for portal views
 
 Adds an opt-in per-`Viewport` confinement primitive so a host can pin a viewport to a single layout

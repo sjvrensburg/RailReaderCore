@@ -138,7 +138,15 @@ public class FocusBlockTests
         // unaffected (they never set Focus).
         var blocks = new List<LayoutBlock>();
         for (int i = 0; i < 8; i++)
-            blocks.Add(new LayoutBlock { BBox = new BBox(0, i * 20, 100, 18), Role = BlockRole.Text, Order = i, Lines = [] });
+            blocks.Add(new LayoutBlock
+            {
+                BBox = new BBox(0, i * 20, 100, 18),
+                Role = BlockRole.Text,
+                Order = i,
+                // One line per block (real analyses always have ≥1 line) so a rail seated on this analysis
+                // can compute a snap target — an empty Lines list would crash CurrentLineInfo on StartSnap.
+                Lines = [new LineInfo(i * 20, 18, 0, 100)],
+            });
         doc.SetAnalysis(0, doc.DefaultAnalysisParams, new PageAnalysis { Blocks = blocks, PageWidth = 612, PageHeight = 792 });
         return doc;
     }
@@ -320,6 +328,109 @@ public class FocusBlockTests
             doc.Camera.OffsetY = -45.6;
             Assert.Null(Record.Exception(() => doc.ClampCamera(vpW, vpH)));
         }
+        doc.Dispose();
+    }
+
+    // ---- Setter / ReapplyFocus state teardown (xhigh review) -----------------------------------------
+
+    [Fact]
+    public void ReapplyFocus_ClearsForcedActivation()
+    {
+        // A forced ("start rail here") low-zoom session must not survive a confine/un-confine cycle —
+        // ReapplyFocus clears it (mirrors SetAnalysis), else rail stays stuck active below threshold.
+        var nav = new RailNav(new AppConfig().ToCoreSettings());
+        nav.SetAnalysis(MakeAnalysis(3), new HashSet<BlockRole> { TextRole });
+        nav.ForceActivateAt(100, 80);   // point inside block 0
+        Assert.True(nav.ForceActive);
+
+        nav.ReapplyFocus(1);
+        Assert.False(nav.ForceActive);
+    }
+
+    // LoadDoc + seat the PRIMARY rail with the same cached page-0 analysis, so rail navigation / auto-scroll
+    // actually run (LoadDoc only fills the document analysis cache, not the rail's seated analysis).
+    private static DocumentModel LoadDocSeatedRail()
+    {
+        var doc = LoadDoc();
+        Assert.True(doc.TryGetAnalysis(0, doc.DefaultAnalysisParams, out var a));
+        doc.Primary.Rail.SetAnalysis(a, new HashSet<BlockRole> { BlockRole.Text });
+        return doc;
+    }
+
+    [Fact]
+    public void Focus_PinWhileAutoScrolling_StopsAutoScroll()
+    {
+        var doc = LoadDocSeatedRail();
+        doc.Primary.SetSize(400, 400);
+        doc.Primary.Rail.Active = true;
+        doc.Primary.Rail.StartAutoScroll(10.0);
+        Assert.True(doc.Primary.Rail.AutoScrolling);
+
+        // A real Focus pin tears down in-flight state, including auto-scroll (state machine cleared).
+        doc.Primary.Focus = new FocusBlock(0, 1, new BBox(100, 100, 200, 80));
+        Assert.False(doc.Primary.Rail.AutoScrolling);
+        doc.Dispose();
+    }
+
+    [Fact]
+    public void Focus_RepinSameLogicalBlock_SkipsTeardownButStoresLatestBounds()
+    {
+        var doc = LoadDocSeatedRail();
+        doc.Primary.SetSize(400, 400);
+        doc.Primary.Focus = new FocusBlock(0, 1, new BBox(100, 100, 200, 80));
+        doc.Primary.Rail.Active = true;
+        doc.Primary.Rail.StartAutoScroll(10.0);
+        Assert.True(doc.Primary.Rail.AutoScrolling);
+
+        // Re-pinning the SAME logical block (page + index) with float-jittered bounds must NOT re-run the
+        // teardown (auto-scroll keeps running) — but must still store the refined bounds for the live clamp.
+        var jittered = new BBox(100.0001f, 100, 200, 80);
+        doc.Primary.Focus = new FocusBlock(0, 1, jittered);
+        Assert.True(doc.Primary.Rail.AutoScrolling);
+        Assert.Equal(jittered, doc.Primary.Focus!.Bounds);
+        doc.Dispose();
+    }
+
+    [Fact]
+    public void Focus_RepinSameBlockMovedBounds_ReclampsToNewBoundsWithoutTeardown()
+    {
+        // Review fix C: a same-logical re-pin whose bounds MATERIALLY moved (not just ULP jitter) must still
+        // re-clamp the camera to track the new rectangle, while skipping the rail/auto-scroll teardown.
+        var doc = LoadDocSeatedRail();
+        doc.Primary.SetSize(400, 400);
+
+        var a = new BBox(50, 50, 80, 40);
+        doc.Primary.Focus = new FocusBlock(0, 1, a);
+        doc.Primary.Rail.Active = true;
+        doc.Primary.Rail.StartAutoScroll(10.0);
+        Assert.True(doc.Primary.Rail.AutoScrolling);
+        double offsetXForA = doc.Camera.OffsetX;
+
+        // Same logical block (page 0, index 1) but bounds moved far across the page.
+        var b = new BBox(400, 500, 80, 40);
+        doc.Primary.Focus = new FocusBlock(0, 1, b);
+
+        Assert.True(doc.Primary.Rail.AutoScrolling);          // teardown skipped (no auto-scroll stop)
+        Assert.Equal(b, doc.Primary.Focus!.Bounds);           // latest bounds stored
+        Assert.NotEqual(offsetXForA, doc.Camera.OffsetX);     // camera re-clamped to track the moved bounds
+        doc.Dispose();
+    }
+
+    [Fact]
+    public void FitWidthPreservingTop_Focus_ReassertsBlockClamp()
+    {
+        // Margin-crop toggle on a confined view must re-assert the block clamp (zoom floored at block fit),
+        // not re-fit width to the block against a page-space top anchor.
+        var doc = LoadDoc();
+        var bounds = new BBox(100, 120, 200, 80);
+        doc.Primary.Focus = new FocusBlock(0, 0, bounds);
+
+        const double vpW = 400, vpH = 400;
+        double fit = doc.Primary.ComputeBlockFitZoom(bounds, vpW, vpH);
+        doc.Camera.Zoom = fit * 0.5;
+        doc.Primary.FitWidthPreservingTop(vpW, vpH);
+
+        Assert.True(doc.Camera.Zoom >= fit - 1e-6);
         doc.Dispose();
     }
 }

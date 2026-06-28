@@ -168,7 +168,16 @@ public sealed class SearchService
                 ? fv.CurrentPage
                 : doc.CurrentPage;
             int firstOnCurrentOrAfter = allMatches.FindIndex(m => m.PageIndex >= fromPage);
-            ActiveMatchIndex = firstOnCurrentOrAfter >= 0 ? firstOnCurrentOrAfter : 0;
+            int seed = firstOnCurrentOrAfter >= 0 ? firstOnCurrentOrAfter : 0;
+            // Confined (portal) view: seed on the first reachable (in-block) match so the initial jump lands
+            // on something the block clamp can show. If there are none, fall back to the page-order seed —
+            // NavigateToActiveMatch then bails (no jiggle) until the user steps to a reachable match.
+            if (FocusedView is { } cfv && ReferenceEquals(cfv.Owner, doc) && cfv.CurrentFocusBlockIndex is not null)
+            {
+                int firstInBlock = allMatches.FindIndex(m => MatchWithinFocus(cfv, m));
+                if (firstInBlock >= 0) seed = firstInBlock;
+            }
+            ActiveMatchIndex = seed;
             NavigateToActiveMatch();
         }
         UpdateCurrentPageMatches();
@@ -178,7 +187,7 @@ public sealed class SearchService
     {
         ClearIfDocumentChanged();
         if (SearchMatches.Count == 0) return;
-        ActiveMatchIndex = (ActiveMatchIndex + 1) % SearchMatches.Count;
+        ActiveMatchIndex = AdvanceActiveIndex(+1);
         NavigateToActiveMatch();
         UpdateCurrentPageMatches();
     }
@@ -187,9 +196,55 @@ public sealed class SearchService
     {
         ClearIfDocumentChanged();
         if (SearchMatches.Count == 0) return;
-        ActiveMatchIndex = (ActiveMatchIndex - 1 + SearchMatches.Count) % SearchMatches.Count;
+        ActiveMatchIndex = AdvanceActiveIndex(-1);
         NavigateToActiveMatch();
         UpdateCurrentPageMatches();
+    }
+
+    /// <summary>
+    /// Steps <see cref="ActiveMatchIndex"/> one match in cycle direction <paramref name="dir"/> (+1 next,
+    /// −1 previous). For an unconfined view this is a plain wrap-around ±1 (byte-identical to the original
+    /// behaviour). For a confined (portal) view it skips matches outside the focus block — they can never
+    /// be shown under the block clamp — and returns the next reachable one; if none are reachable it leaves
+    /// the index unchanged (a clean no-op rather than jumping to a match the clamp would suppress).
+    /// </summary>
+    private int AdvanceActiveIndex(int dir)
+    {
+        int n = SearchMatches.Count;
+        int plain = ((ActiveMatchIndex + dir) % n + n) % n;
+        if (FocusedView is not { } vp || vp.CurrentFocusBlockIndex is null)
+            return plain;
+        for (int i = 1; i <= n; i++)
+        {
+            int cand = ((ActiveMatchIndex + dir * i) % n + n) % n;
+            if (MatchWithinFocus(vp, SearchMatches[cand])) return cand;
+        }
+        return ActiveMatchIndex;
+    }
+
+    /// <summary>
+    /// True when <paramref name="match"/> can actually be shown in <paramref name="vp"/>: always for an
+    /// unconfined view; for a confined (portal) view only when the match is on the view's current page AND
+    /// the centre of its bounding rect falls within the focus block's bounds (an off-block match would be
+    /// centred then immediately yanked back by <c>ClampCameraToBlock</c>, so it is unreachable).
+    /// </summary>
+    private static bool MatchWithinFocus(Viewport vp, SearchMatch match)
+    {
+        if (vp.CurrentFocusBlockIndex is null) return true;
+        if (match.PageIndex != vp.CurrentPage || vp.Focus is not { } f || match.Rects.Count == 0)
+            return false;
+
+        float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
+        foreach (var r in match.Rects)
+        {
+            if (r.Left < minX) minX = r.Left;
+            if (r.Top < minY) minY = r.Top;
+            if (r.Right > maxX) maxX = r.Right;
+            if (r.Bottom > maxY) maxY = r.Bottom;
+        }
+        double cx = (minX + maxX) / 2.0, cy = (minY + maxY) / 2.0;
+        var b = f.Bounds;
+        return cx >= b.X && cx <= b.X + b.W && cy >= b.Y && cy <= b.Y + b.H;
     }
 
     public void GoToMatch(int matchIndex)
@@ -225,11 +280,12 @@ public sealed class SearchService
         if (FocusedView is not { } vp) return;
         if (ActiveMatchIndex < 0 || ActiveMatchIndex >= SearchMatches.Count) return;
         var match = SearchMatches[ActiveMatchIndex];
-        // Confined (portal) view: never chase an OFF-page match — the controller's GoToPage would refuse it
-        // anyway, and moving the camera/rail to its off-block coordinates would jiggle the pinned block while
-        // never showing the match. But an ON-page match (including one inside the pinned block) must still be
-        // centred, so only bail when the match is on a different page than the confined view is showing.
-        if (vp.CurrentFocusBlockIndex is not null && match.PageIndex != vp.CurrentPage) return;
+        // Confined (portal) view: only navigate to a match the block clamp can actually show — on this page
+        // AND within the focus block. An OFF-page match the controller's GoToPage would refuse anyway; an
+        // off-block ON-page match would be centred and then yanked back by ClampCameraToBlock (a jiggle that
+        // never shows the term). NextMatch/PreviousMatch already skip these in the cycle so the active match
+        // is reachable; this is the safety net for any other entry point (FinalizeSearch / GoToMatch).
+        if (!MatchWithinFocus(vp, match)) return;
         // _goToPage routes through the focused view (controller.GoToPage), so this moves THIS view.
         if (match.PageIndex != vp.CurrentPage)
             _goToPage(match.PageIndex);
