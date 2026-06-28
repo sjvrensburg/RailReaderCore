@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.45.1 — FocusBlock: seal the confinement escapes
+
+Closes every way a `Focus`-confined (portal) viewport could escape its block, consolidated onto one
+consistent predicate after three rounds of code review. Non-confined viewports are unchanged throughout.
+
+**One predicate, all sites.** Confinement is governed by `Viewport.CurrentFocusBlockIndex` — non-null iff
+`Focus` is set, on the view's current page, **and** its block index is in range for the seated analysis.
+The camera clamp, `GetFitRect`, the rail-set collapse, and every page-leaving guard gate on it, so
+confinement is all-or-nothing: a stale off-page or out-of-range focus is fully inert (never a
+half-confined "paged-locked but rail roaming" state).
+
+- **Page-change chokepoints.** `Viewport.CurrentPage`'s setter refuses to move a confined viewport (the
+  deepest funnel, catching the Primary facade), backed by `DocumentModel.GoToPage`; the mutating callers
+  (back/forward history, `GoToPage(int)`, link clicks) are guarded at their entry points so nothing is
+  half-applied before the refusal. Confinement holds for ALL page changes — rail boundary, deferred skip,
+  internal links, bookmarks, history, restore-position, role jumps — not just the reading paths. To MOVE
+  a portal a host re-aims it without `GoToPage`: set Focus for the new page first, then CurrentPage +
+  LoadPageBitmap + SubmitAnalysis.
+- **No page advance at a rail boundary.** The rail boundary (`AdvanceLine` → a distinct `ConfinedHold`
+  result), the deferred-skip resume, and the non-rail page-edge hold all hold at the edge for a confined
+  view; any pending skip is dropped.
+- **Setting `Focus` reseats the rail.** Assigning `Viewport.Focus` immediately (re)collapses the rail's
+  navigable set to the focus block (or restores the full set when cleared) via `RailNav.ReapplyFocus`, so
+  a host needn't follow it with a reseat and the camera/rail confinement can't drift apart.
+- **Auto-scroll stops at the block end** instead of pinning the animation flag forever (a repaint spin).
+- **`GetFitRect` fits the focus block.** Reset-zoom / fit-page, `FitWidth`, and margin-crop toggles
+  re-frame the block instead of the whole page (the controller re-clamps after, so the block's zoom floor
+  / pan bound apply). For a confined view `CenterPage` caps the fit zoom at `ZoomMax` so a tiny block
+  can't overshoot; unconfined whole-page fit is left exactly as before. `FitWidth`'s margin-crop
+  rail-threshold cap is skipped for a confined view (page-width-derived, it would under-magnify the block).
+- **Camera clamp owns both axes during rail** (no rail-active manual-pan / zoom escape); its bound
+  arithmetic derives from the same scaled extent the branch tests, so the offset range is always valid
+  (no float-ULP `min > max`).
+- **Camera-leaving callers outside the page chokepoint are guarded too.** Bookmark navigation no longer
+  mutates the focused view's history before the (refused) page change; `SmoothlyFrameBlock`/`SmoothlyFrameRole`
+  refuse to frame any block other than the pinned one (which would deactivate the rail and fly the camera
+  off); search match-navigation no longer jiggles the pinned block chasing an off-page match; and free-pan
+  resume re-clamps to the block on Ctrl release.
+- **Pinning `Focus` refreshes the rail's zoom state.** Assigning `Focus` may raise the camera to the
+  block's fit-zoom (possibly across the rail threshold); the setter now calls `UpdateRailZoom` so a
+  below-threshold view doesn't leave the rail reporting stale (un-engaged) state.
+- **A negative `FocusBlock.BlockIndex` is unconfined regardless of analysis residency** — closing the one
+  asymmetry where a negative index could read as confined-but-not-collapsed when the analysis wasn't cached.
+- **Unconfined fit-page/fit-width regression fixed.** The block re-clamp added to `FitPage`/`FitWidth` now
+  runs only for confined views — an unconfined margin-cropped fit centers its content region exactly as
+  before (the whole-page clamp no longer overrides `CenterPage`).
+
+Follow-up review pass (sealing regressions the consolidation introduced):
+
+- **Search still navigates on-page matches in a confined view.** The confinement guard in
+  `NavigateToActiveMatch` was too broad — it bailed for *every* match while confined, so Find-Next/Prev
+  went dead in a portal even for a match inside the pinned block. It now bails only for **off-page**
+  matches; an on-page hit (including one in the focus block) is centered as before.
+- **Pinning `Focus` keeps the reader's line.** When the auto-fit raised the zoom across the rail threshold,
+  the resulting rail activation reset `CurrentLine` to 0, discarding the position `ReapplyFocus` had just
+  preserved. The reseat now pins the restored block/line so the activation honours it.
+- **Un-pinning resolves the cursor by page position.** When the focused block isn't in the restored
+  navigable set (e.g. a figure), `ReapplyFocus` now lands on the navigable block nearest it in page order
+  rather than reusing a stale subset ordinal that indexed an unrelated block.
+- **A deferred page-skip is dropped when `Focus` is pinned**, so a late analysis arrival can't jump the
+  rail cursor to the block end.
+- **Confined arrow keys are intentionally inert when the whole block fits** instead of churning the camera
+  through a clamp that re-centers it; they still pan when the reader has zoomed in past the block-fit floor.
+- **The `Focus` setter asserts the UI thread**, like every other `Viewport` mutation, since it mutates rail
+  and camera state.
+
 ## 0.45.0 — Viewport block confinement (`FocusBlock`) for portal views
 
 Adds an opt-in per-`Viewport` confinement primitive so a host can pin a viewport to a single layout

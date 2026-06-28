@@ -225,6 +225,11 @@ public sealed class SearchService
         if (FocusedView is not { } vp) return;
         if (ActiveMatchIndex < 0 || ActiveMatchIndex >= SearchMatches.Count) return;
         var match = SearchMatches[ActiveMatchIndex];
+        // Confined (portal) view: never chase an OFF-page match — the controller's GoToPage would refuse it
+        // anyway, and moving the camera/rail to its off-block coordinates would jiggle the pinned block while
+        // never showing the match. But an ON-page match (including one inside the pinned block) must still be
+        // centred, so only bail when the match is on a different page than the confined view is showing.
+        if (vp.CurrentFocusBlockIndex is not null && match.PageIndex != vp.CurrentPage) return;
         // _goToPage routes through the focused view (controller.GoToPage), so this moves THIS view.
         if (match.PageIndex != vp.CurrentPage)
             _goToPage(match.PageIndex);

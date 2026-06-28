@@ -176,7 +176,8 @@ public sealed partial class DocumentController
             if (vp.Rail.AutoScrollParked)
                 return;
 
-            if (vp.Rail.NavigableCount > 0
+            if (vp.CurrentFocusBlockIndex is null   // a confined view can never page — don't prefetch
+                && vp.Rail.NavigableCount > 0
                 && vp.Rail.CurrentBlock >= vp.Rail.NavigableCount - 2
                 && vp.CurrentPage + 1 < vp.Owner.PageCount)
             {
@@ -212,6 +213,12 @@ public sealed partial class DocumentController
                         break;
                     case LineAdvanceResult.PageChangedRailLost:
                         FirePageChanged(ref pageChanged, vp);
+                        vp.AutoScroll.StopAutoScroll();
+                        break;
+                    case LineAdvanceResult.ConfinedHold:
+                        // A block-confined (portal) viewport can't advance past its focus block and
+                        // can't page — so there's nowhere to flow. Stop auto-scroll, otherwise reachedEnd
+                        // stays true and animating is pinned every tick (a repaint spin at the last line).
                         vp.AutoScroll.StopAutoScroll();
                         break;
                     case LineAdvanceResult.LineAdvanced:

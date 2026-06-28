@@ -7,7 +7,9 @@ public sealed partial class DocumentController
 {
     // --- Rail navigation ---
 
-    private enum LineAdvanceResult { NoChange, LineAdvanced, PageChanged, PageChangedRailLost }
+    // ConfinedHold is distinct from NoChange so the auto-scroll handler keys off an explicit
+    // "confined viewport held at its block boundary" signal, not the generic no-op — see TickAutoScroll.
+    private enum LineAdvanceResult { NoChange, LineAdvanced, PageChanged, PageChangedRailLost, ConfinedHold }
 
     private LineAdvanceResult AdvanceLine(Viewport vp, bool forward, double ww, double wh)
     {
@@ -15,6 +17,19 @@ public sealed partial class DocumentController
         var boundary = forward ? NavResult.PageBoundaryNext : NavResult.PageBoundaryPrev;
         if (result == boundary)
         {
+            // A block-confined (portal) viewport must not cross the page on a rail boundary — advancing
+            // would leave the focus block's page, where the confinement (rail-set collapse + camera
+            // clamp) no longer applies, letting the reader escape the block. Hold at the edge instead.
+            // Gated on CurrentFocusBlockIndex (Focus set AND on the focus page), matching the camera
+            // clamp / rail-set collapse / GetFitRect — so a stale off-page focus doesn't trap paging
+            // where no confinement is actually in effect. Also drop any deferred skip so a late
+            // TryResumeSkip can't page off the block after the guard already held it here.
+            if (vp.CurrentFocusBlockIndex is not null)
+            {
+                vp.PendingSkip = null;
+                return LineAdvanceResult.ConfinedHold;
+            }
+
             return SkipToNavigablePage(vp, forward, 0, ww, wh) switch
             {
                 SkipResult.FoundNavigable => LineAdvanceResult.PageChanged,
@@ -34,6 +49,11 @@ public sealed partial class DocumentController
     /// </summary>
     private SkipResult SkipToNavigablePage(Viewport vp, bool forward, int skipped, double ww, double wh)
     {
+        // A confined (portal) viewport must never page off its focus block's page. AdvanceLine already
+        // short-circuits before calling here, but the deferred-skip resume path (TryResumeSkip) reaches
+        // SkipToNavigablePage directly — bail (and drop the skip) so it can't GoToPage off the block.
+        if (vp.CurrentFocusBlockIndex is not null) { vp.PendingSkip = null; return SkipResult.Exhausted; }
+
         var doc = vp.Owner;
         int step = forward ? 1 : -1;
         // Walk from THIS view's page — doc.CurrentPage is the Primary facade, so a non-primary
@@ -151,6 +171,26 @@ public sealed partial class DocumentController
         }
         else
         {
+            // Confined (portal) view below the rail threshold: pan within the block (the block clamp keeps
+            // it bounded) but DON'T run the page-edge hold. The clamp pins OffsetY, so every arrow reads
+            // as "at edge"; running OnEdgeHit would churn the hold counter and trip ShouldSuppressInput on
+            // a view that can never page. The page change itself is already refused downstream.
+            if (vp.CurrentFocusBlockIndex is not null)
+            {
+                vp.PageEdgeHold.Reset();
+                // Pan only when the focus block is actually taller than the viewport (the reader zoomed
+                // in past the block-fit floor). When the whole block already fits there is nothing to
+                // scroll — and a confined view must not page off its block — so the arrows are
+                // intentionally inert here rather than churning OffsetY through a clamp that would just
+                // re-centre it. Mirrors ClampCameraToBlock's f.Bounds-based confinement.
+                if (vp.Focus is { } fb && fb.Bounds.H * vp.Camera.Zoom > wh)
+                {
+                    vp.Camera.OffsetY += forward ? -CoreTuning.PanStep : CoreTuning.PanStep;
+                    vp.ClampCamera(ww, wh);
+                }
+                return;
+            }
+
             if (vp.PageEdgeHold.ShouldSuppressInput) return;
 
             double prevY = vp.Camera.OffsetY;
@@ -297,8 +337,10 @@ public sealed partial class DocumentController
         var link = doc.HitTestLink(vp.CurrentPage, pageX, pageY);
         if (link is not null)
         {
-            if (link.Destination is PageDestination pageDest)
+            if (link.Destination is PageDestination pageDest && vp.CurrentFocusBlockIndex is null)
             {
+                // Confined (portal) view: suppress internal page-link navigation entirely — pushing
+                // history before the GoToPage no-op would corrupt the back stack and leave the block.
                 PushHistory();
                 GoToPage(pageDest.PageIndex);
                 ScrollToDestination(pageDest);

@@ -713,6 +713,18 @@ public sealed class DocumentModel : IDisposable
         page = Math.Clamp(page, 0, PageCount - 1);
         if (page == vp.CurrentPage) return true;
 
+        // Confinement chokepoint: a block-confined (portal) viewport must never leave its focus block's
+        // page. Returns true (a silent no-op, like the same-page early-return above) rather than false,
+        // because callers read false as a render failure. The mutating callers (back/forward history,
+        // GoToPage(int), link clicks) are guarded at their entry points so nothing is half-applied before
+        // this refusal; Viewport.CurrentPage's setter is the even-deeper backstop for the Primary facade.
+        //
+        // To MOVE a portal, a host re-aims it WITHOUT GoToPage: assign Focus for the new page FIRST (so
+        // the view is momentarily un-confined — the new page doesn't match yet), then set CurrentPage,
+        // LoadPageBitmap, and SubmitAnalysis (which reseats + re-collapses the rail). That is the only
+        // bitmap/analysis-correct way to relocate a confined view.
+        if (vp.CurrentFocusBlockIndex is not null) return true;
+
         int oldPage = vp.CurrentPage;
         double oldZoom = vp.Camera.Zoom;
 

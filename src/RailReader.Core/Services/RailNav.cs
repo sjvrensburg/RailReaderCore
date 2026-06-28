@@ -8,6 +8,9 @@ public sealed partial class RailNav : ICameraClamp
     private CoreSettings _config;
     private PageAnalysis? _analysis;
     private readonly List<int> _navigableIndices = [];
+    // The navigable role set from the last SetAnalysis, kept so ReapplyFocus can rebuild the index set
+    // (collapse to / expand from a focus block) without the caller re-supplying it.
+    private IReadOnlySet<BlockRole> _navigableRoles = new HashSet<BlockRole>();
 
     public int CurrentBlock { get; set; }
 
@@ -136,25 +139,9 @@ public sealed partial class RailNav : ICameraClamp
         // below in case a table un-collapsed into more/fewer rows).
         bool keepPosition = ReferenceEquals(_analysis, analysis) || preservePosition;
 
-        _navigableIndices.Clear();
-        for (int i = 0; i < analysis.Blocks.Count; i++)
-        {
-            if (navigable.Contains(analysis.Blocks[i].Role))
-                _navigableIndices.Add(i);
-        }
-
-        // Block confinement (portal view): when the owning viewport pins a single focus block, rail must
-        // not leave it — collapse the navigable set to just that block so block-advance, edge-hold, and
-        // role jumps all clamp to it (they each key off _navigableIndices). The block is force-included
-        // even if its role isn't in `navigable`, so a focused figure/table/equation is still line-
-        // steppable. An out-of-range index (stale focus) is ignored, leaving the normal navigable set.
-        if (focusBlockIndex is { } fi && fi >= 0 && fi < analysis.Blocks.Count)
-        {
-            _navigableIndices.Clear();
-            _navigableIndices.Add(fi);
-        }
-
         _analysis = analysis;
+        _navigableRoles = navigable;
+        RebuildNavigableIndices(focusBlockIndex);
         BuildChunks();
 
         if (!keepPosition)
@@ -176,6 +163,86 @@ public sealed partial class RailNav : ICameraClamp
                 CurrentBlock = Math.Max(0, _navigableIndices.Count - 1);
             if (_navigableIndices.Count > 0 && CurrentLine >= CurrentNavigableBlock.Lines.Count)
                 CurrentLine = Math.Max(0, CurrentNavigableBlock.Lines.Count - 1);
+        }
+    }
+
+    /// <summary>
+    /// (Re)builds <see cref="_navigableIndices"/> from the seated analysis + <see cref="_navigableRoles"/>.
+    /// When <paramref name="focusBlockIndex"/> is an in-range index the set collapses to just that block
+    /// (portal confinement): block-advance, edge-hold, and role jumps all key off this set, so a single
+    /// entry pins the rail to one block — force-included even if its role isn't navigable, so a focused
+    /// figure/table/equation stays line-steppable. An out-of-range index is ignored (full set kept), so
+    /// confinement is all-or-nothing in lockstep with <see cref="Viewport.CurrentFocusBlockIndex"/>.
+    /// </summary>
+    private void RebuildNavigableIndices(int? focusBlockIndex)
+    {
+        _navigableIndices.Clear();
+        if (_analysis is null) return;
+        if (focusBlockIndex is { } fi && fi >= 0 && fi < _analysis.Blocks.Count)
+        {
+            _navigableIndices.Add(fi);
+            return;
+        }
+        for (int i = 0; i < _analysis.Blocks.Count; i++)
+            if (_navigableRoles.Contains(_analysis.Blocks[i].Role))
+                _navigableIndices.Add(i);
+    }
+
+    /// <summary>
+    /// Re-collapse (or restore) the navigable set to <paramref name="focusBlockIndex"/> against the
+    /// already-seated analysis, WITHOUT a fresh SetAnalysis. Lets a host confine the rail the moment it
+    /// pins <see cref="Viewport.Focus"/> on an already-rail-seated page (and un-confine when it clears it)
+    /// rather than waiting for the next reseat. No-op before any analysis is seated.
+    /// <para>The cursor follows its CURRENT page-block across the rebuild (so un-pinning returns to where
+    /// the focus block was, not block 0), and any in-flight snap/scroll/bias is cleared — a set-change
+    /// while a snap toward the old block was animating would otherwise lurch into the new set.</para>
+    /// </summary>
+    public void ReapplyFocus(int? focusBlockIndex)
+    {
+        if (_analysis is null) return;
+
+        // Remember the page-block the cursor is on, so we can follow it into the rebuilt index set.
+        int currentPageBlock = _navigableIndices.Count > 0 && CurrentBlock >= 0 && CurrentBlock < _navigableIndices.Count
+            ? _navigableIndices[CurrentBlock]
+            : -1;
+
+        RebuildNavigableIndices(focusBlockIndex);
+        BuildChunks();
+
+        // Clear in-flight animation/bias — the set just changed under it; leaving it running lurches the
+        // line toward an offset for a block that may no longer be in the set (mirrors SetAnalysis's reset).
+        _snap = null;
+        _scroll.Stop();
+        ScrollSpeed = 0.0;
+        VerticalBias = 0;
+
+        if (_navigableIndices.Count == 0) { CurrentBlock = 0; CurrentLine = 0; return; }
+        int pos = currentPageBlock >= 0 ? _navigableIndices.IndexOf(currentPageBlock) : -1;
+        if (pos < 0 && currentPageBlock >= 0)
+        {
+            // The remembered page-block isn't in the rebuilt navigable set (e.g. un-pinning a focus that
+            // was a NON-navigable block like a figure, so it drops out of the restored set). Land on the
+            // navigable block nearest it in PAGE order — reusing the old subset ordinal (CurrentBlock)
+            // here would index an unrelated block, since the two sets number their entries differently.
+            pos = _navigableIndices.Count - 1;
+            for (int i = 0; i < _navigableIndices.Count; i++)
+                if (_navigableIndices[i] >= currentPageBlock) { pos = i; break; }
+        }
+        CurrentBlock = pos >= 0 ? pos : Math.Min(CurrentBlock, _navigableIndices.Count - 1);
+        if (CurrentBlock < 0) CurrentBlock = 0;
+        if (CurrentLine >= CurrentNavigableBlock.Lines.Count)
+            CurrentLine = Math.Max(0, CurrentNavigableBlock.Lines.Count - 1);
+
+        // When confining (collapsing to the focus block), pin the restored cursor so that if the camera
+        // fit raises the zoom across the rail threshold — activating rail as a side effect of pinning —
+        // UpdateZoom honours this block/line instead of falling to FindNearestBlock, which would reset
+        // CurrentLine to 0 and discard the reading position we just preserved. (For an already-active or
+        // never-activating rail the pin is harmless: it is consumed only on an inactive→active transition
+        // and cleared on deactivate.)
+        if (focusBlockIndex is { } fbi && fbi >= 0)
+        {
+            _pinnedActivationBlock = CurrentBlock;
+            _pinnedActivationLine = CurrentLine;
         }
     }
 

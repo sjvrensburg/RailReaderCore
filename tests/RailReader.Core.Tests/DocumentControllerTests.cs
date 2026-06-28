@@ -382,6 +382,74 @@ public class DocumentControllerTests : IDisposable
     // --- Phase 3b: Non-Rail Edge-Hold Page Advance ---
 
     [Fact]
+    public void Focus_RailHoldsPageAtBoundary()
+    {
+        // A block-confined (portal) viewport must not page-advance when rail reaches the block's last
+        // line — the boundary is a no-op so the reader can't escape the focus block's page.
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        // Three navigable Text blocks (multi-line) so the UNconfined navigable set is genuinely >1 —
+        // otherwise a single-block fixture makes NavigableCount==1 before Focus, and the collapse
+        // assertion below would pass even if ReapplyFocus's collapse logic were broken.
+        TestFixtures.SetupRailMode(state, _controller.Config, 800, 600,
+            (BlockRole.Text, new BBox(72, 72, 468, 150), 4),
+            (BlockRole.Text, new BBox(72, 240, 468, 150), 4),
+            (BlockRole.Text, new BBox(72, 420, 468, 150), 4));
+
+        var vp = state.Primary;
+        Assert.True(state.TryGetAnalysis(0, out var analysis) && analysis.Blocks.Count == 3);
+        Assert.Equal(3, vp.Rail.NavigableCount);   // unconfined: all three Text blocks navigable
+        // Assigning Focus on this already-seated page collapses the rail to the focus block immediately
+        // (ReapplyFocus) — so this genuinely exercises the 3→1 rail-set collapse, not just the boundary guard.
+        vp.Focus = new FocusBlock(0, 0, analysis.Blocks[0].BBox);
+        Assert.Equal(1, vp.Rail.NavigableCount);
+
+        // Drive the rail well past the end of the page; without the guard this would page-advance.
+        for (int i = 0; i < 500; i++)
+            _controller.HandleArrowDown();
+
+        Assert.Equal(0, state.CurrentPage);     // never paged off the focus block's page
+        Assert.Equal(0, vp.Rail.CurrentBlock);  // and never stepped out of the (only) confined block
+    }
+
+    // NOTE: the auto-scroll-stop fix (TickAutoScroll's `case ConfinedHold -> StopAutoScroll`) isn't
+    // unit-tested end-to-end — driving semi-auto-scroll to a block boundary in the harness needs more
+    // state plumbing than is worth it. The boundary→ConfinedHold return it depends on IS covered by
+    // Focus_RailHoldsPageAtBoundary (AdvanceLine via HandleArrowDown), and the handler is a direct
+    // mirror of the adjacent PageChangedRailLost StopAutoScroll case.
+
+    [Fact]
+    public void Focus_ForAnotherPage_DoesNotBlockPaging()
+    {
+        // The boundary guard is gated on CurrentFocusBlockIndex (Focus on the CURRENT page), not a bare
+        // Focus != null — so a stale focus authored for a different page (where no confinement is in
+        // effect) must NOT trap paging. This distinguishes the page-matched guard from the weak null-only
+        // one (which Focus_RailHoldsPageAtBoundary cannot, since there Focus.Page == CurrentPage).
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupRailMode(state);
+
+        var vp = state.Primary;
+        // Focus targets a different page than the one displayed (page 0) → CurrentFocusBlockIndex == null.
+        vp.Focus = new FocusBlock(99, 0, new BBox(0, 0, 10, 10));
+        // Directly assert the confinement predicate is inert off-page (distinguishes the page-matched
+        // guard from a bare `Focus != null`, which Focus_RailHoldsPageAtBoundary cannot) and that the
+        // rail-set was NOT collapsed.
+        Assert.Null(vp.CurrentFocusBlockIndex);
+        Assert.True(vp.Rail.NavigableCount >= 1);
+
+        for (int i = 0; i < 500; i++)
+            _controller.HandleArrowDown();
+
+        // Not confined on this page, so the rail boundary is free to page/park exactly as without focus.
+        Assert.True(state.CurrentPage > 0 || _controller.RailPaused);
+    }
+
+    [Fact]
     public void HandleArrowDown_AtPageEdge_AdvancesAfterHold()
     {
         var state = _controller.CreateDocument(_pdfPath);
