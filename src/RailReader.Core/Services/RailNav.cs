@@ -210,6 +210,14 @@ public sealed partial class RailNav : ICameraClamp
     /// it. Top-level block indices are param-invariant for a page, so the cursor still follows its page-block
     /// across the swap. No-op (delegates straight through) when <paramref name="analysis"/> is null or equal
     /// to the seated one. <paramref name="analysis"/> must be the current page's analysis.
+    /// <para>If the rail happens to hold a DIFFERENT <em>page's</em> analysis than <paramref name="analysis"/>
+    /// (reachable only by host misuse — a bare <c>CurrentPage</c> setter that skips <c>GoToPage</c>'s reseat
+    /// with no following <c>SubmitAnalysis</c>), the remembered <c>currentPageBlock</c> ordinal is read from
+    /// that other page's set and is meaningless here. CONFINING is unaffected: the single-entry collapse
+    /// forces the cursor onto the focus block regardless of the ordinal. UN-CONFINING (a null
+    /// <paramref name="focusBlockIndex"/>) could map the stale ordinal into the rebuilt full set, but that
+    /// lands a reading line, never breaches confinement, and the next per-page reseat (<c>SubmitAnalysis</c>
+    /// /worker result) corrects it. Issue #81 finding #2.</para>
     /// </summary>
     public void ReapplyFocus(int? focusBlockIndex, PageAnalysis? analysis)
     {

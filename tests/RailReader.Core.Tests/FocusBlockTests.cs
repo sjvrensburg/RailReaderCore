@@ -502,6 +502,44 @@ public class FocusBlockTests
     }
 
     [Fact]
+    public void Focus_PinWithCrossPageStaleRail_ConfinesToFocusBlock_NoWrongLanding()
+    {
+        // Issue #81 finding #2: dropping the old ReferenceEquals(Rail.Analysis, cur) guard means the Focus
+        // setter calls ReapplyFocus even when the rail still holds a DIFFERENT page's analysis than the view
+        // now shows (reachable only via host misuse: a bare CurrentPage setter that bypasses GoToPage's
+        // reseat, with no following SubmitAnalysis). This locks the invariant that CONFINING is robust to
+        // that stale state: ReapplyFocus reads the cursor ordinal from the stale (other-page) navigable set,
+        // but the collapse to a single-entry set forces the cursor onto the focus block regardless, AND the
+        // rail is reseated onto the current page's resident analysis. No wrong-block landing, no crash.
+        var doc = LoadDocSeatedRail();                       // rail seated on page 0's analysis (instance a)
+        doc.Primary.SetSize(400, 400);
+        Assert.True(doc.TryGetAnalysis(0, doc.DefaultAnalysisParams, out var a));
+        Assert.Same(a, doc.Primary.Rail.Analysis);
+
+        // Cache a DIFFERENT page's analysis (page 1) and move the view there via the CurrentPage setter,
+        // which (unlike GoToPage) does NOT reseat the rail — so the rail stays cross-page stale on page 0.
+        var blocksB = new List<LayoutBlock>();
+        for (int i = 0; i < 3; i++)
+            blocksB.Add(new LayoutBlock
+            {
+                BBox = new BBox(0, i * 30, 120, 25), Role = BlockRole.Text, Order = i,
+                Lines = [new LineInfo(i * 30, 25, 0, 120)],
+            });
+        var analysisB = new PageAnalysis { Blocks = blocksB, PageWidth = 612, PageHeight = 792 };
+        doc.SetAnalysis(1, doc.DefaultAnalysisParams, analysisB);
+        doc.Primary.CurrentPage = 1;                         // allowed (unconfined); no rail reseat
+        Assert.Same(a, doc.Primary.Rail.Analysis);           // rail is now cross-page stale (still page 0)
+
+        doc.Primary.Focus = new FocusBlock(1, 1, new BBox(0, 30, 120, 25)); // pin a page-1 block
+
+        Assert.Equal(1, doc.Primary.CurrentFocusBlockIndex);
+        Assert.Equal(1, doc.Primary.Rail.NavigableCount);    // collapsed to the one focus block
+        Assert.Same(analysisB, doc.Primary.Rail.Analysis);   // reseated onto the current page's analysis
+        Assert.True(doc.Primary.Rail.TrySetCurrentByPageIndex(1)); // landed on the focus block, not a stale ordinal
+        doc.Dispose();
+    }
+
+    [Fact]
     public void Focus_PinBlockWithNoLines_DoesNotThrow()
     {
         // Issue #81 regression: pinning Focus now unconditionally reseats+collapses the rail and, when the
