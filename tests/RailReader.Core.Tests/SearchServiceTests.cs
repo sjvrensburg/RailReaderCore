@@ -287,6 +287,39 @@ public class SearchServiceTests : IDisposable
     }
 
     [Fact]
+    public void ConfinedSearch_NoReachableMatches_GetSearchState_ReportsNoActiveMatch()
+    {
+        // Issue #81: the −1 "no active match" state must reach the host as an explicit, misuse-resistant
+        // signal — HasActiveMatch == false — so a 1-based counter shows "0 in view" instead of computing
+        // ActiveIndex + 1 → "match 0 of N". TotalMatches still reports the document-wide count.
+        _state.Primary.Focus = new FocusBlock(0, 0, new BBox(0, 0, 100, 100));
+        var matches = new List<SearchMatch>
+        {
+            new(0, 0, 4, [new RectF(500, 400, 560, 430)]),  // off block
+            new(0, 4, 4, [new RectF(520, 420, 560, 440)]),  // off block
+        };
+        _search.FinalizeSearch(_state, matches);
+
+        var state = _search.GetSearchState();
+        Assert.Equal(2, state.TotalMatches);
+        Assert.Equal(-1, state.ActiveIndex);
+        Assert.False(state.HasActiveMatch);
+    }
+
+    [Fact]
+    public void Unconfined_GetSearchState_HasActiveMatch()
+    {
+        // Counterpoint: an unconfined view always has a valid active index when matches exist, so
+        // HasActiveMatch is true and a 1-based "match {ActiveIndex + 1} of {TotalMatches}" is well-formed.
+        var matches = MakeMatches(0, 0, 0);
+        _search.FinalizeSearch(_state, matches);
+
+        var state = _search.GetSearchState();
+        Assert.True(state.HasActiveMatch);
+        Assert.True(state.ActiveIndex >= 0);
+    }
+
+    [Fact]
     public void ConfinedSearch_GoToMatch_OffBlockJumpsToNearestReachable()
     {
         _state.Primary.Focus = new FocusBlock(0, 0, new BBox(0, 0, 100, 100));

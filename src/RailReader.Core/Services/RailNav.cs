@@ -842,6 +842,15 @@ public sealed partial class RailNav : ICameraClamp
         get
         {
             var block = CurrentNavigableBlock;
+            // A navigable block can carry zero detected lines when its analysis didn't pass through
+            // BlockPostProcessor's full-block-line fallback (a directly-constructed PageAnalysis, or a
+            // visual/atomic block line detection found nothing in). Confinement force-includes the focus
+            // block even when its role isn't navigable, so such a block can become the seated block — and
+            // pinning Focus now collapses+snaps onto it (issue #81). Synthesise the same span-the-block line
+            // BlockPostProcessor would (full width, vertical centre), so rail framing/snap never indexes
+            // Lines[-1] (ArgumentOutOfRangeException on Math.Min(CurrentLine, -1)).
+            if (block.Lines.Count == 0)
+                return new LineInfo(block.BBox.Y + block.BBox.H / 2f, block.BBox.H, block.BBox.X, block.BBox.W);
             return block.Lines[Math.Min(CurrentLine, block.Lines.Count - 1)];
         }
     }

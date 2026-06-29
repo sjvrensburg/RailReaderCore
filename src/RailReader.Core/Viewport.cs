@@ -690,15 +690,22 @@ public sealed class Viewport : IDisposable
     /// <summary>
     /// Zoom that fits <paramref name="box"/> within the viewport with a uniform margin,
     /// clamped to the camera range. The limiting dimension wins so the whole block shows.
+    /// <para>When <paramref name="floorAtZoomMin"/> is false the fit may drop BELOW
+    /// <see cref="Camera"/>.ZoomMin so a focus block larger than the viewport (whose fit falls under
+    /// the global min zoom) can still be shown whole — the confined (portal) framing path passes false
+    /// (issue #81 item F). All other callers keep the ZoomMin floor (the default). ZoomMax is always
+    /// enforced either way; degenerate (non-positive) dimensions still return the current zoom.</para>
     /// </summary>
     public double ComputeBlockFitZoom(BBox box, double viewportW, double viewportH,
-        double marginFraction = 0.08)
+        double marginFraction = 0.08, bool floorAtZoomMin = true)
     {
         double padW = box.W * (1.0 + 2.0 * marginFraction);
         double padH = box.H * (1.0 + 2.0 * marginFraction);
         if (padW <= 0 || padH <= 0 || viewportW <= 0 || viewportH <= 0) return Camera.Zoom;
         double z = Math.Min(viewportW / padW, viewportH / padH);
-        return Math.Clamp(z, Camera.ZoomMin, Camera.ZoomMax);
+        return floorAtZoomMin
+            ? Math.Clamp(z, Camera.ZoomMin, Camera.ZoomMax)
+            : Math.Min(z, Camera.ZoomMax);
     }
 
     /// <summary>
@@ -707,12 +714,16 @@ public sealed class Viewport : IDisposable
     /// given. Unlike rail framing this does NOT floor at the rail threshold — a large figure can
     /// be shown whole below 3×. Used by geometric centred framing for non-navigable blocks
     /// (figures/tables/charts) that the rail index can't seat.
+    /// <para><paramref name="floorAtZoomMin"/> mirrors <see cref="ComputeBlockFitZoom"/>: false lets an
+    /// oversized confined block frame below <see cref="Camera"/>.ZoomMin so it shows whole (issue #81
+    /// item F). It also relaxes the floor on an explicit <paramref name="targetZoom"/> so a confined
+    /// caller can frame below ZoomMin; ZoomMax is always enforced.</para>
     /// </summary>
     public (double Zoom, double OffsetX, double OffsetY) ComputeCenteredFrame(
-        BBox box, double viewportW, double viewportH, double? targetZoom = null)
+        BBox box, double viewportW, double viewportH, double? targetZoom = null, bool floorAtZoomMin = true)
     {
-        double z = Math.Clamp(targetZoom ?? ComputeBlockFitZoom(box, viewportW, viewportH),
-            Camera.ZoomMin, Camera.ZoomMax);
+        double raw = targetZoom ?? ComputeBlockFitZoom(box, viewportW, viewportH, floorAtZoomMin: floorAtZoomMin);
+        double z = Math.Clamp(raw, floorAtZoomMin ? Camera.ZoomMin : 0.0, Camera.ZoomMax);
         double ox = (viewportW - box.W * z) / 2.0 - box.X * z;
         double oy = (viewportH - box.H * z) / 2.0 - box.Y * z;
         return (z, ox, oy);
@@ -724,15 +735,16 @@ public sealed class Viewport : IDisposable
         var (rx, ry, rw, rh) = GetFitRect();
         if (rw <= 0 || rh <= 0) return;
         // Confined (portal) view: frame the focus block through the SAME helpers the host framing and the
-        // confinement clamp use — ComputeBlockFitZoom (8% margin, clamped to [ZoomMin, ZoomMax]) +
-        // ComputeCenteredFrame (issue #81 item F). This keeps the margin/clamp rules in one place instead
-        // of hand-rolling a no-margin Math.Min(...) fit: previously FitPage framed the block edge-to-edge
-        // while ClampCameraToBlock (which only ever RAISES zoom) couldn't restore the margin, so a portal
-        // block was framed slightly differently by FitPage than by the host's framing animation. The cap
-        // at ZoomMax is preserved by ComputeBlockFitZoom's clamp (a tiny block's raw fit can exceed it).
+        // confinement clamp use — ComputeBlockFitZoom (8% margin) + ComputeCenteredFrame (issue #81 item F).
+        // This keeps the margin/clamp rules in one place instead of hand-rolling a no-margin Math.Min(...)
+        // fit: previously FitPage framed the block edge-to-edge while ClampCameraToBlock (which only ever
+        // RAISES zoom) couldn't restore the margin, so a portal block was framed slightly differently by
+        // FitPage than by the host's framing animation. floorAtZoomMin:false lets an OVERSIZED block (whose
+        // 8%-margin fit falls under ZoomMin) still show whole — the same floor ClampCameraToBlock and
+        // ConfinedZoomFloor use, so there's no post-fit rebound. The ZoomMax cap is preserved.
         if (CurrentFocusBlockIndex is not null && _focus is { } fb)
         {
-            var (z, ox, oy) = ComputeCenteredFrame(fb.Bounds, windowWidth, windowHeight);
+            var (z, ox, oy) = ComputeCenteredFrame(fb.Bounds, windowWidth, windowHeight, floorAtZoomMin: false);
             Camera.Zoom = z;
             Camera.OffsetX = ox;
             Camera.OffsetY = oy;
@@ -819,7 +831,10 @@ public sealed class Viewport : IDisposable
     /// ZoomMax)</c> throw min&gt;max.</para></summary>
     internal double ConfinedZoomFloor(double windowWidth, double windowHeight)
         => CurrentFocusBlockIndex is not null && _focus is { } f
-            ? Math.Min(ComputeBlockFitZoom(f.Bounds, windowWidth, windowHeight), Camera.ZoomMax)
+            // floorAtZoomMin:false so an OVERSIZED block's floor is its true (sub-ZoomMin) fit, letting a
+            // zoom-out reveal the whole block rather than stranding it cropped at ZoomMin (issue #81 item F).
+            // The outer Math.Min still caps the degenerate-block fallback (raw Camera.Zoom) at ZoomMax.
+            ? Math.Min(ComputeBlockFitZoom(f.Bounds, windowWidth, windowHeight, floorAtZoomMin: false), Camera.ZoomMax)
             : Camera.ZoomMin;
 
     public void ClampCamera(double windowWidth, double windowHeight)
@@ -868,7 +883,9 @@ public sealed class Viewport : IDisposable
     {
         // Fit is the floor — match the margin ComputeCenteredFrame uses so a freshly framed block sits
         // exactly at the floor with no visible rebound. Only ever raises zoom, never lowers it.
-        double fitZoom = ComputeBlockFitZoom(b, windowWidth, windowHeight);
+        // floorAtZoomMin:false so an OVERSIZED block (fit below ZoomMin) isn't raised back to ZoomMin and
+        // re-cropped right after CenterPage/ConfinedZoomFloor framed it whole (issue #81 item F).
+        double fitZoom = ComputeBlockFitZoom(b, windowWidth, windowHeight, floorAtZoomMin: false);
         if (Camera.Zoom < fitZoom) Camera.Zoom = fitZoom;
 
         double scaledW = b.W * Camera.Zoom;

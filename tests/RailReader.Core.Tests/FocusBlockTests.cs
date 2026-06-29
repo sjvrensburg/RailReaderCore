@@ -446,6 +446,34 @@ public class FocusBlockTests
     }
 
     [Fact]
+    public void Focus_CenterPage_OversizedBlock_ShownWholeBelowZoomMin()
+    {
+        // Issue #81 item F regression: a focus block larger than the viewport (whose 8%-margin fit falls
+        // below Camera.ZoomMin) must be framed WHOLE, not raised to ZoomMin and cropped. CenterPage,
+        // ConfinedZoomFloor, and ClampCameraToBlock all floor at the block's true (sub-ZoomMin) fit, so the
+        // whole block shows and the post-fit clamp doesn't rebound it back to ZoomMin.
+        var doc = LoadDoc();
+        var bounds = new BBox(0, 0, 600, 760);              // bigger than a 400×400 viewport even at ZoomMin
+        doc.Primary.Focus = new FocusBlock(0, 0, bounds);
+        const double vpW = 400, vpH = 400;
+
+        double trueFit = doc.Primary.ComputeBlockFitZoom(bounds, vpW, vpH, floorAtZoomMin: false);
+        Assert.True(trueFit < Camera.ZoomMin);              // genuinely oversized
+        // The default (ZoomMin-floored) fit would crop — confirm the two diverge so the test is meaningful.
+        Assert.Equal(Camera.ZoomMin, doc.Primary.ComputeBlockFitZoom(bounds, vpW, vpH), precision: 4);
+
+        doc.Primary.CenterPage(vpW, vpH);
+        Assert.Equal(trueFit, doc.Camera.Zoom, precision: 4);   // shown whole, below ZoomMin
+
+        // The confinement clamp must NOT raise it back to ZoomMin (no rebound on the next pan/zoom/resize).
+        doc.ClampCamera(vpW, vpH);
+        Assert.Equal(trueFit, doc.Camera.Zoom, precision: 4);
+        // And the confined zoom-out floor is the true fit, so a host zoom gesture can reach it.
+        Assert.Equal(trueFit, doc.Primary.ConfinedZoomFloor(vpW, vpH), precision: 4);
+        doc.Dispose();
+    }
+
+    [Fact]
     public void Focus_PinWithStaleSamePageAnalysis_ReseatsAndCollapsesRail()
     {
         // Issue #81 item G: when the rail is seated on a DIFFERENT analysis instance for the SAME page than
@@ -470,6 +498,39 @@ public class FocusBlockTests
         Assert.Equal(1, doc.Primary.Rail.NavigableCount);    // collapsed to the one focus block
         Assert.Same(b, doc.Primary.Rail.Analysis);           // reseated onto the resident instance
         Assert.True(doc.Primary.Rail.TrySetCurrentByPageIndex(1)); // and it is the navigable block
+        doc.Dispose();
+    }
+
+    [Fact]
+    public void Focus_PinBlockWithNoLines_DoesNotThrow()
+    {
+        // Issue #81 regression: pinning Focus now unconditionally reseats+collapses the rail and, when the
+        // block-fit zoom crosses the rail threshold, activates rail and snaps to the current line. A focus
+        // block carrying ZERO detected lines (a directly-built analysis, or a visual block line detection
+        // found nothing in — confinement force-includes the focus block even when its role isn't navigable)
+        // must not crash: CurrentLineInfo synthesises a full-block line instead of indexing Lines[-1].
+        // Before the fix this threw ArgumentOutOfRangeException on StartSnap → ComputeTargetCamera.
+        var doc = LoadDoc();
+        // A small block so its fit-zoom clamps well above RailZoomThreshold (3.0): pinning activates rail
+        // and runs the StartSnap → ComputeTargetCamera → CurrentLineInfo path that indexed Lines[-1].
+        var bounds = new BBox(300, 300, 20, 10);
+        doc.SetAnalysis(0, doc.DefaultAnalysisParams, new PageAnalysis
+        {
+            Blocks = [new LayoutBlock { BBox = bounds, Role = BlockRole.Text, Order = 0, Lines = [] }],
+            PageWidth = 612,
+            PageHeight = 792,
+        });
+        doc.Primary.SetSize(400, 400);
+
+        doc.Primary.Focus = new FocusBlock(0, 0, bounds);   // must not throw
+
+        Assert.Equal(0, doc.Primary.CurrentFocusBlockIndex);
+        Assert.True(doc.Primary.Rail.Active);               // fit-zoom crossed the threshold → rail engaged
+        // CurrentLineInfo returns the synthesised full-block line (full width, vertical centre).
+        var line = doc.Primary.Rail.CurrentLineInfo;
+        Assert.Equal(bounds.X, line.X, precision: 3);
+        Assert.Equal(bounds.W, line.Width, precision: 3);
+        Assert.Equal(bounds.Y + bounds.H / 2f, line.Y, precision: 3);
         doc.Dispose();
     }
 

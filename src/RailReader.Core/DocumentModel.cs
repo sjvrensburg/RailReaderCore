@@ -779,18 +779,20 @@ public sealed class DocumentModel : IDisposable
     /// clamped to the camera range. The limiting dimension wins so the whole block shows.
     /// </summary>
     public double ComputeBlockFitZoom(BBox box, double viewportW, double viewportH,
-        double marginFraction = 0.08) => Primary.ComputeBlockFitZoom(box, viewportW, viewportH, marginFraction);
+        double marginFraction = 0.08, bool floorAtZoomMin = true)
+        => Primary.ComputeBlockFitZoom(box, viewportW, viewportH, marginFraction, floorAtZoomMin);
 
     /// <summary>
     /// Camera target (zoom + offsets) that centres <paramref name="box"/> in the viewport,
     /// fitting it via <see cref="ComputeBlockFitZoom"/> unless <paramref name="targetZoom"/> is
     /// given. Unlike rail framing this does NOT floor at the rail threshold — a large figure can
     /// be shown whole below 3×. Used by geometric centred framing for non-navigable blocks
-    /// (figures/tables/charts) that the rail index can't seat.
+    /// (figures/tables/charts) that the rail index can't seat. <paramref name="floorAtZoomMin"/>
+    /// false lets an oversized confined block frame below <see cref="Camera"/>.ZoomMin (issue #81 item F).
     /// </summary>
     public (double Zoom, double OffsetX, double OffsetY) ComputeCenteredFrame(
-        BBox box, double viewportW, double viewportH, double? targetZoom = null)
-        => Primary.ComputeCenteredFrame(box, viewportW, viewportH, targetZoom);
+        BBox box, double viewportW, double viewportH, double? targetZoom = null, bool floorAtZoomMin = true)
+        => Primary.ComputeCenteredFrame(box, viewportW, viewportH, targetZoom, floorAtZoomMin);
 
     public void CenterPage(double windowWidth, double windowHeight) => Primary.CenterPage(windowWidth, windowHeight);
 

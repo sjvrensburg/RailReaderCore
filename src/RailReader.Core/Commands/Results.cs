@@ -36,10 +36,28 @@ public sealed record DocumentSummary(
 /// <summary>
 /// Result of a search operation.
 /// </summary>
+/// <param name="TotalMatches">Total matches found across the whole document.</param>
+/// <param name="ActiveIndex">
+/// Zero-based index of the active match in document order, or <b>−1 when there is no active match</b>.
+/// −1 arises only in a confined (portal) view whose matches are all unreachable under the block clamp
+/// (issue #81): the active match is never seeded onto a match the camera cannot scroll to. An unconfined
+/// view always has a valid active index whenever <see cref="TotalMatches"/> &gt; 0.
+/// <para>Hosts rendering a 1-based "match X of N" counter must guard on <see cref="HasActiveMatch"/> and
+/// show "0 in view" (or similar) when it is false — computing <c>ActiveIndex + 1</c> unconditionally would
+/// display "match 0 of N". Likewise do not index a UI list at a negative <see cref="ActiveIndex"/>.</para>
+/// </param>
+/// <param name="MatchesPerPage">Match count keyed by zero-based page index.</param>
 public sealed record SearchResult(
     int TotalMatches,
     int ActiveIndex,
-    Dictionary<int, int> MatchesPerPage);
+    Dictionary<int, int> MatchesPerPage)
+{
+    /// <summary>True when <see cref="ActiveIndex"/> points at a real match (≥ 0). False when there is no
+    /// active match — a confined (portal) view whose matches are all unreachable under the block clamp.
+    /// Use this as the guard before a 1-based <c>ActiveIndex + 1</c> display or any indexing by
+    /// <see cref="ActiveIndex"/>, instead of testing the raw int.</summary>
+    public bool HasActiveMatch => ActiveIndex >= 0;
+}
 
 /// <summary>
 /// Options for headless screenshot export.

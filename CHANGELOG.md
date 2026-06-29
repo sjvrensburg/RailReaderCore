@@ -14,7 +14,9 @@ unaffected. The only additive surface is a `RailNav.ReapplyFocus` overload.
   when none are reachable, rather than a page-order match the camera never scrolls to. `NextMatch`/
   `PreviousMatch` already skipped off-block matches; this closes the direct-jump / seed gap.
   **Host note:** in a confined view `ActiveMatchIndex` may now be `-1`; render that as "0 reachable". An
-  unconfined view never yields `-1`.
+  unconfined view never yields `-1`. `SearchResult` exposes this as a first-class `HasActiveMatch`
+  predicate — guard on it before a 1-based `ActiveIndex + 1` display so the counter never reads "match 0
+  of N" (see review fixes below).
 - **E — `MatchWithinFocus` tests rect intersection, not centre containment.** A match whose rect straddles
   the focus-block edge (e.g. a first-baseline hit poking just above the block top) is now reachable, matching
   what the block camera clamp can surface. Centre-containment was stricter than the clamp it mirrored and
@@ -22,8 +24,9 @@ unaffected. The only additive surface is a `RailNav.ReapplyFocus` overload.
 - **F — `CenterPage`'s confined fit routes through `ComputeBlockFitZoom`.** The confined branch no longer
   hand-rolls a no-margin `Math.Min(...)` fit; it uses the shared 8%-margin helper (`ComputeBlockFitZoom` +
   `ComputeCenteredFrame`), so `FitPage` frames a portal block identically to the host framing animation and
-  the post-fit `ClampCameraToBlock` finds it already at the floor. Cosmetic (no clipping before), but the
-  margin/clamp rules now live in one place. The `ZoomMax` cap is preserved by the helper's clamp.
+  the post-fit `ClampCameraToBlock` finds it already at the floor. The margin/clamp rules now live in one
+  place, and the `ZoomMax` cap is preserved by the helper's clamp. (An oversized-block clipping regression
+  this introduced is corrected in the review fixes below.)
 - **G — pinning `Focus` reseats the rail against a stale same-page analysis.** When the rail was seated on a
   *different* analysis instance for the *same* page (a re-analysis replaced the cache entry, or a stale
   table/cell-nav params variant), pinning `Focus` left the navigable set un-collapsed (rail stepping other
@@ -31,6 +34,27 @@ unaffected. The only additive surface is a `RailNav.ReapplyFocus` overload.
   setter now reseats onto the resident analysis before collapsing, via a new
   `RailNav.ReapplyFocus(int?, PageAnalysis?)` overload (additive). Page-escape was always blocked, so this
   was a visual glitch, not a confinement breach.
+
+**Follow-up review fixes** (`/code-review xhigh` on this branch):
+
+- **Crash: pinning `Focus` on a block with no detected lines.** Item G made the `Focus` setter
+  unconditionally reseat+collapse the rail and snap to the current line; if the focus block carried zero
+  `Lines` (a directly-built `PageAnalysis`, or a visual/atomic block line detection found nothing in —
+  confinement force-includes the focus block even when its role isn't navigable), `RailNav.CurrentLineInfo`
+  indexed `Lines[-1]` and threw `ArgumentOutOfRangeException` on the UI thread. It now synthesises a
+  span-the-block line (the same fallback `BlockPostProcessor` applies), so framing/snap is safe for any
+  block. (The real analysis pipeline already guarantees ≥1 line; this hardens Core against analyses that
+  bypass that fallback.)
+- **Oversized confined block shown whole (item F regression).** A focus block larger than the viewport —
+  whose 8%-margin fit falls below `Camera.ZoomMin` — was raised to `ZoomMin` by the new `CenterPage` fit
+  and rendered cropped. `CenterPage`, `ConfinedZoomFloor`, and `ClampCameraToBlock` now floor confined
+  framing at the block's true (possibly sub-`ZoomMin`) fit via a `floorAtZoomMin` parameter on
+  `ComputeBlockFitZoom`/`ComputeCenteredFrame` (additive, default `true` — non-confined and single-view
+  framing unchanged), so the whole block shows with no rebound. `ZoomMax` is still enforced.
+- **`SearchResult.HasActiveMatch` (item D host contract).** The `-1` "no active match" value (confined view,
+  no reachable match) now reaches hosts as an explicit `SearchResult.HasActiveMatch` predicate with a
+  documented `ActiveIndex` contract, so a 1-based counter can't accidentally render "match 0 of N".
+  Additive; unconfined views always report `HasActiveMatch == true` when matches exist.
 
 ## 0.45.1 — FocusBlock: seal the confinement escapes
 
