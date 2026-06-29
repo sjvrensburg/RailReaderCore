@@ -5,7 +5,8 @@
 Clears the four low-priority items the `/code-review xhigh` passes surfaced on the FocusBlock confinement
 work (#81) and v0.45.1 deliberately deferred. Each is gated entirely behind a `Focus`-confined (portal)
 viewport — **unconfined viewports are byte-for-byte unchanged**, so a single-viewport consumer is
-unaffected. The only additive surface is a `RailNav.ReapplyFocus` overload.
+unaffected. The additive surfaces are a `RailNav.ReapplyFocus` overload, a `floorAtZoomMin` parameter on
+`ComputeBlockFitZoom`/`ComputeCenteredFrame`, and `SearchResult.HasActiveMatch` (all default/backward-compatible).
 
 - **D — confined search no longer desyncs the counter from the camera.** In a confined view the search
   seed and direct jumps now only target a match the block clamp can actually show. `SearchService.GoToMatch`
