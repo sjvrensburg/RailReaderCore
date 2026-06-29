@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.45.2 — FocusBlock: deferred minor review items (D/E/F/G)
+
+Clears the four low-priority items the `/code-review xhigh` passes surfaced on the FocusBlock confinement
+work (#81) and v0.45.1 deliberately deferred. Each is gated entirely behind a `Focus`-confined (portal)
+viewport — **unconfined viewports are byte-for-byte unchanged**, so a single-viewport consumer is
+unaffected. The only additive surface is a `RailNav.ReapplyFocus` overload.
+
+- **D — confined search no longer desyncs the counter from the camera.** In a confined view the search
+  seed and direct jumps now only target a match the block clamp can actually show. `SearchService.GoToMatch`
+  resolves an off-block request to the nearest reachable match (or no-ops when none are reachable), and the
+  `FinalizeSearch` seed lands on the first reachable match — or `ActiveMatchIndex = -1` ("no active match")
+  when none are reachable, rather than a page-order match the camera never scrolls to. `NextMatch`/
+  `PreviousMatch` already skipped off-block matches; this closes the direct-jump / seed gap.
+  **Host note:** in a confined view `ActiveMatchIndex` may now be `-1`; render that as "0 reachable". An
+  unconfined view never yields `-1`.
+- **E — `MatchWithinFocus` tests rect intersection, not centre containment.** A match whose rect straddles
+  the focus-block edge (e.g. a first-baseline hit poking just above the block top) is now reachable, matching
+  what the block camera clamp can surface. Centre-containment was stricter than the clamp it mirrored and
+  skipped reachable matches. Trade-off: a barely-overlapping, mostly-off-block match now counts as reachable.
+- **F — `CenterPage`'s confined fit routes through `ComputeBlockFitZoom`.** The confined branch no longer
+  hand-rolls a no-margin `Math.Min(...)` fit; it uses the shared 8%-margin helper (`ComputeBlockFitZoom` +
+  `ComputeCenteredFrame`), so `FitPage` frames a portal block identically to the host framing animation and
+  the post-fit `ClampCameraToBlock` finds it already at the floor. Cosmetic (no clipping before), but the
+  margin/clamp rules now live in one place. The `ZoomMax` cap is preserved by the helper's clamp.
+- **G — pinning `Focus` reseats the rail against a stale same-page analysis.** When the rail was seated on a
+  *different* analysis instance for the *same* page (a re-analysis replaced the cache entry, or a stale
+  table/cell-nav params variant), pinning `Focus` left the navigable set un-collapsed (rail stepping other
+  on-page blocks while the camera stayed pinned — highlight off-screen, arrows looked dead). The `Focus`
+  setter now reseats onto the resident analysis before collapsing, via a new
+  `RailNav.ReapplyFocus(int?, PageAnalysis?)` overload (additive). Page-escape was always blocked, so this
+  was a visual glitch, not a confinement breach.
+
 ## 0.45.1 — FocusBlock: seal the confinement escapes
 
 Closes every way a `Focus`-confined (portal) viewport could escape its block, consolidated onto one

@@ -244,13 +244,16 @@ public sealed class Viewport : IDisposable
                 // AutoScrollController.AutoScrollActive clear in lockstep (a RailNav-only stop would leave
                 // the controller flag stuck true).
                 AutoScroll.StopAutoScroll();
-                // Collapse/restore the rail to the focus block. Only re-collapse NOW when the rail is already
-                // seated with THIS page's analysis: collapsing against a stale (previous-page) seated analysis
-                // would pin the wrong block. When the rail isn't on this page yet (pending reseat / no
-                // resident analysis), the upcoming SetAnalysis(..., CurrentFocusBlockIndex) collapses it.
-                if (Owner.TryGetAnalysis(CurrentPageBacking, AnalysisParams, out var cur)
-                    && ReferenceEquals(Rail.Analysis, cur))
-                    Rail.ReapplyFocus(CurrentFocusBlockIndex);
+                // Collapse/restore the rail to the focus block against THIS page's resident analysis. When
+                // the rail already holds that exact instance, ReapplyFocus rebuilds in place. When it holds a
+                // DIFFERENT instance for the SAME page — a stale table/cell-nav variant, or a re-analysis that
+                // replaced the cache entry (issue #81 item G) — the overload reseats onto the resident
+                // analysis FIRST so the collapse keys off the right blocks; collapsing against the stale
+                // instance the rail still holds would leave the navigable set un-collapsed (rail roaming
+                // other on-page blocks while the camera stays pinned). When NO analysis is resident yet
+                // (pending reseat / evicted), the upcoming SetAnalysis(..., CurrentFocusBlockIndex) collapses it.
+                if (Owner.TryGetAnalysis(CurrentPageBacking, AnalysisParams, out var cur))
+                    Rail.ReapplyFocus(CurrentFocusBlockIndex, cur);
                 // A confined view must never page off its focus block. A page-skip deferred before pinning
                 // would otherwise survive and, when its analysis lands, jump the rail cursor to the block end.
                 // Drop it here, mirroring the page-leaving guards in AdvanceLine / SkipToNavigablePage.
@@ -720,12 +723,25 @@ public sealed class Viewport : IDisposable
         if (PageWidthBacking <= 0 || PageHeightBacking <= 0 || windowWidth <= 0 || windowHeight <= 0) return;
         var (rx, ry, rw, rh) = GetFitRect();
         if (rw <= 0 || rh <= 0) return;
-        // Confined (portal) view ONLY: cap the fit zoom at ZoomMax. GetFitRect returns a small focus
-        // block there, so the raw fit can exceed ZoomMax — and the block clamp only ever raises zoom,
-        // never lowers it, so an un-capped overshoot would strand the user over-magnified. Unconfined
-        // (whole-page) fit is left exactly as before (no cap), preserving the Primary-facade contract.
+        // Confined (portal) view: frame the focus block through the SAME helpers the host framing and the
+        // confinement clamp use — ComputeBlockFitZoom (8% margin, clamped to [ZoomMin, ZoomMax]) +
+        // ComputeCenteredFrame (issue #81 item F). This keeps the margin/clamp rules in one place instead
+        // of hand-rolling a no-margin Math.Min(...) fit: previously FitPage framed the block edge-to-edge
+        // while ClampCameraToBlock (which only ever RAISES zoom) couldn't restore the margin, so a portal
+        // block was framed slightly differently by FitPage than by the host's framing animation. The cap
+        // at ZoomMax is preserved by ComputeBlockFitZoom's clamp (a tiny block's raw fit can exceed it).
+        if (CurrentFocusBlockIndex is not null && _focus is { } fb)
+        {
+            var (z, ox, oy) = ComputeCenteredFrame(fb.Bounds, windowWidth, windowHeight);
+            Camera.Zoom = z;
+            Camera.OffsetX = ox;
+            Camera.OffsetY = oy;
+            return;
+        }
+        // Unconfined (whole-page) fit is left exactly as before (no margin, no cap), preserving the
+        // Primary-facade contract.
         double fitZoom = Math.Min(windowWidth / rw, windowHeight / rh);
-        Camera.Zoom = CurrentFocusBlockIndex is not null ? Math.Min(fitZoom, Camera.ZoomMax) : fitZoom;
+        Camera.Zoom = fitZoom;
         Camera.OffsetX = CenteredOffsetX(windowWidth, rx, rw, Camera.Zoom);
         Camera.OffsetY = (windowHeight - rh * Camera.Zoom) / 2.0 - ry * Camera.Zoom;
     }

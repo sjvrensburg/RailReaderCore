@@ -197,8 +197,28 @@ public sealed partial class RailNav : ICameraClamp
     /// the focus block was, not block 0), and any in-flight snap/scroll/bias is cleared — a set-change
     /// while a snap toward the old block was animating would otherwise lurch into the new set.</para>
     /// </summary>
-    public void ReapplyFocus(int? focusBlockIndex)
+    public void ReapplyFocus(int? focusBlockIndex) => ReapplyFocus(focusBlockIndex, null);
+
+    /// <summary>
+    /// As <see cref="ReapplyFocus(int?)"/>, but first reseats onto <paramref name="analysis"/> when it is
+    /// a different instance than the one currently seated (issue #81 item G). Used when a host pins
+    /// <see cref="Viewport.Focus"/> while the rail holds a STALE same-page analysis instance — a different
+    /// table/cell-nav variant, or a re-analysis that replaced the cache entry. Collapsing against the stale
+    /// instance would rebuild the navigable set from the wrong blocks (and the plain overload keys off
+    /// whatever the rail still holds, possibly even a previous page's analysis), so swap in the resident
+    /// analysis FIRST, then collapse. The stored navigable role set is reused, so callers needn't re-supply
+    /// it. Top-level block indices are param-invariant for a page, so the cursor still follows its page-block
+    /// across the swap. No-op (delegates straight through) when <paramref name="analysis"/> is null or equal
+    /// to the seated one. <paramref name="analysis"/> must be the current page's analysis.
+    /// </summary>
+    public void ReapplyFocus(int? focusBlockIndex, PageAnalysis? analysis)
     {
+        if (_analysis is null && analysis is null) return;
+        // Swap in the resident analysis before reading the cursor/rebuilding, so the collapse keys off the
+        // right page's blocks. Reuses _navigableRoles (the full-set restore path), so confinement collapse
+        // and un-confine expand both behave as for a same-instance ReapplyFocus.
+        if (analysis is not null && !ReferenceEquals(_analysis, analysis))
+            _analysis = analysis;
         if (_analysis is null) return;
 
         // Remember the page-block the cursor is on, so we can follow it into the rebuilt index set.

@@ -268,6 +268,91 @@ public class SearchServiceTests : IDisposable
     }
 
     // ---------------------------------------------------------------
+    // Issue #81 item D: seed / direct-jump never desync the counter from the camera
+    // ---------------------------------------------------------------
+
+    [Fact]
+    public void ConfinedSearch_NoReachableMatches_SeedsNoActiveMatch()
+    {
+        // With no in-block match the seed is −1 ("no active match"), not a page-order match the camera
+        // would never scroll to — so the counter can't read "match X of N" while the view stays put.
+        _state.Primary.Focus = new FocusBlock(0, 0, new BBox(0, 0, 100, 100));
+        var matches = new List<SearchMatch>
+        {
+            new(0, 0, 4, [new RectF(500, 400, 560, 430)]),  // off block
+            new(0, 4, 4, [new RectF(520, 420, 560, 440)]),  // off block
+        };
+        _search.FinalizeSearch(_state, matches);
+        Assert.Equal(-1, _search.ActiveMatchIndex);
+    }
+
+    [Fact]
+    public void ConfinedSearch_GoToMatch_OffBlockJumpsToNearestReachable()
+    {
+        _state.Primary.Focus = new FocusBlock(0, 0, new BBox(0, 0, 100, 100));
+        var matches = new List<SearchMatch>
+        {
+            new(0, 0, 4, [new RectF(10, 10, 50, 20)]),     // idx0 in-block
+            new(0, 4, 4, [new RectF(500, 400, 560, 430)]), // idx1 off-block (direct-jump target)
+            new(0, 8, 4, [new RectF(10, 50, 50, 60)]),     // idx2 in-block
+        };
+        _search.FinalizeSearch(_state, matches);
+
+        // A direct jump to the off-block idx1 resolves to the nearest reachable match (forward bias → idx2),
+        // never advancing the counter to a match the block clamp can't show.
+        _search.GoToMatch(1);
+        Assert.Equal(2, _search.ActiveMatchIndex);
+    }
+
+    [Fact]
+    public void ConfinedSearch_GoToMatch_NoReachable_IsNoOp()
+    {
+        _state.Primary.Focus = new FocusBlock(0, 0, new BBox(0, 0, 100, 100));
+        var matches = new List<SearchMatch>
+        {
+            new(0, 0, 4, [new RectF(500, 400, 560, 430)]),  // off block
+            new(0, 4, 4, [new RectF(520, 420, 560, 440)]),  // off block
+        };
+        _search.FinalizeSearch(_state, matches);   // seed = −1 (nothing reachable)
+
+        _search.GoToMatch(0);                       // off-block direct jump → no-op
+        Assert.Equal(-1, _search.ActiveMatchIndex);
+    }
+
+    [Fact]
+    public void GoToMatch_Unconfined_JumpsExactly()
+    {
+        // Unconfined view: ResolveReachableTarget returns the requested index unchanged (no regression).
+        var matches = MakeMatches(0, 0, 0);
+        _search.FinalizeSearch(_state, matches);
+        _search.GoToMatch(2);
+        Assert.Equal(2, _search.ActiveMatchIndex);
+    }
+
+    // ---------------------------------------------------------------
+    // Issue #81 item E: reachability is rect-vs-block intersection, not centre containment
+    // ---------------------------------------------------------------
+
+    [Fact]
+    public void ConfinedSearch_StraddlingMatch_IsReachableByIntersection()
+    {
+        // A match whose rect straddles the block's top edge (centre 85,−7.5 is ABOVE the block) overlaps
+        // the block and the camera clamp can surface it — so it counts as reachable under intersection,
+        // though the old centre-containment test skipped it.
+        _state.Primary.Focus = new FocusBlock(0, 0, new BBox(0, 0, 100, 100));
+        var matches = new List<SearchMatch>
+        {
+            new(0, 0, 4, [new RectF(50, -20, 120, 5)]),    // straddles the top edge (reachable)
+            new(0, 4, 4, [new RectF(500, 400, 560, 430)]), // fully off-block (unreachable)
+        };
+        _search.FinalizeSearch(_state, matches);
+
+        Assert.Equal(0, _search.ActiveMatchIndex);  // seed lands on the straddling match
+        _search.NextMatch();                        // the off-block idx1 is still skipped → wrap to 0
+        Assert.Equal(0, _search.ActiveMatchIndex);
+    }
+
+    // ---------------------------------------------------------------
     // GetMatchSnippet
     // ---------------------------------------------------------------
 

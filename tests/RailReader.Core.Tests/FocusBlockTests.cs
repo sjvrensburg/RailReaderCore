@@ -417,6 +417,63 @@ public class FocusBlockTests
     }
 
     [Fact]
+    public void Focus_CenterPage_FramesBlockWithMargin_MatchingClampFloor()
+    {
+        // Issue #81 item F: CenterPage's confined fit routes through ComputeBlockFitZoom (the shared
+        // 8%-margin fit, identical to the confinement clamp's floor) instead of a hand-rolled no-margin
+        // Math.Min(...). FitPage then frames the block the same way the host framing animation does, and
+        // the post-fit ClampCameraToBlock (which only raises zoom) finds it already at the floor.
+        var doc = LoadDoc();
+        var bounds = new BBox(100, 120, 200, 80);
+        doc.Primary.Focus = new FocusBlock(0, 0, bounds);
+        const double vpW = 400, vpH = 400;
+
+        doc.Primary.CenterPage(vpW, vpH);
+
+        double marginedFit = doc.Primary.ComputeBlockFitZoom(bounds, vpW, vpH);
+        double noMarginFit = Math.Min(vpW / bounds.W, vpH / bounds.H);
+        Assert.Equal(marginedFit, doc.Camera.Zoom, precision: 4);   // margined fit, in one place
+        Assert.True(marginedFit < noMarginFit);                     // strictly below the old edge-to-edge fit
+
+        // The block is centred within the margin (same offsets ClampCameraToBlock centres to), so a
+        // following clamp leaves the camera put — no rebound between FitPage and the clamp.
+        double offX = doc.Camera.OffsetX, offY = doc.Camera.OffsetY;
+        doc.ClampCamera(vpW, vpH);
+        Assert.Equal(offX, doc.Camera.OffsetX, precision: 3);
+        Assert.Equal(offY, doc.Camera.OffsetY, precision: 3);
+        Assert.Equal(marginedFit, doc.Camera.Zoom, precision: 4);
+        doc.Dispose();
+    }
+
+    [Fact]
+    public void Focus_PinWithStaleSamePageAnalysis_ReseatsAndCollapsesRail()
+    {
+        // Issue #81 item G: when the rail is seated on a DIFFERENT analysis instance for the SAME page than
+        // the one resident in the cache (a re-analysis replaced the entry, or a stale params variant),
+        // pinning Focus must reseat onto the resident instance AND collapse the navigable set — not leave
+        // it un-collapsed (rail roaming other on-page blocks while the camera is pinned to the focus block).
+        var doc = LoadDocSeatedRail();                       // rail seated on instance A == cached cur
+        doc.Primary.SetSize(400, 400);
+        Assert.True(doc.TryGetAnalysis(0, doc.DefaultAnalysisParams, out var a));
+        Assert.Same(a, doc.Primary.Rail.Analysis);
+        Assert.Equal(8, doc.Primary.Rail.NavigableCount);    // full navigable set before pinning
+
+        // Replace the cached analysis for page 0 with a fresh, equivalent instance B, leaving the rail
+        // seated on the now-stale instance A (the bug's trigger: Rail.Analysis != resident analysis).
+        var b = new PageAnalysis { Blocks = a.Blocks, PageWidth = a.PageWidth, PageHeight = a.PageHeight };
+        doc.SetAnalysis(0, doc.DefaultAnalysisParams, b);
+        Assert.NotSame(b, doc.Primary.Rail.Analysis);        // rail is stale (still on A)
+
+        doc.Primary.Focus = new FocusBlock(0, 1, new BBox(0, 20, 100, 18));
+
+        Assert.Equal(1, doc.Primary.CurrentFocusBlockIndex);
+        Assert.Equal(1, doc.Primary.Rail.NavigableCount);    // collapsed to the one focus block
+        Assert.Same(b, doc.Primary.Rail.Analysis);           // reseated onto the resident instance
+        Assert.True(doc.Primary.Rail.TrySetCurrentByPageIndex(1)); // and it is the navigable block
+        doc.Dispose();
+    }
+
+    [Fact]
     public void FitWidthPreservingTop_Focus_ReassertsBlockClamp()
     {
         // Margin-crop toggle on a confined view must re-assert the block clamp (zoom floored at block fit),
