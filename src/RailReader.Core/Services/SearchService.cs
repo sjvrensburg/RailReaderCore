@@ -40,6 +40,14 @@ public sealed class SearchService
     public List<SearchMatch> SearchMatches { get; private set; } = [];
     private Dictionary<int, List<SearchMatch>> _searchMatchesByPage = [];
     public List<SearchMatch>? CurrentPageSearchMatches { get; private set; }
+
+    /// <summary>
+    /// Index of the active match within <see cref="SearchMatches"/>. <b>−1 means "no active match"</b>:
+    /// it is only produced in a confined (portal) view when none of the matches are reachable under the
+    /// block clamp (issue #81 item D) — the seed and direct jumps never point the counter at a match the
+    /// camera can't scroll to. An unconfined view never yields −1 (every match is reachable), so existing
+    /// single-view consumers are unaffected. A host rendering "match X of N" must treat −1 as "0 reachable".
+    /// </summary>
     public int ActiveMatchIndex { get; set; }
     private DocumentModel? _searchedDocument;
 
@@ -169,14 +177,12 @@ public sealed class SearchService
                 : doc.CurrentPage;
             int firstOnCurrentOrAfter = allMatches.FindIndex(m => m.PageIndex >= fromPage);
             int seed = firstOnCurrentOrAfter >= 0 ? firstOnCurrentOrAfter : 0;
-            // Confined (portal) view: seed on the first reachable (in-block) match so the initial jump lands
-            // on something the block clamp can show. If there are none, fall back to the page-order seed —
-            // NavigateToActiveMatch then bails (no jiggle) until the user steps to a reachable match.
+            // Confined (portal) view: seed ONLY onto a reachable (in-block) match so the counter never
+            // points at a match the block clamp can't show (issue #81 item D). FindIndex returns −1 when
+            // none are reachable, which becomes the active index ("no active match") rather than a
+            // page-order match the camera would never scroll to; NavigateToActiveMatch then no-ops on −1.
             if (FocusedView is { } cfv && ReferenceEquals(cfv.Owner, doc) && cfv.CurrentFocusBlockIndex is not null)
-            {
-                int firstInBlock = allMatches.FindIndex(m => MatchWithinFocus(cfv, m));
-                if (firstInBlock >= 0) seed = firstInBlock;
-            }
+                seed = allMatches.FindIndex(m => MatchWithinFocus(cfv, m));
             ActiveMatchIndex = seed;
             NavigateToActiveMatch();
         }
@@ -225,8 +231,13 @@ public sealed class SearchService
     /// <summary>
     /// True when <paramref name="match"/> can actually be shown in <paramref name="vp"/>: always for an
     /// unconfined view; for a confined (portal) view only when the match is on the view's current page AND
-    /// the centre of its bounding rect falls within the focus block's bounds (an off-block match would be
-    /// centred then immediately yanked back by <c>ClampCameraToBlock</c>, so it is unreachable).
+    /// its bounding rect <b>intersects</b> the focus block's bounds (issue #81 item E). Rect-vs-block
+    /// intersection — not bounding-rect-centre containment — mirrors what the block camera clamp can
+    /// surface: a match straddling the block edge (e.g. a first-baseline hit whose rect pokes just above
+    /// the block top) is displayable, so testing its centre was stricter than the clamp it models and
+    /// skipped reachable matches. The trade-off (noted in the issue) is that a barely-overlapping,
+    /// mostly-off-block match now counts as reachable. The AABB test is half-open, so a match flush
+    /// against an edge with zero-area overlap does not count.
     /// </summary>
     private static bool MatchWithinFocus(Viewport vp, SearchMatch match)
     {
@@ -242,18 +253,48 @@ public sealed class SearchService
             if (r.Right > maxX) maxX = r.Right;
             if (r.Bottom > maxY) maxY = r.Bottom;
         }
-        double cx = (minX + maxX) / 2.0, cy = (minY + maxY) / 2.0;
         var b = f.Bounds;
-        return cx >= b.X && cx <= b.X + b.W && cy >= b.Y && cy <= b.Y + b.H;
+        return minX < b.X + b.W && maxX > b.X && minY < b.Y + b.H && maxY > b.Y;
     }
 
     public void GoToMatch(int matchIndex)
     {
         ClearIfDocumentChanged();
         if (matchIndex < 0 || matchIndex >= SearchMatches.Count) return;
-        ActiveMatchIndex = matchIndex;
+        // Confined (portal) view: a direct jump must land on a match the block clamp can show, else the
+        // counter advances to a match the camera never scrolls to (issue #81 item D — the same desync
+        // NextMatch/PreviousMatch already avoid). Resolve to the nearest reachable match; if none are
+        // reachable, leave the active match unchanged (no-op) rather than seeding an unreachable one.
+        int target = ResolveReachableTarget(matchIndex);
+        if (target < 0) return;
+        ActiveMatchIndex = target;
         NavigateToActiveMatch();
         UpdateCurrentPageMatches();
+    }
+
+    /// <summary>
+    /// Resolves a direct-jump target (<see cref="GoToMatch"/>) to a match the focused view can actually
+    /// show. For an unconfined view this is <paramref name="desired"/> unchanged (byte-identical to the
+    /// original behaviour). For a confined (portal) view it returns <paramref name="desired"/> when it is
+    /// reachable, else the nearest reachable match by index distance (the same skip-off-block model as
+    /// <see cref="AdvanceActiveIndex"/>), else −1 when none are reachable. <paramref name="desired"/> must
+    /// already be a valid index into <see cref="SearchMatches"/>.
+    /// </summary>
+    private int ResolveReachableTarget(int desired)
+    {
+        if (FocusedView is not { } vp || vp.CurrentFocusBlockIndex is null)
+            return desired;
+        if (MatchWithinFocus(vp, SearchMatches[desired])) return desired;
+        int n = SearchMatches.Count;
+        // Expand outward from the requested index, preferring the later match on ties (mirrors the
+        // forward bias of NextMatch).
+        for (int d = 1; d < n; d++)
+        {
+            int hi = desired + d, lo = desired - d;
+            if (hi < n && MatchWithinFocus(vp, SearchMatches[hi])) return hi;
+            if (lo >= 0 && MatchWithinFocus(vp, SearchMatches[lo])) return lo;
+        }
+        return -1;
     }
 
     public (string Pre, string Match, string Post) GetMatchSnippet(SearchMatch match, int contextChars = 40)

@@ -417,6 +417,162 @@ public class FocusBlockTests
     }
 
     [Fact]
+    public void Focus_CenterPage_FramesBlockWithMargin_MatchingClampFloor()
+    {
+        // Issue #81 item F: CenterPage's confined fit routes through ComputeBlockFitZoom (the shared
+        // 8%-margin fit, identical to the confinement clamp's floor) instead of a hand-rolled no-margin
+        // Math.Min(...). FitPage then frames the block the same way the host framing animation does, and
+        // the post-fit ClampCameraToBlock (which only raises zoom) finds it already at the floor.
+        var doc = LoadDoc();
+        var bounds = new BBox(100, 120, 200, 80);
+        doc.Primary.Focus = new FocusBlock(0, 0, bounds);
+        const double vpW = 400, vpH = 400;
+
+        doc.Primary.CenterPage(vpW, vpH);
+
+        double marginedFit = doc.Primary.ComputeBlockFitZoom(bounds, vpW, vpH);
+        double noMarginFit = Math.Min(vpW / bounds.W, vpH / bounds.H);
+        Assert.Equal(marginedFit, doc.Camera.Zoom, precision: 4);   // margined fit, in one place
+        Assert.True(marginedFit < noMarginFit);                     // strictly below the old edge-to-edge fit
+
+        // The block is centred within the margin (same offsets ClampCameraToBlock centres to), so a
+        // following clamp leaves the camera put — no rebound between FitPage and the clamp.
+        double offX = doc.Camera.OffsetX, offY = doc.Camera.OffsetY;
+        doc.ClampCamera(vpW, vpH);
+        Assert.Equal(offX, doc.Camera.OffsetX, precision: 3);
+        Assert.Equal(offY, doc.Camera.OffsetY, precision: 3);
+        Assert.Equal(marginedFit, doc.Camera.Zoom, precision: 4);
+        doc.Dispose();
+    }
+
+    [Fact]
+    public void Focus_CenterPage_OversizedBlock_ShownWholeBelowZoomMin()
+    {
+        // Issue #81 item F regression: a focus block larger than the viewport (whose 8%-margin fit falls
+        // below Camera.ZoomMin) must be framed WHOLE, not raised to ZoomMin and cropped. CenterPage,
+        // ConfinedZoomFloor, and ClampCameraToBlock all floor at the block's true (sub-ZoomMin) fit, so the
+        // whole block shows and the post-fit clamp doesn't rebound it back to ZoomMin.
+        var doc = LoadDoc();
+        var bounds = new BBox(0, 0, 600, 760);              // bigger than a 400×400 viewport even at ZoomMin
+        doc.Primary.Focus = new FocusBlock(0, 0, bounds);
+        const double vpW = 400, vpH = 400;
+
+        double trueFit = doc.Primary.ComputeBlockFitZoom(bounds, vpW, vpH, floorAtZoomMin: false);
+        Assert.True(trueFit < Camera.ZoomMin);              // genuinely oversized
+        // The default (ZoomMin-floored) fit would crop — confirm the two diverge so the test is meaningful.
+        Assert.Equal(Camera.ZoomMin, doc.Primary.ComputeBlockFitZoom(bounds, vpW, vpH), precision: 4);
+
+        doc.Primary.CenterPage(vpW, vpH);
+        Assert.Equal(trueFit, doc.Camera.Zoom, precision: 4);   // shown whole, below ZoomMin
+
+        // The confinement clamp must NOT raise it back to ZoomMin (no rebound on the next pan/zoom/resize).
+        doc.ClampCamera(vpW, vpH);
+        Assert.Equal(trueFit, doc.Camera.Zoom, precision: 4);
+        // And the confined zoom-out floor is the true fit, so a host zoom gesture can reach it.
+        Assert.Equal(trueFit, doc.Primary.ConfinedZoomFloor(vpW, vpH), precision: 4);
+        doc.Dispose();
+    }
+
+    [Fact]
+    public void Focus_PinWithStaleSamePageAnalysis_ReseatsAndCollapsesRail()
+    {
+        // Issue #81 item G: when the rail is seated on a DIFFERENT analysis instance for the SAME page than
+        // the one resident in the cache (a re-analysis replaced the entry, or a stale params variant),
+        // pinning Focus must reseat onto the resident instance AND collapse the navigable set — not leave
+        // it un-collapsed (rail roaming other on-page blocks while the camera is pinned to the focus block).
+        var doc = LoadDocSeatedRail();                       // rail seated on instance A == cached cur
+        doc.Primary.SetSize(400, 400);
+        Assert.True(doc.TryGetAnalysis(0, doc.DefaultAnalysisParams, out var a));
+        Assert.Same(a, doc.Primary.Rail.Analysis);
+        Assert.Equal(8, doc.Primary.Rail.NavigableCount);    // full navigable set before pinning
+
+        // Replace the cached analysis for page 0 with a fresh, equivalent instance B, leaving the rail
+        // seated on the now-stale instance A (the bug's trigger: Rail.Analysis != resident analysis).
+        var b = new PageAnalysis { Blocks = a.Blocks, PageWidth = a.PageWidth, PageHeight = a.PageHeight };
+        doc.SetAnalysis(0, doc.DefaultAnalysisParams, b);
+        Assert.NotSame(b, doc.Primary.Rail.Analysis);        // rail is stale (still on A)
+
+        doc.Primary.Focus = new FocusBlock(0, 1, new BBox(0, 20, 100, 18));
+
+        Assert.Equal(1, doc.Primary.CurrentFocusBlockIndex);
+        Assert.Equal(1, doc.Primary.Rail.NavigableCount);    // collapsed to the one focus block
+        Assert.Same(b, doc.Primary.Rail.Analysis);           // reseated onto the resident instance
+        Assert.True(doc.Primary.Rail.TrySetCurrentByPageIndex(1)); // and it is the navigable block
+        doc.Dispose();
+    }
+
+    [Fact]
+    public void Focus_PinWithCrossPageStaleRail_ConfinesToFocusBlock_NoWrongLanding()
+    {
+        // Issue #81 finding #2: dropping the old ReferenceEquals(Rail.Analysis, cur) guard means the Focus
+        // setter calls ReapplyFocus even when the rail still holds a DIFFERENT page's analysis than the view
+        // now shows (reachable only via host misuse: a bare CurrentPage setter that bypasses GoToPage's
+        // reseat, with no following SubmitAnalysis). This locks the invariant that CONFINING is robust to
+        // that stale state: ReapplyFocus reads the cursor ordinal from the stale (other-page) navigable set,
+        // but the collapse to a single-entry set forces the cursor onto the focus block regardless, AND the
+        // rail is reseated onto the current page's resident analysis. No wrong-block landing, no crash.
+        var doc = LoadDocSeatedRail();                       // rail seated on page 0's analysis (instance a)
+        doc.Primary.SetSize(400, 400);
+        Assert.True(doc.TryGetAnalysis(0, doc.DefaultAnalysisParams, out var a));
+        Assert.Same(a, doc.Primary.Rail.Analysis);
+
+        // Cache a DIFFERENT page's analysis (page 1) and move the view there via the CurrentPage setter,
+        // which (unlike GoToPage) does NOT reseat the rail — so the rail stays cross-page stale on page 0.
+        var blocksB = new List<LayoutBlock>();
+        for (int i = 0; i < 3; i++)
+            blocksB.Add(new LayoutBlock
+            {
+                BBox = new BBox(0, i * 30, 120, 25), Role = BlockRole.Text, Order = i,
+                Lines = [new LineInfo(i * 30, 25, 0, 120)],
+            });
+        var analysisB = new PageAnalysis { Blocks = blocksB, PageWidth = 612, PageHeight = 792 };
+        doc.SetAnalysis(1, doc.DefaultAnalysisParams, analysisB);
+        doc.Primary.CurrentPage = 1;                         // allowed (unconfined); no rail reseat
+        Assert.Same(a, doc.Primary.Rail.Analysis);           // rail is now cross-page stale (still page 0)
+
+        doc.Primary.Focus = new FocusBlock(1, 1, new BBox(0, 30, 120, 25)); // pin a page-1 block
+
+        Assert.Equal(1, doc.Primary.CurrentFocusBlockIndex);
+        Assert.Equal(1, doc.Primary.Rail.NavigableCount);    // collapsed to the one focus block
+        Assert.Same(analysisB, doc.Primary.Rail.Analysis);   // reseated onto the current page's analysis
+        Assert.True(doc.Primary.Rail.TrySetCurrentByPageIndex(1)); // landed on the focus block, not a stale ordinal
+        doc.Dispose();
+    }
+
+    [Fact]
+    public void Focus_PinBlockWithNoLines_DoesNotThrow()
+    {
+        // Issue #81 regression: pinning Focus now unconditionally reseats+collapses the rail and, when the
+        // block-fit zoom crosses the rail threshold, activates rail and snaps to the current line. A focus
+        // block carrying ZERO detected lines (a directly-built analysis, or a visual block line detection
+        // found nothing in — confinement force-includes the focus block even when its role isn't navigable)
+        // must not crash: CurrentLineInfo synthesises a full-block line instead of indexing Lines[-1].
+        // Before the fix this threw ArgumentOutOfRangeException on StartSnap → ComputeTargetCamera.
+        var doc = LoadDoc();
+        // A small block so its fit-zoom clamps well above RailZoomThreshold (3.0): pinning activates rail
+        // and runs the StartSnap → ComputeTargetCamera → CurrentLineInfo path that indexed Lines[-1].
+        var bounds = new BBox(300, 300, 20, 10);
+        doc.SetAnalysis(0, doc.DefaultAnalysisParams, new PageAnalysis
+        {
+            Blocks = [new LayoutBlock { BBox = bounds, Role = BlockRole.Text, Order = 0, Lines = [] }],
+            PageWidth = 612,
+            PageHeight = 792,
+        });
+        doc.Primary.SetSize(400, 400);
+
+        doc.Primary.Focus = new FocusBlock(0, 0, bounds);   // must not throw
+
+        Assert.Equal(0, doc.Primary.CurrentFocusBlockIndex);
+        Assert.True(doc.Primary.Rail.Active);               // fit-zoom crossed the threshold → rail engaged
+        // CurrentLineInfo returns the synthesised full-block line (full width, vertical centre).
+        var line = doc.Primary.Rail.CurrentLineInfo;
+        Assert.Equal(bounds.X, line.X, precision: 3);
+        Assert.Equal(bounds.W, line.Width, precision: 3);
+        Assert.Equal(bounds.Y + bounds.H / 2f, line.Y, precision: 3);
+        doc.Dispose();
+    }
+
+    [Fact]
     public void FitWidthPreservingTop_Focus_ReassertsBlockClamp()
     {
         // Margin-crop toggle on a confined view must re-assert the block clamp (zoom floored at block fit),

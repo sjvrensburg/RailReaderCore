@@ -197,8 +197,36 @@ public sealed partial class RailNav : ICameraClamp
     /// the focus block was, not block 0), and any in-flight snap/scroll/bias is cleared — a set-change
     /// while a snap toward the old block was animating would otherwise lurch into the new set.</para>
     /// </summary>
-    public void ReapplyFocus(int? focusBlockIndex)
+    public void ReapplyFocus(int? focusBlockIndex) => ReapplyFocus(focusBlockIndex, null);
+
+    /// <summary>
+    /// As <see cref="ReapplyFocus(int?)"/>, but first reseats onto <paramref name="analysis"/> when it is
+    /// a different instance than the one currently seated (issue #81 item G). Used when a host pins
+    /// <see cref="Viewport.Focus"/> while the rail holds a STALE same-page analysis instance — a different
+    /// table/cell-nav variant, or a re-analysis that replaced the cache entry. Collapsing against the stale
+    /// instance would rebuild the navigable set from the wrong blocks (and the plain overload keys off
+    /// whatever the rail still holds, possibly even a previous page's analysis), so swap in the resident
+    /// analysis FIRST, then collapse. The stored navigable role set is reused, so callers needn't re-supply
+    /// it. Top-level block indices are param-invariant for a page, so the cursor still follows its page-block
+    /// across the swap. No-op (delegates straight through) when <paramref name="analysis"/> is null or equal
+    /// to the seated one. <paramref name="analysis"/> must be the current page's analysis.
+    /// <para>If the rail happens to hold a DIFFERENT <em>page's</em> analysis than <paramref name="analysis"/>
+    /// (reachable only by host misuse — a bare <c>CurrentPage</c> setter that skips <c>GoToPage</c>'s reseat
+    /// with no following <c>SubmitAnalysis</c>), the remembered <c>currentPageBlock</c> ordinal is read from
+    /// that other page's set and is meaningless here. CONFINING is unaffected: the single-entry collapse
+    /// forces the cursor onto the focus block regardless of the ordinal. UN-CONFINING (a null
+    /// <paramref name="focusBlockIndex"/>) could map the stale ordinal into the rebuilt full set, but that
+    /// lands a reading line, never breaches confinement, and the next per-page reseat (<c>SubmitAnalysis</c>
+    /// /worker result) corrects it. Issue #81 finding #2.</para>
+    /// </summary>
+    public void ReapplyFocus(int? focusBlockIndex, PageAnalysis? analysis)
     {
+        if (_analysis is null && analysis is null) return;
+        // Swap in the resident analysis before reading the cursor/rebuilding, so the collapse keys off the
+        // right page's blocks. Reuses _navigableRoles (the full-set restore path), so confinement collapse
+        // and un-confine expand both behave as for a same-instance ReapplyFocus.
+        if (analysis is not null && !ReferenceEquals(_analysis, analysis))
+            _analysis = analysis;
         if (_analysis is null) return;
 
         // Remember the page-block the cursor is on, so we can follow it into the rebuilt index set.
@@ -822,6 +850,15 @@ public sealed partial class RailNav : ICameraClamp
         get
         {
             var block = CurrentNavigableBlock;
+            // A navigable block can carry zero detected lines when its analysis didn't pass through
+            // BlockPostProcessor's full-block-line fallback (a directly-constructed PageAnalysis, or a
+            // visual/atomic block line detection found nothing in). Confinement force-includes the focus
+            // block even when its role isn't navigable, so such a block can become the seated block — and
+            // pinning Focus now collapses+snaps onto it (issue #81). Synthesise the same span-the-block line
+            // BlockPostProcessor would (full width, vertical centre), so rail framing/snap never indexes
+            // Lines[-1] (ArgumentOutOfRangeException on Math.Min(CurrentLine, -1)).
+            if (block.Lines.Count == 0)
+                return new LineInfo(block.BBox.Y + block.BBox.H / 2f, block.BBox.H, block.BBox.X, block.BBox.W);
             return block.Lines[Math.Min(CurrentLine, block.Lines.Count - 1)];
         }
     }

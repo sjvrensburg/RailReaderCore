@@ -1140,7 +1140,14 @@ public class DocumentControllerTests : IDisposable
 
         var blocks = new List<LayoutBlock>();
         for (int i = 0; i < 4; i++)
-            blocks.Add(new LayoutBlock { BBox = new BBox(0, i * 20, 100, 18), Role = BlockRole.Text, Lines = [] });
+            // One line per block (real analyses always have ≥1 line): pinning Focus now reseats and
+            // collapses the rail onto the resident analysis (issue #81 item G), and an active rail snaps
+            // to the current line — an empty Lines list would crash CurrentLineInfo on StartSnap.
+            blocks.Add(new LayoutBlock
+            {
+                BBox = new BBox(0, i * 20, 100, 18), Role = BlockRole.Text,
+                Lines = [new LineInfo(i * 20, 18, 0, 100)],
+            });
         doc.SetAnalysis(0, doc.DefaultAnalysisParams,
             new PageAnalysis { Blocks = blocks, PageWidth = 612, PageHeight = 792 });
 
@@ -1211,7 +1218,11 @@ public class DocumentControllerTests : IDisposable
 
         Assert.Equal(2, doc.Primary.CurrentPage);
         Assert.True(doc.Camera.Zoom < 15.0, "zoom should drop to fit the larger destination block");
-        double expectedFit = Math.Min(400.0 / 300.0, 400.0 / 600.0); // CenterPage's confined no-margin fit
+        // CenterPage now frames a confined block through ComputeBlockFitZoom (issue #81 item F) — the
+        // shared 8%-margin fit, identical to the confinement clamp's floor — instead of a hand-rolled
+        // no-margin Math.Min(...). The post-fit ClampCameraToBlock floors at the same value, so the
+        // settled zoom is exactly the block-fit zoom.
+        double expectedFit = doc.Primary.ComputeBlockFitZoom(bigBlock, 400, 400);
         Assert.Equal(expectedFit, doc.Camera.Zoom, precision: 2);
     }
 }
