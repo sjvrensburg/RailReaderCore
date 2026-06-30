@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.46.0 — Per-viewport rail-pause / "draw rail visuals" predicates (#83)
+
+Free-pan (Ctrl+drag) pauses the rail but deliberately leaves `Rail.Active == true` (so resume can
+restore the prior block/line). Previously the only pause signal was `DocumentController.RailPaused`, a
+**single focused-viewport flag** — a host drawing several panes had to recompute "is *this* view's rail
+visually live" at render time and scope that global flag to the focused surface by object identity. Core
+now owns the decision, per-viewport. **Additive and behaviour-preserving**: the pause snapshot simply
+moved from an internal `Viewport` field onto the view's own `RailNav` (one source of truth), and
+`DocumentController.RailPaused` is unchanged (still the focused view's pause).
+
+- **New `RailNav.Paused`** (`public bool`) — true while *this* view's rail is paused by an in-progress
+  free pan. Per-viewport, since each `Viewport` owns its `RailNav`, so a consumer reads the rail of the
+  exact pane it is drawing (`viewport.Rail.Paused`) instead of `controller.RailPaused &&
+  ReferenceEquals(view, controller.FocusedViewport)`. Distinct from `Active`: the rail stays engaged
+  throughout the pause.
+- **New `RailNav.VisualsVisible`** (`public bool`) — the canonical "should the host draw rail visuals
+  (block dim / outline / line highlight / line-focus blur) for this view right now?" predicate:
+  `Active && !Paused && HasAnalysis` (`HasAnalysis` already implies `NavigableCount > 0`). Lets a
+  consumer collapse a duplicated multi-part render-time condition to one read on the view's own rail.
+
+**Host note (railreader2):** the `IsFreePanningThisViewport(vm)` shell band-aid (controller-flag read +
+`ReferenceEquals` focus scoping, PR sjvrensburg/railreader2#196) can be deleted — fold the free-pan term
+into the per-viewport reads: `viewport.Rail.Paused` for the page line-focus-blur gate, and
+`viewport.Rail is { VisualsVisible: true } rail` for the overlay build. `VisualsVisible` additionally
+gates the page dim on `NavigableCount > 0` (slightly stricter than the old plain `!free-pan`), which is
+fine — the renderer already further gates on line height.
+
 ## 0.45.2 — FocusBlock: deferred minor review items (D/E/F/G)
 
 Clears the four low-priority items the `/code-review xhigh` passes surfaced on the FocusBlock confinement
