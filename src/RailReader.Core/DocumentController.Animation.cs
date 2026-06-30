@@ -33,7 +33,7 @@ public sealed partial class DocumentController
         // size any more (the single-viewport facade was removed in Phase 3).
         var (ww, wh) = (vp.Width, vp.Height);
         // Free-pan pause is this view's own state and can't change within a tick; read it once.
-        bool railPaused = vp.RailPause is not null;
+        bool railPaused = vp.Rail.Paused;
         bool cameraChanged = false;
         bool pageChanged = false;
         bool overlayChanged = false;

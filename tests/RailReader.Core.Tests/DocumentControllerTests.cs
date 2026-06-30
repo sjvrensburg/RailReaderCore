@@ -379,6 +379,78 @@ public class DocumentControllerTests : IDisposable
         Assert.Equal(zoomBefore, state.Camera.Zoom);
     }
 
+    // --- #83: per-viewport rail-pause / "draw rail visuals" predicates ---
+
+    [Fact]
+    public void RailVisualsVisible_WhenRailActiveAndNotPaused_IsTrue()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupRailMode(state);
+
+        // Rail engaged with a navigable block and no free pan → host should draw rail visuals.
+        Assert.True(state.Rail.Active);
+        Assert.False(state.Rail.Paused);
+        Assert.True(state.Rail.VisualsVisible);
+    }
+
+    [Fact]
+    public void RailVisualsVisible_WithoutAnalysis_IsFalse()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+
+        // No analysis seated: rail never engages, so there are no visuals to draw.
+        Assert.False(state.Rail.Active);
+        Assert.False(state.Rail.HasAnalysis);
+        Assert.False(state.Rail.VisualsVisible);
+    }
+
+    [Fact]
+    public void FreePan_PausesRailAndHidesVisuals_OnTheViewport()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupRailMode(state);
+
+        // Engage free pan (Ctrl+drag): the rail stays engaged but is paused, so visuals hide.
+        _controller.HandlePan(10, 10, ctrlHeld: true);
+        Assert.True(state.Rail.Paused);
+        Assert.True(state.Rail.Active);          // still engaged — Paused does not overload Active
+        Assert.False(state.Rail.VisualsVisible);
+
+        // Release Ctrl: pause clears and the visuals come back.
+        _controller.ResumeRailFromPause();
+        Assert.False(state.Rail.Paused);
+        Assert.True(state.Rail.VisualsVisible);
+    }
+
+    [Fact]
+    public void RailPaused_IsPerViewport_NotGlobal()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupRailMode(state);
+
+        // A second pane of the same document (split-pane / tear-off).
+        var pane2 = state.AddViewport();
+
+        // The focused (primary) view free-pans. The other pane must be unaffected — the pause
+        // is per-viewport state, not a single global flag scoped to the focused surface (#83).
+        _controller.HandlePan(10, 10, ctrlHeld: true);
+
+        Assert.True(state.Primary.Rail.Paused);
+        Assert.False(pane2.Rail.Paused);
+    }
+
     // --- Phase 3b: Non-Rail Edge-Hold Page Advance ---
 
     [Fact]

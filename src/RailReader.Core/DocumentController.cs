@@ -116,8 +116,10 @@ public sealed partial class DocumentController : IDisposable
         set { if (FocusedViewport is { } vp) vp.AutoScroll.JumpMode = value; }
     }
 
-    // Rail pause (Ctrl+drag free pan) state — per-view, lives on Viewport.
-    public bool RailPaused => FocusedViewport?.RailPause is not null;
+    // Rail pause (Ctrl+drag free pan) state — per-view, lives on the view's RailNav. This is the
+    // FOCUSED view's pause; a host that draws several panes reads each pane's own Viewport.Rail.Paused
+    // (issue #83) rather than scoping this single flag to the focused surface by object identity.
+    public bool RailPaused => FocusedViewport?.Rail.Paused ?? false;
 
     /// <summary>
     /// Fired when a property changes. UI can subscribe to update bindings.
@@ -274,7 +276,7 @@ public sealed partial class DocumentController : IDisposable
         {
             // Quiesce the FOCUSED view of the tab you're leaving — it may be a secondary/detached
             // pane, not the primary (auto-scroll/free-pan state is per-view), so stop ITS own rail.
-            leavingView.RailPause = null;
+            leavingView.Rail.PauseState = null;
             leavingView.AutoScroll.StopAutoScroll();
         }
         ActiveDocumentIndex = index;
@@ -511,7 +513,7 @@ public sealed partial class DocumentController : IDisposable
         if (FocusedViewport is not { } vp) return;
         var (ww, wh) = (vp.Width, vp.Height);
 
-        if (ctrlHeld && vp.Rail.Active && !RailPaused)
+        if (ctrlHeld && vp.Rail.Active && !vp.Rail.Paused)
         {
             double step = scrollDelta * 2.0 * vp.Camera.Zoom;
             vp.Camera.OffsetX += step;
@@ -535,19 +537,19 @@ public sealed partial class DocumentController : IDisposable
         if (AutoScrollActive) StopAutoScroll();
         var (ww, wh) = (vp.Width, vp.Height);
 
-        if (ctrlHeld && vp.Rail.Active && !RailPaused)
+        if (ctrlHeld && vp.Rail.Active && !vp.Rail.Paused)
             StartRailPause(vp);
 
         vp.Camera.OffsetX += dx;
         vp.Camera.OffsetY += dy;
         vp.ClampCamera(ww, wh);
-        if (vp.Rail.Active && !RailPaused)
+        if (vp.Rail.Active && !vp.Rail.Paused)
             vp.Rail.CaptureVerticalBias(vp.Camera.OffsetY, vp.Camera.Zoom, wh);
     }
 
     private void StartRailPause(Viewport vp)
     {
-        vp.RailPause = new(vp.Rail.CurrentBlock, vp.Rail.CurrentLine, vp.Rail.VerticalBias, vp.Camera.Zoom);
+        vp.Rail.PauseState = new(vp.Rail.CurrentBlock, vp.Rail.CurrentLine, vp.Rail.VerticalBias, vp.Camera.Zoom);
         StatusMessage?.Invoke("Free pan — release Ctrl to return");
     }
 
@@ -557,8 +559,8 @@ public sealed partial class DocumentController : IDisposable
     public void ResumeRailFromPause()
     {
         if (FocusedViewport is not { } vp) return;
-        if (vp.RailPause is not { } pause) return;
-        vp.RailPause = null;
+        if (vp.Rail.PauseState is not { } pause) return;
+        vp.Rail.PauseState = null;
 
         var (ww, wh) = (vp.Width, vp.Height);
 

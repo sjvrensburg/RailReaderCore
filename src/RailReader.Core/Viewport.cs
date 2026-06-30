@@ -111,9 +111,6 @@ public sealed class Viewport : IDisposable
     /// <summary>Non-rail page-edge hold state (hold arrow at the page edge → page advance) for this view.</summary>
     internal EdgeHoldStateMachine PageEdgeHold { get; } = new();
 
-    /// <summary>Active free-pan (Ctrl+drag) rail-pause snapshot for this view, or null when not paused.</summary>
-    internal RailPauseState? RailPause { get; set; }
-
     /// <summary>True while THIS view has a camera animation (zoom / rail snap) or an active auto-scroll
     /// running. Replaces the removed controller-level <c>IsAnimating</c> facade (Phase 3): a host's
     /// "settled" signal reads the focused view's value. A <em>parked</em> semi-auto-scroll is excluded

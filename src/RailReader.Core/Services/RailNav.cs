@@ -29,6 +29,38 @@ public sealed partial class RailNav : ICameraClamp
         set { _currentLine = value; CurrentCell = 0; }
     }
     public bool Active { get; set; }
+
+    /// <summary>
+    /// Free-pan (Ctrl+drag) snapshot of this view's rail position (block / line / vertical bias / zoom),
+    /// captured when the user starts a free pan and consumed when Ctrl is released
+    /// (<see cref="DocumentController.ResumeRailFromPause"/>). Non-null ⇔ paused. Lives on the rail — not on
+    /// <see cref="Viewport"/> — so the per-view pause state and the <see cref="Paused"/> /
+    /// <see cref="VisualsVisible"/> predicates derived from it share one source of truth (issue #83).
+    /// <see cref="Active"/> deliberately stays <c>true</c> across a pause so resume can restore the prior
+    /// block/line; this snapshot is the separate "transient pause" signal.
+    /// </summary>
+    internal RailPauseState? PauseState { get; set; }
+
+    /// <summary>
+    /// True while this view's rail is paused by an in-progress free pan (Ctrl+drag) — see
+    /// <see cref="PauseState"/>. Per-viewport (each <see cref="Viewport"/> owns its own
+    /// <see cref="RailNav"/>), so a consumer asks the rail of the exact view it is drawing instead of
+    /// scoping the controller's focused-view <c>RailPaused</c> flag by object identity (issue #83).
+    /// Distinct from <see cref="Active"/>: the rail stays engaged (<c>Active == true</c>) throughout the
+    /// pause so the prior position can be restored on resume.
+    /// </summary>
+    public bool Paused => PauseState is not null;
+
+    /// <summary>
+    /// Canonical "should the host draw rail visuals (block dim / outline / line highlight / line-focus
+    /// blur) for this view right now?" predicate: the rail is engaged, not paused by a free pan, and has
+    /// a navigable block to highlight — <c>Active &amp;&amp; !Paused &amp;&amp; HasAnalysis</c>
+    /// (<see cref="HasAnalysis"/> already implies <see cref="NavigableCount"/> &gt; 0). Lets a consumer
+    /// replace a duplicated multi-part render-time condition with one read on the view's own rail
+    /// (issue #83).
+    /// </summary>
+    public bool VisualsVisible => Active && !Paused && HasAnalysis;
+
     public double ScrollSpeed { get; private set; }
 
     /// <summary>Zoom level at or above which rail mode activates.</summary>
