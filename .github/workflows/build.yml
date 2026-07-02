@@ -57,3 +57,4 @@ jobs:
         with:
           name: nuget-packages
           path: dist/*.nupkg
+          retention-days: 7
