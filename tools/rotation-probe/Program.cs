@@ -39,6 +39,37 @@ internal static class Probe
         ProbePdf(Path.Combine(fixtures, "landscape-scan.pdf"), "SCANMARK");
         ProbePdf(Path.Combine(fixtures, "sideways-table.pdf"), "Quarter");
         ProbeViewRotation(Path.Combine(fixtures, "landscape-scan.pdf"), "SCANMARK");
+
+        // Optional second arg: write a copy of rotate-suite.pdf with a yellow
+        // highlight authored over 'MARKER' on every page (each in its own display
+        // frame) for independent-viewer fidelity checks (Poppler/MuPDF).
+        if (args.Length > 1)
+            WriteAnnotatedSuite(Path.Combine(fixtures, "rotate-suite.pdf"), args[1]);
+    }
+
+    private static void WriteAnnotatedSuite(string path, string outPath)
+    {
+        var bytes = File.ReadAllBytes(path);
+        var textService = new PdfTextService();
+        var file = new AnnotationFile();
+        for (int p = 0; p < 4; p++)
+        {
+            var pageText = textService.ExtractPageText(bytes, p);
+            int mi = pageText.Text.IndexOf("MARKER", StringComparison.Ordinal);
+            var boxes = pageText.CharBoxes.Where(c => c.Index >= mi && c.Index < mi + 6).ToList();
+            float l = boxes.Min(b => b.Left), t = boxes.Min(b => b.Top);
+            float r = boxes.Max(b => b.Right), btm = boxes.Max(b => b.Bottom);
+            file.Pages[p] =
+            [
+                new HighlightAnnotation
+                {
+                    Rects = [new HighlightRect(l, t, r - l, btm - t)],
+                    Color = "#FFFF00",
+                },
+            ];
+        }
+        File.WriteAllBytes(outPath, new PdfAnnotationWriter().AddAuthoredAnnotations(bytes, file));
+        Console.WriteLine($"\nannotated suite written: {outPath}");
     }
 
     /// <summary>
