@@ -38,6 +38,57 @@ internal static class Probe
         ProbePdf(Path.Combine(fixtures, "rotate-suite.pdf"), "MARKER");
         ProbePdf(Path.Combine(fixtures, "landscape-scan.pdf"), "SCANMARK");
         ProbePdf(Path.Combine(fixtures, "sideways-table.pdf"), "Quarter");
+        ProbeViewRotation(Path.Combine(fixtures, "landscape-scan.pdf"), "SCANMARK");
+    }
+
+    /// <summary>
+    /// Phase-1 check: applying a manual view rotation to the sideways-scan fixture
+    /// must keep char boxes aligned with the re-rendered pixmap at every quarter-turn,
+    /// and at the correct turn the marker's box must become wider than tall (upright text).
+    /// </summary>
+    private static void ProbeViewRotation(string path, string marker)
+    {
+        Console.WriteLine($"\n=== view-rotation: {Path.GetFileName(path)} ===");
+        var service = new SkiaPdfService(path);
+        var textService = new PdfTextService();
+        var bytes = File.ReadAllBytes(path);
+
+        for (int q = 0; q < 4; q++)
+        {
+            var (w, h) = ((IPdfService)service).GetPageSize(0, q);
+            var pageText = ((IPdfTextService)textService).ExtractPageText(bytes, 0, q);
+
+            int mi = pageText.Text.IndexOf(marker, StringComparison.Ordinal);
+            var boxes = pageText.CharBoxes.Where(c => c.Index >= mi && c.Index < mi + marker.Length).ToList();
+            float bw = boxes.Max(b => b.Right) - boxes.Min(b => b.Left);
+            float bh = boxes.Max(b => b.Bottom) - boxes.Min(b => b.Top);
+
+            var (rgb, pixW, pixH) = ((IPdfService)service).RenderPagePixmap(0, 800, q);
+            double scaleX = pixW / w, scaleY = pixH / h;
+            var inBox = new bool[pixW * pixH];
+            foreach (var b in pageText.CharBoxes)
+            {
+                if (b.Right <= b.Left || b.Bottom <= b.Top) continue;
+                int x0 = Math.Clamp((int)(b.Left * scaleX) - 1, 0, pixW - 1);
+                int x1 = Math.Clamp((int)(b.Right * scaleX) + 1, 0, pixW - 1);
+                int y0 = Math.Clamp((int)(b.Top * scaleY) - 1, 0, pixH - 1);
+                int y1 = Math.Clamp((int)(b.Bottom * scaleY) + 1, 0, pixH - 1);
+                for (int y = y0; y <= y1; y++)
+                    for (int x = x0; x <= x1; x++)
+                        inBox[y * pixW + x] = true;
+            }
+            long dark = 0, darkIn = 0;
+            for (int i = 0; i < pixW * pixH; i++)
+                if (rgb[i * 3] + rgb[i * 3 + 1] + rgb[i * 3 + 2] < 384)
+                {
+                    dark++;
+                    if (inBox[i]) darkIn++;
+                }
+
+            Console.WriteLine($"viewRotation={q}: size {w:F0}x{h:F0}, pixmap {pixW}x{pixH}, " +
+                $"coverage {(dark == 0 ? 0 : (double)darkIn / dark):F3}, '{marker}' box {bw:F1}x{bh:F1} " +
+                (bw > bh ? "(horizontal)" : "(vertical)"));
+        }
     }
 
     private static void ProbePdf(string path, string marker)

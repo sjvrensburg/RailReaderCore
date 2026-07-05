@@ -800,6 +800,44 @@ public sealed partial class DocumentController : IDisposable
     }
 
     /// <summary>
+    /// Sets the focused document's view rotation (clockwise quarter-turns, 0–3,
+    /// composed on top of each page's own /Rotate) and re-establishes everything
+    /// derived from page geometry: the model drops its text/link/analysis caches
+    /// and re-renders every view (<see cref="DocumentModel.ViewRotation"/>), then
+    /// this method resubmits analysis and lookahead per view so rail re-seats in
+    /// the new frame. Any active search is closed (its match rects are geometry
+    /// in the old frame). Persisting the rotation is the host's job.
+    /// </summary>
+    public void SetViewRotation(int quarterTurns)
+    {
+        if (FocusedViewport is not { } fv) return;
+        var doc = fv.Owner;
+        int q = ViewRotationMath.Normalize(quarterTurns);
+        if (q == doc.ViewRotation) return;
+
+        Search.CloseSearch();
+        doc.ViewRotation = q;
+
+        foreach (var vp in doc.Viewports)
+        {
+            doc.SubmitAnalysis(vp, _worker, _config.NavigableRoles);
+            doc.QueueLookahead(vp, _config.AnalysisLookaheadPages);
+        }
+    }
+
+    /// <summary>Rotates the focused document's view a quarter-turn clockwise (wraps at 360°).</summary>
+    public void RotateViewClockwise()
+    {
+        if (FocusedViewport is { } fv) SetViewRotation(fv.Owner.ViewRotation + 1);
+    }
+
+    /// <summary>Rotates the focused document's view a quarter-turn counter-clockwise.</summary>
+    public void RotateViewCounterClockwise()
+    {
+        if (FocusedViewport is { } fv) SetViewRotation(fv.Owner.ViewRotation - 1);
+    }
+
+    /// <summary>
     /// Apply a new settings snapshot for incremental slider drag events.
     /// Like <see cref="OnConfigChanged"/> but skips reapplying analysis-derived
     /// state (navigable classes) because slider drags don't change them.

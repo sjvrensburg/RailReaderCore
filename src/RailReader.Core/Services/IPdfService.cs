@@ -38,4 +38,26 @@ public interface IPdfService
     /// Renders a page to RGB bytes at the given target pixel size (for ONNX analysis).
     /// </summary>
     (byte[] RgbBytes, int Width, int Height) RenderPagePixmap(int pageIndex, int targetSize);
+
+    // --- View-rotation overloads ---------------------------------------------------
+    // viewRotation is a user-requested extra rotation in clockwise quarter-turns
+    // (0–3), composed on top of the page's own /Rotate attribute. Default
+    // implementations ignore it so existing IPdfService implementations keep
+    // compiling and behaving; rotation-aware backends override them.
+
+    /// <summary>Displayed page size under an extra view rotation (axes swap on odd turns).</summary>
+    (double Width, double Height) GetPageSize(int pageIndex, int viewRotation)
+        => GetPageSize(pageIndex);
+
+    /// <summary>Renders a page with an extra view rotation applied.</summary>
+    IRenderedPage RenderPage(int pageIndex, int dpi, int viewRotation)
+        => RenderPage(pageIndex, dpi);
+
+    /// <summary>Renders a thumbnail with an extra view rotation applied.</summary>
+    IRenderedPage RenderThumbnail(int pageIndex, int viewRotation)
+        => RenderThumbnail(pageIndex);
+
+    /// <summary>Renders the analysis pixmap with an extra view rotation applied.</summary>
+    (byte[] RgbBytes, int Width, int Height) RenderPagePixmap(int pageIndex, int targetSize, int viewRotation)
+        => RenderPagePixmap(pageIndex, targetSize);
 }

@@ -108,6 +108,50 @@ public sealed class DocumentModel : IDisposable
         set => SetField(ref _marginCropping, value, nameof(MarginCropping));
     }
 
+    private int _viewRotation;
+
+    /// <summary>
+    /// User-requested view rotation in clockwise quarter-turns (0–3), composed on
+    /// top of each page's own /Rotate attribute. Document-level (not per-viewport):
+    /// analysis, text, and link geometry are cached per document in the displayed
+    /// frame, so every view of a document must share one rotation. Setting it
+    /// drops all cached geometry and rasterised bitmaps and re-renders each view;
+    /// the host should then re-trigger analysis via
+    /// <see cref="DocumentController.SetViewRotation"/>, which does both.
+    /// Persisting the value across sessions is the host's job.
+    /// </summary>
+    public int ViewRotation
+    {
+        get => _viewRotation;
+        set
+        {
+            _marshaller.AssertUIThread();
+            int q = ViewRotationMath.Normalize(value);
+            if (q == _viewRotation) return;
+            _viewRotation = q;
+            OnViewRotationChanged();
+            StateChanged?.Invoke(nameof(ViewRotation));
+        }
+    }
+
+    /// <summary>
+    /// Every cached artefact — text boxes, link rects, analysis blocks, content
+    /// fraction, rasterised bitmaps — is geometry in the OLD display frame; drop
+    /// them all and re-render each view in the new frame. Analysis re-runs lazily
+    /// (controller resubmission / background queue), not here: the model doesn't
+    /// hold the worker or the navigable-role set.
+    /// </summary>
+    private void OnViewRotationChanged()
+    {
+        _textCache.Clear();
+        _linkCache.Clear();
+        _analysisCache.Clear();
+        DocumentContentFraction = null;
+        BackgroundQueue.Reset(Primary.CurrentPage);
+        foreach (var vp in _viewports)
+            vp.OnViewRotationChanged();
+    }
+
     public string FilePath { get; }
     public int PageCount { get; }
     public IPdfService Pdf => _pdf;
@@ -559,6 +603,7 @@ public sealed class DocumentModel : IDisposable
         int page = vp.CurrentPage;
         double pageW = vp.PageWidth, pageH = vp.PageHeight;
         string filePath = FilePath;
+        int viewRotation = _viewRotation;
         vp.PendingRailSetup = true;
 
         _logger.Debug($"[SubmitAnalysis] Page {page}: scheduling pixmap on background thread...");
@@ -569,8 +614,8 @@ public sealed class DocumentModel : IDisposable
             try
             {
                 ct.ThrowIfCancellationRequested();
-                var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize);
-                var pageText = _pdfText.ExtractPageText(_pdf.PdfBytes, page, _pdf.Password);
+                var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize, viewRotation);
+                var pageText = _pdfText.ExtractPageText(_pdf.PdfBytes, page, viewRotation, _pdf.Password);
                 _logger.Debug($"[SubmitAnalysis] Page {page}: pixmap ready {pxW}x{pxH}, {pageText.CharBoxes.Count} chars, submitting...");
                 _marshaller.Post(() =>
                 {
@@ -638,14 +683,15 @@ public sealed class DocumentModel : IDisposable
 
             string filePath = FilePath;
             double pageW = vp.PageWidth, pageH = vp.PageHeight;
+            int viewRotation = _viewRotation;
             var ct = _cts.Token;
             Task.Run(() =>
             {
                 try
                 {
                     ct.ThrowIfCancellationRequested();
-                    var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize);
-                    var pageText = _pdfText.ExtractPageText(_pdf.PdfBytes, page, _pdf.Password);
+                    var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize, viewRotation);
+                    var pageText = _pdfText.ExtractPageText(_pdf.PdfBytes, page, viewRotation, _pdf.Password);
                     _marshaller.Post(() =>
                     {
                         if (!IsDisposed)
@@ -695,8 +741,8 @@ public sealed class DocumentModel : IDisposable
 
         try
         {
-            var (pageW, pageH) = _pdf.GetPageSize(page);
-            var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize);
+            var (pageW, pageH) = _pdf.GetPageSize(page, _viewRotation);
+            var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize, _viewRotation);
             var pageText = GetOrExtractText(page);
             worker.Submit(new AnalysisRequest(FilePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, pars));
             return true;
@@ -866,6 +912,17 @@ public sealed class DocumentModel : IDisposable
 
     public void AddAnnotation(int page, Annotation annotation)
     {
+        // Annotation geometry is persisted in the rotation-0 display frame (the
+        // sidecar and the PDF /Annots writer both assume it). Authoring while the
+        // view is rotated would bake rotated-frame coordinates into the store, so
+        // it is refused here as a backstop — hosts should disable annotation tools
+        // while ViewRotation != 0 (see the ViewRotation docs).
+        if (_viewRotation != 0)
+        {
+            _logger.Warn($"[Annotations] Refusing to add an annotation while ViewRotation={_viewRotation} — geometry would be stored in the rotated frame");
+            return;
+        }
+
         if (!Annotations.Pages.TryGetValue(page, out var list))
         {
             list = [];
@@ -929,7 +986,7 @@ public sealed class DocumentModel : IDisposable
         _marshaller.AssertUIThread();
         if (_textCache.TryGetValue(pageIndex, out var cached))
             return cached;
-        var text = _pdfText.ExtractPageText(_pdf.PdfBytes, pageIndex, _pdf.Password);
+        var text = _pdfText.ExtractPageText(_pdf.PdfBytes, pageIndex, _viewRotation, _pdf.Password);
         _textCache[pageIndex] = text;
         return text;
     }
@@ -943,7 +1000,7 @@ public sealed class DocumentModel : IDisposable
         _marshaller.AssertUIThread();
         if (_linkCache.TryGetValue(pageIndex, out var cached))
             return cached;
-        var links = _pdfLink.ExtractPageLinks(_pdf.PdfBytes, pageIndex, _pdf.Password);
+        var links = _pdfLink.ExtractPageLinks(_pdf.PdfBytes, pageIndex, _viewRotation, _pdf.Password);
         _linkCache[pageIndex] = links;
         return links;
     }

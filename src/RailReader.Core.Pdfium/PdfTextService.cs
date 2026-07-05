@@ -21,8 +21,11 @@ public sealed class PdfTextService : IPdfTextService
     /// matching BBox and the overlay layers.
     /// </summary>
     public PageText ExtractPageText(byte[] pdfBytes, int pageIndex, string? password = null)
+        => ExtractPageText(pdfBytes, pageIndex, 0, password);
+
+    public PageText ExtractPageText(byte[] pdfBytes, int pageIndex, int viewRotation, string? password = null)
     {
-        return WithTextPage(pdfBytes, pageIndex, password, s_empty, "extract text",
+        return WithTextPage(pdfBytes, pageIndex, viewRotation, password, s_empty, "extract text",
             (textPage, tx) =>
             {
                 int charCount = FPDFText_CountChars(textPage);
@@ -62,12 +65,16 @@ public sealed class PdfTextService : IPdfTextService
     /// </summary>
     public List<List<RectF>> GetTextRangeRects(byte[] pdfBytes, int pageIndex,
         List<(int CharStart, int CharLength)> ranges, string? password = null)
+        => GetTextRangeRects(pdfBytes, pageIndex, ranges, 0, password);
+
+    public List<List<RectF>> GetTextRangeRects(byte[] pdfBytes, int pageIndex,
+        List<(int CharStart, int CharLength)> ranges, int viewRotation, string? password = null)
     {
         var result = new List<List<RectF>>(ranges.Count);
         for (int i = 0; i < ranges.Count; i++)
             result.Add([]);
 
-        return WithTextPage(pdfBytes, pageIndex, password, result, "get text range rects",
+        return WithTextPage(pdfBytes, pageIndex, viewRotation, password, result, "get text range rects",
             (textPage, tx) =>
             {
                 for (int i = 0; i < ranges.Count; i++)
@@ -96,7 +103,7 @@ public sealed class PdfTextService : IPdfTextService
     /// Returns <paramref name="defaultValue"/> if the document, page, or text page
     /// fails to load, or if an exception is thrown.
     /// </summary>
-    private static T WithTextPage<T>(byte[] pdfBytes, int pageIndex, string? password, T defaultValue,
+    private static T WithTextPage<T>(byte[] pdfBytes, int pageIndex, int viewRotation, string? password, T defaultValue,
         string operationName, Func<IntPtr, PageTransform, T> action)
     {
         lock (PdfiumGate.Lock)
@@ -121,7 +128,7 @@ public sealed class PdfTextService : IPdfTextService
                 if (page == IntPtr.Zero)
                     return defaultValue;
 
-                var tx = GetPageTransform(page);
+                var tx = GetPageTransform(page, viewRotation);
 
                 textPage = FPDFText_LoadPage(page);
                 if (textPage == IntPtr.Zero)

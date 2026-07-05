@@ -14,6 +14,9 @@ public sealed class PdfLinkService : IPdfLinkService
     private static readonly List<PdfLink> s_empty = [];
 
     public List<PdfLink> ExtractPageLinks(byte[] pdfBytes, int pageIndex, string? password = null)
+        => ExtractPageLinks(pdfBytes, pageIndex, 0, password);
+
+    public List<PdfLink> ExtractPageLinks(byte[] pdfBytes, int pageIndex, int viewRotation, string? password = null)
     {
         lock (PdfiumGate.Lock)
         {
@@ -33,7 +36,7 @@ public sealed class PdfLinkService : IPdfLinkService
                 page = FPDF_LoadPage(doc, pageIndex);
                 if (page == IntPtr.Zero) return s_empty;
 
-                var tx = GetPageTransform(page);
+                var tx = GetPageTransform(page, viewRotation);
                 var links = new List<PdfLink>();
                 // Destinations can target other pages with their own /Rotate; cache
                 // each target page's transform so repeated links stay cheap.
@@ -47,7 +50,7 @@ public sealed class PdfLinkService : IPdfLinkService
 
                     var rect = ToPageRect(fsRect, tx);
 
-                    var dest = ResolveDestination(doc, linkAnnot, destTransforms);
+                    var dest = ResolveDestination(doc, linkAnnot, destTransforms, viewRotation);
                     if (dest is null) continue;
 
                     links.Add(new PdfLink { Rect = rect, Destination = dest });
@@ -70,7 +73,7 @@ public sealed class PdfLinkService : IPdfLinkService
     }
 
     private static PdfLinkDestination? ResolveDestination(IntPtr doc, IntPtr link,
-        Dictionary<int, PageTransform> destTransforms)
+        Dictionary<int, PageTransform> destTransforms, int viewRotation)
     {
         // Try direct destination first (most internal links)
         IntPtr dest = FPDFLink_GetDest(doc, link);
@@ -78,7 +81,7 @@ public sealed class PdfLinkService : IPdfLinkService
         {
             int pageIdx = FPDFDest_GetDestPageIndex(doc, dest);
             if (pageIdx >= 0)
-                return MakePageDestination(doc, dest, pageIdx, destTransforms);
+                return MakePageDestination(doc, dest, pageIdx, destTransforms, viewRotation);
         }
 
         // Fall back to action
@@ -94,7 +97,7 @@ public sealed class PdfLinkService : IPdfLinkService
                 {
                     int pageIdx = FPDFDest_GetDestPageIndex(doc, dest);
                     if (pageIdx >= 0)
-                        return MakePageDestination(doc, dest, pageIdx, destTransforms);
+                        return MakePageDestination(doc, dest, pageIdx, destTransforms, viewRotation);
                 }
                 break;
 
@@ -122,7 +125,7 @@ public sealed class PdfLinkService : IPdfLinkService
     }
 
     private static PageDestination MakePageDestination(IntPtr doc, IntPtr dest, int pageIdx,
-        Dictionary<int, PageTransform> destTransforms)
+        Dictionary<int, PageTransform> destTransforms, int viewRotation)
     {
         float? pdfX = null, pdfY = null;
         if (FPDFDest_GetLocationInPage(dest, out int hasX, out int hasY, out _,
@@ -136,7 +139,7 @@ public sealed class PdfLinkService : IPdfLinkService
         // space (CropBox- and /Rotate-aware) so navigation needs no PDF-space math.
         float? pageX = null, pageY = null;
         if ((pdfX is not null || pdfY is not null) &&
-            TryGetTransform(doc, pageIdx, destTransforms, out var tx))
+            TryGetTransform(doc, pageIdx, destTransforms, viewRotation, out var tx))
         {
             var (px, py) = tx.PdfToPage(pdfX ?? 0, pdfY ?? 0);
             // On 90°/270° pages each displayed axis derives from the other PDF axis;
@@ -154,7 +157,7 @@ public sealed class PdfLinkService : IPdfLinkService
     }
 
     private static bool TryGetTransform(IntPtr doc, int pageIdx,
-        Dictionary<int, PageTransform> cache, out PageTransform tx)
+        Dictionary<int, PageTransform> cache, int viewRotation, out PageTransform tx)
     {
         if (cache.TryGetValue(pageIdx, out tx)) return true;
 
@@ -162,7 +165,7 @@ public sealed class PdfLinkService : IPdfLinkService
         if (page == IntPtr.Zero) return false;
         try
         {
-            tx = GetPageTransform(page);
+            tx = GetPageTransform(page, viewRotation);
             cache[pageIdx] = tx;
             return true;
         }

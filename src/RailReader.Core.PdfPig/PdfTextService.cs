@@ -18,6 +18,9 @@ public sealed class PdfTextService : IPdfTextService
     private static readonly PageText s_empty = new("", []);
 
     public PageText ExtractPageText(byte[] pdfBytes, int pageIndex, string? password = null)
+        => ExtractPageText(pdfBytes, pageIndex, 0, password);
+
+    public PageText ExtractPageText(byte[] pdfBytes, int pageIndex, int viewRotation, string? password = null)
     {
         try
         {
@@ -26,7 +29,7 @@ public sealed class PdfTextService : IPdfTextService
 
             // PdfPig pages are 1-indexed; Core's IPdfTextService is 0-indexed.
             var page = doc.GetPage(pageIndex + 1);
-            return BuildPageText(page);
+            return RotateBoxes(BuildPageText(page), page.Width, page.Height, viewRotation);
         }
         catch (Exception ex)
         {
@@ -37,6 +40,10 @@ public sealed class PdfTextService : IPdfTextService
 
     public List<List<RectF>> GetTextRangeRects(byte[] pdfBytes, int pageIndex,
         List<(int CharStart, int CharLength)> ranges, string? password = null)
+        => GetTextRangeRects(pdfBytes, pageIndex, ranges, 0, password);
+
+    public List<List<RectF>> GetTextRangeRects(byte[] pdfBytes, int pageIndex,
+        List<(int CharStart, int CharLength)> ranges, int viewRotation, string? password = null)
     {
         var result = new List<List<RectF>>(ranges.Count);
         for (int i = 0; i < ranges.Count; i++)
@@ -48,7 +55,7 @@ public sealed class PdfTextService : IPdfTextService
             if (pageIndex < 0 || pageIndex >= doc.NumberOfPages) return result;
 
             var page = doc.GetPage(pageIndex + 1);
-            var pageText = BuildPageText(page);
+            var pageText = RotateBoxes(BuildPageText(page), page.Width, page.Height, viewRotation);
             var boxes = pageText.CharBoxes;
             int textLen = pageText.Text.Length;
 
@@ -225,6 +232,26 @@ public sealed class PdfTextService : IPdfTextService
         }
 
         return new PageText(sb.ToString(), boxes);
+    }
+
+    /// <summary>
+    /// Applies the extra view rotation to every char box. Word/line detection in
+    /// <see cref="BuildPageText"/> runs in the page's own display frame; the view
+    /// rotation is a pure per-box geometry remap, so it composes afterwards.
+    /// </summary>
+    private static PageText RotateBoxes(PageText pageText, double pageW, double pageH, int viewRotation)
+    {
+        if (ViewRotationMath.Normalize(viewRotation) == 0 || pageText.CharBoxes.Count == 0)
+            return pageText;
+
+        var rotated = new List<CharBox>(pageText.CharBoxes.Count);
+        foreach (var b in pageText.CharBoxes)
+        {
+            var r = ViewRotationMath.RotateRect(
+                new RectF(b.Left, b.Top, b.Right, b.Bottom), pageW, pageH, viewRotation);
+            rotated.Add(new CharBox(b.Index, r.Left, r.Top, r.Right, r.Bottom));
+        }
+        return new PageText(pageText.Text, rotated);
     }
 
     /// <summary>
