@@ -1,0 +1,24 @@
+% Simulates a sideways "scan": a portrait page whose entire content is
+% rotated 90 degrees, with NO /Rotate attribute — the case manual view
+% rotation (Phase 1) must fix. All glyphs report a 90-degree angle.
+\documentclass[12pt]{article}
+\usepackage[paperwidth=8.5in,paperheight=11in,margin=0.5in]{geometry}
+\usepackage{graphicx}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+
+\noindent
+\rotatebox{90}{%
+\begin{minipage}{9in}
+SCANMARK
+
+The quick brown fox jumps over the lazy dog. This entire page body is
+rotated ninety degrees with no Rotate attribute, imitating a sideways
+scan. After manual view rotation the text should read normally and the
+line detector should recover these sentences as horizontal bands.
+
+Final line of the sideways body.
+\end{minipage}}
+
+\end{document}

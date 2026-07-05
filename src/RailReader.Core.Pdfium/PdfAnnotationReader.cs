@@ -75,7 +75,7 @@ public sealed class PdfAnnotationReader
     private static List<Annotation> ReadPage(IntPtr page)
     {
         var result = new List<Annotation>();
-        var (cropLeft, cropBottom, visibleHeight) = GetCropBoxTransform(page);
+        var tx = GetPageTransform(page);
 
         int count = FPDFPage_GetAnnotCount(page);
         for (int i = 0; i < count; i++)
@@ -84,7 +84,7 @@ public sealed class PdfAnnotationReader
             if (annot == IntPtr.Zero) continue;
             try
             {
-                var mapped = ReadSingle(annot, cropLeft, cropBottom, visibleHeight);
+                var mapped = ReadSingle(annot, tx);
                 if (mapped is not null) result.Add(mapped);
             }
             finally
@@ -101,42 +101,41 @@ public sealed class PdfAnnotationReader
     /// metadata), or null for unsupported subtypes. Shared with the reconciling writer.
     /// Caller owns the handle and holds <see cref="PdfiumGate.Lock"/>.
     /// </summary>
-    internal static Annotation? ReadSingle(IntPtr annot, float cropLeft, float cropBottom, double visibleHeight)
+    internal static Annotation? ReadSingle(IntPtr annot, in PageTransform tx)
     {
         int subtype = FPDFAnnot_GetSubtype(annot);
-        var mapped = Map(annot, subtype, cropLeft, cropBottom, visibleHeight);
+        var mapped = Map(annot, subtype, tx);
         if (mapped is null) return null;
         ApplyCommonMetadata(annot, mapped);
         return mapped;
     }
 
-    private static Annotation? Map(IntPtr annot, int subtype,
-        float cropLeft, float cropBottom, double visibleHeight)
+    private static Annotation? Map(IntPtr annot, int subtype, in PageTransform tx)
     {
         switch (subtype)
         {
             case FPDF_ANNOT_HIGHLIGHT:
-                return new HighlightAnnotation { Rects = ReadQuads(annot, cropLeft, cropBottom, visibleHeight) };
+                return new HighlightAnnotation { Rects = ReadQuads(annot, tx) };
             case FPDF_ANNOT_UNDERLINE:
-                return new UnderlineAnnotation { Rects = ReadQuads(annot, cropLeft, cropBottom, visibleHeight) };
+                return new UnderlineAnnotation { Rects = ReadQuads(annot, tx) };
             case FPDF_ANNOT_STRIKEOUT:
-                return new StrikeOutAnnotation { Rects = ReadQuads(annot, cropLeft, cropBottom, visibleHeight) };
+                return new StrikeOutAnnotation { Rects = ReadQuads(annot, tx) };
             case FPDF_ANNOT_SQUIGGLY:
-                return new SquigglyAnnotation { Rects = ReadQuads(annot, cropLeft, cropBottom, visibleHeight) };
+                return new SquigglyAnnotation { Rects = ReadQuads(annot, tx) };
 
             case FPDF_ANNOT_TEXT:
             {
-                var (x, y, _, _) = ReadRect(annot, cropLeft, cropBottom, visibleHeight);
+                var (x, y, _, _) = ReadRect(annot, tx);
                 return new TextNoteAnnotation { X = x, Y = y };
             }
             case FPDF_ANNOT_CARET:
             {
-                var (x, y, w, h) = ReadRect(annot, cropLeft, cropBottom, visibleHeight);
+                var (x, y, w, h) = ReadRect(annot, tx);
                 return new CaretAnnotation { X = x, Y = y, W = w, H = h };
             }
             case FPDF_ANNOT_FREETEXT:
             {
-                var (x, y, w, h) = ReadRect(annot, cropLeft, cropBottom, visibleHeight);
+                var (x, y, w, h) = ReadRect(annot, tx);
                 var ft = new FreeTextAnnotation { X = x, Y = y, W = w, H = h };
                 // FreeText carries its text colour and point size in /DA (not /C), so parse
                 // it back for a faithful round-trip — the inverse of PdfAnnotationWriter's
@@ -147,7 +146,7 @@ public sealed class PdfAnnotationReader
             }
             case FPDF_ANNOT_SQUARE:
             {
-                var (x, y, w, h) = ReadRect(annot, cropLeft, cropBottom, visibleHeight);
+                var (x, y, w, h) = ReadRect(annot, tx);
                 var rect = new RectAnnotation { X = x, Y = y, W = w, H = h };
                 if (FPDFAnnot_GetBorder(annot, out _, out _, out float bw)) rect.StrokeWidth = bw;
                 // /IC (interior colour) present ⇒ filled. (GetColor(INTERIOR) returns a default
@@ -157,7 +156,7 @@ public sealed class PdfAnnotationReader
             }
             case FPDF_ANNOT_INK:
             {
-                var points = ReadInk(annot, cropLeft, cropBottom, visibleHeight);
+                var points = ReadInk(annot, tx);
                 if (points.Count < 2) return null;
                 var ink = new FreehandAnnotation { Points = points };
                 if (FPDFAnnot_GetBorder(annot, out _, out _, out float bw) && bw > 0) ink.StrokeWidth = bw;
@@ -172,8 +171,7 @@ public sealed class PdfAnnotationReader
     }
 
     /// <summary>Reads QuadPoints into page-space rectangles for text-markup annotations.</summary>
-    private static List<HighlightRect> ReadQuads(IntPtr annot,
-        float cropLeft, float cropBottom, double visibleHeight)
+    private static List<HighlightRect> ReadQuads(IntPtr annot, in PageTransform tx)
     {
         var rects = new List<HighlightRect>();
         nuint quadCount = FPDFAnnot_CountAttachmentPoints(annot);
@@ -188,15 +186,14 @@ public sealed class PdfAnnotationReader
             float pdfBottom = Math.Min(Math.Min(quad.Y1, quad.Y2), Math.Min(quad.Y3, quad.Y4));
             float pdfTop = Math.Max(Math.Max(quad.Y1, quad.Y2), Math.Max(quad.Y3, quad.Y4));
 
-            var (x, yTop) = PdfPointToPage(pdfLeft, pdfTop, cropLeft, cropBottom, visibleHeight);
-            rects.Add(new HighlightRect(x, yTop, pdfRight - pdfLeft, pdfTop - pdfBottom));
+            var (l, t, r, b) = tx.PdfRectToPage(pdfLeft, pdfBottom, pdfRight, pdfTop);
+            rects.Add(new HighlightRect(l, t, r - l, b - t));
         }
         return rects;
     }
 
     /// <summary>Reads /Rect into page-space (X,Y top-left, W, H). Normalises inverted rects.</summary>
-    private static (float X, float Y, float W, float H) ReadRect(IntPtr annot,
-        float cropLeft, float cropBottom, double visibleHeight)
+    private static (float X, float Y, float W, float H) ReadRect(IntPtr annot, in PageTransform tx)
     {
         if (!FPDFAnnot_GetRect(annot, out FsRectF r))
             return (0, 0, 0, 0);
@@ -206,12 +203,11 @@ public sealed class PdfAnnotationReader
         float pdfBottom = Math.Min(r.Bottom, r.Top);
         float pdfTop = Math.Max(r.Bottom, r.Top);
 
-        var (x, yTop) = PdfPointToPage(pdfLeft, pdfTop, cropLeft, cropBottom, visibleHeight);
-        return (x, yTop, pdfRight - pdfLeft, pdfTop - pdfBottom);
+        var (l, t, rt, b) = tx.PdfRectToPage(pdfLeft, pdfBottom, pdfRight, pdfTop);
+        return (l, t, rt - l, b - t);
     }
 
-    private static List<PointF> ReadInk(IntPtr annot,
-        float cropLeft, float cropBottom, double visibleHeight)
+    private static List<PointF> ReadInk(IntPtr annot, in PageTransform tx)
     {
         var points = new List<PointF>();
         int pathCount = FPDFAnnot_GetInkListCount(annot);
@@ -223,7 +219,7 @@ public sealed class PdfAnnotationReader
             FPDFAnnot_GetInkListPath(annot, p, buffer, n);
             foreach (var pt in buffer)
             {
-                var (x, y) = PdfPointToPage(pt.X, pt.Y, cropLeft, cropBottom, visibleHeight);
+                var (x, y) = tx.PdfToPage(pt.X, pt.Y);
                 points.Add(new PointF(x, y));
             }
         }

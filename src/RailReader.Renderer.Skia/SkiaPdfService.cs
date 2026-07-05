@@ -62,44 +62,62 @@ public sealed class SkiaPdfService : IPdfService
         }
     }
 
-    public (double Width, double Height) GetPageSize(int pageIndex)
+    public (double Width, double Height) GetPageSize(int pageIndex) => GetPageSize(pageIndex, 0);
+
+    public (double Width, double Height) GetPageSize(int pageIndex, int viewRotation)
     {
         lock (PdfiumGate.Lock)
         {
             var size = Conversion.GetPageSize(PdfBytes, page: pageIndex, password: Password);
-            return (size.Width, size.Height);
+            // PDFtoImage's size already honours the page /Rotate; an extra view
+            // rotation just swaps the displayed axes on odd quarter-turns.
+            return (viewRotation & 1) == 0
+                ? (size.Width, size.Height)
+                : (size.Height, size.Width);
         }
     }
 
-    public IRenderedPage RenderPage(int pageIndex, int dpi = 200)
+    public IRenderedPage RenderPage(int pageIndex, int dpi = 200) => RenderPage(pageIndex, dpi, 0);
+
+    public IRenderedPage RenderPage(int pageIndex, int dpi, int viewRotation)
     {
         lock (PdfiumGate.Lock)
         {
             var bitmap = Conversion.ToImage(PdfBytes, password: Password, page: pageIndex,
-                options: new RenderOptions(Dpi: dpi));
+                options: new RenderOptions(Dpi: dpi, Rotation: ToPdfRotation(viewRotation)));
             return new SkiaRenderedPage(bitmap);
         }
     }
 
-    public IRenderedPage RenderThumbnail(int pageIndex)
+    public IRenderedPage RenderThumbnail(int pageIndex) => RenderThumbnail(pageIndex, 0);
+
+    public IRenderedPage RenderThumbnail(int pageIndex, int viewRotation)
     {
         lock (PdfiumGate.Lock)
         {
+            // PDFtoImage applies explicit Width/Height to the PRE-rotation raster and
+            // rotates the output afterwards (verified via tools/rotation-probe), so fit
+            // the unrotated page; odd turns swap the output dimensions on their own.
             var (pixW, pixH) = FitPageToTarget(pageIndex, 200);
             var bitmap = Conversion.ToImage(PdfBytes, password: Password, page: pageIndex,
-                options: new RenderOptions(Width: pixW, Height: pixH));
+                options: new RenderOptions(Width: pixW, Height: pixH, Rotation: ToPdfRotation(viewRotation)));
             return new SkiaRenderedPage(bitmap);
         }
     }
 
     public (byte[] RgbBytes, int Width, int Height) RenderPagePixmap(int pageIndex, int targetSize)
+        => RenderPagePixmap(pageIndex, targetSize, 0);
+
+    public (byte[] RgbBytes, int Width, int Height) RenderPagePixmap(int pageIndex, int targetSize, int viewRotation)
     {
         SKBitmap bitmap;
         lock (PdfiumGate.Lock)
         {
+            // Fit the PRE-rotation page: PDFtoImage rasterises at Width/Height and then
+            // rotates the output, swapping the dimensions on odd turns (see RenderThumbnail).
             var (pixW, pixH) = FitPageToTarget(pageIndex, targetSize);
             bitmap = Conversion.ToImage(PdfBytes, password: Password, page: pageIndex,
-                options: new RenderOptions(Width: pixW, Height: pixH));
+                options: new RenderOptions(Width: pixW, Height: pixH, Rotation: ToPdfRotation(viewRotation)));
         }
 
         // BGRA->RGB conversion is pure CPU; run outside the PDFium gate so
@@ -131,5 +149,13 @@ public sealed class SkiaPdfService : IPdfService
         double scale = Math.Min(targetSize / pageW, targetSize / pageH);
         return (Math.Max(1, (int)(pageW * scale)), Math.Max(1, (int)(pageH * scale)));
     }
+
+    private static PdfRotation ToPdfRotation(int viewRotation) => (((viewRotation % 4) + 4) % 4) switch
+    {
+        1 => PdfRotation.Rotate90,
+        2 => PdfRotation.Rotate180,
+        3 => PdfRotation.Rotate270,
+        _ => PdfRotation.Rotate0,
+    };
 
 }

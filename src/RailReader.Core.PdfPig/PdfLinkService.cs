@@ -16,6 +16,9 @@ public sealed class PdfLinkService : IPdfLinkService
     private static readonly List<PdfLink> s_empty = [];
 
     public List<PdfLink> ExtractPageLinks(byte[] pdfBytes, int pageIndex, string? password = null)
+        => ExtractPageLinks(pdfBytes, pageIndex, 0, password);
+
+    public List<PdfLink> ExtractPageLinks(byte[] pdfBytes, int pageIndex, int viewRotation, string? password = null)
     {
         try
         {
@@ -33,10 +36,15 @@ public sealed class PdfLinkService : IPdfLinkService
                 var dest = ResolveDestination(ann.Action);
                 if (dest is null) continue;
 
+                // Corner-normalise: like letter boxes, annotation rects on
+                // /Rotate pages are oriented and can come back Left>Right.
                 var r = ann.Rectangle;
-                float top    = (float)(pageH - r.Top);
-                float bottom = (float)(pageH - r.Bottom);
-                var rect = new RectF((float)r.Left, top, (float)r.Right, bottom).Normalized();
+                double minX = Math.Min(Math.Min(r.TopLeft.X, r.TopRight.X), Math.Min(r.BottomLeft.X, r.BottomRight.X));
+                double maxX = Math.Max(Math.Max(r.TopLeft.X, r.TopRight.X), Math.Max(r.BottomLeft.X, r.BottomRight.X));
+                double minY = Math.Min(Math.Min(r.TopLeft.Y, r.TopRight.Y), Math.Min(r.BottomLeft.Y, r.BottomRight.Y));
+                double maxY = Math.Max(Math.Max(r.TopLeft.Y, r.TopRight.Y), Math.Max(r.BottomLeft.Y, r.BottomRight.Y));
+                var rect = new RectF((float)minX, (float)(pageH - maxY), (float)maxX, (float)(pageH - minY));
+                rect = ViewRotationMath.RotateRect(rect, page.Width, pageH, viewRotation);
 
                 links.Add(new PdfLink { Rect = rect, Destination = dest });
             }

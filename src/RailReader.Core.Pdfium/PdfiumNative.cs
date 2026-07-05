@@ -50,8 +50,12 @@ internal static class PdfiumNative
     [DllImport(Lib)] internal static extern int FPDF_GetPageCount(IntPtr document);
     [DllImport(Lib)] internal static extern IntPtr FPDF_LoadPage(IntPtr document, int pageIndex);
     [DllImport(Lib)] internal static extern void FPDF_ClosePage(IntPtr page);
+    [DllImport(Lib)] internal static extern double FPDF_GetPageWidth(IntPtr page);
     [DllImport(Lib)] internal static extern double FPDF_GetPageHeight(IntPtr page);
+    [DllImport(Lib)] internal static extern int FPDFPage_GetRotation(IntPtr page);
     [DllImport(Lib)] internal static extern bool FPDFPage_GetCropBox(IntPtr page,
+        ref float left, ref float bottom, ref float right, ref float top);
+    [DllImport(Lib)] internal static extern bool FPDFPage_GetMediaBox(IntPtr page,
         ref float left, ref float bottom, ref float right, ref float top);
 
     // Bookmarks
@@ -91,19 +95,40 @@ internal static class PdfiumNative
     }
 
     /// <summary>
-    /// Computes the CropBox-to-page-point-space transform for a loaded page.
-    /// PDFium APIs return coordinates in MediaBox space; if the page has a
-    /// CropBox offset from the MediaBox origin, we subtract it so coordinates
-    /// align with the rendered (CropBox) area.
+    /// Computes the PDF-user-space ↔ page-point-space transform for a loaded page,
+    /// honouring both the CropBox offset and the page's /Rotate attribute.
+    /// PDFium geometry APIs (char boxes, annotation rects, link rects) return
+    /// coordinates in <b>unrotated</b> MediaBox space, while the rendered pixmap
+    /// (and PDFtoImage's GetPageSize) honour /Rotate — so the transform must fold
+    /// the rotation in for overlays to line up.
+    /// <paramref name="extraQuarterTurns"/> composes an additional user-requested
+    /// view rotation (clockwise quarter-turns) on top of the page's own /Rotate.
     /// </summary>
-    internal static (float OffsetX, float OffsetY, double VisibleHeight) GetCropBoxTransform(IntPtr page)
+    internal static PageTransform GetPageTransform(IntPtr page, int extraQuarterTurns = 0)
     {
-        float cropLeft = 0, cropBottom = 0, cropRight = 0, cropTop = 0;
-        bool hasCropBox = FPDFPage_GetCropBox(page, ref cropLeft, ref cropBottom, ref cropRight, ref cropTop);
-        float offsetX = hasCropBox ? cropLeft : 0;
-        float offsetY = hasCropBox ? cropBottom : 0;
-        double visibleHeight = hasCropBox ? cropTop - cropBottom : FPDF_GetPageHeight(page);
-        return (offsetX, offsetY, visibleHeight);
+        float left = 0, bottom = 0, right = 0, top = 0;
+        float cropLeft = 0, cropBottom = 0;
+        double visibleWidth, visibleHeight;
+        if (FPDFPage_GetCropBox(page, ref left, ref bottom, ref right, ref top) ||
+            FPDFPage_GetMediaBox(page, ref left, ref bottom, ref right, ref top))
+        {
+            cropLeft = left;
+            cropBottom = bottom;
+            visibleWidth = right - left;
+            visibleHeight = top - bottom;
+        }
+        else
+        {
+            // No boxes at all: fall back to the page dimensions, un-rotating them
+            // (FPDF_GetPageWidth/Height return display dimensions, i.e. post-/Rotate).
+            double w = FPDF_GetPageWidth(page), h = FPDF_GetPageHeight(page);
+            bool odd = (FPDFPage_GetRotation(page) & 1) != 0;
+            visibleWidth = odd ? h : w;
+            visibleHeight = odd ? w : h;
+        }
+
+        int rotation = ((FPDFPage_GetRotation(page) + extraQuarterTurns) % 4 + 4) % 4;
+        return new PageTransform(cropLeft, cropBottom, (float)visibleWidth, (float)visibleHeight, rotation);
     }
 
     // Document creation & page copying
@@ -219,26 +244,7 @@ internal static class PdfiumNative
         public IntPtr WriteBlock;
     }
 
-    /// <summary>
-    /// Converts a point from page-point space (top-left origin, Y-down) to
-    /// PDF user space (bottom-left origin, Y-up), accounting for CropBox offset.
-    /// </summary>
-    internal static (float PdfX, float PdfY) PagePointToPdf(
-        float pointX, float pointY, float cropLeft, float cropBottom, double visibleHeight)
-    {
-        return (pointX + cropLeft, (float)(visibleHeight - pointY) + cropBottom);
-    }
-
-    /// <summary>
-    /// Inverse of <see cref="PagePointToPdf"/>: converts a point from PDF user space
-    /// (bottom-left origin, Y-up) back to page-point space (top-left origin, Y-down),
-    /// accounting for CropBox offset. Used when reading native annotation geometry.
-    /// </summary>
-    internal static (float PointX, float PointY) PdfPointToPage(
-        float pdfX, float pdfY, float cropLeft, float cropBottom, double visibleHeight)
-    {
-        return (pdfX - cropLeft, (float)(visibleHeight - (pdfY - cropBottom)));
-    }
+    // (Point conversions live on PageTransform; see GetPageTransform.)
 
     // Text
     [DllImport(Lib)] internal static extern IntPtr FPDFText_LoadPage(IntPtr page);
@@ -247,6 +253,11 @@ internal static class PdfiumNative
     [DllImport(Lib)] internal static extern uint FPDFText_GetUnicode(IntPtr textPage, int index);
     [DllImport(Lib)] internal static extern bool FPDFText_GetCharBox(IntPtr textPage, int index,
         ref double left, ref double right, ref double bottom, ref double top);
+    // Per-char glyph rotation in radians. Empirically (tools/rotation-probe): the
+    // value reads as CLOCKWISE degrees of glyph rotation in the page's Y-down
+    // display frame at /Rotate 0 — LaTeX \rotatebox{90} (visually 90° CCW) text
+    // reports 270°, and /Rotate never affects it (content-stream angle only).
+    [DllImport(Lib)] internal static extern float FPDFText_GetCharAngle(IntPtr textPage, int index);
     [DllImport(Lib)] internal static extern int FPDFText_CountRects(IntPtr textPage, int startIndex, int count);
     [DllImport(Lib)] internal static extern bool FPDFText_GetRect(IntPtr textPage, int rectIndex,
         ref double left, ref double top, ref double right, ref double bottom);

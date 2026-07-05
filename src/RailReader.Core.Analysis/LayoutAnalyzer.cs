@@ -221,6 +221,7 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
             ClassId = classId,
             Confidence = confidence,
             Order = order,
+            UprightTurns = classTable[classId].UprightTurnsSeed,
         };
         return true;
     }

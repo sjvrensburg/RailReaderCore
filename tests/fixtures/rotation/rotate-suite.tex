@@ -1,0 +1,44 @@
+% Four identical pages differing only in the page /Rotate attribute:
+% page 1 = /Rotate 0 (control), page 2 = 90, page 3 = 180, page 4 = 270.
+% The content stream is byte-identical portrait text on every page, so any
+% difference in extracted geometry between pages is purely the /Rotate term.
+\documentclass[12pt]{article}
+\usepackage[paperwidth=8.5in,paperheight=11in,margin=1in]{geometry}
+\usepackage[hidelinks]{hyperref}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+
+\newcommand{\testpage}{%
+MARKER
+
+The quick brown fox jumps over the lazy dog. This paragraph exists so
+that line detection has several horizontal text lines to cluster. Each
+line should be recovered as a distinct band regardless of the page
+rotation attribute, once coordinates are normalised.
+
+Final line of the test page.%
+}
+
+\pdfpageattr{/Rotate 0}
+\testpage
+
+% Internal link from the upright page to a target on the /Rotate 90 page,
+% so link-destination page-point resolution is exercised across rotations.
+\medskip
+\hyperlink{target90}{LINKTEXT}
+\clearpage
+
+\pdfpageattr{/Rotate 90}
+\hypertarget{target90}{}%
+\testpage
+\clearpage
+
+\pdfpageattr{/Rotate 180}
+\testpage
+\clearpage
+
+\pdfpageattr{/Rotate 270}
+\testpage
+
+\end{document}

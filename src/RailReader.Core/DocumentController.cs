@@ -394,24 +394,29 @@ public sealed partial class DocumentController : IDisposable
 
     /// <summary>
     /// Scrolls the camera so the destination position is visible.
-    /// Coordinates are in PDF user space; converted using the target page dimensions.
+    /// Prefers the provider-resolved page-point coordinates (CropBox- and
+    /// /Rotate-aware); falls back to the legacy PDF-user-space conversion for
+    /// providers that only supply PdfX/PdfY.
     /// </summary>
     private void ScrollToDestination(PageDestination dest)
     {
         if (FocusedViewport is not { } vp) return;
-        if (dest.PdfX is null && dest.PdfY is null) return;
+
+        float? pageX = dest.PageX, pageY = dest.PageY;
+        if (pageX is null && dest.PdfX is { } pdfX) pageX = pdfX;
+        if (pageY is null && dest.PdfY is { } pdfY) pageY = (float)(vp.PageHeight - pdfY);
+        if (pageX is null && pageY is null) return;
 
         var (ww, wh) = (vp.Width, vp.Height);
 
-        if (dest.PdfY is { } pdfY)
+        if (pageY is { } py)
         {
-            double pageY = vp.PageHeight - pdfY;
-            vp.Camera.OffsetY = -pageY * vp.Camera.Zoom + wh * CoreTuning.DestMarginTop;
+            vp.Camera.OffsetY = -py * vp.Camera.Zoom + wh * CoreTuning.DestMarginTop;
         }
 
-        if (dest.PdfX is { } pdfX)
+        if (pageX is { } px)
         {
-            vp.Camera.OffsetX = -pdfX * vp.Camera.Zoom + ww * CoreTuning.DestMarginLeft;
+            vp.Camera.OffsetX = -px * vp.Camera.Zoom + ww * CoreTuning.DestMarginLeft;
         }
 
         vp.ClampCamera(ww, wh);
@@ -792,6 +797,81 @@ public sealed partial class DocumentController : IDisposable
                     doc.SubmitAnalysis(vp, _worker, _config.NavigableRoles);
             }
         }
+    }
+
+    /// <summary>
+    /// Sets the focused document's view rotation (clockwise quarter-turns, 0–3,
+    /// composed on top of each page's own /Rotate) and re-establishes everything
+    /// derived from page geometry: the model drops its text/link/analysis caches
+    /// and re-renders every view (<see cref="DocumentModel.ViewRotation"/>), then
+    /// this method resubmits analysis and lookahead per view so rail re-seats in
+    /// the new frame. Any active search is closed (its match rects are geometry
+    /// in the old frame). Persisting the rotation is the host's job.
+    /// </summary>
+    public void SetViewRotation(int quarterTurns)
+    {
+        if (FocusedViewport is not { } fv) return;
+        var doc = fv.Owner;
+        int q = ViewRotationMath.Normalize(quarterTurns);
+        if (q == doc.ViewRotation) return;
+
+        Search.CloseSearch();
+        doc.ViewRotation = q;
+
+        foreach (var vp in doc.Viewports)
+        {
+            doc.SubmitAnalysis(vp, _worker, _config.NavigableRoles);
+            doc.QueueLookahead(vp, _config.AnalysisLookaheadPages);
+        }
+    }
+
+    /// <summary>Rotates the focused document's view a quarter-turn clockwise (wraps at 360°).</summary>
+    public void RotateViewClockwise()
+    {
+        if (FocusedViewport is { } fv) SetViewRotation(fv.Owner.ViewRotation + 1);
+    }
+
+    /// <summary>Rotates the focused document's view a quarter-turn counter-clockwise.</summary>
+    public void RotateViewCounterClockwise()
+    {
+        if (FocusedViewport is { } fv) SetViewRotation(fv.Owner.ViewRotation - 1);
+    }
+
+    /// <summary>
+    /// The clockwise quarter-turns that would make the focused viewport's current
+    /// rail block read upright (<see cref="LayoutBlock.UprightTurns"/>), or 0 when
+    /// there is no seated analysis / the block is already upright. Hosts use this
+    /// for a rotate-to-read affordance ("this table is sideways — press R to read").
+    /// </summary>
+    public int CurrentBlockUprightTurns
+    {
+        get
+        {
+            if (FocusedViewport is not { } vp) return 0;
+            var analysis = vp.Rail.Analysis;
+            if (analysis is null) return 0;
+            int i = vp.Rail.CurrentBlock;
+            if (i < 0 || i >= analysis.Blocks.Count) return 0;
+            return ViewRotationMath.Normalize(analysis.Blocks[i].UprightTurns);
+        }
+    }
+
+    /// <summary>
+    /// Rotate-to-read: rotates the view so the focused viewport's current rail
+    /// block reads upright, composing with any rotation already in effect. Uses
+    /// the Phase-1 view-rotation machinery, so the whole page rotates (analysis
+    /// re-runs in the new frame — where the block, now upright, gets real
+    /// per-line detection instead of the atomic sideways collapse). Returns true
+    /// when a rotation was applied; false when the block is already upright or
+    /// no rail block is seated. Rotate back with <see cref="SetViewRotation"/>(0)
+    /// or the quarter-turn helpers.
+    /// </summary>
+    public bool RotateViewToReadBlock()
+    {
+        int turns = CurrentBlockUprightTurns;
+        if (turns == 0 || FocusedViewport is not { } fv) return false;
+        SetViewRotation(fv.Owner.ViewRotation + turns);
+        return true;
     }
 
     /// <summary>

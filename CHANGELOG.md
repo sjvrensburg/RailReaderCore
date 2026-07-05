@@ -1,5 +1,90 @@
 # Changelog
 
+## 0.47.0 — Rotated pages and sideways tables (Phases 0–2)
+
+Three stacked pieces of rotation support, all empirically validated against LaTeX-generated
+fixtures (`tests/fixtures/rotation/`, rebuilt via `build.sh`) using an ink-coverage probe
+(`tools/rotation-probe`, `tools/rotation-probe-pdfpig`) and an independent Poppler render check.
+
+### Phase 0 — page `/Rotate` correctness (bug fix, both backends)
+
+PDFium's geometry APIs (char boxes, text-range rects, annotation rects/quads, link rects and
+destinations) return **unrotated** PDF user space, while the rendered pixmap honours `/Rotate` —
+so on `/Rotate 90/180/270` pages every overlay, search highlight, and annotation was in the wrong
+frame (measured ink coverage of char boxes over rendered ink: **0.000**; now **1.000** on all four
+rotations, both backends). Annotations authored on rotated pages also serialised to the wrong PDF
+user-space quads — a Poppler render now shows 100% of authored-highlight pixels landing on the
+highlighted text on all four rotations.
+
+- New internal `PageTransform` (Core.Pdfium): CropBox offset + unrotated size + quarter-turns,
+  replacing the crop-offset/Y-flip-only transform in `PdfTextService`, `PdfLinkService`,
+  `PdfAnnotationReader`/`Writer`, and `AnnotationExportService`.
+- `PageDestination` gains **additive** `PageX`/`PageY` (target position pre-resolved into the
+  destination page's displayed frame); `DocumentController.ScrollToDestination` prefers them and
+  keeps the legacy `PdfX`/`PdfY` fallback for third-party link providers.
+- Core.PdfPig: letter/annotation rects are **oriented** rectangles that come back inverted
+  (Left&gt;Right) for rotated glyphs — now corner-normalised to axis-aligned boxes.
+- `PdfTextService`/`PdfLinkService` now call `PdfiumResolver.EnsureLibraryInitialized()`
+  defensively (first-PDFium-touch segfault in headless/library use).
+
+### Phase 1 — manual view rotation (additive API)
+
+For sideways scans with no `/Rotate` attribute: rotate the whole displayed page in clockwise
+quarter-turns, composed on top of each page's own `/Rotate`.
+
+- `IPdfService`/`IPdfTextService`/`IPdfLinkService` gain `viewRotation` overloads as **default
+  interface methods** — existing implementations keep compiling and ignore rotation.
+  `SkiaPdfService` passes PDFtoImage's `RenderOptions.Rotation` (note: explicit `Width`/`Height`
+  apply to the *pre-rotation* raster — fitting uses the unrotated page size);
+  `PdfPigSkiaPdfService` rotates the rendered bitmap (PdfPig has no rotation input).
+- New public `ViewRotationMath` (Core): quarter-turn size/point/rect mapping helpers, usable by
+  hosts (e.g. to map sidecar-annotation geometry for display while rotated).
+- **`DocumentModel.ViewRotation`** (document-level — analysis/text/link caches are shared by all
+  viewports of a document): setting it drops all cached geometry + rasterised bitmaps, resets the
+  background queue, re-renders every viewport (prefetch dropped, focus confinement released,
+  camera re-clamped) and fires `StateChanged("ViewRotation")`.
+- **`DocumentController.SetViewRotation` / `RotateViewClockwise` / `RotateViewCounterClockwise`**:
+  the host entry point — also resubmits analysis + lookahead per view and closes any active
+  search (match rects are geometry in the old frame). Persisting the rotation is the host's job.
+- **Annotation authoring is refused while `ViewRotation != 0`** (guarded at
+  `DocumentModel.AddAnnotation`, warn-logged): stored annotation geometry is the rotation-0 frame,
+  and authoring while rotated would corrupt it. Hosts should disable annotation tools while
+  rotated; annotation *display* under rotation is host-side via `ViewRotationMath.RotateRect`.
+
+### Phase 2 — sideways-text detection, upright VLM crops, rotate-to-read
+
+- `CharBox` gains **`Angle`** (positional, defaulted — source-compatible): the glyph's rotation
+  in the **displayed** frame, clockwise degrees normalised to {0, 90, 180, 270}, composing the
+  content-stream angle + page `/Rotate` + view rotation, so 0 always means "reads upright as
+  displayed". PDFium backend binds `FPDFText_GetCharAngle`; PdfPig maps `TextOrientation`
+  (`GlyphRectangle.Rotation` reads 0 for most rotated glyphs and is only the free-angle
+  fallback). Both backends agree exactly on the fixtures.
+- New `OrientationDetector` (Core) sets **`LayoutBlock.UprightTurns`** (clockwise quarter-turns
+  to make the block read upright; `IsRotatedText` convenience): majority glyph-angle vote
+  (≥60% of ≥4 in-block glyphs) with a conservative row/column projection-variance fallback for
+  pages without a text layer. Runs in `BlockPostProcessor` before line detection.
+- **Sideways blocks collapse to one atomic rail line** instead of the per-glyph shatter that
+  mid-Y char clustering produced (rail frames the whole block; per-line reading goes through
+  rotate-to-read).
+- PP-DocLayoutV3's `vertical_text` class is no longer silently flattened to plain `Text`:
+  `LayoutClassDescriptor.UprightTurnsSeed` (additive) seeds the flag for text-layer-less pages;
+  glyph evidence overrides it.
+- `BlockCropRenderer` rotates flagged crops upright before PNG encoding (additive
+  `uprightTurns` parameters); `MarkdownExportService` passes each block's turns, so sideways
+  tables reach the VLM readable.
+- **`DocumentController.CurrentBlockUprightTurns`** (affordance query) and
+  **`RotateViewToReadBlock()`**: rotate-to-read via the Phase-1 machinery — the whole page
+  rotates and analysis re-runs in the new frame, where the now-upright block gets real per-line
+  detection.
+
+**Compatibility.** Additive API surface throughout (DIM overloads, defaulted parameters, new
+members); the one nuance is `CharBox`'s new positional `Angle` parameter — source-compatible for
+constructors, but a **binary** break for assemblies compiled against the old 5-parameter
+constructor, and positional pattern matches/deconstruction of all five fields need updating.
+railreader2 owes a NuGet bump + optional UI wiring (rotate keybindings, rotate-to-read
+affordance via `CurrentBlockUprightTurns`, disabling annotation tools while
+`doc.ViewRotation != 0`, and per-document rotation persistence).
+
 ## 0.46.0 — Per-viewport rail-pause / "draw rail visuals" predicates (#83)
 
 Free-pan (Ctrl+drag) pauses the rail but deliberately leaves `Rail.Active == true` (so resume can

@@ -106,7 +106,11 @@ public static class LineDetector
         bool cellNavigation = false)
     {
         bool isTable = block.Role == BlockRole.Table;
-        if (AtomicLineRoles.Contains(block.Role) || (isTable && !tableRowReading))
+        // Rotated-text blocks collapse to one atomic line: mid-Y char clustering
+        // (and the row-density fallback) assume horizontal lines and would shatter
+        // a sideways block into per-glyph fragments. Rail then frames the whole
+        // block; per-line reading of rotated text goes through rotate-to-read.
+        if (AtomicLineRoles.Contains(block.Role) || block.IsRotatedText || (isTable && !tableRowReading))
             return [new LineInfo(block.BBox.Y + block.BBox.H / 2f, block.BBox.H, block.BBox.X, block.BBox.W)];
 
         // Table rows come from the same char clustering as prose, but skip the

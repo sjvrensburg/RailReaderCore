@@ -20,6 +20,16 @@ public sealed class PageDestination : PdfLinkDestination
     public float? PdfX { get; init; }
     /// <summary>Target Y in PDF user space (Y-up from page bottom). Null if not specified.</summary>
     public float? PdfY { get; init; }
+
+    /// <summary>
+    /// Target X in the destination page's page-point space (origin top-left, Y-down,
+    /// displayed orientation — CropBox- and /Rotate-aware). Preferred over
+    /// <see cref="PdfX"/>/<see cref="PdfY"/> when present; a provider that cannot
+    /// compute it may leave it null.
+    /// </summary>
+    public float? PageX { get; init; }
+    /// <summary>Target Y in the destination page's page-point space. See <see cref="PageX"/>.</summary>
+    public float? PageY { get; init; }
 }
 
 /// <summary>External link to a URL.</summary>

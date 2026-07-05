@@ -441,10 +441,10 @@ public sealed class Viewport : IDisposable
                 return true;
             }
 
-            var (w, h) = Owner.Pdf.GetPageSize(CurrentPageBacking);
+            var (w, h) = Owner.Pdf.GetPageSize(CurrentPageBacking, Owner.ViewRotation);
             int dpi = DocumentModel.CalculateRenderDpi(Camera.Zoom, w, h, RenderDpi);
-            var newPage = Owner.Pdf.RenderPage(CurrentPageBacking, dpi);
-            var newMinimap = Owner.Pdf.RenderThumbnail(CurrentPageBacking);
+            var newPage = Owner.Pdf.RenderPage(CurrentPageBacking, dpi, Owner.ViewRotation);
+            var newMinimap = Owner.Pdf.RenderThumbnail(CurrentPageBacking, Owner.ViewRotation);
 
             // Commit: swap fields and dispose old bitmaps only after full success
             CachedPage = newPage;
@@ -461,6 +461,28 @@ public sealed class Viewport : IDisposable
         {
             Owner.Logger.Error($"Failed to render page {CurrentPageBacking + 1}: {ex.Message}", ex);
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Reacts to a document view-rotation change: every rasterised bitmap and all
+    /// geometry-derived per-view state are in the old display frame. Drops the
+    /// prefetch, releases any block confinement (the focus block's bounds were
+    /// geometry in the old frame and its analysis was just invalidated), re-renders
+    /// the current page in the new frame, and re-clamps the camera. Rail re-seats
+    /// when the controller resubmits analysis.
+    /// </summary>
+    internal void OnViewRotationChanged()
+    {
+        Prefetched?.Dispose();
+        Prefetched = null;
+        if (_focus is not null) Focus = null;
+        AutoScroll.StopAutoScroll();
+        LoadPageBitmap();
+        if (Width > 0 && Height > 0)
+        {
+            ClampCamera(Width, Height);
+            UpdateRailZoom(Width, Height);
         }
     }
 
@@ -483,6 +505,7 @@ public sealed class Viewport : IDisposable
         // UI thread, so DPI is computed there too.
         double zoom = Camera.Zoom;
         var dpiSettings = RenderDpi;
+        int viewRotation = Owner.ViewRotation;
         var ct = Cts.Token;
 
         Task.Run(() =>
@@ -492,11 +515,11 @@ public sealed class Viewport : IDisposable
             try
             {
                 ct.ThrowIfCancellationRequested();
-                var (w, h) = Owner.Pdf.GetPageSize(pageIndex);
+                var (w, h) = Owner.Pdf.GetPageSize(pageIndex, viewRotation);
                 int dpi = DocumentModel.CalculateRenderDpi(zoom, w, h, dpiSettings);
                 Owner.Logger.Debug($"[PDFium] prefetch pg {pageIndex} @ {dpi}dpi tid={Environment.CurrentManagedThreadId} file={Path.GetFileName(Owner.FilePath)}");
-                var page = Owner.Pdf.RenderPage(pageIndex, dpi);
-                var minimap = Owner.Pdf.RenderThumbnail(pageIndex);
+                var page = Owner.Pdf.RenderPage(pageIndex, dpi, viewRotation);
+                var minimap = Owner.Pdf.RenderThumbnail(pageIndex, viewRotation);
                 prepared = new(pageIndex, dpi, page, minimap, w, h);
             }
             catch (OperationCanceledException) { }
@@ -568,6 +591,7 @@ public sealed class Viewport : IDisposable
         {
             DpiRenderPending = true;
             int page = CurrentPageBacking;
+            int viewRotation = Owner.ViewRotation;
             var ct = Cts.Token;
             Task.Run(() =>
             {
@@ -577,7 +601,7 @@ public sealed class Viewport : IDisposable
                 {
                     ct.ThrowIfCancellationRequested();
                     Owner.Logger.Debug($"[PDFium] dpi-rerender pg {page} @ {neededDpi}dpi tid={Environment.CurrentManagedThreadId} file={Path.GetFileName(Owner.FilePath)}");
-                    newPage = Owner.Pdf.RenderPage(page, neededDpi);
+                    newPage = Owner.Pdf.RenderPage(page, neededDpi, viewRotation);
                 }
                 catch (OperationCanceledException) { }
                 catch (Exception ex) { error = ex; }

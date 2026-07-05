@@ -40,7 +40,11 @@ public static class PPDocLayoutV3Roles
         new(20, "seal",              BlockRole.Decoration),
         new(21, "table",             BlockRole.Table),
         new(22, "text",              BlockRole.Text),
-        new(23, "vertical_text",     BlockRole.Text),
+        // vertical_text: no longer flattened silently — seeded as rotated text
+        // (1 CW turn to read, the common rotated-to-fit case) so scanned pages
+        // without a text layer still get the sideways affordance; glyph-angle
+        // detection refines the turn count whenever char boxes exist.
+        new(23, "vertical_text",     BlockRole.Text, UprightTurnsSeed: 1),
         new(24, "vision_footnote",   BlockRole.Footnote),
     ];
 

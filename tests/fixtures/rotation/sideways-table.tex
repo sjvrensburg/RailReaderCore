@@ -1,0 +1,33 @@
+% An upright portrait page containing a table rotated 90 degrees to fit
+% (the common academic-PDF pattern), surrounded by normal upright text.
+% No page /Rotate attribute. Used to test sideways-block detection.
+\documentclass[12pt]{article}
+\usepackage[paperwidth=8.5in,paperheight=11in,margin=1in]{geometry}
+\usepackage{graphicx}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+
+This upright paragraph precedes a sideways table. Its characters should
+report an angle of zero and cluster into ordinary horizontal lines.
+
+\vspace{1cm}
+\begin{center}
+\rotatebox{90}{%
+\begin{tabular}{|l|r|r|r|}
+\hline
+Quarter & Revenue & Costs & Margin \\
+\hline
+Q1 2025 & 1 288 272 & 934 001 & 27.5 \\
+Q2 2025 & 1 401 356 & 988 442 & 29.5 \\
+Q3 2025 & 1 512 990 & 1 044 213 & 31.0 \\
+Q4 2025 & 1 633 105 & 1 101 870 & 32.5 \\
+\hline
+\end{tabular}}
+\end{center}
+\vspace{1cm}
+
+This upright paragraph follows the sideways table and should likewise
+be detected as normal horizontal text.
+
+\end{document}

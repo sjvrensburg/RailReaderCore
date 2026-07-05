@@ -18,6 +18,9 @@ public sealed class PdfTextService : IPdfTextService
     private static readonly PageText s_empty = new("", []);
 
     public PageText ExtractPageText(byte[] pdfBytes, int pageIndex, string? password = null)
+        => ExtractPageText(pdfBytes, pageIndex, 0, password);
+
+    public PageText ExtractPageText(byte[] pdfBytes, int pageIndex, int viewRotation, string? password = null)
     {
         try
         {
@@ -26,7 +29,7 @@ public sealed class PdfTextService : IPdfTextService
 
             // PdfPig pages are 1-indexed; Core's IPdfTextService is 0-indexed.
             var page = doc.GetPage(pageIndex + 1);
-            return BuildPageText(page);
+            return RotateBoxes(BuildPageText(page), page.Width, page.Height, viewRotation);
         }
         catch (Exception ex)
         {
@@ -37,6 +40,10 @@ public sealed class PdfTextService : IPdfTextService
 
     public List<List<RectF>> GetTextRangeRects(byte[] pdfBytes, int pageIndex,
         List<(int CharStart, int CharLength)> ranges, string? password = null)
+        => GetTextRangeRects(pdfBytes, pageIndex, ranges, 0, password);
+
+    public List<List<RectF>> GetTextRangeRects(byte[] pdfBytes, int pageIndex,
+        List<(int CharStart, int CharLength)> ranges, int viewRotation, string? password = null)
     {
         var result = new List<List<RectF>>(ranges.Count);
         for (int i = 0; i < ranges.Count; i++)
@@ -48,7 +55,7 @@ public sealed class PdfTextService : IPdfTextService
             if (pageIndex < 0 || pageIndex >= doc.NumberOfPages) return result;
 
             var page = doc.GetPage(pageIndex + 1);
-            var pageText = BuildPageText(page);
+            var pageText = RotateBoxes(BuildPageText(page), page.Width, page.Height, viewRotation);
             var boxes = pageText.CharBoxes;
             int textLen = pageText.Text.Length;
 
@@ -150,11 +157,10 @@ public sealed class PdfTextService : IPdfTextService
         {
             // Compute the word's flipped bbox once for break-detection
             // against the previous word.
-            var wbox = word.BoundingBox;
-            float wLeft   = (float)wbox.Left;
-            float wRight  = (float)wbox.Right;
-            float wTop    = (float)(pageH - wbox.Top);
-            float wBottom = (float)(pageH - wbox.Bottom);
+            var (wLeft, wTop, wRight, wBottom) = FlippedAabb(word.BoundingBox, pageH);
+            // Displayed glyph angle for the word — synthetic separators inherit it so
+            // sideways runs aren't diluted with angle-0 whitespace in majority votes.
+            float wordAngle = word.Letters.Count > 0 ? DisplayAngle(word.Letters[0]) : 0f;
 
             if (!float.IsNaN(prevWordRight))
             {
@@ -189,7 +195,7 @@ public sealed class PdfTextService : IPdfTextService
                         sb.Append(' ');
                         float spaceTop    = Math.Min(prevWordTop, wTop);
                         float spaceBottom = Math.Max(prevWordBottom, wBottom);
-                        boxes.Add(new CharBox(idx, prevWordRight, spaceTop, wLeft, spaceBottom));
+                        boxes.Add(new CharBox(idx, prevWordRight, spaceTop, wLeft, spaceBottom, wordAngle));
                     }
                 }
                 else if (lastChar != '\n')
@@ -197,24 +203,21 @@ public sealed class PdfTextService : IPdfTextService
                     int idx = sb.Length;
                     sb.Append('\n');
                     boxes.Add(new CharBox(idx, prevWordRight, prevWordTop,
-                                          prevWordRight + 1f, prevWordBottom));
+                                          prevWordRight + 1f, prevWordBottom, wordAngle));
                 }
             }
 
             foreach (var letter in word.Letters)
             {
-                var rect = letter.BoundingBox;
-                float left   = (float)rect.Left;
-                float right  = (float)rect.Right;
-                float top    = (float)(pageH - rect.Top);
-                float bottom = (float)(pageH - rect.Bottom);
+                var (left, top, right, bottom) = FlippedAabb(letter.BoundingBox, pageH);
+                float angle = DisplayAngle(letter);
 
                 string value = letter.Value ?? "";
                 if (value.Length == 0)
                 {
                     int index = sb.Length;
                     sb.Append('�');
-                    boxes.Add(new CharBox(index, left, top, right, bottom));
+                    boxes.Add(new CharBox(index, left, top, right, bottom, angle));
                 }
                 else
                 {
@@ -222,7 +225,7 @@ public sealed class PdfTextService : IPdfTextService
                     {
                         int index = sb.Length;
                         sb.Append(ch);
-                        boxes.Add(new CharBox(index, left, top, right, bottom));
+                        boxes.Add(new CharBox(index, left, top, right, bottom, angle));
                     }
                 }
             }
@@ -233,5 +236,80 @@ public sealed class PdfTextService : IPdfTextService
         }
 
         return new PageText(sb.ToString(), boxes);
+    }
+
+    /// <summary>
+    /// Applies the extra view rotation to every char box. Word/line detection in
+    /// <see cref="BuildPageText"/> runs in the page's own display frame; the view
+    /// rotation is a pure per-box geometry remap, so it composes afterwards.
+    /// </summary>
+    private static PageText RotateBoxes(PageText pageText, double pageW, double pageH, int viewRotation)
+    {
+        if (ViewRotationMath.Normalize(viewRotation) == 0 || pageText.CharBoxes.Count == 0)
+            return pageText;
+
+        int q = ViewRotationMath.Normalize(viewRotation);
+        var rotated = new List<CharBox>(pageText.CharBoxes.Count);
+        foreach (var b in pageText.CharBoxes)
+        {
+            var r = ViewRotationMath.RotateRect(
+                new RectF(b.Left, b.Top, b.Right, b.Bottom), pageW, pageH, viewRotation);
+            float angle = (b.Angle + 90 * q) % 360;
+            rotated.Add(new CharBox(b.Index, r.Left, r.Top, r.Right, r.Bottom, angle));
+        }
+        return new PageText(pageText.Text, rotated);
+    }
+
+    /// <summary>
+    /// Displayed glyph angle in clockwise degrees {0, 90, 180, 270}, matching the
+    /// PDFium backend's CharBox.Angle convention. PdfPig letters are already in the
+    /// page's /Rotate display frame, and TextOrientation maps directly onto the
+    /// displayed clockwise angle — calibrated empirically
+    /// (tools/rotation-probe-pdfpig): \rotatebox{90} content = Rotate270 (270° CW);
+    /// a /Rotate 90 page's upright content = Rotate90 (90° CW) — both matching
+    /// PDFium's values exactly. TextOrientation is used rather than
+    /// GlyphRectangle.Rotation because the latter reads 0 for many rotated glyphs
+    /// (only ~30% of the fixture table's glyphs report it); the free-angle Other
+    /// case falls back to the glyph rotation, negated (PdfPig rotation is
+    /// counter-clockwise-positive).
+    /// </summary>
+    private static float DisplayAngle(Letter letter)
+    {
+        switch (letter.TextOrientation)
+        {
+            case TextOrientation.Horizontal: return 0f;
+            case TextOrientation.Rotate90: return 90f;
+            case TextOrientation.Rotate180: return 180f;
+            case TextOrientation.Rotate270: return 270f;
+            default:
+                int deg = (int)Math.Round(letter.GlyphRectangle.Rotation / 90.0) * 90;
+                return ((-deg) % 360 + 360) % 360;
+        }
+    }
+
+    /// <summary>
+    /// Converts a PdfPig rectangle to a Y-flipped axis-aligned box
+    /// (Left, Top, Right, Bottom in page-point space, Y-down).
+    /// PdfPig rectangles are <b>oriented</b>: for glyphs rotated by the page
+    /// /Rotate attribute or by an in-content rotation, Left/Right and
+    /// Top/Bottom follow the glyph's own axes and can come back inverted
+    /// (Left &gt; Right), which used to produce degenerate boxes on rotated
+    /// text. Taking the min/max over the four corners yields the correct
+    /// axis-aligned bounds regardless of glyph orientation. Verified
+    /// empirically (tools/rotation-probe-pdfpig): ink coverage 1.000 on all
+    /// four /Rotate values and on 90°-rotated in-content text.
+    /// </summary>
+    private static (float Left, float Top, float Right, float Bottom) FlippedAabb(
+        UglyToad.PdfPig.Core.PdfRectangle rect, double pageH)
+    {
+        double minX = Math.Min(Math.Min(rect.TopLeft.X, rect.TopRight.X),
+                               Math.Min(rect.BottomLeft.X, rect.BottomRight.X));
+        double maxX = Math.Max(Math.Max(rect.TopLeft.X, rect.TopRight.X),
+                               Math.Max(rect.BottomLeft.X, rect.BottomRight.X));
+        double minY = Math.Min(Math.Min(rect.TopLeft.Y, rect.TopRight.Y),
+                               Math.Min(rect.BottomLeft.Y, rect.BottomRight.Y));
+        double maxY = Math.Max(Math.Max(rect.TopLeft.Y, rect.TopRight.Y),
+                               Math.Max(rect.BottomLeft.Y, rect.BottomRight.Y));
+        return ((float)minX, (float)(pageH - maxY), (float)maxX, (float)(pageH - minY));
     }
 }

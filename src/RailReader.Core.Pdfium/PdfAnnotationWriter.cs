@@ -11,7 +11,7 @@ namespace RailReader.Core.Services;
 ///
 /// <para><b>Coordinates:</b> Core annotations are in page-point space (top-left
 /// origin, Y-down); these helpers convert to PDF user space (bottom-left, Y-up)
-/// via <see cref="PdfiumNative.PagePointToPdf"/>, the inverse of
+/// via <see cref="PageTransform.PageToPdf"/>, the inverse of
 /// <see cref="PdfAnnotationReader"/>.</para>
 ///
 /// <para><see cref="AddAuthoredAnnotations"/> performs an <b>in-place</b>
@@ -67,9 +67,9 @@ public sealed class PdfAnnotationWriter
                         if (page == IntPtr.Zero) continue;
                         try
                         {
-                            var (cropLeft, cropBottom, visibleHeight) = GetCropBoxTransform(page);
+                            var tx = GetPageTransform(page);
                             foreach (var ann in authored)
-                                WriteAnnotationToPage(page, ann, cropLeft, cropBottom, visibleHeight);
+                                WriteAnnotationToPage(page, ann, tx);
                         }
                         finally
                         {
@@ -156,7 +156,7 @@ public sealed class PdfAnnotationWriter
 
     private static void ReconcilePage(IntPtr page, List<Annotation> desired)
     {
-        var (cl, cb, vh) = GetCropBoxTransform(page);
+        var tx = GetPageTransform(page);
 
         var desiredByNm = new Dictionary<string, Annotation>(StringComparer.Ordinal);
         var desiredNew = new List<Annotation>();
@@ -190,7 +190,7 @@ public sealed class PdfAnnotationWriter
                 }
 
                 matched.Add(nm!);
-                var current = PdfAnnotationReader.ReadSingle(annot, cl, cb, vh);
+                var current = PdfAnnotationReader.ReadSingle(annot, tx);
                 if (current is not null && AnnotationEquivalence.ContentEquivalent(current, want))
                     continue; // unchanged → leave the original annotation untouched
 
@@ -221,7 +221,7 @@ public sealed class PdfAnnotationWriter
         {
             var annot = FPDFPage_GetAnnot(page, index);
             if (annot == IntPtr.Zero) continue;
-            try { EditRectBasedInPlace(annot, ann, cl, cb, vh); }
+            try { EditRectBasedInPlace(annot, ann, tx); }
             finally { FPDFPage_CloseAnnot(annot); }
         }
 
@@ -240,13 +240,13 @@ public sealed class PdfAnnotationWriter
             // Only mark it persisted if an annotation was actually written — empty-geometry
             // annots (0 rects / <2 ink points) and Carets write nothing, and must NOT be
             // flagged InPdf or they'd be lost from both the PDF and the sidecar.
-            if (WriteAnnotationToPage(page, ann, cl, cb, vh))
+            if (WriteAnnotationToPage(page, ann, tx))
                 ann.Source = AnnotationSource.InPdf;
             else
                 ann.NativeId = null;
         }
         foreach (var ann in recreate)
-            WriteAnnotationToPage(page, ann, cl, cb, vh);
+            WriteAnnotationToPage(page, ann, tx);
     }
 
     private static bool IsManagedSubtype(int subtype) => subtype is
@@ -259,14 +259,13 @@ public sealed class PdfAnnotationWriter
     /// Text (sticky), Caret (uncreatable), and FreeText — preserving their other keys.
     /// Rect/markup/ink changes go through delete+recreate instead.
     /// </summary>
-    private static void EditRectBasedInPlace(IntPtr annot, Annotation ann,
-        float cropLeft, float cropBottom, double visibleHeight)
+    private static void EditRectBasedInPlace(IntPtr annot, Annotation ann, in PageTransform tx)
     {
         FsRectF rect = ann switch
         {
-            TextNoteAnnotation tn => StickyRect(tn.X, tn.Y, cropLeft, cropBottom, visibleHeight),
-            CaretAnnotation c => BoxRect(c.X, c.Y, c.W, c.H, cropLeft, cropBottom, visibleHeight),
-            FreeTextAnnotation ft => BoxRect(ft.X, ft.Y, ft.W, ft.H, cropLeft, cropBottom, visibleHeight),
+            TextNoteAnnotation tn => StickyRect(tn.X, tn.Y, tx),
+            CaretAnnotation c => BoxRect(c.X, c.Y, c.W, c.H, tx),
+            FreeTextAnnotation ft => BoxRect(ft.X, ft.Y, ft.W, ft.H, tx),
             _ => default,
         };
         FPDFAnnot_SetRect(annot, ref rect);
@@ -289,17 +288,16 @@ public sealed class PdfAnnotationWriter
         WriteReviewState(annot, ann.State);
     }
 
-    private static FsRectF StickyRect(float x, float y, float cl, float cb, double vh)
-    {
-        var (px, py) = PagePointToPdf(x, y, cl, cb, vh);
-        return new FsRectF { Left = px, Bottom = py - StickyNoteSize, Right = px + StickyNoteSize, Top = py };
-    }
+    // The sticky-note icon is anchored at its page-point (X, Y) and occupies a
+    // StickyNoteSize square below-right of it on screen; the square stays axis-
+    // aligned under quarter-turn rotation, so transform it as a rect.
+    private static FsRectF StickyRect(float x, float y, in PageTransform tx)
+        => BoxRect(x, y, StickyNoteSize, StickyNoteSize, tx);
 
-    private static FsRectF BoxRect(float x, float y, float w, float h, float cl, float cb, double vh)
+    private static FsRectF BoxRect(float x, float y, float w, float h, in PageTransform tx)
     {
-        var (lx, by) = PagePointToPdf(x, y + h, cl, cb, vh);
-        var (rx, ty) = PagePointToPdf(x + w, y, cl, cb, vh);
-        return new FsRectF { Left = lx, Bottom = by, Right = rx, Top = ty };
+        var (l, b, r, t) = tx.PageRectToPdf(x, y, w, h);
+        return new FsRectF { Left = l, Bottom = b, Right = r, Top = t };
     }
 
     /// <summary>
@@ -309,19 +307,18 @@ public sealed class PdfAnnotationWriter
     /// </summary>
     /// <summary>Returns true iff a PDF annotation was actually created (false for an
     /// unsupported subtype or empty geometry, so the caller can avoid marking it persisted).</summary>
-    internal static bool WriteAnnotationToPage(IntPtr page, Annotation ann,
-        float cropLeft, float cropBottom, double visibleHeight)
+    internal static bool WriteAnnotationToPage(IntPtr page, Annotation ann, in PageTransform tx)
     {
         switch (ann)
         {
             case TextMarkupAnnotation m:
-                return WriteTextMarkup(page, m, MarkupSubtype(m), cropLeft, cropBottom, visibleHeight);
+                return WriteTextMarkup(page, m, MarkupSubtype(m), tx);
             case FreehandAnnotation f:
-                return WriteInk(page, f, cropLeft, cropBottom, visibleHeight);
+                return WriteInk(page, f, tx);
             case RectAnnotation r:
-                return WriteRect(page, r, cropLeft, cropBottom, visibleHeight);
+                return WriteRect(page, r, tx);
             case TextNoteAnnotation tn:
-                return WriteTextNote(page, tn, cropLeft, cropBottom, visibleHeight);
+                return WriteTextNote(page, tn, tx);
             case CaretAnnotation:
                 // PDFium's FPDFPage_CreateAnnot cannot create Caret annotations (not in its
                 // supported-subtype whitelist). Carets are read-only: we surface existing ones
@@ -330,7 +327,7 @@ public sealed class PdfAnnotationWriter
                 RailReaderLogging.Logger.Debug("[PdfAnnotationWriter] Skipping Caret: PDFium cannot create caret annotations");
                 return false;
             case FreeTextAnnotation ft:
-                return WriteFreeText(page, ft, cropLeft, cropBottom, visibleHeight);
+                return WriteFreeText(page, ft, tx);
             default:
                 return false;
         }
@@ -345,7 +342,7 @@ public sealed class PdfAnnotationWriter
     };
 
     private static bool WriteTextMarkup(IntPtr page, TextMarkupAnnotation m, int subtype,
-        float cropLeft, float cropBottom, double visibleHeight)
+        in PageTransform tx)
     {
         if (m.Rects.Count == 0) return false;
 
@@ -359,8 +356,7 @@ public sealed class PdfAnnotationWriter
             float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
             foreach (var rect in m.Rects)
             {
-                var (lx, by) = PagePointToPdf(rect.X, rect.Y + rect.H, cropLeft, cropBottom, visibleHeight);
-                var (rx, ty) = PagePointToPdf(rect.X + rect.W, rect.Y, cropLeft, cropBottom, visibleHeight);
+                var (lx, by, rx, ty) = tx.PageRectToPdf(rect.X, rect.Y, rect.W, rect.H);
                 var quad = new FsQuadPointsF { X1 = lx, Y1 = by, X2 = rx, Y2 = by, X3 = lx, Y3 = ty, X4 = rx, Y4 = ty };
                 FPDFAnnot_AppendAttachmentPoints(annot, ref quad);
                 minX = Math.Min(minX, lx); minY = Math.Min(minY, by);
@@ -378,8 +374,7 @@ public sealed class PdfAnnotationWriter
         }
     }
 
-    private static bool WriteInk(IntPtr page, FreehandAnnotation f,
-        float cropLeft, float cropBottom, double visibleHeight)
+    private static bool WriteInk(IntPtr page, FreehandAnnotation f, in PageTransform tx)
     {
         if (f.Points.Count < 2) return false;
 
@@ -395,7 +390,7 @@ public sealed class PdfAnnotationWriter
             float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
             for (int i = 0; i < f.Points.Count; i++)
             {
-                var (px, py) = PagePointToPdf(f.Points[i].X, f.Points[i].Y, cropLeft, cropBottom, visibleHeight);
+                var (px, py) = tx.PageToPdf(f.Points[i].X, f.Points[i].Y);
                 pts[i] = new FsPointF { X = px, Y = py };
                 minX = Math.Min(minX, px); minY = Math.Min(minY, py);
                 maxX = Math.Max(maxX, px); maxY = Math.Max(maxY, py);
@@ -414,8 +409,7 @@ public sealed class PdfAnnotationWriter
         }
     }
 
-    private static bool WriteRect(IntPtr page, RectAnnotation ra,
-        float cropLeft, float cropBottom, double visibleHeight)
+    private static bool WriteRect(IntPtr page, RectAnnotation ra, in PageTransform tx)
     {
         var annot = FPDFPage_CreateAnnot(page, FPDF_ANNOT_SQUARE);
         if (annot == IntPtr.Zero) return false;
@@ -423,8 +417,7 @@ public sealed class PdfAnnotationWriter
         {
             ApplyRectStyle(annot, ra);
 
-            var (lx, by) = PagePointToPdf(ra.X, ra.Y + ra.H, cropLeft, cropBottom, visibleHeight);
-            var (rx, ty) = PagePointToPdf(ra.X + ra.W, ra.Y, cropLeft, cropBottom, visibleHeight);
+            var (lx, by, rx, ty) = tx.PageRectToPdf(ra.X, ra.Y, ra.W, ra.H);
             var rect = new FsRectF { Left = lx, Bottom = by, Right = rx, Top = ty };
             FPDFAnnot_SetRect(annot, ref rect);
             ApplyCommonMetadata(annot, ra);
@@ -436,8 +429,7 @@ public sealed class PdfAnnotationWriter
         }
     }
 
-    private static bool WriteTextNote(IntPtr page, TextNoteAnnotation tn,
-        float cropLeft, float cropBottom, double visibleHeight)
+    private static bool WriteTextNote(IntPtr page, TextNoteAnnotation tn, in PageTransform tx)
     {
         var annot = FPDFPage_CreateAnnot(page, FPDF_ANNOT_TEXT);
         if (annot == IntPtr.Zero) return false;
@@ -446,8 +438,7 @@ public sealed class PdfAnnotationWriter
             var color = ResolveColor(tn);
             FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_COLOR, color.R, color.G, color.B, color.A);
 
-            var (px, py) = PagePointToPdf(tn.X, tn.Y, cropLeft, cropBottom, visibleHeight);
-            var rect = new FsRectF { Left = px, Bottom = py - StickyNoteSize, Right = px + StickyNoteSize, Top = py };
+            var rect = StickyRect(tn.X, tn.Y, tx);
             FPDFAnnot_SetRect(annot, ref rect);
             ApplyCommonMetadata(annot, tn);
             return true;
@@ -472,15 +463,13 @@ public sealed class PdfAnnotationWriter
     /// appearance from <c>/DA</c> + <c>/Contents</c> — the same viewer-side-synthesis
     /// contract the markup subtypes rely on (see <see cref="WriteTextMarkup"/>).
     /// </summary>
-    private static bool WriteFreeText(IntPtr page, FreeTextAnnotation ft,
-        float cropLeft, float cropBottom, double visibleHeight)
+    private static bool WriteFreeText(IntPtr page, FreeTextAnnotation ft, in PageTransform tx)
     {
         var annot = FPDFPage_CreateAnnot(page, FPDF_ANNOT_FREETEXT);
         if (annot == IntPtr.Zero) return false;
         try
         {
-            var (lx, by) = PagePointToPdf(ft.X, ft.Y + ft.H, cropLeft, cropBottom, visibleHeight);
-            var (rx, ty) = PagePointToPdf(ft.X + ft.W, ft.Y, cropLeft, cropBottom, visibleHeight);
+            var (lx, by, rx, ty) = tx.PageRectToPdf(ft.X, ft.Y, ft.W, ft.H);
             var rect = new FsRectF { Left = lx, Bottom = by, Right = rx, Top = ty };
             FPDFAnnot_SetRect(annot, ref rect);
 

@@ -86,33 +86,43 @@ public sealed class PdfPigSkiaPdfService : IPdfService, IDisposable
             RailReaderLogging.Logger.Debug($"[PdfPigSkia] Extracted {Outline.Count} outline entries");
     }
 
-    public (double Width, double Height) GetPageSize(int pageIndex)
+    public (double Width, double Height) GetPageSize(int pageIndex) => GetPageSize(pageIndex, 0);
+
+    public (double Width, double Height) GetPageSize(int pageIndex, int viewRotation)
     {
         lock (PdfPigGate.Lock)
         {
-            // PdfPig is 1-indexed; Core's IPdfService is 0-indexed.
+            // PdfPig is 1-indexed; Core's IPdfService is 0-indexed. page.Width/Height
+            // already honour the page /Rotate; the view rotation swaps axes on odd turns.
             var page = _doc.GetPage(pageIndex + 1);
-            return (page.Width, page.Height);
+            return ViewRotationMath.RotateSize(page.Width, page.Height, viewRotation);
         }
     }
 
-    public IRenderedPage RenderPage(int pageIndex, int dpi = 200)
+    public IRenderedPage RenderPage(int pageIndex, int dpi = 200) => RenderPage(pageIndex, dpi, 0);
+
+    public IRenderedPage RenderPage(int pageIndex, int dpi, int viewRotation)
     {
         // SkiaSharp.GetPageAsSKBitmap renders at PDF native (72 DPI) ×
         // scale; convert the caller's DPI request into a scale factor.
         float scale = dpi / PointsPerInch;
-        return new PdfPigSkiaRenderedPage(RenderAt(pageIndex, scale));
+        return new PdfPigSkiaRenderedPage(RotateBitmap(RenderAt(pageIndex, scale), viewRotation));
     }
 
-    public IRenderedPage RenderThumbnail(int pageIndex)
+    public IRenderedPage RenderThumbnail(int pageIndex) => RenderThumbnail(pageIndex, 0);
+
+    public IRenderedPage RenderThumbnail(int pageIndex, int viewRotation)
     {
-        var bmp = RenderAtPixelSize(pageIndex, 200, 200);
+        var bmp = RotateBitmap(RenderAtPixelSize(pageIndex, 200, 200), viewRotation);
         return new PdfPigSkiaRenderedPage(bmp);
     }
 
     public (byte[] RgbBytes, int Width, int Height) RenderPagePixmap(int pageIndex, int targetSize)
+        => RenderPagePixmap(pageIndex, targetSize, 0);
+
+    public (byte[] RgbBytes, int Width, int Height) RenderPagePixmap(int pageIndex, int targetSize, int viewRotation)
     {
-        var bitmap = RenderAtPixelSize(pageIndex, targetSize, targetSize);
+        var bitmap = RotateBitmap(RenderAtPixelSize(pageIndex, targetSize, targetSize), viewRotation);
 
         // BGRA→RGB conversion is pure CPU; run outside the gate so other
         // renders/text-extracts aren't blocked. Mirrors SkiaPdfService.
@@ -134,6 +144,39 @@ public sealed class PdfPigSkiaPdfService : IPdfService, IDisposable
         finally
         {
             bitmap.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Rotates a rendered bitmap by the view rotation (clockwise quarter-turns).
+    /// PdfPig's Skia page factory has no rotation input, so the rotation is
+    /// applied to the rasterised output; the source bitmap is disposed.
+    /// </summary>
+    private static SKBitmap RotateBitmap(SKBitmap source, int viewRotation)
+    {
+        int q = ViewRotationMath.Normalize(viewRotation);
+        if (q == 0) return source;
+
+        try
+        {
+            var rotated = (q & 1) == 0
+                ? new SKBitmap(source.Width, source.Height)
+                : new SKBitmap(source.Height, source.Width);
+            using var canvas = new SKCanvas(rotated);
+            switch (q)
+            {
+                case 1: canvas.Translate(rotated.Width, 0); break;
+                case 2: canvas.Translate(rotated.Width, rotated.Height); break;
+                case 3: canvas.Translate(0, rotated.Height); break;
+            }
+            canvas.RotateDegrees(q * 90);
+            canvas.DrawBitmap(source, 0, 0);
+            canvas.Flush();
+            return rotated;
+        }
+        finally
+        {
+            source.Dispose();
         }
     }
 
