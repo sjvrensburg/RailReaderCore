@@ -168,4 +168,14 @@ public record PageText(string Text, List<CharBox> CharBoxes)
     }
 }
 
-public record struct CharBox(int Index, float Left, float Top, float Right, float Bottom);
+/// <summary>
+/// One character's axis-aligned bounding box in page-point space (top-left
+/// origin, Y-down, displayed orientation). <paramref name="Angle"/> is the
+/// glyph's rotation in the DISPLAYED frame, in clockwise degrees normalised to
+/// {0, 90, 180, 270} (0 for ordinary upright text; free-angle glyphs are
+/// rounded to the nearest quarter-turn). It composes the content-stream glyph
+/// angle, the page /Rotate, and any view rotation — so 0 always means "reads
+/// left-to-right upright as displayed". Providers that cannot report glyph
+/// angles leave it 0.
+/// </summary>
+public record struct CharBox(int Index, float Left, float Top, float Right, float Bottom, float Angle = 0f);

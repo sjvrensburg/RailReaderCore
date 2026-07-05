@@ -9,6 +9,11 @@ using UglyToad.PdfPig;
 string fixtures = args.Length > 0 ? args[0] : "tests/fixtures/rotation";
 ProbePdf(Path.Combine(fixtures, "rotate-suite.pdf"), "MARKER");
 ProbePdf(Path.Combine(fixtures, "landscape-scan.pdf"), "SCANMARK");
+DumpOrientations(Path.Combine(fixtures, "sideways-table.pdf"), "Quarter", 0);
+DumpOrientations(Path.Combine(fixtures, "sideways-table.pdf"), "upright", 0);
+DumpOrientations(Path.Combine(fixtures, "landscape-scan.pdf"), "SCANMARK", 0);
+DumpOrientations(Path.Combine(fixtures, "rotate-suite.pdf"), "MARKER", 1);
+DumpOrientations(Path.Combine(fixtures, "rotate-suite.pdf"), "MARKER", 2);
 
 static void ProbePdf(string path, string marker)
 {
@@ -76,4 +81,16 @@ static void MeasureInkCoverage(PdfPigSkiaPdfService service, PageText pageText,
     }
     double recall = dark == 0 ? 0 : (double)darkInBox / dark;
     Console.WriteLine($"pixmap {pixW}x{pixH}; dark px: {dark}; ink coverage by char boxes: {recall:F3}");
+}
+
+static void DumpOrientations(string path, string marker, int pageIndex)
+{
+    var bytes = File.ReadAllBytes(path);
+    using var doc = PdfDocument.Open(bytes);
+    var page = doc.GetPage(pageIndex + 1);
+    var letters = page.Letters;
+    var text = string.Concat(letters.Select(l => l.Value));
+    int mi = text.IndexOf(marker, StringComparison.Ordinal);
+    Console.WriteLine($"{Path.GetFileName(path)} p{pageIndex} '{marker}': " +
+        (mi < 0 ? "NOT FOUND" : $"TextOrientation={letters[mi].TextOrientation}, GlyphRect rotation={letters[mi].GlyphRectangle.Rotation:F1}"));
 }

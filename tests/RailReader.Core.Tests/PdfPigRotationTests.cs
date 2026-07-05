@@ -66,6 +66,34 @@ public class PdfPigRotationTests
     }
 
     [Fact]
+    public void Glyph_angles_match_the_pdfium_convention()
+    {
+        // Same displayed-clockwise-degree convention as the PDFium backend:
+        // \rotatebox{90} content = 270°, upright prose = 0°, and a /Rotate 90
+        // page's upright content = 90°.
+        var text = new RailReader.Core.PdfPig.PdfTextService();
+
+        var sideways = text.ExtractPageText(File.ReadAllBytes(FixturePath("sideways-table.pdf")), 0);
+        AssertMarkerAngle(sideways, "Quarter", 270f);
+        AssertMarkerAngle(sideways, "upright", 0f);
+
+        var rotated = text.ExtractPageText(File.ReadAllBytes(FixturePath("rotate-suite.pdf")), 1);
+        AssertMarkerAngle(rotated, "MARKER", 90f);
+
+        // View rotation composes: one clockwise turn makes the sideways scan upright.
+        var scan = text.ExtractPageText(File.ReadAllBytes(FixturePath("landscape-scan.pdf")), 0, 1);
+        AssertMarkerAngle(scan, "SCANMARK", 0f);
+    }
+
+    private static void AssertMarkerAngle(PageText pageText, string marker, float expected)
+    {
+        int mi = pageText.Text.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(mi >= 0, $"'{marker}' not found");
+        foreach (var c in pageText.CharBoxes.Where(c => c.Index >= mi && c.Index < mi + marker.Length))
+            Assert.Equal(expected, c.Angle);
+    }
+
+    [Fact]
     public void CharBoxes_cover_rendered_ink_for_rotated_content_without_rotate_attr()
     {
         using var service = new PdfPigSkiaPdfService(FixturePath("landscape-scan.pdf"));

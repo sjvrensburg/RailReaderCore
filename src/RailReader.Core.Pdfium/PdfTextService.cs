@@ -41,15 +41,22 @@ public sealed class PdfTextService : IPdfTextService
                     uint unicode = FPDFText_GetUnicode(textPage, i);
                     textChars[i] = unicode <= 0xFFFF ? (char)unicode : '\uFFFD';
 
+                    // Displayed glyph angle: PDFium reports the content-stream angle
+                    // only (unaffected by /Rotate \u2014 see the binding note), so compose
+                    // the page/view rotation to get the as-displayed clockwise angle.
+                    float rad = FPDFText_GetCharAngle(textPage, i);
+                    int contentDeg = (int)Math.Round(rad * 180.0 / Math.PI / 90.0) * 90;
+                    float angle = ((contentDeg + 90 * tx.Rotation) % 360 + 360) % 360;
+
                     double left = 0, right = 0, bottom = 0, top = 0;
                     if (FPDFText_GetCharBox(textPage, i, ref left, ref right, ref bottom, ref top))
                     {
                         var (l, t, r, b) = tx.PdfRectToPage(left, bottom, right, top);
-                        charBoxes.Add(new CharBox(i, l, t, r, b));
+                        charBoxes.Add(new CharBox(i, l, t, r, b, angle));
                     }
                     else
                     {
-                        charBoxes.Add(new CharBox(i, 0, 0, 0, 0));
+                        charBoxes.Add(new CharBox(i, 0, 0, 0, 0, angle));
                     }
                 }
                 string text = new string(textChars);
@@ -108,6 +115,12 @@ public sealed class PdfTextService : IPdfTextService
     {
         lock (PdfiumGate.Lock)
         {
+            // Text extraction can be the first PDFium touch (headless/library use
+            // before any render) — initialise defensively like PdfAnnotationReader;
+            // FPDF_InitLibrary is idempotent and this is a cheap flag check after
+            // the first call.
+            PdfiumResolver.EnsureLibraryInitialized();
+
             IntPtr doc = IntPtr.Zero;
             IntPtr page = IntPtr.Zero;
             IntPtr textPage = IntPtr.Zero;

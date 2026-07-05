@@ -253,6 +253,11 @@ internal static class PdfiumNative
     [DllImport(Lib)] internal static extern uint FPDFText_GetUnicode(IntPtr textPage, int index);
     [DllImport(Lib)] internal static extern bool FPDFText_GetCharBox(IntPtr textPage, int index,
         ref double left, ref double right, ref double bottom, ref double top);
+    // Per-char glyph rotation in radians. Empirically (tools/rotation-probe): the
+    // value reads as CLOCKWISE degrees of glyph rotation in the page's Y-down
+    // display frame at /Rotate 0 — LaTeX \rotatebox{90} (visually 90° CCW) text
+    // reports 270°, and /Rotate never affects it (content-stream angle only).
+    [DllImport(Lib)] internal static extern float FPDFText_GetCharAngle(IntPtr textPage, int index);
     [DllImport(Lib)] internal static extern int FPDFText_CountRects(IntPtr textPage, int startIndex, int count);
     [DllImport(Lib)] internal static extern bool FPDFText_GetRect(IntPtr textPage, int rectIndex,
         ref double left, ref double top, ref double right, ref double bottom);

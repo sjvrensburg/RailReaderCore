@@ -44,4 +44,11 @@ public sealed record LayoutModelCapabilities(
 }
 
 /// <summary>One entry in a layout model's class table.</summary>
-public sealed record LayoutClassDescriptor(int Id, string Name, BlockRole Role);
+/// <summary>
+/// One model output class. <paramref name="UprightTurnsSeed"/> pre-seeds
+/// <see cref="Models.LayoutBlock.UprightTurns"/> for classes the model itself
+/// declares as rotated/vertical text (e.g. PP-DocLayoutV3's vertical_text) —
+/// a best-guess default that glyph-angle detection overrides whenever the page
+/// has a text layer (<see cref="OrientationDetector"/>).
+/// </summary>
+public sealed record LayoutClassDescriptor(int Id, string Name, BlockRole Role, int UprightTurnsSeed = 0);

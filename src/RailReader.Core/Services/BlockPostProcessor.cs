@@ -29,6 +29,9 @@ public static class BlockPostProcessor
         bool cellNavigation = false)
     {
         ResolveVerticalOverlaps(blocks);
+        // Orientation before line detection: a sideways block must collapse to one
+        // atomic line rather than be shattered by horizontal char clustering.
+        OrientationDetector.DetectBlockOrientations(blocks, charBoxes, rgbBytes, imgW, imgH, scaleX, scaleY);
         DetectLinesForBlocks(blocks, rgbBytes, imgW, imgH, scaleX, scaleY, charBoxes, tableRowReading, cellNavigation);
     }
 
@@ -70,6 +73,7 @@ public static class BlockPostProcessor
                     ClassId = b.ClassId,
                     Confidence = b.Confidence,
                     Order = b.Order,
+                    UprightTurns = b.UprightTurns,
                 };
             }
         }

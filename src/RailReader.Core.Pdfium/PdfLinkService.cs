@@ -20,6 +20,9 @@ public sealed class PdfLinkService : IPdfLinkService
     {
         lock (PdfiumGate.Lock)
         {
+            // May be the first PDFium touch in headless use — see PdfTextService.
+            PdfiumResolver.EnsureLibraryInitialized();
+
             IntPtr doc = IntPtr.Zero;
             IntPtr page = IntPtr.Zero;
             GCHandle pinned = default;

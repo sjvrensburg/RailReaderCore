@@ -203,7 +203,9 @@ public sealed class MarkdownExportService : IMarkdownExportService
         List<byte[]?> pngs;
         try
         {
-            pngs = BlockCropRenderer.RenderBlocksAsPng(pdf, pageIdx, bboxes, pageW, pageH, 300);
+            // Pass each block's UprightTurns so sideways tables/text reach the VLM upright.
+            var turns = vlmTargets.Select(t => t.Block.UprightTurns).ToList();
+            pngs = BlockCropRenderer.RenderBlocksAsPng(pdf, pageIdx, bboxes, pageW, pageH, 300, turns);
         }
         catch (Exception ex)
         {

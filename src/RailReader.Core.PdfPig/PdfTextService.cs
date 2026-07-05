@@ -158,6 +158,9 @@ public sealed class PdfTextService : IPdfTextService
             // Compute the word's flipped bbox once for break-detection
             // against the previous word.
             var (wLeft, wTop, wRight, wBottom) = FlippedAabb(word.BoundingBox, pageH);
+            // Displayed glyph angle for the word — synthetic separators inherit it so
+            // sideways runs aren't diluted with angle-0 whitespace in majority votes.
+            float wordAngle = word.Letters.Count > 0 ? DisplayAngle(word.Letters[0]) : 0f;
 
             if (!float.IsNaN(prevWordRight))
             {
@@ -192,7 +195,7 @@ public sealed class PdfTextService : IPdfTextService
                         sb.Append(' ');
                         float spaceTop    = Math.Min(prevWordTop, wTop);
                         float spaceBottom = Math.Max(prevWordBottom, wBottom);
-                        boxes.Add(new CharBox(idx, prevWordRight, spaceTop, wLeft, spaceBottom));
+                        boxes.Add(new CharBox(idx, prevWordRight, spaceTop, wLeft, spaceBottom, wordAngle));
                     }
                 }
                 else if (lastChar != '\n')
@@ -200,20 +203,21 @@ public sealed class PdfTextService : IPdfTextService
                     int idx = sb.Length;
                     sb.Append('\n');
                     boxes.Add(new CharBox(idx, prevWordRight, prevWordTop,
-                                          prevWordRight + 1f, prevWordBottom));
+                                          prevWordRight + 1f, prevWordBottom, wordAngle));
                 }
             }
 
             foreach (var letter in word.Letters)
             {
                 var (left, top, right, bottom) = FlippedAabb(letter.BoundingBox, pageH);
+                float angle = DisplayAngle(letter);
 
                 string value = letter.Value ?? "";
                 if (value.Length == 0)
                 {
                     int index = sb.Length;
                     sb.Append('�');
-                    boxes.Add(new CharBox(index, left, top, right, bottom));
+                    boxes.Add(new CharBox(index, left, top, right, bottom, angle));
                 }
                 else
                 {
@@ -221,7 +225,7 @@ public sealed class PdfTextService : IPdfTextService
                     {
                         int index = sb.Length;
                         sb.Append(ch);
-                        boxes.Add(new CharBox(index, left, top, right, bottom));
+                        boxes.Add(new CharBox(index, left, top, right, bottom, angle));
                     }
                 }
             }
@@ -244,14 +248,43 @@ public sealed class PdfTextService : IPdfTextService
         if (ViewRotationMath.Normalize(viewRotation) == 0 || pageText.CharBoxes.Count == 0)
             return pageText;
 
+        int q = ViewRotationMath.Normalize(viewRotation);
         var rotated = new List<CharBox>(pageText.CharBoxes.Count);
         foreach (var b in pageText.CharBoxes)
         {
             var r = ViewRotationMath.RotateRect(
                 new RectF(b.Left, b.Top, b.Right, b.Bottom), pageW, pageH, viewRotation);
-            rotated.Add(new CharBox(b.Index, r.Left, r.Top, r.Right, r.Bottom));
+            float angle = (b.Angle + 90 * q) % 360;
+            rotated.Add(new CharBox(b.Index, r.Left, r.Top, r.Right, r.Bottom, angle));
         }
         return new PageText(pageText.Text, rotated);
+    }
+
+    /// <summary>
+    /// Displayed glyph angle in clockwise degrees {0, 90, 180, 270}, matching the
+    /// PDFium backend's CharBox.Angle convention. PdfPig letters are already in the
+    /// page's /Rotate display frame, and TextOrientation maps directly onto the
+    /// displayed clockwise angle — calibrated empirically
+    /// (tools/rotation-probe-pdfpig): \rotatebox{90} content = Rotate270 (270° CW);
+    /// a /Rotate 90 page's upright content = Rotate90 (90° CW) — both matching
+    /// PDFium's values exactly. TextOrientation is used rather than
+    /// GlyphRectangle.Rotation because the latter reads 0 for many rotated glyphs
+    /// (only ~30% of the fixture table's glyphs report it); the free-angle Other
+    /// case falls back to the glyph rotation, negated (PdfPig rotation is
+    /// counter-clockwise-positive).
+    /// </summary>
+    private static float DisplayAngle(Letter letter)
+    {
+        switch (letter.TextOrientation)
+        {
+            case TextOrientation.Horizontal: return 0f;
+            case TextOrientation.Rotate90: return 90f;
+            case TextOrientation.Rotate180: return 180f;
+            case TextOrientation.Rotate270: return 270f;
+            default:
+                int deg = (int)Math.Round(letter.GlyphRectangle.Rotation / 90.0) * 90;
+                return ((-deg) % 360 + 360) % 360;
+        }
     }
 
     /// <summary>
