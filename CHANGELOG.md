@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — Rotated pages and sideways tables (Phases 0–2)
+## 0.47.0 — Rotated pages and sideways tables (Phases 0–2)
 
 Three stacked pieces of rotation support, all empirically validated against LaTeX-generated
 fixtures (`tests/fixtures/rotation/`, rebuilt via `build.sh`) using an ink-coverage probe
