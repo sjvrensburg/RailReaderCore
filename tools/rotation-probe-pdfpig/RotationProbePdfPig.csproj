@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>RotationProbePdfPig</AssemblyName>
+    <NoWarn>CA1416</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="3.119.*" />
+    <ProjectReference Include="../../src/RailReader.Core/RailReader.Core.csproj" />
+    <ProjectReference Include="../../src/RailReader.Core.PdfPig/RailReader.Core.PdfPig.csproj" />
+    <ProjectReference Include="../../src/RailReader.Renderer.PdfPigSkia/RailReader.Renderer.PdfPigSkia.csproj" />
+  </ItemGroup>
+</Project>

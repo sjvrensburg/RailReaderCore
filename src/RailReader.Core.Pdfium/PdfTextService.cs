@@ -23,7 +23,7 @@ public sealed class PdfTextService : IPdfTextService
     public PageText ExtractPageText(byte[] pdfBytes, int pageIndex, string? password = null)
     {
         return WithTextPage(pdfBytes, pageIndex, password, s_empty, "extract text",
-            (textPage, offsetX, offsetY, visibleHeight) =>
+            (textPage, tx) =>
             {
                 int charCount = FPDFText_CountChars(textPage);
                 if (charCount <= 0)
@@ -41,13 +41,8 @@ public sealed class PdfTextService : IPdfTextService
                     double left = 0, right = 0, bottom = 0, top = 0;
                     if (FPDFText_GetCharBox(textPage, i, ref left, ref right, ref bottom, ref top))
                     {
-                        // Shift from MediaBox to CropBox space, then convert
-                        // from PDF user space (Y-up) to page-point space (Y-down)
-                        float adjLeft = (float)(left - offsetX);
-                        float adjRight = (float)(right - offsetX);
-                        float tlY = (float)(visibleHeight - (top - offsetY));
-                        float brY = (float)(visibleHeight - (bottom - offsetY));
-                        charBoxes.Add(new CharBox(i, adjLeft, tlY, adjRight, brY));
+                        var (l, t, r, b) = tx.PdfRectToPage(left, bottom, right, top);
+                        charBoxes.Add(new CharBox(i, l, t, r, b));
                     }
                     else
                     {
@@ -73,7 +68,7 @@ public sealed class PdfTextService : IPdfTextService
             result.Add([]);
 
         return WithTextPage(pdfBytes, pageIndex, password, result, "get text range rects",
-            (textPage, offsetX, offsetY, visibleHeight) =>
+            (textPage, tx) =>
             {
                 for (int i = 0; i < ranges.Count; i++)
                 {
@@ -84,13 +79,8 @@ public sealed class PdfTextService : IPdfTextService
                         double left = 0, top = 0, right = 0, bottom = 0;
                         if (FPDFText_GetRect(textPage, r, ref left, ref top, ref right, ref bottom))
                         {
-                            // Shift from MediaBox space to CropBox space, then
-                            // convert from PDF user space (Y-up) to page-point space (Y-down)
-                            float adjLeft = (float)(left - offsetX);
-                            float adjRight = (float)(right - offsetX);
-                            float tlY = (float)(visibleHeight - (top - offsetY));
-                            float brY = (float)(visibleHeight - (bottom - offsetY));
-                            result[i].Add(new RectF(adjLeft, tlY, adjRight, brY));
+                            var (l, t, rr, b) = tx.PdfRectToPage(left, bottom, right, top);
+                            result[i].Add(new RectF(l, t, rr, b));
                         }
                     }
                 }
@@ -107,7 +97,7 @@ public sealed class PdfTextService : IPdfTextService
     /// fails to load, or if an exception is thrown.
     /// </summary>
     private static T WithTextPage<T>(byte[] pdfBytes, int pageIndex, string? password, T defaultValue,
-        string operationName, Func<IntPtr, float, float, double, T> action)
+        string operationName, Func<IntPtr, PageTransform, T> action)
     {
         lock (PdfiumGate.Lock)
         {
@@ -131,13 +121,13 @@ public sealed class PdfTextService : IPdfTextService
                 if (page == IntPtr.Zero)
                     return defaultValue;
 
-                var (offsetX, offsetY, visibleHeight) = GetCropBoxTransform(page);
+                var tx = GetPageTransform(page);
 
                 textPage = FPDFText_LoadPage(page);
                 if (textPage == IntPtr.Zero)
                     return defaultValue;
 
-                return action(textPage, offsetX, offsetY, visibleHeight);
+                return action(textPage, tx);
             }
             catch (Exception ex)
             {

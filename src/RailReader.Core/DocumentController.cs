@@ -394,24 +394,29 @@ public sealed partial class DocumentController : IDisposable
 
     /// <summary>
     /// Scrolls the camera so the destination position is visible.
-    /// Coordinates are in PDF user space; converted using the target page dimensions.
+    /// Prefers the provider-resolved page-point coordinates (CropBox- and
+    /// /Rotate-aware); falls back to the legacy PDF-user-space conversion for
+    /// providers that only supply PdfX/PdfY.
     /// </summary>
     private void ScrollToDestination(PageDestination dest)
     {
         if (FocusedViewport is not { } vp) return;
-        if (dest.PdfX is null && dest.PdfY is null) return;
+
+        float? pageX = dest.PageX, pageY = dest.PageY;
+        if (pageX is null && dest.PdfX is { } pdfX) pageX = pdfX;
+        if (pageY is null && dest.PdfY is { } pdfY) pageY = (float)(vp.PageHeight - pdfY);
+        if (pageX is null && pageY is null) return;
 
         var (ww, wh) = (vp.Width, vp.Height);
 
-        if (dest.PdfY is { } pdfY)
+        if (pageY is { } py)
         {
-            double pageY = vp.PageHeight - pdfY;
-            vp.Camera.OffsetY = -pageY * vp.Camera.Zoom + wh * CoreTuning.DestMarginTop;
+            vp.Camera.OffsetY = -py * vp.Camera.Zoom + wh * CoreTuning.DestMarginTop;
         }
 
-        if (dest.PdfX is { } pdfX)
+        if (pageX is { } px)
         {
-            vp.Camera.OffsetX = -pdfX * vp.Camera.Zoom + ww * CoreTuning.DestMarginLeft;
+            vp.Camera.OffsetX = -px * vp.Camera.Zoom + ww * CoreTuning.DestMarginLeft;
         }
 
         vp.ClampCamera(ww, wh);

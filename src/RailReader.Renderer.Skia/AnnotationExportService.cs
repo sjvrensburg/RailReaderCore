@@ -70,14 +70,14 @@ public static class AnnotationExportService
 
                         try
                         {
-                            var (cropLeft, cropBottom, visibleHeight) = GetCropBoxTransform(page);
+                            var tx = GetPageTransform(page);
 
                             // FPDF_ImportPages already copied the source page's native /Annots, so
                             // only write the RailReader-authored ones — writing the InPdf ones too
                             // would duplicate every native annotation in the exported file.
                             foreach (var ann in pageAnns)
                                 if (ann.Source != AnnotationSource.InPdf)
-                                    PdfAnnotationWriter.WriteAnnotationToPage(page, ann, cropLeft, cropBottom, visibleHeight);
+                                    PdfAnnotationWriter.WriteAnnotationToPage(page, ann, tx);
                         }
                         finally
                         {

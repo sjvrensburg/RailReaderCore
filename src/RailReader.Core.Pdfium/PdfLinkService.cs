@@ -33,8 +33,11 @@ public sealed class PdfLinkService : IPdfLinkService
                 page = FPDF_LoadPage(doc, pageIndex);
                 if (page == IntPtr.Zero) return s_empty;
 
-                var (offsetX, offsetY, visibleHeight) = GetCropBoxTransform(page);
+                var tx = GetPageTransform(page);
                 var links = new List<PdfLink>();
+                // Destinations can target other pages with their own /Rotate; cache
+                // each target page's transform so repeated links stay cheap.
+                var destTransforms = new Dictionary<int, PageTransform> { [pageIndex] = tx };
 
                 int startPos = 0;
                 while (FPDFLink_Enumerate(page, ref startPos, out IntPtr linkAnnot))
@@ -42,9 +45,9 @@ public sealed class PdfLinkService : IPdfLinkService
                     if (!FPDFLink_GetAnnotRect(linkAnnot, out FsRectF fsRect))
                         continue;
 
-                    var rect = ToPageRect(fsRect, offsetX, offsetY, visibleHeight);
+                    var rect = ToPageRect(fsRect, tx);
 
-                    var dest = ResolveDestination(doc, linkAnnot);
+                    var dest = ResolveDestination(doc, linkAnnot, destTransforms);
                     if (dest is null) continue;
 
                     links.Add(new PdfLink { Rect = rect, Destination = dest });
@@ -66,7 +69,8 @@ public sealed class PdfLinkService : IPdfLinkService
         }
     }
 
-    private static PdfLinkDestination? ResolveDestination(IntPtr doc, IntPtr link)
+    private static PdfLinkDestination? ResolveDestination(IntPtr doc, IntPtr link,
+        Dictionary<int, PageTransform> destTransforms)
     {
         // Try direct destination first (most internal links)
         IntPtr dest = FPDFLink_GetDest(doc, link);
@@ -74,7 +78,7 @@ public sealed class PdfLinkService : IPdfLinkService
         {
             int pageIdx = FPDFDest_GetDestPageIndex(doc, dest);
             if (pageIdx >= 0)
-                return MakePageDestination(dest, pageIdx);
+                return MakePageDestination(doc, dest, pageIdx, destTransforms);
         }
 
         // Fall back to action
@@ -90,7 +94,7 @@ public sealed class PdfLinkService : IPdfLinkService
                 {
                     int pageIdx = FPDFDest_GetDestPageIndex(doc, dest);
                     if (pageIdx >= 0)
-                        return MakePageDestination(dest, pageIdx);
+                        return MakePageDestination(doc, dest, pageIdx, destTransforms);
                 }
                 break;
 
@@ -117,7 +121,8 @@ public sealed class PdfLinkService : IPdfLinkService
         return null;
     }
 
-    private static PageDestination MakePageDestination(IntPtr dest, int pageIdx)
+    private static PageDestination MakePageDestination(IntPtr doc, IntPtr dest, int pageIdx,
+        Dictionary<int, PageTransform> destTransforms)
     {
         float? pdfX = null, pdfY = null;
         if (FPDFDest_GetLocationInPage(dest, out int hasX, out int hasY, out _,
@@ -126,19 +131,54 @@ public sealed class PdfLinkService : IPdfLinkService
             if (hasX != 0) pdfX = x;
             if (hasY != 0) pdfY = y;
         }
-        return new PageDestination { PageIndex = pageIdx, PdfX = pdfX, PdfY = pdfY };
+
+        // Pre-resolve the target position into the destination page's page-point
+        // space (CropBox- and /Rotate-aware) so navigation needs no PDF-space math.
+        float? pageX = null, pageY = null;
+        if ((pdfX is not null || pdfY is not null) &&
+            TryGetTransform(doc, pageIdx, destTransforms, out var tx))
+        {
+            var (px, py) = tx.PdfToPage(pdfX ?? 0, pdfY ?? 0);
+            // On 90°/270° pages each displayed axis derives from the other PDF axis;
+            // only publish an axis whose source coordinate was actually specified.
+            bool haveForX = tx.AxesSwapped ? pdfY is not null : pdfX is not null;
+            bool haveForY = tx.AxesSwapped ? pdfX is not null : pdfY is not null;
+            if (haveForX) pageX = px;
+            if (haveForY) pageY = py;
+        }
+
+        return new PageDestination
+        {
+            PageIndex = pageIdx, PdfX = pdfX, PdfY = pdfY, PageX = pageX, PageY = pageY,
+        };
+    }
+
+    private static bool TryGetTransform(IntPtr doc, int pageIdx,
+        Dictionary<int, PageTransform> cache, out PageTransform tx)
+    {
+        if (cache.TryGetValue(pageIdx, out tx)) return true;
+
+        IntPtr page = FPDF_LoadPage(doc, pageIdx);
+        if (page == IntPtr.Zero) return false;
+        try
+        {
+            tx = GetPageTransform(page);
+            cache[pageIdx] = tx;
+            return true;
+        }
+        finally
+        {
+            FPDF_ClosePage(page);
+        }
     }
 
     /// <summary>
-    /// Converts an FsRectF from PDF user space (Y-up, MediaBox) to a normalized
-    /// RectF in page-point space (Y-down, CropBox-adjusted).
+    /// Converts an FsRectF from PDF user space (Y-up, unrotated MediaBox) to a
+    /// normalized RectF in displayed page-point space.
     /// </summary>
-    private static RectF ToPageRect(FsRectF fsRect, float offsetX, float offsetY, double visibleHeight)
+    private static RectF ToPageRect(FsRectF fsRect, PageTransform tx)
     {
-        float left = fsRect.Left - offsetX;
-        float right = fsRect.Right - offsetX;
-        float y1 = (float)(visibleHeight - (fsRect.Top - offsetY));
-        float y2 = (float)(visibleHeight - (fsRect.Bottom - offsetY));
-        return new RectF(left, y1, right, y2).Normalized();
+        var (l, t, r, b) = tx.PdfRectToPage(fsRect.Left, fsRect.Bottom, fsRect.Right, fsRect.Top);
+        return new RectF(l, t, r, b).Normalized();
     }
 }

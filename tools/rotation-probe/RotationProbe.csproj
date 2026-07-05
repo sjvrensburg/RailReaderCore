@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>RotationProbe</AssemblyName>
+    <NoWarn>CA1416</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/RailReader.Core/RailReader.Core.csproj" />
+    <ProjectReference Include="../../src/RailReader.Core.Pdfium/RailReader.Core.Pdfium.csproj" />
+    <ProjectReference Include="../../src/RailReader.Renderer.Skia/RailReader.Renderer.Skia.csproj" />
+  </ItemGroup>
+</Project>

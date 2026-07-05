@@ -150,11 +150,7 @@ public sealed class PdfTextService : IPdfTextService
         {
             // Compute the word's flipped bbox once for break-detection
             // against the previous word.
-            var wbox = word.BoundingBox;
-            float wLeft   = (float)wbox.Left;
-            float wRight  = (float)wbox.Right;
-            float wTop    = (float)(pageH - wbox.Top);
-            float wBottom = (float)(pageH - wbox.Bottom);
+            var (wLeft, wTop, wRight, wBottom) = FlippedAabb(word.BoundingBox, pageH);
 
             if (!float.IsNaN(prevWordRight))
             {
@@ -203,11 +199,7 @@ public sealed class PdfTextService : IPdfTextService
 
             foreach (var letter in word.Letters)
             {
-                var rect = letter.BoundingBox;
-                float left   = (float)rect.Left;
-                float right  = (float)rect.Right;
-                float top    = (float)(pageH - rect.Top);
-                float bottom = (float)(pageH - rect.Bottom);
+                var (left, top, right, bottom) = FlippedAabb(letter.BoundingBox, pageH);
 
                 string value = letter.Value ?? "";
                 if (value.Length == 0)
@@ -233,5 +225,31 @@ public sealed class PdfTextService : IPdfTextService
         }
 
         return new PageText(sb.ToString(), boxes);
+    }
+
+    /// <summary>
+    /// Converts a PdfPig rectangle to a Y-flipped axis-aligned box
+    /// (Left, Top, Right, Bottom in page-point space, Y-down).
+    /// PdfPig rectangles are <b>oriented</b>: for glyphs rotated by the page
+    /// /Rotate attribute or by an in-content rotation, Left/Right and
+    /// Top/Bottom follow the glyph's own axes and can come back inverted
+    /// (Left &gt; Right), which used to produce degenerate boxes on rotated
+    /// text. Taking the min/max over the four corners yields the correct
+    /// axis-aligned bounds regardless of glyph orientation. Verified
+    /// empirically (tools/rotation-probe-pdfpig): ink coverage 1.000 on all
+    /// four /Rotate values and on 90°-rotated in-content text.
+    /// </summary>
+    private static (float Left, float Top, float Right, float Bottom) FlippedAabb(
+        UglyToad.PdfPig.Core.PdfRectangle rect, double pageH)
+    {
+        double minX = Math.Min(Math.Min(rect.TopLeft.X, rect.TopRight.X),
+                               Math.Min(rect.BottomLeft.X, rect.BottomRight.X));
+        double maxX = Math.Max(Math.Max(rect.TopLeft.X, rect.TopRight.X),
+                               Math.Max(rect.BottomLeft.X, rect.BottomRight.X));
+        double minY = Math.Min(Math.Min(rect.TopLeft.Y, rect.TopRight.Y),
+                               Math.Min(rect.BottomLeft.Y, rect.BottomRight.Y));
+        double maxY = Math.Max(Math.Max(rect.TopLeft.Y, rect.TopRight.Y),
+                               Math.Max(rect.BottomLeft.Y, rect.BottomRight.Y));
+        return ((float)minX, (float)(pageH - maxY), (float)maxX, (float)(pageH - minY));
     }
 }
