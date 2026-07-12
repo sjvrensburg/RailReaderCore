@@ -15,7 +15,12 @@ internal static class PdfiumNative
     [DllImport(Lib)] internal static extern void FPDF_InitLibrary();
 
     // Document
-    [DllImport(Lib)] internal static extern IntPtr FPDF_LoadMemDocument(IntPtr data, int size, string? password);
+    // The password is FPDF_BYTESTRING and PDFium tries UTF-8 first (required for
+    // AES-256/R6 documents). Marshal explicitly as UTF-8: the default (no CharSet)
+    // is ANSI, which is UTF-8 on Unix but the active system codepage on Windows —
+    // non-ASCII passwords would be mis-encoded and spuriously rejected there.
+    [DllImport(Lib)] internal static extern IntPtr FPDF_LoadMemDocument(IntPtr data, int size,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? password);
     [DllImport(Lib)] internal static extern void FPDF_CloseDocument(IntPtr document);
     [DllImport(Lib)] internal static extern int FPDF_GetSignatureCount(IntPtr document);
 

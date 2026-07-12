@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using RailReader.Core;
 using RailReader.Core.Models;
 using static RailReader.Core.Services.PdfiumNative;
@@ -13,6 +12,11 @@ public sealed class PdfTextService : IPdfTextService
 {
 
     private static readonly PageText s_empty = new("", []);
+
+    // Reuses one parsed document across the per-page call bursts issued by the
+    // analysis pipeline (ExtractPageText once per analysed page). Guarded by
+    // PdfiumGate.Lock; see CachedPdfDocument for the lifetime contract.
+    private readonly CachedPdfDocument _docCache = new();
 
     /// <summary>
     /// Extracts all text and per-character bounding boxes for a given page.
@@ -110,7 +114,7 @@ public sealed class PdfTextService : IPdfTextService
     /// Returns <paramref name="defaultValue"/> if the document, page, or text page
     /// fails to load, or if an exception is thrown.
     /// </summary>
-    private static T WithTextPage<T>(byte[] pdfBytes, int pageIndex, int viewRotation, string? password, T defaultValue,
+    private T WithTextPage<T>(byte[] pdfBytes, int pageIndex, int viewRotation, string? password, T defaultValue,
         string operationName, Func<IntPtr, PageTransform, T> action)
     {
         lock (PdfiumGate.Lock)
@@ -121,19 +125,18 @@ public sealed class PdfTextService : IPdfTextService
             // the first call.
             PdfiumResolver.EnsureLibraryInitialized();
 
-            IntPtr doc = IntPtr.Zero;
             IntPtr page = IntPtr.Zero;
             IntPtr textPage = IntPtr.Zero;
-            GCHandle pinned = default;
 
             try
             {
-                pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
                 // Read path is fail-soft: a wrong/missing password yields IntPtr.Zero and the
                 // default (empty) result rather than throwing — this runs on the render hot
                 // path, and the open boundary already validated the password. The write/open
                 // paths use LoadDocumentChecked to throw instead.
-                doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, password);
+                // The document handle is cached across per-page calls (owned by
+                // _docCache — do not close it here).
+                IntPtr doc = _docCache.GetOrLoad(pdfBytes, password);
                 if (doc == IntPtr.Zero)
                     return defaultValue;
 
@@ -158,8 +161,6 @@ public sealed class PdfTextService : IPdfTextService
             {
                 if (textPage != IntPtr.Zero) FPDFText_ClosePage(textPage);
                 if (page != IntPtr.Zero) FPDF_ClosePage(page);
-                if (doc != IntPtr.Zero) FPDF_CloseDocument(doc);
-                if (pinned.IsAllocated) pinned.Free();
             }
         }
     }

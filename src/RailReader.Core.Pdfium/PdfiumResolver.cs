@@ -16,18 +16,28 @@ namespace RailReader.Core.Services;
 /// </summary>
 public static class PdfiumResolver
 {
+    // Both flags are guarded by PdfiumGate.Lock — deliberately the ONLY lock used
+    // here. Callers reach this method both while already holding the gate
+    // (PdfTextService, PdfLinkService, PdfAnnotationWriter, …) and before taking
+    // it (PdfAnnotationReader); a second dedicated init lock would create two
+    // possible acquisition orders and an ABBA deadlock during the pre-init window.
+    // The gate is reentrant, so gate-holding callers nest safely. The flags are
+    // read via Volatile on the fast path and written only after the work completes,
+    // so a thread that observes true is guaranteed the init actually finished.
     private static bool s_initialized;
     private static bool s_libraryInitialized;
-    private static readonly object s_libraryInitLock = new();
 
     public static void Initialize()
     {
-        if (s_initialized) return;
-        s_initialized = true;
-
-        NativeLibrary.SetDllImportResolver(
-            typeof(PdfiumResolver).Assembly,
-            ResolvePdfium);
+        if (Volatile.Read(ref s_initialized)) return;
+        lock (PdfiumGate.Lock)
+        {
+            if (s_initialized) return;
+            NativeLibrary.SetDllImportResolver(
+                typeof(PdfiumResolver).Assembly,
+                ResolvePdfium);
+            Volatile.Write(ref s_initialized, true);
+        }
     }
 
     /// <summary>
@@ -37,19 +47,17 @@ public static class PdfiumResolver
     /// e.g. <see cref="PdfAnnotationReader"/> via the annotation store — may run
     /// before any render. This makes initialisation explicit and order-independent.
     /// <c>FPDF_InitLibrary</c> is idempotent, so this is safe alongside PDFtoImage.
+    /// Thread-safe; may be called with or without <see cref="PdfiumGate"/> held.
     /// </summary>
     public static void EnsureLibraryInitialized()
     {
         Initialize();
-        if (s_libraryInitialized) return;
-        lock (s_libraryInitLock)
+        if (Volatile.Read(ref s_libraryInitialized)) return;
+        lock (PdfiumGate.Lock)
         {
             if (s_libraryInitialized) return;
-            lock (PdfiumGate.Lock)
-            {
-                PdfiumNative.FPDF_InitLibrary();
-            }
-            s_libraryInitialized = true;
+            PdfiumNative.FPDF_InitLibrary();
+            Volatile.Write(ref s_libraryInitialized, true);
         }
     }
 

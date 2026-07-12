@@ -16,6 +16,11 @@ public sealed class PdfOutlineService : IPdfOutlineService
     {
         lock (PdfiumGate.Lock)
         {
+            // Outline extraction can be the first PDFium touch (headless/library
+            // use before any render) — initialise defensively like the sibling
+            // services; cheap flag check after the first call.
+            PdfiumResolver.EnsureLibraryInitialized();
+
             IntPtr doc = IntPtr.Zero;
             GCHandle pinned = default;
             try
