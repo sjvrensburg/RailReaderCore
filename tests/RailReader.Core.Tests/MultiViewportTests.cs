@@ -746,6 +746,19 @@ public class MultiViewportTests : IDisposable
         SeatAndActivate(controller, doc, vp2, page: 1);
         Assert.NotSame(vp2, controller.FocusedViewport);
 
+        // Reseat the pane on a known MULTI-line block: the worker's line detection collapses the
+        // synthetic block to a single line on the test PDF, which put the rail at the page boundary
+        // immediately — and the event this test then observed came from the stale-rail cross-page
+        // landing (the SkipToNavigablePage conflation bug, since fixed to defer), not from a line
+        // advance. Seat three lines so the advance under test genuinely happens within the page.
+        var multiLine = MakeNavigableAnalysis();
+        multiLine.PageWidth = 612;
+        multiLine.PageHeight = 792;
+        doc.SetAnalysis(1, vp2.AnalysisParams, multiLine);
+        vp2.Rail.SetAnalysis(multiLine, controller.Config.NavigableRoles);
+        vp2.UpdateRailZoom(vp2.Width, vp2.Height);
+        Assert.True(vp2.Rail.Active && vp2.Rail.CurrentLineCount >= 3);
+
         vp2.Rail.StartAutoScroll(50.0);
         vp2.AutoScroll.ActivateAutoScroll();
         vp2.Rail.AutoScrollElapsedSecondsOverride = () => 10.0;

@@ -345,6 +345,10 @@ public sealed partial class RailNav : ICameraClamp
         if (shouldBeActive && !Active)
         {
             Active = true;
+            // A pending auto-scroll teardown was queued by a transient deactivation (e.g. a
+            // deferred page-skip clearing the stale rail); the rail is live again, so it must
+            // not fire a spurious line advance against the freshly-seated position.
+            _autoScrollState.CancelTeardown();
             if (_pinnedActivationBlock is { } pinned)
             {
                 // An explicit framing (e.g. SmoothlyFrameBlock) pinned the target block;
@@ -368,6 +372,11 @@ public sealed partial class RailNav : ICameraClamp
             _scroll.Stop();
             ScrollSpeed = 0.0;
             _pinnedActivationBlock = null;
+            // Auto-scroll must not keep panning the camera in browse mode: hand the running
+            // session to the state machine's teardown tick so the orchestrator's no-move
+            // advance check ends it (machine + controller flag) on the next frame, instead
+            // of drifting along the stale line trajectory until its far end is reached.
+            _autoScrollState.RequestTeardown();
         }
     }
 
@@ -410,6 +419,27 @@ public sealed partial class RailNav : ICameraClamp
         ScrollSpeed = 0.0;
         _pinnedActivationBlock = null;
         _forceActive = false;
+        // Mirror UpdateZoom's deactivate branch: a running auto-scroll session must end with
+        // the rail (via the machine's teardown tick), not keep auto-panning without one.
+        _autoScrollState.RequestTeardown();
+    }
+
+    /// <summary>
+    /// Drops the seated analysis entirely and deactivates the rail — back to the no-analysis
+    /// state a freshly-constructed rail starts in. Used when the view navigates to a page whose
+    /// analysis is still pending (the deferred page-skip path): the PREVIOUS page's analysis must
+    /// not keep the rail active in the interim — navigating, or rendering the old page's block
+    /// geometry over the new page's bitmap. The worker result reseats via <see cref="SetAnalysis"/>.
+    /// </summary>
+    internal void ClearAnalysis()
+    {
+        Deactivate();
+        _analysis = null;
+        _navigableIndices.Clear();
+        BuildChunks();
+        CurrentBlock = 0;
+        CurrentLine = 0;
+        VerticalBias = 0;
     }
 
     /// <summary>
@@ -676,6 +706,9 @@ public sealed partial class RailNav : ICameraClamp
     public double? ComputeLineEndX(double zoom, double windowWidth)
         => ComputeLineEdgeX(zoom, windowWidth, start: false);
 
+    // Pure geometry query — no side effects. A caller that then drives the camera to the
+    // returned X directly must cancel any in-flight snap itself (see CancelSnap), or the
+    // running snap will overwrite the camera on the next tick.
     private double? ComputeLineEdgeX(double zoom, double windowWidth, bool start)
     {
         if (!CanNavigate) return null;
@@ -683,9 +716,16 @@ public sealed partial class RailNav : ICameraClamp
         double x = start
             ? windowWidth * 0.05 - block.BBox.X * zoom
             : windowWidth * 0.95 - (block.BBox.X + block.BBox.W) * zoom;
-        _snap = null;
         return ClampX(x, zoom, windowWidth);
     }
+
+    /// <summary>
+    /// Cancels any in-flight snap animation. For callers that drive the camera directly to a
+    /// computed target (e.g. the controller's line Home/End) — a live snap would otherwise
+    /// overwrite the camera on the next tick. Previously this cancellation hid inside
+    /// <see cref="ComputeLineStartX"/>/<see cref="ComputeLineEndX"/>, which read as pure queries.
+    /// </summary>
+    internal void CancelSnap() => _snap = null;
 
     private double ClampX(double cameraX, double zoom, double windowWidth)
     {

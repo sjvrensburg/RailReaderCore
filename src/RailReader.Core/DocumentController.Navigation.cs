@@ -8,7 +8,11 @@ public sealed partial class DocumentController
     // --- Rail navigation ---
 
     // ConfinedHold is distinct from NoChange so the auto-scroll handler keys off an explicit
-    // "confined viewport held at its block boundary" signal, not the generic no-op — see TickAutoScroll.
+    // "held at a boundary it cannot cross" signal, not the generic no-op — see TickAutoScroll.
+    // It covers both a block-confined (portal) viewport held at its focus-block edge AND a rail
+    // boundary that produced no page change (document edge, or a failed page render): in all of
+    // these nothing moved, so no PageChanged fires, auto-scroll stops, and edge-advance skips
+    // its repaint flags.
     private enum LineAdvanceResult { NoChange, LineAdvanced, PageChanged, PageChangedRailLost, ConfinedHold }
 
     private LineAdvanceResult AdvanceLine(Viewport vp, bool forward, double ww, double wh)
@@ -33,7 +37,14 @@ public sealed partial class DocumentController
             return SkipToNavigablePage(vp, forward, 0, ww, wh) switch
             {
                 SkipResult.FoundNavigable => LineAdvanceResult.PageChanged,
-                _ => LineAdvanceResult.PageChangedRailLost,
+                SkipResult.Deferred => LineAdvanceResult.PageChangedRailLost,
+                // Exhausted means NO page change happened (document edge, confined view, or a
+                // failed page render — GoToPage restores the old page on failure). Reporting a
+                // page change here made every keypress at the document edge re-fire PageChanged
+                // to hosts (page indicators, AT announcements) for a page that never moved.
+                // ConfinedHold is the existing "held at a boundary, nothing changed" signal:
+                // no PageChanged, auto-scroll stops cleanly, no edge-advance repaint churn.
+                _ => LineAdvanceResult.ConfinedHold,
             };
         }
         return result == NavResult.Ok ? LineAdvanceResult.LineAdvanced : LineAdvanceResult.NoChange;
@@ -84,25 +95,37 @@ public sealed partial class DocumentController
             }
             vp.UpdateRailZoom(ww, wh);
 
-            if (vp.Rail.Active)
-            {
-                vp.PendingSkip = null;
-                doc.QueueLookahead(vp, _config.AnalysisLookaheadPages);
-                ApplySkipLanding(vp, forward, savedBias);
-                vp.StartSnap(ww, wh);
-                if (skipped > 0) NotifyPagesSkipped(skipped);
-                return SkipResult.FoundNavigable;
-            }
-
+            // Check the pending flag BEFORE the rail: a cache-miss GoToPage leaves the rail
+            // still seated on the PREVIOUS page's analysis (nothing clears it until the worker
+            // result arrives), so Rail.Active alone conflates "seated on the new page" with a
+            // stale still-active rail — which made this deferred branch unreachable and landed
+            // rail navigation on the old page's block geometry. Drop the stale rail so it can't
+            // navigate or render the old geometry over the new page in the interim, and pin
+            // block 0 / line 0 (ClearAnalysis reset the cursor) so the async seat activates at
+            // the top of the page instead of geometric nearest-block selection; a backward skip
+            // is corrected to the page end by the deferred ApplySkipLanding (JumpToEnd).
             if (vp.PendingRailSetup)
             {
+                vp.Rail.ClearAnalysis();
+                vp.Rail.PinCurrentBlockForActivation();
                 vp.PendingSkip = new(forward, skipped, savedBias);
                 doc.QueueLookahead(vp, _config.AnalysisLookaheadPages);
                 return SkipResult.Deferred;
             }
 
-            skipped++;
-            targetPage += step;
+            // Not pending → this page is the landing. Either the rail engaged (cached analysis
+            // with navigable blocks — the loop's fast path guarantees cached pages without them
+            // never reach GoToPage), or it stayed inactive because the zoom is below the rail
+            // threshold (e.g. a deferred-skip resume after the user zoomed out, or a forced-rail
+            // session ending at the page boundary) — in which case walking on would runaway-page
+            // through every remaining readable page, so stop here too. The snap no-ops on an
+            // inactive rail.
+            vp.PendingSkip = null;
+            doc.QueueLookahead(vp, _config.AnalysisLookaheadPages);
+            ApplySkipLanding(vp, forward, savedBias);
+            vp.StartSnap(ww, wh);
+            if (skipped > 0) NotifyPagesSkipped(skipped);
+            return SkipResult.FoundNavigable;
         }
 
         vp.PendingSkip = null;
@@ -138,6 +161,17 @@ public sealed partial class DocumentController
     {
         var skip = vp.PendingSkip!;
         vp.Rail.VerticalBias = skip.SavedVerticalBias;
+        // The seat that triggered this resume may have left the rail INACTIVE not because the
+        // landed page has nothing to read (the walk-on case this resume exists for) but because
+        // the zoom dropped below the rail threshold while the skip was in flight. If the seated
+        // analysis has navigable blocks, the current page IS the landing — apply it and stop
+        // rather than walking past every readable page to the document edge.
+        if (vp.Rail.HasAnalysis)
+        {
+            vp.PendingSkip = null;
+            ApplySkipLanding(vp, skip.Forward, skip.SavedVerticalBias);
+            return true;
+        }
         return SkipToNavigablePage(vp, skip.Forward, skip.Skipped + 1, ww, wh) == SkipResult.FoundNavigable;
     }
 
@@ -303,6 +337,10 @@ public sealed partial class DocumentController
             : vp.Rail.ComputeLineEndX(vp.Camera.Zoom, ww);
         if (x is { } val)
         {
+            // Cancel any in-flight snap BEFORE driving the camera directly — a live snap would
+            // overwrite OffsetX on the next tick. (This cancellation used to hide inside
+            // ComputeLineStartX/EndX; it now lives here, at the mutation site.)
+            vp.Rail.CancelSnap();
             vp.Camera.OffsetX = val;
             // During autoscroll: brief settle pause, then resume from new position
             if (AutoScrollActive)
@@ -354,6 +392,13 @@ public sealed partial class DocumentController
         vp.Rail.FindBlockNearPoint(pageX, pageY);
         var (ww2, wh2) = (vp.Width, vp.Height);
         vp.StartSnap(ww2, wh2);
+        // The click-snap must not fight the wall-clock scroll trajectory: without a pause the
+        // Scrolling state recomputes cameraX from the pre-click origin every frame, discarding
+        // the snap's X (only its Y survived) and potentially firing an instant line advance
+        // against the newly-clicked line. Defer-resume after the snap settles, matching the
+        // manual line-advance and Home/End paths. (A no-op while parked — a click never un-parks.)
+        if (AutoScrollActive)
+            vp.Rail.PauseAutoScroll(_config.AutoScrollLinePauseMs);
         FireReadingPositionChanged();
         return (true, null);
     }
