@@ -1,5 +1,98 @@
 # Changelog
 
+## 0.48.0 — Full-codebase audit: 52 verified fixes
+
+A 63-agent audit (9 area finders + adversarial verification of every finding) surfaced 52
+confirmed issues across bugs, concurrency, performance, and tech debt; all are fixed here.
+Suite grew 856 → 937 tests (932 pass + 5 visible environment-gated skips that previously
+passed vacuously).
+
+### Breaking / migration notes
+
+- **`DocumentModel.ViewportRemoved` is now a proper `event Action<Viewport>`** (was a public
+  single-slot `Action` property that host assignment could silently clobber, breaking the
+  controller's dangling-focus safety net). Hosts using `+=`/`-=` are source-compatible;
+  hosts that assigned with `=` must switch to `+=`.
+- **`LayoutAnalyzer` (PP-V3) now throws `ArgumentException`** when a pixmap edge exceeds the
+  letterbox canvas instead of silently cropping (silently wrong analysis before).
+- **PP-S and Heron detection outputs shift slightly**: preprocessing now matches
+  `PIL.Image.BILINEAR` byte-exactly (half-pixel centres, area-averaging downscale, Pillow's
+  fixed-point arithmetic), replacing point-sampled align-corners bilinear. Validated
+  byte-exact against Pillow 12.3.0 and detection-compared against the live models: Heron
+  boxes move ≤1pt; PP-S improves on the 1920→480 path (footnotes/small text previously
+  aliased away are now detected — output moved toward the Python `raildla` reference).
+- Behavioural (intentional): `SearchService.FindAllOccurrences` returns non-overlapping
+  matches; no redundant `PageChanged` fires when rail navigation exhausts at a document
+  boundary; `RailNav.ComputeLineStartX/EndX` are pure queries (no longer cancel a running
+  snap); `AppConfig.Load` no longer overwrites an unreadable config with defaults — it backs
+  the file up to `config.json.bad` and runs on in-memory defaults.
+
+### Rotation race family (v0.47.0 hardening)
+
+- In-flight DPI re-renders/prefetches no longer install stale-frame bitmaps after
+  `SetViewRotation`/render-quality changes (new internal `Viewport.RenderGeneration` checked
+  in every marshalled completion guard and prefetch consume).
+- Analysis results now carry `ViewRotation`; stale-frame results are rejected by the poll
+  loop and the page is automatically resubmitted (previously `IsInFlight` suppressed the
+  corrective resubmission and old-frame geometry seated the rail).
+- `ScreenshotCompositor` renders in the view-rotated frame, with the annotation layer
+  transformed from its rotation-0 storage frame.
+
+### Bug fixes
+
+- Freehand (Ink) annotations rendered a stale path after move/resize — the `SKPath` cache
+  keyed on point *count* only; now keyed on point content.
+- PDFium first-init hardening: removed the ABBA lock-order inversion (init is now
+  double-checked under `PdfiumGate.Lock` itself — no second lock exists), made
+  `PdfiumResolver.Initialize` thread-safe, and `PdfOutlineService` now calls
+  `EnsureLibraryInitialized` like its siblings.
+- `FPDF_LoadMemDocument` password now marshals as UTF-8 (non-ASCII passwords failed on
+  Windows); link URIs are decoded as UTF-8 (were ANSI).
+- The analysis worker survives per-item analyzer exceptions (one throw used to kill layout
+  analysis for the rest of the session, stranding in-flight entries).
+- Rail: page-skip no longer lands navigation on the previous page's geometry when the target
+  page's analysis is pending (the Deferred/PendingSkip path is now reachable); deactivating
+  rail (zoom-out) tears down auto-scroll; click-to-block snap pauses auto-scroll instead of
+  fighting it frame-by-frame.
+- Undo/redo: removing an already-absent annotation no longer corrupts the undo stack
+  (`List.Insert(-1)` crash or wrong-page duplication); erasing/undoing clears stale
+  selection/drag references.
+- Search: user regexes run with a 2s match timeout (catastrophic backtracking used to hang
+  the UI thread permanently, partial results are kept); stale matches can no longer throw
+  from `GetMatchSnippet`; `CloseDocument` of a background tab no longer closes the focused
+  tab's search.
+- `LineDetector.DetectLinesFromPixels` clamps negative crop origins (was
+  `IndexOutOfRangeException`); `ColorUtils.ParseHexColor` falls back to yellow on malformed
+  hex as documented; Rectangle/FreeText pointer-move without pointer-down no longer builds a
+  preview from stale coordinates; `GoToPage`'s render-failure rollback works under focus
+  confinement (`RetargetFocus` flow); `SavePng` truncates existing files; screenshot
+  annotations draw in z-order; VLM `TestConnectionAsync` distinguishes caller cancellation
+  from timeout; `SessionOptions` no longer leaks a native handle per analyzer construction;
+  `ConsoleLogger` writes are synchronized.
+
+### Performance
+
+- `PdfTextService`/`PdfLinkService` cache the loaded PDFium document per service instance
+  (MRU-of-1, all lifetime handling inside `PdfiumGate`) — a background text sweep over an
+  N-page document no longer performs N full document parses serialized against rendering.
+- Note-popup layout cache is per-annotation (was single-slot, thrashing with ≥2 open notes).
+
+### Maintainability / tests
+
+- PdfPig backend: text/link services are now actually gated (`GatedPdfPigServices`),
+  matching the documented `PdfPigGate` invariant.
+- `EdgeHoldStateMachine` has an injectable clock; its tests are deterministic (no sleeps).
+- `CleanupService.RunCleanup` (recursive deletion + protection rules) gained real tests
+  against temp dirs; real-Acrobat interop tests skip visibly with a `RAILREADER_ACROBAT_PDF`
+  env-var override instead of passing vacuously; perf benchmarks carry a
+  `Category=Perf` trait; duplicated bilinear-resize geometry unified in `BilinearResampler`
+  with Pillow-golden tests; duplicated annotation test helpers unified; misleading
+  "incremental save" docs corrected (the writer deliberately does a full `FPDF_SaveAsCopy`
+  rewrite); stale `TopDownReadingOrderResolver` references removed from docs.
+
+**railreader2 owes:** NuGet bump to 0.48.0 + the `ViewportRemoved` `=`→`+=` migration if
+applicable.
+
 ## 0.47.0 — Rotated pages and sideways tables (Phases 0–2)
 
 Three stacked pieces of rotation support, all empirically validated against LaTeX-generated
