@@ -326,4 +326,78 @@ public class AutoScrollStateMachineTests
         sm.Tick(ref cameraX, 0.016, in ctx);
         Assert.Equal(0.5, sm.NormalizedSpeed, precision: 10);
     }
+
+    // ===== Teardown tick (rail deactivated while a session is engaged) =====
+
+    [Fact]
+    public void RequestTeardown_NextTickReportsReachedEnd_WithoutMovingCamera()
+    {
+        // Rail deactivation during auto-scroll: the next Tick must report reached-end once,
+        // camera untouched, so the orchestrator's no-move advance check ends the session —
+        // instead of Scrolling recomputing the stale wall-clock trajectory (visible drift).
+        var sm = new AutoScrollStateMachine(new NoOpClamp());
+        sm.GetScrollElapsedSeconds = () => 10.0; // any real Scrolling tick would move far left
+        sm.Start(1.0);
+
+        sm.RequestTeardown();
+        double cameraX = 123.0;
+        var ctx = MakeContext(lineRight: 10000);
+
+        Assert.True(sm.Tick(ref cameraX, 0.016, in ctx)); // reached-end reported once
+        Assert.Equal(123.0, cameraX);                     // camera untouched
+
+        // The request is one-shot: the next tick resumes normal state handling.
+        Assert.False(sm.Tick(ref cameraX, 0.016, in ctx));
+    }
+
+    [Fact]
+    public void RequestTeardown_WhenInactive_IsNoOp()
+    {
+        var sm = new AutoScrollStateMachine(new NoOpClamp());
+        sm.RequestTeardown();
+
+        double cameraX = 0;
+        var ctx = MakeContext();
+        Assert.False(sm.Tick(ref cameraX, 0.016, in ctx));
+    }
+
+    [Fact]
+    public void CancelTeardown_ClearsPendingRequest()
+    {
+        // A rail (re)activation cancels a queued teardown so it can't fire a spurious
+        // line advance against the freshly-seated rail.
+        var sm = new AutoScrollStateMachine(new NoOpClamp());
+        sm.GetScrollElapsedSeconds = () => 0.0; // no movement → no genuine reached-end
+        sm.Start(1.0);
+
+        sm.RequestTeardown();
+        sm.CancelTeardown();
+
+        double cameraX = 0;
+        var ctx = MakeContext(lineRight: 10000);
+        Assert.False(sm.Tick(ref cameraX, 0.016, in ctx));
+        Assert.Equal(AutoScrollState.Scrolling, sm.CurrentState);
+    }
+
+    [Fact]
+    public void RequestTeardown_WhileParked_HeldUntilResume()
+    {
+        // Parked has no motion to tear down, and consuming the request there would let a
+        // later explicit resume drift on a dead rail — it must fire on the post-resume tick.
+        var sm = new AutoScrollStateMachine(new NoOpClamp());
+        sm.Start(1.0);
+        sm.RequestDeferredPark();
+        double cameraX = 0;
+        var ctx = MakeContext(snapInProgress: false);
+        sm.Tick(ref cameraX, 0.016, in ctx); // WaitingForSnap → WaitingForAdvance
+        Assert.True(sm.Parked);
+
+        sm.RequestTeardown();
+        Assert.False(sm.Tick(ref cameraX, 0.016, in ctx)); // parked: request held, no advance
+        Assert.True(sm.Parked);
+
+        sm.ResumeFromPark();
+        Assert.True(sm.Tick(ref cameraX, 0.016, in ctx));  // fires on the post-resume tick
+        Assert.Equal(0.0, cameraX);                        // still no motion
+    }
 }

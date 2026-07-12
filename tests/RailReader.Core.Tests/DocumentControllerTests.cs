@@ -1297,4 +1297,172 @@ public class DocumentControllerTests : IDisposable
         double expectedFit = doc.Primary.ComputeBlockFitZoom(bigBlock, 400, 400);
         Assert.Equal(expectedFit, doc.Camera.Zoom, precision: 2);
     }
+
+    // ---- Rail page-skip audit fixes ------------------------------------------------------------------
+
+    /// <summary>One Text block spanning the test PDF's drawn text region (lines at y≈72/120/140),
+    /// so the worker's line detection yields multiple real lines.</summary>
+    private static PageAnalysis MakeWorkerAnalysis() => new()
+    {
+        PageWidth = 612,
+        PageHeight = 792,
+        Blocks =
+        [
+            new LayoutBlock
+            {
+                BBox = new BBox(60, 50, 500, 110),
+                Role = BlockRole.Text,
+                Confidence = 0.95f,
+                Order = 0,
+            },
+        ],
+    };
+
+    private void DrainPendingRailSetup(Viewport vp)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (vp.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
+        {
+            _controller.PollAnalysisResults();
+            Thread.Sleep(10);
+        }
+        Assert.False(vp.PendingRailSetup);
+    }
+
+    [Fact]
+    public void HandleArrowDown_AtDocumentEnd_DoesNotFirePageChanged()
+    {
+        // Finding: SkipResult.Exhausted was mapped to PageChangedRailLost, so every keypress at
+        // the last line of the LAST page re-fired PageChanged although no page change occurred.
+        var state = CreateAndAddDocument();
+        _controller.GoToPage(2); // last page of the 3-page fixture
+        SetupRailMode(state);    // seats a 5-line block on the current page
+
+        for (int i = 0; i < 4; i++)
+            _controller.HandleArrowDown(); // advance to the last line
+
+        int pageChangedFires = 0;
+        _controller.FocusedViewport!.PageChanged = _ => pageChangedFires++;
+
+        for (int i = 0; i < 5; i++)
+            _controller.HandleArrowDown(); // held at the document edge
+
+        Assert.Equal(0, pageChangedFires);
+        Assert.Equal(2, state.CurrentPage);
+        Assert.True(state.Rail.Active); // the rail is untouched, merely held
+        Assert.Equal(4, state.Rail.CurrentLine);
+    }
+
+    [Fact]
+    public void HandleClick_DuringAutoScroll_SnapWinsOverScrollTrajectory()
+    {
+        // Finding: HandleClick's block snap never paused auto-scroll, so the Scrolling state
+        // recomputed cameraX from the pre-click wall-clock trajectory every frame, discarding
+        // the snap's X. The click must defer-resume like every other snap-while-autoscroll site.
+        var state = CreateAndAddDocument();
+        SetupRailMode(state);
+        var vp = state.Primary;
+
+        _controller.ToggleAutoScroll();
+        Assert.True(_controller.AutoScrollActive);
+        // Constant elapsed: any live Scrolling tick pins the camera at the line's far end instantly.
+        vp.Rail.AutoScrollElapsedSecondsOverride = () => 10.0;
+
+        // Click the centre of the seated block.
+        var block = vp.Rail.CurrentNavigableBlock;
+        double pageX = block.BBox.X + block.BBox.W / 2;
+        double pageY = block.BBox.Y + block.BBox.H / 2;
+        _controller.HandleClick(pageX * vp.Camera.Zoom + vp.Camera.OffsetX,
+                                pageY * vp.Camera.Zoom + vp.Camera.OffsetY);
+
+        var (targetX, _) = vp.Rail.ComputeSnapTarget(vp.Camera.Zoom, vp.Width, vp.Height);
+
+        // Drive the tick until the click snap completes; auto-scroll is paused for it, so the
+        // camera must settle on the snap target, not the stale scroll trajectory's line end.
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (vp.Rail.SnapProgress < 1.0 && sw.ElapsedMilliseconds < 3000)
+        {
+            _controller.TickViewport(vp, 0.016);
+            Thread.Sleep(5);
+        }
+        _controller.TickViewport(vp, 0.016);
+
+        Assert.True(_controller.AutoScrollActive); // paused for the snap, not stopped
+        Assert.Equal(targetX, vp.Camera.OffsetX, 1.0);
+    }
+
+    [Fact]
+    public void RailPageAdvance_PendingAnalysis_DefersAndSeatsAtPageTop()
+    {
+        // Finding: SkipToNavigablePage's `if (vp.Rail.Active)` conflated "seated on the new page"
+        // with a STALE still-active rail (nothing clears the rail on a cache-miss page change), so
+        // the deferred-skip path was unreachable and navigation landed on the previous page's
+        // geometry. A pending page change must defer, drop the stale rail, and seat block 0 /
+        // line 0 when the worker result arrives.
+        _controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(MakeWorkerAnalysis));
+        var state = CreateAndAddDocument(); // auto-submits page-0 analysis
+        var vp = state.Primary;
+        DrainPendingRailSetup(vp);
+
+        // Reseat page 0 with the synthetic 5-line block and activate rail.
+        SetupRailMode(state);
+        Assert.True(vp.Rail.Active);
+
+        for (int i = 0; i < 5; i++)
+            _controller.HandleArrowDown(); // 4 line advances + the boundary keypress
+
+        // Page 1 was never analysed → the skip must defer, with the stale rail dropped.
+        Assert.Equal(1, state.CurrentPage);
+        Assert.True(vp.PendingRailSetup);
+        Assert.NotNull(vp.PendingSkip);
+        Assert.False(vp.Rail.Active);
+        Assert.False(vp.Rail.HasAnalysis); // page 0's analysis no longer drives nav/visuals
+
+        // A further keypress while pending must not skip page 1 (the held-key bug: the stale
+        // last line re-hit PageBoundaryNext and paged on to N+2 unread).
+        _controller.HandleArrowDown();
+        Assert.Equal(1, state.CurrentPage);
+
+        DrainPendingRailSetup(vp);
+        Assert.True(vp.Rail.Active);       // deferred landing engaged the rail on the new page
+        Assert.Null(vp.PendingSkip);
+        Assert.Equal(0, vp.Rail.CurrentBlock);
+        Assert.Equal(0, vp.Rail.CurrentLine); // forward skip lands at the TOP of the page
+    }
+
+    [Fact]
+    public void RailPageBack_PendingAnalysis_DefersAndSeatsAtPageEnd()
+    {
+        // Backward variant of the deferred skip: the saved landing (JumpToEnd) must apply when
+        // the async result seats — under the bug the reader landed at the TOP of the previous
+        // page because the stale-rail landing ran first and the deferred landing never did.
+        _controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(MakeWorkerAnalysis));
+        var state = CreateAndAddDocument();
+        var vp = state.Primary;
+        DrainPendingRailSetup(vp);
+
+        // Rail-read page 2; page 1 is never analysed.
+        _controller.GoToPage(2);
+        DrainPendingRailSetup(vp);
+        state.Camera.Zoom = _controller.Config.RailZoomThreshold + 1;
+        vp.UpdateRailZoom(vp.Width, vp.Height);
+        Assert.True(vp.Rail.Active);
+        Assert.True(vp.Rail.CurrentLineCount > 1); // detection found the fixture's real text lines
+
+        _controller.HandleArrowUp(); // at block 0 / line 0 → page boundary backward
+
+        Assert.Equal(1, state.CurrentPage);
+        Assert.NotNull(vp.PendingSkip);
+        Assert.False(vp.Rail.Active);
+
+        DrainPendingRailSetup(vp);
+        Assert.True(vp.Rail.Active);
+        Assert.Null(vp.PendingSkip);
+        // The deferred JumpToEnd landing: last block, LAST line — not the top of the page.
+        Assert.Equal(vp.Rail.NavigableCount - 1, vp.Rail.CurrentBlock);
+        Assert.True(vp.Rail.CurrentLineCount > 1);
+        Assert.Equal(vp.Rail.CurrentLineCount - 1, vp.Rail.CurrentLine);
+    }
 }
