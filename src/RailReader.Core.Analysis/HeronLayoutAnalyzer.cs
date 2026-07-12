@@ -217,9 +217,9 @@ public sealed class HeronLayoutAnalyzer : ILayoutAnalyzer
             return buffer;
         }
 
-        // Shared 4-tap point-sampled bilinear geometry — see BilinearResampler
-        // for the sampling semantics (align-corners) and the documented
-        // divergence from PIL's area-averaging downscale.
+        // Shared PIL-equivalent bilinear resample — see BilinearResampler for
+        // the sampling semantics (half-pixel centres, area-averaging downscale,
+        // byte-exact against Pillow).
         var sink = new ByteChwSink(buffer, pixelCount);
         BilinearResampler.Resize(rgbBytes, srcW, srcH, target, ref sink);
 

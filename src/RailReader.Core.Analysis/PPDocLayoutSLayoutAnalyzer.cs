@@ -255,13 +255,10 @@ public sealed class PPDocLayoutSLayoutAnalyzer : ILayoutAnalyzer
             return buffer;
         }
 
-        // Shared 4-tap bilinear geometry (see BilinearResampler). NOTE: this is
-        // point-sampled align-corners bilinear, NOT equivalent to the Python
-        // reference's PIL.Image.BILINEAR, which area-averages on downscale —
-        // at the real 1920→480 path thin strokes can alias where PIL would
-        // average them in. Kept as-is deliberately: changing the resample
-        // kernel changes the model inputs and must be validated against the
-        // live model before shipping (see BilinearResampler docs).
+        // Shared PIL-equivalent bilinear resample (see BilinearResampler):
+        // matches the Python reference's PIL.Image.BILINEAR byte-exactly, so
+        // the real 1920→480 path area-averages thin strokes in instead of
+        // point-sampling past them.
         var sink = new ImageNetFloatSink(buffer, pixelCount);
         BilinearResampler.Resize(rgbBytes, srcW, srcH, target, ref sink);
 
