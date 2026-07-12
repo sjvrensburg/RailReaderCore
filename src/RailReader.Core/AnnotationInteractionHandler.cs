@@ -66,6 +66,11 @@ public sealed class AnnotationInteractionHandler
     // In-progress annotation building state
     private List<PointF>? _freehandPoints;
     private float _rectStartX, _rectStartY;
+    // In-drag sentinel for the box tools (Rectangle/FreeText) — the analogue of Pen's
+    // `_freehandPoints is not null` and the markup tools' `_highlightCharStart >= 0`. Without
+    // it, a pointer-move/up not preceded by pointer-down (drag entered from off-page, pointer
+    // capture loss, hover moves) would fabricate a preview/commit anchored at stale _rectStart.
+    private bool _boxDragActive;
     private int _highlightCharStart = -1;
 
     // Browse-mode drag state (for moving/resizing annotations)
@@ -91,6 +96,7 @@ public sealed class AnnotationInteractionHandler
         PreviewAnnotation = null;
         PendingFreeText = null;
         _freehandPoints = null;
+        _boxDragActive = false;
         _highlightCharStart = -1;
 
         if (tool != AnnotationTool.TextSelect)
@@ -222,6 +228,7 @@ public sealed class AnnotationInteractionHandler
             case AnnotationTool.FreeText:
                 _rectStartX = (float)pageX;
                 _rectStartY = (float)pageY;
+                _boxDragActive = true;
                 PendingFreeText = null;
                 break;
             case AnnotationTool.TextNote:
@@ -316,7 +323,7 @@ public sealed class AnnotationInteractionHandler
                 };
                 changed = true;
                 break;
-            case AnnotationTool.Rectangle:
+            case AnnotationTool.Rectangle when _boxDragActive:
                 var (rx, ry, rw, rh) = NormalizeBox(_rectStartX, _rectStartY, (float)pageX, (float)pageY);
                 PreviewAnnotation = new RectAnnotation
                 {
@@ -327,7 +334,7 @@ public sealed class AnnotationInteractionHandler
                 };
                 changed = true;
                 break;
-            case AnnotationTool.FreeText:
+            case AnnotationTool.FreeText when _boxDragActive:
                 var (px, py, pw, ph) = NormalizeBox(_rectStartX, _rectStartY, (float)pageX, (float)pageY);
                 PreviewAnnotation = new FreeTextAnnotation
                 {
@@ -373,9 +380,14 @@ public sealed class AnnotationInteractionHandler
                 if (r.W > 1 && r.H > 1)
                     vp.Owner.AddAnnotation(vp.CurrentPage, r);
                 PreviewAnnotation = null;
+                _boxDragActive = false;
                 changed = true;
                 break;
-            case AnnotationTool.FreeText:
+            case AnnotationTool.Rectangle:
+                // Click without a drag (no preview built) — end the box gesture anyway.
+                _boxDragActive = false;
+                break;
+            case AnnotationTool.FreeText when _boxDragActive:
                 // Finalise the box geometry; a too-small drag (or a plain click) falls back
                 // to a default-sized box anchored at the press point. The text itself is
                 // supplied later by the UI via CommitPendingFreeText.
@@ -388,6 +400,7 @@ public sealed class AnnotationInteractionHandler
                     Opacity = ActiveAnnotationOpacity,
                 };
                 PreviewAnnotation = null;
+                _boxDragActive = false;
                 changed = true;
                 break;
         }
@@ -441,7 +454,18 @@ public sealed class AnnotationInteractionHandler
         {
             if (AnnotationGeometry.HitTest(list[i], pageX, pageY))
             {
-                vp.Owner.RemoveAnnotation(vp.CurrentPage, list[i]);
+                var erased = list[i];
+                vp.Owner.RemoveAnnotation(vp.CurrentPage, erased);
+                // Don't leave selection/drag state dangling on a removed annotation:
+                // the host would keep rendering selection chrome for it, and a later
+                // DeleteSelectedAnnotation would remove an annotation no longer present.
+                if (ReferenceEquals(SelectedAnnotation, erased))
+                    SelectedAnnotation = null;
+                if (ReferenceEquals(_dragAnnotation, erased))
+                {
+                    _dragAnnotation = null;
+                    _dragOriginalPosition = null;
+                }
                 return;
             }
         }
@@ -453,9 +477,43 @@ public sealed class AnnotationInteractionHandler
             CopyToClipboard?.Invoke(SelectedText);
     }
 
-    public void UndoAnnotation(Viewport? vp) => vp?.Owner.Undo();
+    public void UndoAnnotation(Viewport? vp)
+    {
+        vp?.Owner.Undo();
+        ClearStaleReferences(vp);
+    }
 
-    public void RedoAnnotation(Viewport? vp) => vp?.Owner.Redo();
+    public void RedoAnnotation(Viewport? vp)
+    {
+        vp?.Owner.Redo();
+        ClearStaleReferences(vp);
+    }
+
+    /// <summary>
+    /// Drops selection/drag references to annotations no longer present in the document —
+    /// undo of an AddAnnotationAction (or redo of a removal) can delete the annotation the
+    /// handler still points at, leaving stale selection chrome and letting a subsequent
+    /// DeleteSelectedAnnotation target an annotation that is not on any page.
+    /// </summary>
+    private void ClearStaleReferences(Viewport? vp)
+    {
+        if (vp is null) return;
+        if (SelectedAnnotation is not null && !AnnotationExists(vp, SelectedAnnotation))
+            SelectedAnnotation = null;
+        if (_dragAnnotation is not null && !AnnotationExists(vp, _dragAnnotation))
+        {
+            _dragAnnotation = null;
+            _dragOriginalPosition = null;
+        }
+    }
+
+    private static bool AnnotationExists(Viewport vp, Annotation annotation)
+    {
+        foreach (var list in vp.Owner.Annotations.Pages.Values)
+            if (list.Contains(annotation))
+                return true;
+        return false;
+    }
 
     /// <summary>
     /// Delete the currently selected annotation (if any) in browse mode.
@@ -464,8 +522,13 @@ public sealed class AnnotationInteractionHandler
     public bool DeleteSelectedAnnotation(Viewport? vp)
     {
         if (vp is null || SelectedAnnotation is null) return false;
-        vp.Owner.RemoveAnnotation(vp.CurrentPage, SelectedAnnotation);
+        var target = SelectedAnnotation;
         SelectedAnnotation = null;
+        // A stale selection (annotation already removed, or selected while the focused view sat
+        // on a different page) must not reach RemoveAnnotation: it would push a no-op removal
+        // action whose Undo restores nothing (or, on the wrong page, misplaces the annotation).
+        if (GetCurrentPageAnnotations(vp) is not { } list || !list.Contains(target)) return false;
+        vp.Owner.RemoveAnnotation(vp.CurrentPage, target);
         return true;
     }
 

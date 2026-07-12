@@ -589,12 +589,14 @@ public static class LineDetector
     internal static List<LineInfo> DetectLinesFromPixels(
         LayoutBlock block, byte[] rgbBytes, int imgW, int imgH, float scaleX, float scaleY)
     {
-        int pxX = Math.Min((int)Math.Round(block.BBox.X / scaleX), imgW - 1);
-        int pxY = Math.Min((int)Math.Round(block.BBox.Y / scaleY), imgH - 1);
+        // Clamp both bounds (like DetectColumnGrid): a block with a slightly negative origin
+        // must degrade gracefully, not index rgbBytes with a negative pixel offset.
+        int pxX = Math.Max(0, Math.Min((int)Math.Round(block.BBox.X / scaleX), imgW - 1));
+        int pxY = Math.Max(0, Math.Min((int)Math.Round(block.BBox.Y / scaleY), imgH - 1));
         int pxW = Math.Min((int)Math.Round(block.BBox.W / scaleX), imgW - pxX);
         int pxH = Math.Min((int)Math.Round(block.BBox.H / scaleY), imgH - pxY);
 
-        if (pxW == 0 || pxH == 0)
+        if (pxW <= 0 || pxH <= 0)
             return [];
 
         var densities = ComputeRowDensities(rgbBytes, imgW, pxX, pxY, pxW, pxH);

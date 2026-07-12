@@ -98,6 +98,13 @@ public sealed class SearchService
     }
 
     /// <summary>
+    /// Per-match-operation timeout for user-supplied regex patterns. Search runs synchronously
+    /// on the UI thread, so an unbounded pattern with exponential backtracking would hang the
+    /// application permanently; on timeout the page keeps its partial results (see SearchPage).
+    /// </summary>
+    private static readonly TimeSpan MatchTimeout = TimeSpan.FromSeconds(2);
+
+    /// <summary>
     /// Prepares search parameters. Returns null regex and an error message for invalid regex patterns.
     /// </summary>
     public static (Regex? Regex, StringComparison Comparison, string? RegexError) PrepareSearchParams(
@@ -110,7 +117,10 @@ public sealed class SearchService
             try
             {
                 var options = caseSensitive ? RegexOptions.None : RegexOptions.IgnoreCase;
-                regex = new Regex(query, options);
+                // Match timeout guards the UI thread against catastrophic backtracking
+                // (e.g. "(a+)+$" over a long run of 'a'): SearchPage catches
+                // RegexMatchTimeoutException and keeps the hits found so far.
+                regex = new Regex(query, options, MatchTimeout);
             }
             catch (RegexParseException ex) { regexError = ex.Message; }
         }
@@ -134,8 +144,19 @@ public sealed class SearchService
         else
             hits = FindAllOccurrences(pageText.Text, query, comparison);
 
-        // Collect all hits first so we can batch the PDFium rect query
-        var hitList = hits.ToList();
+        // Collect all hits first so we can batch the PDFium rect query. Regex enumeration is
+        // lazy and each match operation carries a MatchTimeout: a catastrophically backtracking
+        // pattern raises RegexMatchTimeoutException mid-enumeration, and this page keeps the
+        // hits found so far (partial results) instead of hanging the UI thread or crashing.
+        var hitList = new List<(int Index, int Length)>();
+        try
+        {
+            foreach (var hit in hits) hitList.Add(hit);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            // Treat as "no further matches on this page".
+        }
         if (hitList.Count == 0) return;
 
         var allRects = doc.PdfText.GetTextRangeRects(doc.Pdf.PdfBytes, page, hitList, doc.ViewRotation, doc.Pdf.Password);
@@ -303,14 +324,18 @@ public sealed class SearchService
         var text = ActiveDoc?.GetOrExtractText(match.PageIndex).Text;
         if (text is null) return ("", "", "");
 
-        int start = Math.Max(0, match.CharStart - contextChars);
-        int end = Math.Min(text.Length, match.CharStart + match.CharLength + contextChars);
-        int matchEnd = Math.Min(match.CharStart + match.CharLength, text.Length);
+        // Clamp the caller-supplied match range against the CURRENT page text: a host may hold
+        // a stale SearchMatch across a document change (ClearIfDocumentChanged resets only this
+        // service's own state), and the new page's text can be shorter than the old offsets.
+        int matchStart = Math.Clamp(match.CharStart, 0, text.Length);
+        int matchEnd = Math.Clamp(match.CharStart + match.CharLength, matchStart, text.Length);
+        int start = Math.Max(0, matchStart - contextChars);
+        int end = Math.Min(text.Length, matchEnd + contextChars);
 
         static string Flatten(string s) => s.Replace('\n', ' ').Replace('\r', ' ');
 
-        string pre = Flatten((start > 0 ? "\u2026" : "") + text[start..match.CharStart]);
-        string matchStr = Flatten(text[match.CharStart..matchEnd]);
+        string pre = Flatten((start > 0 ? "\u2026" : "") + text[start..matchStart]);
+        string matchStr = Flatten(text[matchStart..matchEnd]);
         string post = Flatten(text[matchEnd..end] + (end < text.Length ? "\u2026" : ""));
 
         return (pre, matchStr, post);
@@ -391,7 +416,10 @@ public sealed class SearchService
             int idx = text.IndexOf(query, pos, comparison);
             if (idx < 0) break;
             yield return (idx, query.Length);
-            pos = idx + 1;
+            // Advance past the match (non-overlapping, like the regex path and mainstream
+            // viewers): a self-overlapping query such as "aa" over "aaaa" reports 2 hits,
+            // not 3 stacked ones. Math.Max guards an empty query against an infinite loop.
+            pos = idx + Math.Max(1, query.Length);
         }
     }
 
