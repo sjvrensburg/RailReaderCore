@@ -29,10 +29,9 @@ A future Lite (web/WASM) app would consume `RailReader.Core` only and substitute
 Core defines two seams that let any layout-detection model drive RailReader:
 
 - **`ILayoutAnalyzer`** — wraps a specific ONNX model and declares its class table + input size + whether it provides reading order via `LayoutModelCapabilities`. Each detection is stamped with a portable `BlockRole`; Core never branches on the model-specific class id.
-- **`IReadingOrderResolver`** — assigns 0..N-1 reading order to detected blocks. Three built-ins ship:
+- **`IReadingOrderResolver`** — assigns 0..N-1 reading order to detected blocks. Two built-ins ship:
   - `ModelOrderResolver` (trusts the analyzer's order hints — default pick for models with `ProvidesReadingOrder=true`)
   - `XYCutPlusPlusResolver` (column-aware recursive XY-cut, default for non-ordering models — handles two/three-column papers and full-width spanners correctly)
-  - `TopDownReadingOrderResolver` (Y-then-X baseline, retained as a debug fallback)
 
 `Core.Analysis` ships three analyzers today:
 
