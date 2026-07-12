@@ -8,10 +8,15 @@ public sealed record AnalysisRequest(
     string FilePath, int Page, byte[] RgbBytes,
     int PxW, int PxH, double PageW, double PageH,
     IReadOnlyList<CharBox>? CharBoxes,
-    AnalysisParams Params);
+    AnalysisParams Params,
+    // The document ViewRotation the pixmap was rasterised under. Carried through to the result so
+    // the consumer can reject a result whose geometry is in a display frame the document has since
+    // rotated away from (the caches were cleared; old-frame blocks must not repopulate them).
+    int ViewRotation = 0);
 
 public sealed record AnalysisResult(
-    string FilePath, int Page, AnalysisParams Params, PageAnalysis Analysis);
+    string FilePath, int Page, AnalysisParams Params, PageAnalysis Analysis,
+    int ViewRotation = 0);
 
 public sealed class AnalysisWorker : IDisposable
 {
@@ -95,25 +100,42 @@ public sealed class AnalysisWorker : IDisposable
         {
             await foreach (var request in _requestChannel.Reader.ReadAllAsync(ct))
             {
-                _logger.Debug($"[Worker] Running analyzer for {Path.GetFileName(request.FilePath)} page {request.Page}...");
-                var analysis = analyzer.RunAnalysis(
-                    request.RgbBytes, request.PxW, request.PxH, request.PageW, request.PageH,
-                    request.CharBoxes, ct);
+                // A per-request failure (ORT exception on a bad raster, geometry edge case in the
+                // resolver, …) must not fault the loop: that would silently kill analysis for the
+                // rest of the session AND strand the request's _inFlight key, so IsInFlight stays
+                // true forever (blocking resubmission for its page) and IsIdle stays false
+                // (blocking lookahead/background analysis document-wide). Log, release the key on
+                // the UI thread (its owner), and keep serving requests.
+                try
+                {
+                    _logger.Debug($"[Worker] Running analyzer for {Path.GetFileName(request.FilePath)} page {request.Page}...");
+                    var analysis = analyzer.RunAnalysis(
+                        request.RgbBytes, request.PxW, request.PxH, request.PageW, request.PageH,
+                        request.CharBoxes, ct);
 
-                // Pipeline: assign reading order → trim overlaps + detect lines.
-                _readingOrder.AssignOrder(analysis.Blocks, analysis.PageWidth, analysis.PageHeight,
-                    request.CharBoxes);
+                    // Pipeline: assign reading order → trim overlaps + detect lines.
+                    _readingOrder.AssignOrder(analysis.Blocks, analysis.PageWidth, analysis.PageHeight,
+                        request.CharBoxes);
 
-                float mapScaleX = request.PxW > 0 ? (float)(request.PageW / request.PxW) : 1f;
-                float mapScaleY = request.PxH > 0 ? (float)(request.PageH / request.PxH) : 1f;
-                BlockPostProcessor.PostProcess(
-                    analysis.Blocks, request.RgbBytes, request.PxW, request.PxH,
-                    mapScaleX, mapScaleY, request.CharBoxes, request.Params.TableRowReading, request.Params.CellNavigation);
+                    float mapScaleX = request.PxW > 0 ? (float)(request.PageW / request.PxW) : 1f;
+                    float mapScaleY = request.PxH > 0 ? (float)(request.PageH / request.PxH) : 1f;
+                    BlockPostProcessor.PostProcess(
+                        analysis.Blocks, request.RgbBytes, request.PxW, request.PxH,
+                        mapScaleX, mapScaleY, request.CharBoxes, request.Params.TableRowReading, request.Params.CellNavigation);
 
-                _logger.Debug($"[Worker] Page {request.Page}: {analysis.Blocks.Count} blocks detected");
+                    _logger.Debug($"[Worker] Page {request.Page}: {analysis.Blocks.Count} blocks detected");
 
-                await _resultChannel.Writer.WriteAsync(
-                    new AnalysisResult(request.FilePath, request.Page, request.Params, analysis), ct);
+                    await _resultChannel.Writer.WriteAsync(
+                        new AnalysisResult(request.FilePath, request.Page, request.Params, analysis,
+                            request.ViewRotation), ct);
+                }
+                catch (OperationCanceledException) { throw; } // Dispose path — let the loop end
+                catch (Exception ex)
+                {
+                    _logger.Error($"[Worker] Analysis failed for {Path.GetFileName(request.FilePath)} page {request.Page}; worker continues", ex);
+                    var key = (request.FilePath, request.Page, request.Params);
+                    _marshaller.Post(() => _inFlight.Remove(key));
+                }
             }
         }
     }

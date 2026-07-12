@@ -447,9 +447,12 @@ public sealed class DocumentModel : IDisposable
 
     /// <summary>
     /// Raised after a viewport is removed and disposed. The controller subscribes so it can re-point
-    /// focus off a view that no longer exists (it owns no list of which view is focused).
+    /// focus off a view that no longer exists (it owns no list of which view is focused). A proper
+    /// event (not a single-slot callback like <see cref="StateChanged"/>) because a host subscribing
+    /// for its own pane teardown must not be able to displace the controller's dangling-focus hook —
+    /// clobbering it would leave <c>FocusedViewport</c> pointing at a disposed view.
     /// </summary>
-    public Action<Viewport>? ViewportRemoved;
+    public event Action<Viewport>? ViewportRemoved;
 
     /// <summary>
     /// Removes and disposes a view (cancelling its in-flight renders and freeing its bitmaps). The
@@ -621,10 +624,13 @@ public sealed class DocumentModel : IDisposable
                 {
                     // vp.IsDisposed: the view may have been removed (RemoveViewport) while this
                     // prep task ran — it watches the document CTS, not the view's — so don't submit
-                    // a worker request or write state for a view that's gone.
-                    if (IsDisposed || vp.IsDisposed || vp.CurrentPage != page) return;
+                    // a worker request or write state for a view that's gone. viewRotation: a rotation
+                    // that landed mid-prep cleared the text/analysis caches — this old-frame pageText
+                    // and pixmap must not repopulate them (SetViewRotation resubmits in the new frame).
+                    if (IsDisposed || vp.IsDisposed || vp.CurrentPage != page
+                        || viewRotation != _viewRotation) return;
                     _textCache[page] = pageText;
-                    worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, pars));
+                    worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, pars, viewRotation));
                 });
             }
             catch (OperationCanceledException) { }
@@ -694,10 +700,12 @@ public sealed class DocumentModel : IDisposable
                     var pageText = _pdfText.ExtractPageText(_pdf.PdfBytes, page, viewRotation, _pdf.Password);
                     _marshaller.Post(() =>
                     {
-                        if (!IsDisposed)
+                        // viewRotation: same stale-frame guard as SubmitAnalysis — don't repopulate
+                        // the caches a mid-prep rotation just cleared with old-frame geometry.
+                        if (!IsDisposed && viewRotation == _viewRotation)
                         {
                             _textCache[page] = pageText;
-                            worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, pars));
+                            worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, pars, viewRotation));
                         }
                     });
                 }
@@ -744,7 +752,7 @@ public sealed class DocumentModel : IDisposable
             var (pageW, pageH) = _pdf.GetPageSize(page, _viewRotation);
             var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize, _viewRotation);
             var pageText = GetOrExtractText(page);
-            worker.Submit(new AnalysisRequest(FilePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, pars));
+            worker.Submit(new AnalysisRequest(FilePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, pars, _viewRotation));
             return true;
         }
         catch (Exception ex)
@@ -782,7 +790,12 @@ public sealed class DocumentModel : IDisposable
         vp.CurrentPage = page;
         if (!vp.LoadPageBitmap())
         {
-            vp.CurrentPage = oldPage;
+            // Roll back through the confinement-bypassing setter: when a Focus targets the failed
+            // destination page (the RetargetFocus flow assigns Focus first, then navigates), the view
+            // became confined the instant CurrentPage committed above, and the public setter's
+            // confinement guard would silently refuse this rollback — stranding CurrentPage on a page
+            // whose bitmap never loaded while CachedPage/PageWidth/PageHeight still hold the old page.
+            vp.ForceCurrentPage(oldPage);
             return false;
         }
         SubmitAnalysis(vp, worker, navigableRoles);
@@ -1123,5 +1136,6 @@ public sealed class DocumentModel : IDisposable
 
         StateChanged = null;
         AnalysisCacheUpdated = null;
+        ViewportRemoved = null;
     }
 }

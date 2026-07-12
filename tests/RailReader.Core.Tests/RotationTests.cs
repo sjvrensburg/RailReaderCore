@@ -262,6 +262,119 @@ public class RotationTests
         Assert.Equal(t, tn.Y, 0.5);
     }
 
+    /// <summary>
+    /// FreeText (box + /DA) and Ink (per-point PageToPdf) authoring must land in
+    /// the displayed frame on every /Rotate value — these two subtypes go through
+    /// writer geometry paths (BoxRect, per-point transform) that the
+    /// Highlight/Rect/TextNote round-trip above does not exercise.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void FreeText_and_Ink_roundtrip_on_rotated_pages(int pageIndex)
+    {
+        var bytes = SuiteBytes();
+        var pageText = new PdfTextService().ExtractPageText(bytes, pageIndex);
+        var (l, t, r, b) = MarkerUnion(pageText, "MARKER");
+
+        var inkPoints = new List<PointF>
+        {
+            new(l, t), new((l + r) / 2, b + 5), new(r, t),
+        };
+        var file = new AnnotationFile();
+        file.Pages[pageIndex] =
+        [
+            new FreeTextAnnotation { X = l, Y = t, W = r - l, H = (b - t) + 10, Contents = "rotated note", FontSize = 14f },
+            new FreehandAnnotation { Points = inkPoints, StrokeWidth = 3f },
+        ];
+
+        var written = new PdfAnnotationWriter().AddAuthoredAnnotations(bytes, file);
+        var anns = new PdfAnnotationReader().Read(written).Pages[pageIndex];
+
+        var ft = Assert.Single(anns.OfType<FreeTextAnnotation>());
+        Assert.Equal(l, ft.X, 0.5);
+        Assert.Equal(t, ft.Y, 0.5);
+        Assert.Equal(r - l, ft.W, 0.5);
+        Assert.Equal((b - t) + 10, ft.H, 0.5);
+        Assert.Equal("rotated note", ft.Contents);
+
+        var ink = Assert.Single(anns.OfType<FreehandAnnotation>());
+        Assert.Equal(inkPoints.Count, ink.Points.Count);
+        for (int i = 0; i < inkPoints.Count; i++)
+        {
+            Assert.Equal(inkPoints[i].X, ink.Points[i].X, 0.5);
+            Assert.Equal(inkPoints[i].Y, ink.Points[i].Y, 0.5);
+        }
+    }
+
+    /// <summary>
+    /// WriteReconciled on a page with /Rotate: the in-place edit path
+    /// (EditRectBasedInPlace re-deriving the rect through PageTransform), the
+    /// delete+recreate path (markup geometry change), and delete-by-/NM must
+    /// all operate in the displayed (rotated) frame. A sign/axis error in the
+    /// rotated edit path would move the annotation to the wrong quadrant.
+    /// </summary>
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void WriteReconciled_edit_delete_recreate_on_rotated_page(int pageIndex)
+    {
+        var bytes = SuiteBytes();
+        var pageText = new PdfTextService().ExtractPageText(bytes, pageIndex);
+        var (l, t, r, b) = MarkerUnion(pageText, "MARKER");
+
+        var writer = new PdfAnnotationWriter();
+        var file = new AnnotationFile();
+        file.Pages[pageIndex] =
+        [
+            new FreeTextAnnotation { X = l, Y = t, W = 80, H = 30, Contents = "before" },
+            new HighlightAnnotation { Rects = [new HighlightRect(l, t, r - l, b - t)] },
+            new FreehandAnnotation { Points = [new PointF(l, t), new PointF(r, b)], StrokeWidth = 2f },
+        ];
+
+        var b1 = writer.WriteReconciled(bytes, file);
+        Assert.Equal(3, new PdfAnnotationReader().Read(b1).Pages[pageIndex].Count);
+        var ftId = file.Pages[pageIndex][0].NativeId;
+        var hlId = file.Pages[pageIndex][1].NativeId;
+        Assert.False(string.IsNullOrEmpty(ftId));
+        Assert.False(string.IsNullOrEmpty(hlId));
+
+        // Edit-in-place (FreeText box moved 30/40 displayed points), recreate
+        // (highlight rect moved down the displayed page), delete (the ink).
+        // Move towards the page centre so the edited geometry stays in-bounds on
+        // every rotation (the marker sits near an edge whose side varies by /Rotate).
+        float movedY = t > 300 ? t - 100 : t + 100;
+        float ftY = t > 300 ? t - 40 : t + 40;
+        var ft = (FreeTextAnnotation)file.Pages[pageIndex][0];
+        ft.X = l + 30; ft.Y = ftY; ft.Contents = "after";
+        var hl = (HighlightAnnotation)file.Pages[pageIndex][1];
+        hl.Rects = [new HighlightRect(l, movedY, r - l, b - t)];
+        file.Pages[pageIndex].RemoveAt(2);
+
+        var b2 = writer.WriteReconciled(b1, file);
+        var anns = new PdfAnnotationReader().Read(b2).Pages[pageIndex];
+
+        Assert.Equal(2, anns.Count);
+        Assert.Empty(anns.OfType<FreehandAnnotation>()); // deleted by /NM
+
+        var ftBack = Assert.Single(anns.OfType<FreeTextAnnotation>());
+        Assert.Equal(ftId, ftBack.NativeId);             // edited in place
+        Assert.Equal(l + 30, ftBack.X, 0.5);
+        Assert.Equal(ftY, ftBack.Y, 0.5);
+        Assert.Equal("after", ftBack.Contents);
+
+        var hlBack = Assert.Single(anns.OfType<HighlightAnnotation>());
+        Assert.Equal(hlId, hlBack.NativeId);             // recreated with the same /NM
+        var rect = Assert.Single(hlBack.Rects);
+        Assert.Equal(l, rect.X, 0.5);
+        Assert.Equal(movedY, rect.Y, 0.5);
+        Assert.Equal(r - l, rect.W, 0.5);
+        Assert.Equal(b - t, rect.H, 0.5);
+    }
+
     [Fact]
     public void Link_destination_resolves_page_point_position_on_rotated_target_page()
     {

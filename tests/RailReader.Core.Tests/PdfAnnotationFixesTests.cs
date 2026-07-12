@@ -12,20 +12,13 @@ namespace RailReader.Core.Tests;
 /// </summary>
 public class PdfAnnotationFixesTests
 {
-    private static byte[] PlainPdf() => File.ReadAllBytes(TestFixtures.GetTestPdfPath());
+    private static byte[] PlainPdf() => AnnotationTestHelpers.PlainPdfBytes();
 
     private static AnnotationFile OnePage(params Annotation[] anns)
-    {
-        var f = new AnnotationFile();
-        f.Pages[0] = [.. anns];
-        return f;
-    }
+        => AnnotationTestHelpers.OnePage(anns);
 
     private static List<Annotation> ReadBack(byte[] bytes)
-    {
-        var f = new PdfAnnotationReader().Read(bytes);
-        return f.Pages.TryGetValue(0, out var l) ? l : [];
-    }
+        => AnnotationTestHelpers.ReadBack(bytes);
 
     private static string TempPdf()
     {

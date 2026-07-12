@@ -6,8 +6,11 @@ namespace RailReader.Core.Services;
 /// An <see cref="IAnnotationStore"/> backed by the PDF itself: annotations live in
 /// the document's /Annots dictionaries. <see cref="Load"/> reads them via
 /// <see cref="PdfAnnotationReader"/>; <see cref="Save"/> reconciles the document to
-/// match the model via <see cref="PdfAnnotationWriter.WriteReconciled"/> (incremental
-/// save, preserving AcroForm/signatures/unchanged annotations).
+/// match the model via <see cref="PdfAnnotationWriter.WriteReconciled"/>, which does
+/// a <b>full FPDF_SaveAsCopy rewrite</b> (not an incremental update — PDFium's
+/// incremental save corrupts the xref of linearised PDFs). A full rewrite would
+/// invalidate digital signatures, so <b>signed PDFs never reach this store</b>:
+/// <see cref="CompositeAnnotationStore"/> routes them to the JSON sidecar instead.
 ///
 /// <para>Bookmarks are not yet stored in the PDF (PR 4) — this store ignores them.
 /// Used for writable PDFs; non-writable ones fall back to the JSON sidecar (the

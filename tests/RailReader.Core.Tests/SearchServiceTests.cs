@@ -81,12 +81,18 @@ public class SearchServiceTests : IDisposable
     }
 
     [Fact]
-    public void FindAllOccurrences_Overlapping()
+    public void FindAllOccurrences_SelfOverlappingQuery_NonOverlappingHits()
     {
+        // Non-overlapping like the regex path and mainstream viewers: "aa" over "aaa" is one
+        // hit (at 0), not two stacked ones; "aa" over "aaaa" is two (at 0 and 2), not three.
         var hits = SearchService.FindAllOccurrences("aaa", "aa", StringComparison.Ordinal).ToList();
-        Assert.Equal(2, hits.Count);
+        Assert.Single(hits);
         Assert.Equal(0, hits[0].Index);
-        Assert.Equal(1, hits[1].Index);
+
+        var hits4 = SearchService.FindAllOccurrences("aaaa", "aa", StringComparison.Ordinal).ToList();
+        Assert.Equal(2, hits4.Count);
+        Assert.Equal(0, hits4[0].Index);
+        Assert.Equal(2, hits4[1].Index);
     }
 
     [Fact]

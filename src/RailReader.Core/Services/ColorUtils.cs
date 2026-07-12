@@ -13,23 +13,25 @@ public static class ColorUtils
     /// </summary>
     public static ColorRGBA ParseHexColor(string hex, byte alpha)
     {
-        if (hex.Length == 7 && hex[0] == '#')
+        // TryParse (not Parse) so a right-length string with non-hex digits — e.g. "#GGHHII"
+        // from a hand-edited/corrupted annotation sidecar — falls back to yellow as documented
+        // instead of throwing FormatException on the render or PDF-save path.
+        if (hex is { Length: 7 } && hex[0] == '#'
+            && TryHexByte(hex, 1, out byte r6) && TryHexByte(hex, 3, out byte g6) && TryHexByte(hex, 5, out byte b6))
         {
-            byte r = byte.Parse(hex.AsSpan(1, 2), NumberStyles.HexNumber);
-            byte g = byte.Parse(hex.AsSpan(3, 2), NumberStyles.HexNumber);
-            byte b = byte.Parse(hex.AsSpan(5, 2), NumberStyles.HexNumber);
-            return new ColorRGBA(r, g, b, alpha);
+            return new ColorRGBA(r6, g6, b6, alpha);
         }
-        if (hex.Length == 9 && hex[0] == '#')
+        if (hex is { Length: 9 } && hex[0] == '#'
+            && TryHexByte(hex, 1, out byte hexA) && TryHexByte(hex, 3, out byte r8)
+            && TryHexByte(hex, 5, out byte g8) && TryHexByte(hex, 7, out byte b8))
         {
-            byte hexA = byte.Parse(hex.AsSpan(1, 2), NumberStyles.HexNumber);
-            byte r = byte.Parse(hex.AsSpan(3, 2), NumberStyles.HexNumber);
-            byte g = byte.Parse(hex.AsSpan(5, 2), NumberStyles.HexNumber);
-            byte b = byte.Parse(hex.AsSpan(7, 2), NumberStyles.HexNumber);
             byte a = (byte)(hexA * alpha / 255);
-            return new ColorRGBA(r, g, b, a);
+            return new ColorRGBA(r8, g8, b8, a);
         }
         return new ColorRGBA(255, 255, 0, alpha); // fallback yellow
+
+        static bool TryHexByte(string s, int start, out byte value)
+            => byte.TryParse(s.AsSpan(start, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value);
     }
 
     /// <summary>

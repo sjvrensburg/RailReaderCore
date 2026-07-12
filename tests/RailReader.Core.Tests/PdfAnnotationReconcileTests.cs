@@ -13,20 +13,13 @@ public class PdfAnnotationReconcileTests
 {
     private const float Tol = 0.6f;
 
-    private static byte[] PlainPdfBytes() => File.ReadAllBytes(TestFixtures.GetTestPdfPath());
+    private static byte[] PlainPdfBytes() => AnnotationTestHelpers.PlainPdfBytes();
 
     private static AnnotationFile OnePage(params Annotation[] anns)
-    {
-        var f = new AnnotationFile();
-        f.Pages[0] = [.. anns];
-        return f;
-    }
+        => AnnotationTestHelpers.OnePage(anns);
 
     private static List<Annotation> ReadBack(byte[] bytes, int page = 0)
-    {
-        var file = new PdfAnnotationReader().Read(bytes);
-        return file.Pages.TryGetValue(page, out var list) ? list : [];
-    }
+        => AnnotationTestHelpers.ReadBack(bytes, page);
 
     [Fact]
     public void Add_AssignsNativeId_AndMarksPersisted()
@@ -142,14 +135,11 @@ public class PdfAnnotationReconcileTests
         }
     }
 
-    [Fact]
+    [RealAcrobatPdfFact]
     public void RealAcrobatPdf_SaveWithNoChanges_PreservesAllFortyLosslessly()
     {
-        const string src = "/home/stefan/Downloads/Day-ahead-photovoltaic-power-forecasting---Short.pdf";
-        if (!File.Exists(src)) return; // soft-skip
-
         var path = Path.Combine(Path.GetTempPath(), $"rr-real-{Guid.NewGuid():N}.pdf");
-        File.Copy(src, path, overwrite: true);
+        File.Copy(AnnotationTestHelpers.RealAcrobatPdfPath, path, overwrite: true);
         try
         {
             var store = new PdfAnnotationStore();

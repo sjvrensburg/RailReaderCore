@@ -10,7 +10,12 @@ namespace RailReader.Core.Tests;
 /// <summary>
 /// Performance benchmarks for the agent API surface. These are not deterministic
 /// unit tests — they measure wall-clock time on a real CPU. Run with -c Release.
+/// Tagged Category=Perf so a loaded/frequency-scaled runner can exclude them with
+/// <c>dotnet test --filter "Category!=Perf"</c>; the assertion ceilings are kept
+/// deliberately generous (order-of-magnitude guards, not tight budgets) so the
+/// default run stays green under normal contention.
 /// </summary>
+[Trait("Category", "Perf")]
 public class AgentApiPerfBenchmarks : IDisposable
 {
     private readonly ITestOutputHelper _output;
@@ -165,10 +170,12 @@ public class AgentApiPerfBenchmarks : IDisposable
             _output.WriteLine($"GetReadingPosition ({charCount:N0} chars): {usPerCall:F1} µs/call");
         }
 
-        // Verify roughly linear scaling (20K should not be >10x slower than 1K)
+        // Verify roughly linear scaling. Linear would be ~20x; the ceiling is 100x so
+        // only genuinely super-linear behaviour (quadratic ≈ 400x) trips it — a tighter
+        // bound (formerly 40x) sat within normal shared-runner timing variance.
         var ratio = results.Last().usPerCall / results.First().usPerCall;
         _output.WriteLine($"Scaling ratio (20K/1K): {ratio:F1}x");
-        Assert.True(ratio < 40, $"Non-linear scaling detected: {ratio:F1}x");
+        Assert.True(ratio < 100, $"Non-linear scaling detected: {ratio:F1}x");
     }
 
     [Fact]

@@ -146,6 +146,17 @@ public sealed class Viewport : IDisposable
         }
     }
 
+    /// <summary>Assigns this view's current page bypassing the confinement chokepoint in the
+    /// <see cref="CurrentPage"/> setter. Only for internal recovery paths that must win against an
+    /// active <see cref="Focus"/> — e.g. <see cref="DocumentModel.GoToPage"/> rolling back a failed
+    /// navigation whose destination the focus already targets (the public setter would silently
+    /// refuse the rollback, stranding CurrentPage on a page whose bitmap never loaded).</summary>
+    internal void ForceCurrentPage(int page)
+    {
+        if (SetField(ref CurrentPageBacking, page, nameof(CurrentPage)))
+            Owner.EvictDistantPageCaches();
+    }
+
     /// <summary>This view's current page width in PDF points (set when the page bitmap loads).</summary>
     public double PageWidth
     {
@@ -392,6 +403,14 @@ public sealed class Viewport : IDisposable
     /// <summary>True while a DPI re-render task is in flight.</summary>
     internal bool DpiRenderPending { get; set; }
 
+    /// <summary>Render-configuration generation for this view. Bumped (UI thread) whenever an
+    /// in-flight background render's inputs are invalidated — a view-rotation change (the bitmap
+    /// frame changed) or a render-quality change (the DPI tuning changed). Background prefetch /
+    /// DPI-rerender tasks capture it at schedule time and their marshalled completion compares it,
+    /// so a render scheduled under the old frame/tuning can never install a stale bitmap over the
+    /// fresh one the invalidation path just produced.</summary>
+    internal int RenderGeneration { get; private set; }
+
     // --- Page prefetch (seamless auto-scroll page transitions) ---
 
     /// <summary>The prefetched next-page bitmaps, consumed by the next matching LoadPageBitmap.</summary>
@@ -402,7 +421,7 @@ public sealed class Viewport : IDisposable
 
     internal sealed record PrefetchedPageData(
         int PageIndex, int Dpi, IRenderedPage Page, IRenderedPage Minimap,
-        double PageWidth, double PageHeight) : IDisposable
+        double PageWidth, double PageHeight, int Generation) : IDisposable
     {
         public void Dispose() { Page.Dispose(); Minimap.Dispose(); }
     }
@@ -415,7 +434,11 @@ public sealed class Viewport : IDisposable
     // ---------------------------------------------------------------------------------------------
 
     /// <summary>
-    /// Renders the current page bitmap. Safe to call from a background thread.
+    /// Renders the current page bitmap. Safe to call from a background thread <em>provided no other
+    /// thread touches this view concurrently</em> (the desktop host's document-open flow calls it
+    /// inside <c>Task.Run</c> before the document is wired to any UI): the page-dimension change
+    /// notifications are marshalled to the UI thread rather than fired inline, so no subscriber ever
+    /// runs UI code on a pool thread.
     /// Does NOT submit analysis (which requires UI-thread access to the worker).
     /// Returns false if the page could not be rendered.
     /// Uses prefetched bitmap if available for the current page (seamless auto-scroll transitions).
@@ -427,14 +450,20 @@ public sealed class Viewport : IDisposable
 
         try
         {
-            // Use prefetched page if available (e.g. from auto-scroll lookahead).
+            // Use prefetched page if available (e.g. from auto-scroll lookahead). A stale-generation
+            // buffer (rasterised under a rotation/DPI tuning that has since changed) is dropped and
+            // re-rendered fresh below — belt-and-braces with the completion-guard in PrefetchPage.
+            if (Prefetched is { } stale && stale.Generation != RenderGeneration)
+            {
+                stale.Dispose();
+                Prefetched = null;
+            }
             if (Prefetched is { } pf && pf.PageIndex == CurrentPageBacking)
             {
                 CachedPage = pf.Page;
                 CachedDpi = pf.Dpi;
                 MinimapPage = pf.Minimap;
-                PageWidth = pf.PageWidth;
-                PageHeight = pf.PageHeight;
+                SetPageSizeFromLoad(pf.PageWidth, pf.PageHeight);
                 Prefetched = null; // consumed — don't dispose, we're using the bitmaps
                 oldPage?.Dispose();
                 oldMinimap?.Dispose();
@@ -450,8 +479,7 @@ public sealed class Viewport : IDisposable
             CachedPage = newPage;
             CachedDpi = dpi;
             MinimapPage = newMinimap;
-            PageWidth = w;
-            PageHeight = h;
+            SetPageSizeFromLoad(w, h);
             oldPage?.Dispose();
             oldMinimap?.Dispose();
             return true;
@@ -464,6 +492,27 @@ public sealed class Viewport : IDisposable
         }
     }
 
+    /// <summary>Sets the page dimensions from <see cref="LoadPageBitmap"/>, which may run on a
+    /// background thread (see its contract) — so it can't use <see cref="SetField"/>, whose UI-thread
+    /// assert and synchronous <see cref="StateChanged"/> invoke would run subscribers on the pool
+    /// thread. The backing fields are written inline (the caller owns the view exclusively during a
+    /// background load) and the change notifications are posted to the UI thread; with the synchronous
+    /// test/CLI marshaller they still fire inline, so UI-thread callers are unchanged.</summary>
+    private void SetPageSizeFromLoad(double w, double h)
+    {
+        bool wChanged = PageWidthBacking != w;
+        bool hChanged = PageHeightBacking != h;
+        if (!wChanged && !hChanged) return;
+        PageWidthBacking = w;
+        PageHeightBacking = h;
+        Owner.Marshaller.Post(() =>
+        {
+            if (_disposed) return;
+            if (wChanged) StateChanged?.Invoke(nameof(PageWidth));
+            if (hChanged) StateChanged?.Invoke(nameof(PageHeight));
+        });
+    }
+
     /// <summary>
     /// Reacts to a document view-rotation change: every rasterised bitmap and all
     /// geometry-derived per-view state are in the old display frame. Drops the
@@ -474,6 +523,9 @@ public sealed class Viewport : IDisposable
     /// </summary>
     internal void OnViewRotationChanged()
     {
+        // Invalidate any in-flight prefetch / DPI-rerender: it was scheduled in the OLD frame and
+        // its completion must not install an old-orientation bitmap over the re-render below.
+        RenderGeneration++;
         Prefetched?.Dispose();
         Prefetched = null;
         if (_focus is not null) Focus = null;
@@ -506,6 +558,7 @@ public sealed class Viewport : IDisposable
         double zoom = Camera.Zoom;
         var dpiSettings = RenderDpi;
         int viewRotation = Owner.ViewRotation;
+        int generation = RenderGeneration;
         var ct = Cts.Token;
 
         Task.Run(() =>
@@ -520,7 +573,7 @@ public sealed class Viewport : IDisposable
                 Owner.Logger.Debug($"[PDFium] prefetch pg {pageIndex} @ {dpi}dpi tid={Environment.CurrentManagedThreadId} file={Path.GetFileName(Owner.FilePath)}");
                 var page = Owner.Pdf.RenderPage(pageIndex, dpi, viewRotation);
                 var minimap = Owner.Pdf.RenderThumbnail(pageIndex, viewRotation);
-                prepared = new(pageIndex, dpi, page, minimap, w, h);
+                prepared = new(pageIndex, dpi, page, minimap, w, h, generation);
             }
             catch (OperationCanceledException) { }
             catch (Exception ex) { error = ex; }
@@ -533,8 +586,10 @@ public sealed class Viewport : IDisposable
                         Owner.Logger.Error($"Failed to prefetch page {pageIndex + 1}: {error.Message}", error);
                     // Bail if the document OR just this view (RemoveViewport) was disposed while the
                     // render was in flight — otherwise we'd resurrect Prefetched on a freed view whose
-                    // Dispose already ran, leaking the bitmaps it will never get to dispose.
-                    if (Owner.IsDisposed || _disposed || prepared is null)
+                    // Dispose already ran, leaking the bitmaps it will never get to dispose. Also bail
+                    // on a stale render generation: a rotation / render-quality change dropped the
+                    // prefetch buffer, and this old-frame/old-DPI render must not resurrect it.
+                    if (Owner.IsDisposed || _disposed || RenderGeneration != generation || prepared is null)
                     {
                         prepared?.Dispose();
                         return;
@@ -592,6 +647,7 @@ public sealed class Viewport : IDisposable
             DpiRenderPending = true;
             int page = CurrentPageBacking;
             int viewRotation = Owner.ViewRotation;
+            int generation = RenderGeneration;
             var ct = Cts.Token;
             Task.Run(() =>
             {
@@ -614,8 +670,12 @@ public sealed class Viewport : IDisposable
                             Owner.Logger.Error($"Failed to re-render page at {neededDpi} DPI: {error.Message}", error);
                         // Bail if the document OR just this view (RemoveViewport) was disposed while the
                         // render was in flight — otherwise we'd swap a fresh bitmap onto a freed view
-                        // whose Dispose already ran, leaking it.
-                        if (Owner.IsDisposed || _disposed || CurrentPageBacking != page || newPage is null)
+                        // whose Dispose already ran, leaking it. Also bail on a stale render generation:
+                        // a rotation change already re-rendered this page in the NEW frame, and this
+                        // old-frame bitmap must not overwrite it (a quality change re-arms itself via
+                        // RenderDpiDirty, so neither invalidation loses its re-render).
+                        if (Owner.IsDisposed || _disposed || CurrentPageBacking != page
+                            || RenderGeneration != generation || newPage is null)
                         {
                             newPage?.Dispose();
                             // Re-arm a forced re-render that FAILED (RenderPage threw →
@@ -664,6 +724,10 @@ public sealed class Viewport : IDisposable
         if (settings == RenderDpi) return;
 
         RenderDpi = settings;
+        // Invalidate any in-flight prefetch / DPI-rerender scheduled under the OLD tuning: its
+        // completion must not resurrect the prefetch buffer dropped below (or install an old-DPI
+        // bitmap); the forced re-render below produces the new-tuning bitmap instead.
+        RenderGeneration++;
 
         // Drop the prefetch buffer — it was rasterised at the previous DPI.
         Prefetched?.Dispose();

@@ -1292,4 +1292,102 @@ public class RailNavTests
             $"right cell should scroll camera further left: camRight={camRight}, camLeft={camLeft}");
     }
 
+    // ===== Rail deactivation must end a running auto-scroll session =====
+
+    [Fact]
+    public void UpdateZoom_DeactivateDuringAutoScroll_ReportsEndWithoutDrift()
+    {
+        // Zooming out below the rail threshold while auto-scrolling deactivated the rail but
+        // left the state machine Scrolling — the camera kept auto-panning in browse mode along
+        // the stale line's wall-clock trajectory. The deactivation must hand the session to the
+        // teardown tick: reached-end reported once, camera untouched, so the controller's
+        // no-move advance check stops the session.
+        ActivateWithAnalysis(1, 3);
+        _nav.UpdateZoom(Zoom, 0, 0, WindowWidth, WindowHeight);
+        Assert.True(_nav.Active);
+        _nav.AutoScrollElapsedSecondsOverride = () => 10.0; // any live Scrolling tick would drift far left
+        _nav.StartAutoScroll(100.0);
+        Assert.True(_nav.AutoScrolling);
+
+        _nav.UpdateZoom(1.0, 0, 0, WindowWidth, WindowHeight); // below threshold → deactivates
+        Assert.False(_nav.Active);
+
+        double cx = 42.0;
+        Assert.True(_nav.TickAutoScroll(ref cx, 0.016, 1.0, WindowWidth)); // reached-end (teardown)
+        Assert.Equal(42.0, cx);                                            // no drift
+    }
+
+    [Fact]
+    public void Deactivate_DuringAutoScroll_ReportsEndWithoutDrift()
+    {
+        // Explicit Deactivate() mirrors UpdateZoom's deactivate branch.
+        ActivateWithAnalysis(1, 3);
+        _nav.UpdateZoom(Zoom, 0, 0, WindowWidth, WindowHeight);
+        _nav.AutoScrollElapsedSecondsOverride = () => 10.0;
+        _nav.StartAutoScroll(100.0);
+
+        _nav.Deactivate();
+
+        double cx = 42.0;
+        Assert.True(_nav.TickAutoScroll(ref cx, 0.016, 1.0, WindowWidth));
+        Assert.Equal(42.0, cx);
+    }
+
+    [Fact]
+    public void UpdateZoom_ReactivateBeforeTick_CancelsPendingTeardown()
+    {
+        // Deactivate then reactivate before any tick (e.g. a zoom dip that immediately
+        // recovers): the queued teardown must not fire a spurious advance.
+        ActivateWithAnalysis(1, 3);
+        _nav.UpdateZoom(Zoom, 0, 0, WindowWidth, WindowHeight);
+        _nav.AutoScrollElapsedSecondsOverride = () => 0.0; // no movement → no genuine reached-end
+        _nav.StartAutoScroll(100.0);
+
+        _nav.UpdateZoom(1.0, 0, 0, WindowWidth, WindowHeight);  // deactivate → teardown queued
+        _nav.UpdateZoom(Zoom, 0, 0, WindowWidth, WindowHeight); // reactivate → teardown cancelled
+
+        double cx = 0;
+        Assert.False(_nav.TickAutoScroll(ref cx, 0.016, Zoom, WindowWidth));
+        Assert.True(_nav.AutoScrolling);
+    }
+
+    // ===== ComputeLineStartX/EndX are pure queries (no hidden snap cancellation) =====
+
+    [Fact]
+    public void ComputeLineEdgeX_DoesNotCancelInFlightSnap()
+    {
+        // These "Compute" queries used to silently null the running snap animation — any
+        // caller wanting only the target X (overlay, test, prefetch) killed the user's snap.
+        var config = new AppConfig { SnapDurationMs = 60_000, PixelSnapping = false };
+        var nav = new RailNav(config.ToCoreSettings());
+        nav.SetAnalysis(CreateAnalysis(1, 3), new HashSet<BlockRole> { TextRole });
+        nav.UpdateZoom(Zoom, 0, 0, WindowWidth, WindowHeight);
+        Assert.True(nav.Active);
+
+        nav.StartSnapToCurrent(0, 0, Zoom, WindowWidth, WindowHeight);
+        Assert.True(nav.SnapProgress < 1.0); // snap in flight (60s duration)
+
+        Assert.NotNull(nav.ComputeLineStartX(Zoom, WindowWidth));
+        Assert.NotNull(nav.ComputeLineEndX(Zoom, WindowWidth));
+
+        Assert.True(nav.SnapProgress < 1.0, "a pure geometry query must not cancel the running snap");
+    }
+
+    [Fact]
+    public void CancelSnap_StopsInFlightSnap()
+    {
+        // The cancellation now lives in an explicitly-named method for callers that drive
+        // the camera directly (the controller's line Home/End).
+        var config = new AppConfig { SnapDurationMs = 60_000, PixelSnapping = false };
+        var nav = new RailNav(config.ToCoreSettings());
+        nav.SetAnalysis(CreateAnalysis(1, 3), new HashSet<BlockRole> { TextRole });
+        nav.UpdateZoom(Zoom, 0, 0, WindowWidth, WindowHeight);
+
+        nav.StartSnapToCurrent(0, 0, Zoom, WindowWidth, WindowHeight);
+        Assert.True(nav.SnapProgress < 1.0);
+
+        nav.CancelSnap();
+        Assert.Equal(1.0, nav.SnapProgress); // no snap running
+    }
+
 }

@@ -81,7 +81,9 @@ public sealed class HeronLayoutAnalyzer : ILayoutAnalyzer
     {
         _capabilities = capabilities ?? DoclingHeronRoles.Capabilities;
 
-        var opts = AnalyzerSessionOptions.Create(ConfigureSession);
+        // ORT copies the options into the session at creation, so the native
+        // handle is safe to dispose immediately (and on constructor throw).
+        using var opts = AnalyzerSessionOptions.Create(ConfigureSession);
         _session = new InferenceSession(modelPath, opts);
 
         RailReaderLogging.Logger.Debug($"[Heron ONNX] Input names: {string.Join(", ", _session.InputNames)}");
@@ -215,45 +217,30 @@ public sealed class HeronLayoutAnalyzer : ILayoutAnalyzer
             return buffer;
         }
 
-        // Map output (x, y) → source (srcX, srcY) so the LAST output pixel
-        // samples at exactly (srcW-1, srcH-1).
-        float xScale = srcW > 1 ? (float)(srcW - 1) / (target - 1) : 0f;
-        float yScale = srcH > 1 ? (float)(srcH - 1) / (target - 1) : 0f;
-
-        for (int y = 0; y < target; y++)
-        {
-            float fy = y * yScale;
-            int y0 = (int)fy;
-            int y1 = Math.Min(y0 + 1, srcH - 1);
-            float wy = fy - y0;
-
-            for (int x = 0; x < target; x++)
-            {
-                float fx = x * xScale;
-                int x0 = (int)fx;
-                int x1 = Math.Min(x0 + 1, srcW - 1);
-                float wx = fx - x0;
-
-                int o00 = (y0 * srcW + x0) * 3;
-                int o01 = (y0 * srcW + x1) * 3;
-                int o10 = (y1 * srcW + x0) * 3;
-                int o11 = (y1 * srcW + x1) * 3;
-
-                int dstIdx = y * target + x;
-                for (int c = 0; c < 3; c++)
-                {
-                    float v =
-                        rgbBytes[o00 + c] * (1 - wx) * (1 - wy) +
-                        rgbBytes[o01 + c] * wx * (1 - wy) +
-                        rgbBytes[o10 + c] * (1 - wx) * wy +
-                        rgbBytes[o11 + c] * wx * wy;
-                    int b = (int)(v + 0.5f);
-                    buffer[c * pixelCount + dstIdx] = (byte)(b < 0 ? 0 : b > 255 ? 255 : b);
-                }
-            }
-        }
+        // Shared PIL-equivalent bilinear resample — see BilinearResampler for
+        // the sampling semantics (half-pixel centres, area-averaging downscale,
+        // byte-exact against Pillow).
+        var sink = new ByteChwSink(buffer, pixelCount);
+        BilinearResampler.Resize(rgbBytes, srcW, srcH, target, ref sink);
 
         return buffer;
+    }
+
+    /// <summary>Output stage: round-and-clamp to uint8, pack into CHW byte planes.</summary>
+    private readonly struct ByteChwSink(byte[] buffer, int pixelCount) : BilinearResampler.IPixelSink
+    {
+        public void Write(int dstIdx, float r, float g, float b)
+        {
+            buffer[dstIdx] = RoundClamp(r);
+            buffer[pixelCount + dstIdx] = RoundClamp(g);
+            buffer[2 * pixelCount + dstIdx] = RoundClamp(b);
+        }
+
+        private static byte RoundClamp(float v)
+        {
+            int b = (int)(v + 0.5f);
+            return (byte)(b < 0 ? 0 : b > 255 ? 255 : b);
+        }
     }
 
     public void Dispose()

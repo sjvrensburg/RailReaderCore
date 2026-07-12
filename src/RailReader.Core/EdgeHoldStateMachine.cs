@@ -20,7 +20,20 @@ internal sealed class EdgeHoldStateMachine
 {
     public EdgeHoldState CurrentState { get; private set; } = EdgeHoldState.Idle;
 
-    private Stopwatch? _timer;
+    // Monotonic clock; process-wide is fine because only elapsed differences are used.
+    private static readonly Stopwatch SharedClock = Stopwatch.StartNew();
+
+    /// <summary>
+    /// Inject a controlled milliseconds source for unit tests (mirrors
+    /// <c>AutoScrollStateMachine.GetScrollElapsedSeconds</c>). When set, the
+    /// real clock is not used.
+    /// </summary>
+    internal Func<double>? GetNowMs;
+
+    private double NowMs => GetNowMs?.Invoke() ?? SharedClock.Elapsed.TotalMilliseconds;
+
+    // Timestamp (in NowMs units) when the current hold/cooldown began; null when idle.
+    private double? _markMs;
     private bool _forward;
 
     // Output signals: set when OnEdgeHit fires, consumed by the caller.
@@ -41,12 +54,12 @@ internal sealed class EdgeHoldStateMachine
         switch (CurrentState)
         {
             case EdgeHoldState.Cooldown:
-                if (_timer!.Elapsed.TotalMilliseconds < CoreTuning.EdgeCooldownMs) return false;
+                if (NowMs - _markMs!.Value < CoreTuning.EdgeCooldownMs) return false;
                 // Cooldown expired, fall through to start a new hold
                 goto case EdgeHoldState.Idle;
 
             case EdgeHoldState.Idle:
-                _timer = Stopwatch.StartNew();
+                _markMs = NowMs;
                 _forward = forward;
                 CurrentState = EdgeHoldState.Holding;
                 return false;
@@ -55,13 +68,13 @@ internal sealed class EdgeHoldStateMachine
                 if (_forward != forward)
                 {
                     // Direction changed, restart
-                    _timer = Stopwatch.StartNew();
+                    _markMs = NowMs;
                     _forward = forward;
                     return false;
                 }
-                if (_timer!.Elapsed.TotalMilliseconds >= CoreTuning.EdgeHoldMs)
+                if (NowMs - _markMs!.Value >= CoreTuning.EdgeHoldMs)
                 {
-                    _timer = Stopwatch.StartNew();
+                    _markMs = NowMs;
                     CurrentState = EdgeHoldState.Cooldown;
                     _pendingAdvance = forward ? ScrollDirection.Forward : ScrollDirection.Backward;
                     _advanceJustFired = true;
@@ -80,7 +93,7 @@ internal sealed class EdgeHoldStateMachine
         if (CurrentState != EdgeHoldState.Idle)
         {
             CurrentState = EdgeHoldState.Idle;
-            _timer = null;
+            _markMs = null;
         }
     }
 
@@ -116,7 +129,7 @@ internal sealed class EdgeHoldStateMachine
     public void Reset()
     {
         CurrentState = EdgeHoldState.Idle;
-        _timer = null;
+        _markMs = null;
         _pendingAdvance = null;
         _advanceJustFired = false;
         _suppressUntilRelease = false;

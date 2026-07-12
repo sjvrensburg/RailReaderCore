@@ -25,7 +25,11 @@ public static class AnnotationRenderer
 
     // Cached freehand SKPath per thread — avoids rebuilding native path every frame.
     // ConditionalWeakTable so paths are GC'd when annotations are collected.
-    private sealed class FreehandPathCache { public SKPath Path = null!; public int PointCount; }
+    // Invalidation is keyed by a hash over the point GEOMETRY, not just the count:
+    // move/resize mutate Points[i] in place without changing the count
+    // (AnnotationInteractionHandler.MoveAnnotation/ResizeFreehand), so a
+    // count-only key would keep drawing the pre-drag path forever.
+    private sealed class FreehandPathCache { public SKPath Path = null!; public int PointsHash; }
     [ThreadStatic] private static ConditionalWeakTable<FreehandAnnotation, FreehandPathCache>? s_freehandPaths;
 
     // Shared SKPath for ephemeral preview freehand rendering. Preview annotations
@@ -34,8 +38,11 @@ public static class AnnotationRenderer
     [ThreadStatic] private static SKPath? s_previewFreehandPath;
 
     // Cached text note popup layout per thread — avoids WrapText + MeasureText every frame.
-    private sealed record NoteLayoutCache(TextNoteAnnotation Owner, string Body, List<string> Lines, float PopupW, float PopupH);
-    [ThreadStatic] private static NoteLayoutCache? s_noteLayout;
+    // Keyed per note via ConditionalWeakTable (like s_freehandPaths) so multiple
+    // simultaneously expanded notes each keep their own entry: a single slot
+    // thrashes as soon as two expanded notes draw in the same frame.
+    private sealed record NoteLayoutCache(string Body, List<string> Lines, float PopupW, float PopupH);
+    [ThreadStatic] private static ConditionalWeakTable<TextNoteAnnotation, NoteLayoutCache>? s_noteLayouts;
 
     // Shared unit-size icon path for text notes — translated per note, never rebuilt.
     [ThreadStatic] private static SKPath? s_noteIconPath;
@@ -268,14 +275,16 @@ public static class AnnotationRenderer
 
     /// <summary>
     /// Returns a cached SKPath for the freehand annotation, rebuilding only when
-    /// the point count changes. Eliminates O(points) native interop per frame.
+    /// the point geometry changes (count, position or shape — see the cache
+    /// field docs). Eliminates O(points) native interop per frame; the managed
+    /// hash pass over the points is cheap by comparison.
     /// </summary>
     private static SKPath GetOrCreateFreehandPath(FreehandAnnotation freehand)
     {
         var paths = s_freehandPaths ??= new();
-        int count = freehand.Points.Count;
+        int pointsHash = ComputePointsHash(freehand.Points);
 
-        if (paths.TryGetValue(freehand, out var cache) && cache.PointCount == count)
+        if (paths.TryGetValue(freehand, out var cache) && cache.PointsHash == pointsHash)
             return cache.Path;
 
         var path = new SKPath();
@@ -285,13 +294,26 @@ public static class AnnotationRenderer
         {
             cache.Path.Dispose();
             cache.Path = path;
-            cache.PointCount = count;
+            cache.PointsHash = pointsHash;
         }
         else
         {
-            paths.AddOrUpdate(freehand, new FreehandPathCache { Path = path, PointCount = count });
+            paths.AddOrUpdate(freehand, new FreehandPathCache { Path = path, PointsHash = pointsHash });
         }
         return path;
+    }
+
+    /// <summary>Order-sensitive hash over the full point list, including its count.</summary>
+    private static int ComputePointsHash(List<PointF> points)
+    {
+        var hash = new HashCode();
+        hash.Add(points.Count);
+        foreach (var p in points)
+        {
+            hash.Add(p.X);
+            hash.Add(p.Y);
+        }
+        return hash.ToHashCode();
     }
 
     private const float NoteIconSize = 16f;
@@ -417,8 +439,9 @@ public static class AnnotationRenderer
     private static (List<string> Lines, float PopupW, float PopupH) GetOrComputeNoteLayout(
         TextNoteAnnotation note, SKFont font)
     {
+        var layouts = s_noteLayouts ??= new();
         string body = note.EffectiveContents;
-        if (s_noteLayout is { } cached && cached.Owner == note && cached.Body == body)
+        if (layouts.TryGetValue(note, out var cached) && cached.Body == body)
             return (cached.Lines, cached.PopupW, cached.PopupH);
 
         var lines = WrapText(body, font, PopupMaxWidth - PopupPadding * 2);
@@ -432,7 +455,7 @@ public static class AnnotationRenderer
         popupW = Math.Min(popupW, PopupMaxWidth);
         float popupH = lines.Count * lineHeight + PopupPadding * 2;
 
-        s_noteLayout = new(note, body, lines, popupW, popupH);
+        layouts.AddOrUpdate(note, new(body, lines, popupW, popupH));
         return (lines, popupW, popupH);
     }
 

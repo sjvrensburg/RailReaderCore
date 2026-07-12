@@ -49,9 +49,9 @@ public class HeronLayoutAnalyzerTests
     [Fact]
     public void Preprocess_CornersSampleCornersOfSource()
     {
-        // Bilinear resize with the (src-1)/(target-1) mapping anchors the
-        // last output pixel at the last source pixel — i.e. the output corners
-        // sample the source corners exactly.
+        // Under PIL half-pixel-centre bilinear, an upscale's corner output
+        // pixels have a single source tap — they still sample the source
+        // corners exactly.
         const int srcW = 32, srcH = 32, target = 640;
         var src = MakeGradient(srcW, srcH);
         byte[]? buffer = null;

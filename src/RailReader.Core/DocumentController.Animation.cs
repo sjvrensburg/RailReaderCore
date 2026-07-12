@@ -327,6 +327,22 @@ public sealed partial class DocumentController
             foreach (var doc in Documents)
             {
                 if (doc.IsDisposed || doc.FilePath != result.FilePath) continue;
+
+                // Reject a result produced in a different view-rotation frame: its block geometry is
+                // old-frame and must not repopulate the caches the rotation just cleared (or seat any
+                // rail). SetViewRotation's per-view resubmission may have been suppressed by
+                // IsInFlight — by this very request — so now that Poll() has drained its key,
+                // resubmit for each view still waiting; that fresh submission runs in the new frame.
+                if (doc.ViewRotation != result.ViewRotation)
+                {
+                    foreach (var vp in doc.Viewports)
+                    {
+                        if (vp.CurrentPage != result.Page || !vp.PendingRailSetup
+                            || vp.AnalysisParams != result.Params) continue;
+                        doc.SubmitAnalysis(vp, _worker, _config.NavigableRoles);
+                    }
+                    continue;
+                }
                 matchedLiveDoc = true;
 
                 // Cache at the model level under the params it was produced with (railreader2#180 #3).

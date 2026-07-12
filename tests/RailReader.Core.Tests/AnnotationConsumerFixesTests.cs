@@ -101,13 +101,11 @@ public class AnnotationConsumerFixesTests
 
     // ---- #9: export does not duplicate native annotations ----
 
-    [Fact]
+    [RealAcrobatPdfFact]
     public void Export_DoesNotDuplicateNativeAnnotations()
     {
-        const string src = "/home/stefan/Downloads/Day-ahead-photovoltaic-power-forecasting---Short.pdf";
-        if (!File.Exists(src)) return; // soft-skip
-
-        var pdf = TestFixtures.CreatePdfFactory().CreatePdfService(src);
+        var pdf = TestFixtures.CreatePdfFactory()
+            .CreatePdfService(AnnotationTestHelpers.RealAcrobatPdfPath);
         var annots = new PdfAnnotationReader().Read(pdf.PdfBytes);
         int before = annots.Pages.Values.Sum(p => p.Count);
 

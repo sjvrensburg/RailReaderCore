@@ -125,6 +125,12 @@ public sealed class OpenAIVlmClient : IVlmService
         {
             return $"Cannot reach endpoint: {ex.Message}";
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Caller-initiated cancellation (e.g. the settings dialog closed) —
+            // not a timeout; don't report a spurious endpoint failure.
+            return "Request cancelled";
+        }
         catch (TaskCanceledException)
         {
             return "Connection timed out";

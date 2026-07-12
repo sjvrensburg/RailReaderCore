@@ -202,7 +202,7 @@ public sealed partial class DocumentController : IDisposable
         // (ActiveDocumentIndex setter), so detached panes get the same treatment once focused.
         // If the focused view is removed, fall back to its document's primary so FocusedViewport is
         // never left pointing at a disposed view (it backs ActiveDocument and the per-frame tick).
-        state.ViewportRemoved = OnViewportRemoved;
+        state.ViewportRemoved += OnViewportRemoved;
 
         var saved = _recentFiles.GetReadingPosition(state.FilePath);
         bool restoredPage = saved is not null && saved.Page > 0;
@@ -258,7 +258,14 @@ public sealed partial class DocumentController : IDisposable
         // keeps its own pause — so nothing to clear here. (The old global `_railPause = null` was a
         // single shared slot; reaching into the *new* active view to null it would clobber a
         // legitimate in-progress free-pan on the tab the user is keeping.)
-        Search.CloseSearch();
+        //
+        // Close the search only when the searched-against (focused) view belonged to the closed
+        // document: SearchService is focused-view-aware, so closing a BACKGROUND tab doesn't
+        // invalidate the focused tab's matches — dropping them would discard the user's in-progress
+        // search for no reason. A search whose document was closed while unfocused is cleared lazily
+        // by SearchService.ClearIfDocumentChanged before any stale match is acted on.
+        if (closingFocused)
+            Search.CloseSearch();
     }
 
     public void SelectDocument(int index)

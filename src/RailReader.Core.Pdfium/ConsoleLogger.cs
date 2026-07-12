@@ -9,7 +9,11 @@ namespace RailReader.Core;
 /// </summary>
 public sealed class ConsoleLogger : ILogger, IDisposable
 {
-    private readonly StreamWriter? _fileWriter;
+    // Wrapped in TextWriter.Synchronized: log calls arrive concurrently from the
+    // UI thread, the analysis worker, and thread-pool render/prefetch tasks, and
+    // a bare StreamWriter is not thread-safe (concurrent WriteLine can corrupt
+    // its internal buffer and permanently break file logging).
+    private readonly TextWriter? _fileWriter;
 
     /// <summary>Path to the current session log file, or null if file logging failed.</summary>
     public string? LogFilePath { get; }
@@ -37,7 +41,8 @@ public sealed class ConsoleLogger : ILogger, IDisposable
             }
             catch { }
 
-            _fileWriter = new StreamWriter(LogFilePath, append: false) { AutoFlush = true };
+            _fileWriter = TextWriter.Synchronized(
+                new StreamWriter(LogFilePath, append: false) { AutoFlush = true });
             _fileWriter.WriteLine($"--- Session started {DateTime.Now:yyyy-MM-dd HH:mm:ss} ---");
         }
         catch

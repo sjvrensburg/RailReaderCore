@@ -126,12 +126,11 @@ public class CompositeAnnotationStoreTests
         Assert.False(sidecar.Saved.ContainsKey(Path.GetFullPath(pdfPath))); // stale entry removed
     }
 
-    [Fact]
+    [RealAcrobatPdfFact]
     public void Load_DedupesSidecarCopyByNativeId()
     {
         // Uses the genuine Acrobat PDF (its annotations carry /NM); skips otherwise.
-        const string path = "/home/stefan/Downloads/Day-ahead-photovoltaic-power-forecasting---Short.pdf";
-        if (!File.Exists(path)) return;
+        string path = AnnotationTestHelpers.RealAcrobatPdfPath;
 
         // Discover a real native id and its page from a plain native read.
         var nativeOnly = new PdfAnnotationReader().Read(File.ReadAllBytes(path));

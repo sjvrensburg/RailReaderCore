@@ -43,7 +43,7 @@ public class XYCutPlusPlusResolverTests
     public void OutputOrderIsDense()
     {
         // Output invariant: blocks[i].Order == i after AssignOrder. Matches the
-        // contract enforced by ModelOrderResolver / TopDownReadingOrderResolver.
+        // contract enforced by ModelOrderResolver.
         var blocks = new List<LayoutBlock>
         {
             Block(0,   0, 100, 20),

@@ -35,9 +35,13 @@ public static class ScreenshotCompositor
         // single-viewport caller is byte-identical and a detached pane composites its own state.
         var vp = viewport ?? doc.Primary;
 
-        // Render PDF page at requested DPI
+        // Render PDF page at requested DPI, in the same view-rotated frame the
+        // viewport state lives in: vp.PageWidth/PageHeight, the rail/analysis
+        // geometry, the camera and the annotations are all expressed in the
+        // ViewRotation-rotated frame (swapped axes on odd quarter-turns), so an
+        // unrotated render would misplace every overlay and the crop rect.
         int dpi = Math.Clamp(options.Dpi, 72, 600);
-        using var renderedPage = doc.Pdf.RenderPage(vp.CurrentPage, dpi);
+        using var renderedPage = doc.Pdf.RenderPage(vp.CurrentPage, dpi, doc.ViewRotation);
         var pageBitmap = ((SkiaRenderedPage)renderedPage).Bitmap;
 
         int bitmapW = pageBitmap.Width;
@@ -141,7 +145,18 @@ public static class ScreenshotCompositor
         {
             var pageAnnotations = doc.Annotations.Pages.TryGetValue(vp.CurrentPage, out var list) ? list : null;
             if (pageAnnotations is not null && pageAnnotations.Count > 0)
-                AnnotationRenderer.DrawAnnotations(canvas, pageAnnotations, null);
+            {
+                // Annotation geometry is persisted in the rotation-0 frame
+                // (see DocumentModel.AddAnnotation), unlike the rest of the
+                // viewport state, so map it into the view-rotated frame here.
+                canvas.Save();
+                ApplyViewRotation(canvas, doc.ViewRotation, vp.PageWidth, vp.PageHeight);
+                // Storage order is insertion order; DrawAnnotations expects
+                // z-order (markup under notes) so the screenshot matches the
+                // live composition regardless of creation order.
+                AnnotationRenderer.DrawAnnotations(canvas, AnnotationRenderer.SortByZOrder(pageAnnotations), null);
+                canvas.Restore();
+            }
         }
 
         // --- Layer 5: Debug overlay ---
@@ -161,6 +176,40 @@ public static class ScreenshotCompositor
 
         using var snapshot = surface.Snapshot();
         return SKBitmap.FromImage(snapshot);
+    }
+
+    /// <summary>
+    /// Applies the view-rotation transform so geometry expressed in the
+    /// rotation-0 page frame (annotations) lands correctly on a canvas whose
+    /// coordinate space is the view-rotated frame. Mirrors
+    /// <see cref="ViewRotationMath.RotatePoint"/>: q=1 maps (x, y) → (H₀−y, x),
+    /// q=2 → (W₀−x, H₀−y), q=3 → (y, W₀−x), where (W₀, H₀) is the UNROTATED
+    /// page size. <paramref name="rotatedPageW"/>/<paramref name="rotatedPageH"/>
+    /// are the rotated-frame dimensions (as exposed by <c>Viewport.PageWidth/Height</c>).
+    /// </summary>
+    private static void ApplyViewRotation(SKCanvas canvas, int viewRotation, double rotatedPageW, double rotatedPageH)
+    {
+        int q = ViewRotationMath.Normalize(viewRotation);
+        if (q == 0) return;
+
+        // Unrotated page size: axes swap back on odd quarter-turns.
+        var (w0, h0) = ViewRotationMath.RotateSize(rotatedPageW, rotatedPageH, q);
+
+        switch (q)
+        {
+            case 1: // (x, y) → (h0 - y, x)
+                canvas.Translate((float)h0, 0);
+                canvas.RotateDegrees(90);
+                break;
+            case 2: // (x, y) → (w0 - x, h0 - y)
+                canvas.Translate((float)w0, (float)h0);
+                canvas.RotateDegrees(180);
+                break;
+            case 3: // (x, y) → (y, w0 - x)
+                canvas.Translate(0, (float)w0);
+                canvas.RotateDegrees(270);
+                break;
+        }
     }
 
     /// <summary>
@@ -219,7 +268,9 @@ public static class ScreenshotCompositor
 
         using var image = SKImage.FromBitmap(bitmap);
         using var data = image.Encode(SKEncodedImageFormat.Png, quality);
-        using var stream = File.OpenWrite(outputPath);
+        // File.Create truncates an existing file; OpenWrite would leave stale
+        // trailing bytes after IEND when overwriting with smaller PNG data.
+        using var stream = File.Create(outputPath);
         data.SaveTo(stream);
     }
 

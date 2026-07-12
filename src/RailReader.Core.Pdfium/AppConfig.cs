@@ -146,6 +146,10 @@ public sealed class AppConfig : IRecentFilesStore
 
     private static string? s_configDir;
 
+    /// <summary>Test hook: redirects <see cref="ConfigDir"/> (and everything derived
+    /// from it) to <paramref name="dir"/>; pass null to restore auto-detection.</summary>
+    internal static void OverrideConfigDirForTesting(string? dir) => s_configDir = dir;
+
     public static string ConfigDir
     {
         get
@@ -172,9 +176,9 @@ public sealed class AppConfig : IRecentFilesStore
 
     public static AppConfig Load()
     {
-        try
+        if (File.Exists(ConfigPath))
         {
-            if (File.Exists(ConfigPath))
+            try
             {
                 var json = File.ReadAllText(ConfigPath);
                 var loaded = JsonSerializer.Deserialize(json, RailReaderJsonContext.Default.AppConfig) ?? new AppConfig();
@@ -182,12 +186,29 @@ public sealed class AppConfig : IRecentFilesStore
                     loaded.Save();
                 return loaded;
             }
-        }
-        catch (Exception ex)
-        {
-            RailReaderLogging.Logger.Error("Failed to load config", ex);
+            catch (Exception ex)
+            {
+                // The file exists but could not be read/parsed (transient IO error,
+                // corrupt JSON, …). Do NOT overwrite it with defaults — the user's
+                // recent files, reading positions, role sets and VLM settings may be
+                // recoverable. Preserve a copy as config.json.bad for forensics and
+                // run this session on in-memory defaults; the original file is only
+                // replaced if the user later changes a setting (explicit Save()).
+                RailReaderLogging.Logger.Error(
+                    "Failed to load config — using defaults for this session (existing config.json left in place)", ex);
+                try
+                {
+                    File.Copy(ConfigPath, ConfigPath + ".bad", overwrite: true);
+                }
+                catch
+                {
+                    // Best-effort backup only.
+                }
+                return new AppConfig();
+            }
         }
 
+        // First run: persist the defaults so the file exists for hand-editing.
         var config = new AppConfig();
         config.Save();
         return config;

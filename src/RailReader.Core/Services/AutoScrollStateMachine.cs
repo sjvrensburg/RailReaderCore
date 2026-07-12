@@ -70,6 +70,14 @@ internal sealed class AutoScrollStateMachine
     private double _pendingPauseMs;
     private bool _pendingPark;
 
+    // Set when the rail deactivates while a session is engaged (RailNav.UpdateZoom's
+    // deactivate branch / Deactivate()): the next Tick reports reached-end once, without
+    // moving the camera, so the orchestrator's no-move advance check tears the whole
+    // session down (machine + controller-level active flag) through its normal path.
+    // Without it the Scrolling state keeps recomputing the wall-clock trajectory against
+    // the stale line for seconds of visible camera drift in browse mode.
+    private bool _teardownRequested;
+
     // Paused: countdown timer
     private Stopwatch? _pauseTimer;
     private double _pauseDurationMs;
@@ -128,7 +136,29 @@ internal sealed class AutoScrollStateMachine
         _scrollInitialized = false;
         _scrollClock = null;
         _scrollStartX = 0;
+        _teardownRequested = false;
     }
+
+    /// <summary>
+    /// Arrange for the next <see cref="Tick"/> to report reached-end without moving the camera.
+    /// Called when the rail deactivates while auto-scroll is engaged: the orchestrator's no-move
+    /// advance check then ends the whole session (this machine plus the controller-level active
+    /// flag) through its normal teardown path, instead of the camera drifting along the stale
+    /// line's wall-clock trajectory in browse mode. No-op when inactive. While parked
+    /// (<see cref="AutoScrollState.WaitingForAdvance"/>) the request is held, not consumed —
+    /// it fires on the tick after an explicit resume.
+    /// </summary>
+    public void RequestTeardown()
+    {
+        if (IsActive) _teardownRequested = true;
+    }
+
+    /// <summary>
+    /// Cancel a pending <see cref="RequestTeardown"/>. Called when the rail (re)activates —
+    /// e.g. a deferred page-skip seat re-engaging rail — so a teardown queued by the transient
+    /// deactivation doesn't fire a spurious line advance against the freshly-seated rail.
+    /// </summary>
+    public void CancelTeardown() => _teardownRequested = false;
 
     /// <summary>Set/clear the boost flag (user holding D/Right during auto-scroll).</summary>
     public void SetBoost(bool boost)
@@ -200,6 +230,16 @@ internal sealed class AutoScrollStateMachine
     /// </summary>
     public bool Tick(ref double cameraX, double dtSecs, in AutoScrollContext ctx)
     {
+        // Rail deactivated while the session was engaged: report reached-end once, camera
+        // untouched, so the caller's no-move advance check ends the session cleanly (see
+        // RequestTeardown). Not consumed while parked — a park has no motion to tear down,
+        // and consuming it there would let a later explicit resume drift on a dead rail.
+        if (_teardownRequested && CurrentState != AutoScrollState.WaitingForAdvance)
+        {
+            _teardownRequested = false;
+            return true;
+        }
+
         return CurrentState switch
         {
             AutoScrollState.WaitingForSnap => TickWaitingForSnap(in ctx),
