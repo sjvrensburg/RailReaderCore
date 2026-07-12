@@ -223,10 +223,17 @@ public sealed class AddAnnotationAction(int pageIndex, Annotation annotation) : 
 
 public sealed class RemoveAnnotationAction(int pageIndex, Annotation annotation) : IUndoAction
 {
-    private int _index;
+    /// <summary>
+    /// Position the annotation was removed from, or −1 when the last <see cref="Redo"/> found
+    /// nothing to remove (annotation absent from the page, or page key missing). Undo of a
+    /// no-op removal must itself be a no-op: inserting anyway would either throw
+    /// (List.Insert(−1)) or silently duplicate the annotation onto a page it was never on.
+    /// </summary>
+    private int _index = -1;
 
     public void Undo(AnnotationFile file)
     {
+        if (_index < 0) return; // Redo removed nothing — nothing to restore
         if (!file.Pages.TryGetValue(pageIndex, out var list))
         {
             list = [];
@@ -237,11 +244,9 @@ public sealed class RemoveAnnotationAction(int pageIndex, Annotation annotation)
 
     public void Redo(AnnotationFile file)
     {
-        if (file.Pages.TryGetValue(pageIndex, out var list))
-        {
-            _index = list.IndexOf(annotation);
-            list.Remove(annotation);
-        }
+        _index = file.Pages.TryGetValue(pageIndex, out var list) ? list.IndexOf(annotation) : -1;
+        if (_index >= 0)
+            list!.RemoveAt(_index);
     }
 }
 

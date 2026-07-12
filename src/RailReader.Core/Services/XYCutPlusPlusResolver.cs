@@ -1014,7 +1014,9 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     }
 
     /// <summary>
-    /// Mirror of <see cref="FindWidestVerticalGap"/> on the Y axis.
+    /// Y-axis twin of the X-axis gutter sweep (<see cref="BlockGeom.NonStraddledGutters"/>,
+    /// consumed via <see cref="FindColumnSplit"/>): finds the widest horizontal band of
+    /// whitespace between the blocks' Y extents.
     /// </summary>
     private static HGap? FindWidestHorizontalGap(List<LayoutBlock> blocks)
     {
