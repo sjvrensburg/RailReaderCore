@@ -13,6 +13,10 @@ public sealed class PdfLinkService : IPdfLinkService
 
     private static readonly List<PdfLink> s_empty = [];
 
+    // Reuses one parsed document across per-page link extraction calls.
+    // Guarded by PdfiumGate.Lock; see CachedPdfDocument for the lifetime contract.
+    private readonly CachedPdfDocument _docCache = new();
+
     public List<PdfLink> ExtractPageLinks(byte[] pdfBytes, int pageIndex, string? password = null)
         => ExtractPageLinks(pdfBytes, pageIndex, 0, password);
 
@@ -23,17 +27,16 @@ public sealed class PdfLinkService : IPdfLinkService
             // May be the first PDFium touch in headless use — see PdfTextService.
             PdfiumResolver.EnsureLibraryInitialized();
 
-            IntPtr doc = IntPtr.Zero;
             IntPtr page = IntPtr.Zero;
-            GCHandle pinned = default;
 
             try
             {
-                pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
                 // Read path is fail-soft: a wrong/missing password yields IntPtr.Zero and an
                 // empty result rather than throwing (the open boundary validated the password).
                 // The write/open paths use LoadDocumentChecked to throw instead.
-                doc = FPDF_LoadMemDocument(pinned.AddrOfPinnedObject(), pdfBytes.Length, password);
+                // The document handle is cached across per-page calls (owned by
+                // _docCache — do not close it here).
+                IntPtr doc = _docCache.GetOrLoad(pdfBytes, password);
                 if (doc == IntPtr.Zero) return s_empty;
 
                 page = FPDF_LoadPage(doc, pageIndex);
@@ -69,8 +72,6 @@ public sealed class PdfLinkService : IPdfLinkService
             finally
             {
                 if (page != IntPtr.Zero) FPDF_ClosePage(page);
-                if (doc != IntPtr.Zero) FPDF_CloseDocument(doc);
-                if (pinned.IsAllocated) pinned.Free();
             }
         }
     }
@@ -112,7 +113,13 @@ public sealed class PdfLinkService : IPdfLinkService
                     try
                     {
                         FPDFAction_GetURIPath(doc, action, buf, len);
-                        string uri = Marshal.PtrToStringAnsi(buf, (int)len - 1) ?? "";
+                        // PDFium returns the raw URI bytes (7-bit ASCII per spec, but
+                        // UTF-8 in the wild). Decode as UTF-8 explicitly —
+                        // Marshal.PtrToStringAnsi would use the system codepage on
+                        // Windows and mojibake non-ASCII URIs.
+                        var uriBytes = new byte[(int)len - 1];
+                        Marshal.Copy(buf, uriBytes, 0, uriBytes.Length);
+                        string uri = System.Text.Encoding.UTF8.GetString(uriBytes).TrimEnd('\0');
                         if (!string.IsNullOrWhiteSpace(uri))
                             return new UriDestination { Uri = uri };
                     }
