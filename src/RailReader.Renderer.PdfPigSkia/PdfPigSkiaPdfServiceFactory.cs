@@ -20,9 +20,14 @@ public sealed class PdfPigSkiaPdfServiceFactory : IPdfServiceFactory
     public IPdfService CreatePdfService(string filePath, string? password = null)
         => new PdfPigSkiaPdfService(filePath, password);
 
+    // The Core.PdfPig services open their own short-lived PdfDocument per call;
+    // they are wrapped in the gate here so every PdfPig touch made through this
+    // backend (UI-thread renders, thread-pool text extraction) is serialised by
+    // the same PdfPigGate.Lock — Core.PdfPig itself cannot reference the gate.
+
     public IPdfTextService CreatePdfTextService()
-        => new PdfTextService();
+        => new GatedPdfPigTextService(new PdfTextService());
 
     public IPdfLinkService CreatePdfLinkService()
-        => new PdfLinkService();
+        => new GatedPdfPigLinkService(new PdfLinkService());
 }

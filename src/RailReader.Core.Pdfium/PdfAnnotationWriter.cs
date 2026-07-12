@@ -35,10 +35,11 @@ public sealed class PdfAnnotationWriter
     /// bytes (a full rewrite that preserves the document's existing content). In-PDF annotations are left untouched.
     /// </summary>
     /// <remarks>
-    /// PR 2 step 1 scope: this only <i>adds</i> authored annotations; it does not yet
-    /// reconcile edits/deletes of existing in-PDF annotations, and does not mark the
-    /// written annotations as persisted — so it is not idempotent across repeated calls.
-    /// Edit/delete-by-/NM and idempotent save are the next step.
+    /// This method only <i>adds</i> authored annotations; it does not reconcile
+    /// edits/deletes of existing in-PDF annotations and does not mark the written
+    /// annotations as persisted — so it is not idempotent across repeated calls.
+    /// For edit/delete-by-/NM reconciliation and idempotent saves use
+    /// <see cref="WriteReconciled"/>.
     /// </remarks>
     public byte[] AddAuthoredAnnotations(byte[] pdfBytes, AnnotationFile annotations, string? password = null)
     {

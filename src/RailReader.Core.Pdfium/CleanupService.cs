@@ -6,12 +6,20 @@ public static class CleanupService
 {
 
     public static (int FilesRemoved, long BytesFreed) RunCleanup()
+        => RunCleanup(AppConfig.ConfigDir, includeOrphanedAnnotations: true);
+
+    /// <summary>
+    /// Testable core of <see cref="RunCleanup()"/>: cleans the given config
+    /// directory (recursive cache/ wipe, *.tmp removal, 7-day-old *.log removal)
+    /// honouring the protected-file rules. Orphaned-annotation cleanup is
+    /// optional because <see cref="AnnotationService.CleanOrphaned"/> operates
+    /// on the real user annotation directory.
+    /// </summary>
+    internal static (int FilesRemoved, long BytesFreed) RunCleanup(
+        string configDir, bool includeOrphanedAnnotations)
     {
         int filesRemoved = 0;
         long bytesFreed = 0;
-
-        // Clean cache/ and temp files in the app config directory
-        var configDir = AppConfig.ConfigDir;
 
         var cacheDir = Path.Combine(configDir, "cache");
         if (Directory.Exists(cacheDir))
@@ -24,9 +32,12 @@ public static class CleanupService
         RemoveMatchingFiles(configDir, ".log", TimeSpan.FromDays(7), ref filesRemoved, ref bytesFreed);
 
         // Clean orphaned annotation files (source PDF no longer exists)
-        var (orphansRemoved, orphanBytes) = AnnotationService.CleanOrphaned();
-        filesRemoved += orphansRemoved;
-        bytesFreed += orphanBytes;
+        if (includeOrphanedAnnotations)
+        {
+            var (orphansRemoved, orphanBytes) = AnnotationService.CleanOrphaned();
+            filesRemoved += orphansRemoved;
+            bytesFreed += orphanBytes;
+        }
 
         if (filesRemoved > 0)
             RailReaderLogging.Logger.Debug($"Cleanup: removed {filesRemoved} files, freed {bytesFreed} bytes");

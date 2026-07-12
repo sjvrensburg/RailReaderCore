@@ -6,30 +6,24 @@ namespace RailReader.Core.Tests;
 
 /// <summary>
 /// PR 2 step 1 — PdfAnnotationWriter.AddAuthoredAnnotations writes RailReader-authored
-/// annotations into a PDF in place via incremental save, preserving existing content.
+/// annotations into a PDF via a full FPDF_SaveAsCopy rewrite that preserves the
+/// document's existing content. (Deliberately NOT an incremental update — PDFium's
+/// incremental save corrupts the xref of linearised PDFs.)
 /// </summary>
 public class PdfAnnotationWriterTests
 {
     private const float Tol = 0.5f;
 
-    private static byte[] PlainPdfBytes()
-        => File.ReadAllBytes(TestFixtures.GetTestPdfPath());
+    private static byte[] PlainPdfBytes() => AnnotationTestHelpers.PlainPdfBytes();
 
     private static AnnotationFile OnePage(params Annotation[] anns)
-    {
-        var f = new AnnotationFile();
-        f.Pages[0] = [.. anns];
-        return f;
-    }
+        => AnnotationTestHelpers.OnePage(anns);
 
     private static List<Annotation> ReadBack(byte[] bytes, int page = 0)
-    {
-        var file = new PdfAnnotationReader().Read(bytes);
-        return file.Pages.TryGetValue(page, out var list) ? list : [];
-    }
+        => AnnotationTestHelpers.ReadBack(bytes, page);
 
     [Fact]
-    public void IncrementalSave_PreservesPreviouslyWrittenAnnotations()
+    public void FullRewriteSave_PreservesPreviouslyWrittenAnnotations()
     {
         var writer = new PdfAnnotationWriter();
 
@@ -38,7 +32,7 @@ public class PdfAnnotationWriterTests
             OnePage(new HighlightAnnotation { Rects = [new HighlightRect(72, 100, 80, 16)] }));
         Assert.Single(ReadBack(bytes1));
 
-        // Second write onto the result: highlight B. A must survive (incremental).
+        // Second write onto the result: highlight B. A must survive the full rewrite.
         var bytes2 = writer.AddAuthoredAnnotations(bytes1,
             OnePage(new HighlightAnnotation { Rects = [new HighlightRect(72, 200, 80, 16)] }));
 
@@ -169,13 +163,10 @@ public class PdfAnnotationWriterTests
         Assert.IsType<TextNoteAnnotation>(note);
     }
 
-    [Fact]
+    [RealAcrobatPdfFact]
     public void RealAcrobatPdf_AddingAnnotationPreservesExistingForty()
     {
-        const string path = "/home/stefan/Downloads/Day-ahead-photovoltaic-power-forecasting---Short.pdf";
-        if (!File.Exists(path)) return; // soft-skip
-
-        var original = File.ReadAllBytes(path);
+        var original = File.ReadAllBytes(AnnotationTestHelpers.RealAcrobatPdfPath);
         var before = new PdfAnnotationReader().Read(original);
         int beforeTotal = before.Pages.Values.Sum(p => p.Count);
         var knownId = before.Pages.Values.SelectMany(p => p).First(a => a.NativeId is not null).NativeId;

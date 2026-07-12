@@ -123,13 +123,11 @@ public class PdfAnnotationReaderTests
     /// Reads the genuine Acrobat review PDF when it is present on the machine.
     /// Skips otherwise so CI/other boxes stay green.
     /// </summary>
-    [Fact]
+    [RealAcrobatPdfFact]
     public void RealAcrobatPdf_ReadsReviewerComments()
     {
-        const string path = "/home/stefan/Downloads/Day-ahead-photovoltaic-power-forecasting---Short.pdf";
-        if (!File.Exists(path)) return; // soft-skip: sample PDF not present on this machine
-
-        var file = new PdfAnnotationReader().Read(File.ReadAllBytes(path));
+        var file = new PdfAnnotationReader().Read(
+            File.ReadAllBytes(AnnotationTestHelpers.RealAcrobatPdfPath));
 
         var all = file.Pages.Values.SelectMany(p => p).ToList();
         Assert.NotEmpty(all);

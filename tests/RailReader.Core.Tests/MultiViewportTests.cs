@@ -1090,6 +1090,67 @@ public class MultiViewportTests : IDisposable
         Assert.Same(sibling, doc.Primary);                 // sibling promoted to primary
     }
 
+    // --- View rotation × multiple viewports (DocumentModel.OnViewRotationChanged fan-out) ---
+
+    [Fact]
+    public void SetViewRotation_FansOutToEveryViewport()
+    {
+        var doc = SetupDoc();
+        var vp1 = doc.Primary;
+        var vp2 = doc.AddViewport();
+        Assert.True(vp2.LoadPageBitmap());
+
+        double w0 = vp1.PageWidth, h0 = vp1.PageHeight;
+        Assert.True(h0 > w0, "synthetic fixture page must start portrait");
+        var cached1 = vp1.CachedPage;
+        var cached2 = vp2.CachedPage;
+        int gen2 = vp2.RenderGeneration;
+
+        _controller.SetViewRotation(1);
+
+        // EVERY view — not just the focused primary — re-derives its page dimensions
+        // and re-renders in the rotated frame.
+        foreach (var vp in doc.Viewports)
+        {
+            Assert.Equal(h0, vp.PageWidth, 0.5);
+            Assert.Equal(w0, vp.PageHeight, 0.5);
+            Assert.NotNull(vp.CachedPage);
+        }
+        Assert.NotSame(cached1, vp1.CachedPage);   // old-frame bitmaps replaced…
+        Assert.NotSame(cached2, vp2.CachedPage);   // …on the secondary too
+        Assert.True(vp2.RenderGeneration > gen2,   // in-flight secondary renders invalidated
+            "rotation must bump the secondary view's render generation");
+        Assert.Equal(0, doc.AnalysedPageCount);    // old-frame analysis dropped for all views
+    }
+
+    [Fact]
+    public void SetViewRotation_ViewportsOnDifferentPages_EachRerendersItsOwnPage()
+    {
+        var doc = SetupDoc();
+        var vp1 = doc.Primary;
+        var vp2 = doc.AddViewport();
+        vp2.CurrentPage = 2;
+        Assert.True(vp2.LoadPageBitmap());
+        vp2.Focus = new FocusBlock(2, 0, new BBox(10, 10, 100, 100));
+        var (w2, h2) = doc.Pdf.GetPageSize(2);
+
+        _controller.SetViewRotation(3);
+
+        Assert.Equal(0, vp1.CurrentPage);
+        Assert.Equal(2, vp2.CurrentPage);          // rotation must not move a view off its page
+        Assert.Equal(h2, vp2.PageWidth, 0.5);      // the quarter-turn swapped ITS page's axes
+        Assert.Equal(w2, vp2.PageHeight, 0.5);
+        Assert.NotNull(vp2.CachedPage);            // re-rendered (not left with a stale pre-rotation pixmap)
+        Assert.Null(vp2.Focus);                    // old-frame confinement released on the secondary too
+        Assert.Null(vp2.Prefetched);               // no old-frame prefetch left to be consumed later
+
+        // Rotating back restores both views' original orientation independently.
+        _controller.SetViewRotation(0);
+        Assert.Equal(w2, vp2.PageWidth, 0.5);
+        Assert.Equal(h2, vp2.PageHeight, 0.5);
+        Assert.True(vp1.PageHeight > vp1.PageWidth);
+    }
+
     // A 3-block (each 3-line) navigable Text analysis so the rail has multiple navigable blocks to seat on.
     private static PageAnalysis MakeMultiBlockAnalysis()
     {
