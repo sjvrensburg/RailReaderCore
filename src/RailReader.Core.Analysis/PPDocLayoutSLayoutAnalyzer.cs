@@ -97,7 +97,9 @@ public sealed class PPDocLayoutSLayoutAnalyzer : ILayoutAnalyzer
     {
         _capabilities = capabilities ?? PPDocLayoutSRoles.Capabilities;
 
-        var opts = AnalyzerSessionOptions.Create(ConfigureSession);
+        // ORT copies the options into the session at creation, so the native
+        // handle is safe to dispose immediately (and on constructor throw).
+        using var opts = AnalyzerSessionOptions.Create(ConfigureSession);
         _session = new InferenceSession(modelPath, opts);
 
         RailReaderLogging.Logger.Debug($"[PP-S ONNX] Input names: {string.Join(", ", _session.InputNames)}");
@@ -253,61 +255,32 @@ public sealed class PPDocLayoutSLayoutAnalyzer : ILayoutAnalyzer
             return buffer;
         }
 
-        // Map output (x, y) → source (srcX, srcY) so the LAST output pixel
-        // samples at exactly (srcW-1, srcH-1) — matches PIL.Image.BILINEAR
-        // which is what the Python reference uses.
-        float xScale = srcW > 1 ? (float)(srcW - 1) / (target - 1) : 0f;
-        float yScale = srcH > 1 ? (float)(srcH - 1) / (target - 1) : 0f;
-
-        float invStdR = 1f / ImageNetStd[0];
-        float invStdG = 1f / ImageNetStd[1];
-        float invStdB = 1f / ImageNetStd[2];
-
-        for (int y = 0; y < target; y++)
-        {
-            float fy = y * yScale;
-            int y0 = (int)fy;
-            int y1 = Math.Min(y0 + 1, srcH - 1);
-            float wy = fy - y0;
-
-            for (int x = 0; x < target; x++)
-            {
-                float fx = x * xScale;
-                int x0 = (int)fx;
-                int x1 = Math.Min(x0 + 1, srcW - 1);
-                float wx = fx - x0;
-
-                int o00 = (y0 * srcW + x0) * 3;
-                int o01 = (y0 * srcW + x1) * 3;
-                int o10 = (y1 * srcW + x0) * 3;
-                int o11 = (y1 * srcW + x1) * 3;
-
-                int dstIdx = y * target + x;
-                // R
-                float r =
-                    rgbBytes[o00]     * (1 - wx) * (1 - wy) +
-                    rgbBytes[o01]     * wx * (1 - wy) +
-                    rgbBytes[o10]     * (1 - wx) * wy +
-                    rgbBytes[o11]     * wx * wy;
-                buffer[dstIdx] = (r / 255f - ImageNetMean[0]) * invStdR;
-                // G
-                float g =
-                    rgbBytes[o00 + 1] * (1 - wx) * (1 - wy) +
-                    rgbBytes[o01 + 1] * wx * (1 - wy) +
-                    rgbBytes[o10 + 1] * (1 - wx) * wy +
-                    rgbBytes[o11 + 1] * wx * wy;
-                buffer[pixelCount + dstIdx] = (g / 255f - ImageNetMean[1]) * invStdG;
-                // B
-                float b =
-                    rgbBytes[o00 + 2] * (1 - wx) * (1 - wy) +
-                    rgbBytes[o01 + 2] * wx * (1 - wy) +
-                    rgbBytes[o10 + 2] * (1 - wx) * wy +
-                    rgbBytes[o11 + 2] * wx * wy;
-                buffer[2 * pixelCount + dstIdx] = (b / 255f - ImageNetMean[2]) * invStdB;
-            }
-        }
+        // Shared 4-tap bilinear geometry (see BilinearResampler). NOTE: this is
+        // point-sampled align-corners bilinear, NOT equivalent to the Python
+        // reference's PIL.Image.BILINEAR, which area-averages on downscale —
+        // at the real 1920→480 path thin strokes can alias where PIL would
+        // average them in. Kept as-is deliberately: changing the resample
+        // kernel changes the model inputs and must be validated against the
+        // live model before shipping (see BilinearResampler docs).
+        var sink = new ImageNetFloatSink(buffer, pixelCount);
+        BilinearResampler.Resize(rgbBytes, srcW, srcH, target, ref sink);
 
         return buffer;
+    }
+
+    /// <summary>Output stage: scale to [0,1], ImageNet-normalise, pack into CHW float planes.</summary>
+    private readonly struct ImageNetFloatSink(float[] buffer, int pixelCount) : BilinearResampler.IPixelSink
+    {
+        private readonly float _invStdR = 1f / ImageNetStd[0];
+        private readonly float _invStdG = 1f / ImageNetStd[1];
+        private readonly float _invStdB = 1f / ImageNetStd[2];
+
+        public void Write(int dstIdx, float r, float g, float b)
+        {
+            buffer[dstIdx] = (r / 255f - ImageNetMean[0]) * _invStdR;
+            buffer[pixelCount + dstIdx] = (g / 255f - ImageNetMean[1]) * _invStdG;
+            buffer[2 * pixelCount + dstIdx] = (b / 255f - ImageNetMean[2]) * _invStdB;
+        }
     }
 
     public void Dispose()
