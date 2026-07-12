@@ -44,7 +44,10 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
     {
         _capabilities = capabilities ?? PPDocLayoutV3Roles.Capabilities;
 
-        var opts = AnalyzerSessionOptions.Create(ConfigureSession);
+        // ORT copies the options into the session at creation, so the native
+        // OrtSessionOptions handle can (and must) be disposed here — including
+        // when the InferenceSession constructor throws.
+        using var opts = AnalyzerSessionOptions.Create(ConfigureSession);
         _session = new InferenceSession(modelPath, opts);
 
         RailReaderLogging.Logger.Debug($"[ONNX] Input names: {string.Join(", ", _session.InputNames)}");
@@ -57,6 +60,7 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
         int target = Capabilities.InputSize;
 
         ct.ThrowIfCancellationRequested();
+        ValidateLetterboxInput(pxW, pxH, target);
 
         // Letterbox: place undistorted image at (0,0) in target×target canvas.
         // FitPageToTarget already ensures max(pxW, pxH) == target, so no resizing
@@ -157,6 +161,26 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
         }
 
         return rawBlocks;
+    }
+
+    /// <summary>
+    /// Rejects pixmaps larger than the letterbox canvas. Unlike the PP-S and
+    /// Heron analyzers, which resize arbitrary inputs internally, this analyzer
+    /// copies pixels 1:1 into a <paramref name="target"/>×<paramref name="target"/>
+    /// canvas — an oversized pixmap would be silently CROPPED to its top-left
+    /// corner and the surviving detections remapped as if the whole page were
+    /// visible. Callers must rasterise with max(width, height) &lt;=
+    /// <see cref="LayoutModelCapabilities.InputSize"/> (smaller is fine:
+    /// FitPageToTarget can truncate a pixel below the target).
+    /// </summary>
+    internal static void ValidateLetterboxInput(int pxW, int pxH, int target)
+    {
+        if (pxW > target || pxH > target)
+            throw new ArgumentException(
+                $"Pixmap {pxW}x{pxH} exceeds the model input size {target}x{target}. " +
+                $"Rasterise the page with max(width, height) == Capabilities.InputSize ({target}); " +
+                "LayoutAnalyzer letterboxes without resizing, so a larger pixmap would be " +
+                "silently cropped and yield corrupted detections.");
     }
 
     private static float[] PreprocessImage(byte[] rgbBytes, int origW, int origH, int target, ref float[]? buffer)

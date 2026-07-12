@@ -132,4 +132,27 @@ public class LayoutAnalyzerTests
         LayoutAnalyzer.SuppressNestedBlocks(blocks);
         Assert.Equal(2, blocks.Count);
     }
+
+    [Theory]
+    [InlineData(1920, 1080)] // PP-S rasterisation hint fed to V3 by mistake
+    [InlineData(801, 800)]
+    [InlineData(800, 801)]
+    public void ValidateLetterboxInput_OversizedPixmap_Throws(int pxW, int pxH)
+    {
+        // V3 letterboxes without resizing: a pixmap larger than the canvas used
+        // to be silently CROPPED to its top-left corner, corrupting detections.
+        var ex = Assert.Throws<ArgumentException>(
+            () => LayoutAnalyzer.ValidateLetterboxInput(pxW, pxH, 800));
+        Assert.Contains("InputSize", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(800, 800)]
+    [InlineData(800, 799)] // FitPageToTarget truncates — a pixel below target is valid
+    [InlineData(799, 800)]
+    [InlineData(400, 300)]
+    public void ValidateLetterboxInput_AtOrBelowTarget_DoesNotThrow(int pxW, int pxH)
+    {
+        LayoutAnalyzer.ValidateLetterboxInput(pxW, pxH, 800);
+    }
 }
