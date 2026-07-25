@@ -19,8 +19,27 @@ can read page paths, the separators are simply known.
   also implements `IPdfRulingService`, so a consumer gains exact grids with no factory or
   constructor change. `GatedPdfPigTextService` forwards it, which is what keeps the capability
   reaching the Skia/PdfPig backend.
-- `LineDetector.DetectColumnGridFromRulings` takes precedence over the raster scan; PDFium has
-  no path-reading implementation yet, so the desktop backend keeps the raster path.
+- `LineDetector.DetectColumnGridFromRulings` takes precedence over the raster scan.
+- **Both backends implement it.** `Core.Pdfium`'s `PdfTextService` reads the page's object list
+  through new path P/Invokes (`FPDFPage_GetObject` / `FPDFPath_GetPathSegment` / …), descending
+  into form XObjects with their matrices composed — a table drawn inside a form is invisible to
+  `FPDFPage_GetObject` alone, which is common in LaTeX and Word output. PDFium reports path
+  points in each object's own space, so the object matrix is applied before anything else;
+  without it, rules land wherever the identity transform happens to put them.
+
+### Table rows from horizontal rules
+
+Char clustering finds *text lines*, which is right for prose and wrong for a table whose cells
+wrap: a two-line cell became two rail rows, the second looking like a row with content in one
+column only, and cell navigation stepped through the phantom. `LineDetector.MergeRowsByRulings`
+now fuses the lines sharing a band between two horizontal rules into one row.
+
+- Gated on the rules being dense enough to delimit rows rather than sections: the bands must
+  average no more than two lines each. A booktabs-style table (a rule above, below and under the
+  header) is left exactly as it was rather than collapsing its body into one row.
+- A rule must cross at least half the table's width to cut a row, so a single header cell's
+  underline — or a neighbouring block's rule clipped into this one — cannot.
+- Table blocks only; prose under a page rule keeps its per-line stepping.
 
 ### Grids are now checked against the content they claim to cut
 

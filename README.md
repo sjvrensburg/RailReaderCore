@@ -97,10 +97,11 @@ Some backends can do more than the core interfaces require. Rather than widen th
 (and every consumer's wiring) for something only one backend supports, Core discovers the extra
 by casting the service it was given:
 
-- **`IPdfRulingService`** — a page's vector ruling lines. `RailReader.Core.PdfPig`'s
-  `PdfTextService` implements it, so tables get their column grid from the exact lines the
-  producer drew rather than from dark pixel runs in the analysis pixmap. PDFium exposes no path
-  reading through our P/Invoke surface today, so that backend keeps the raster path.
+- **`IPdfRulingService`** — a page's vector ruling lines. Both backends implement it
+  (`Core.PdfPig` via `page.Paths`, `Core.Pdfium` via the page object list, descending into form
+  XObjects), so tables get their column grid from the exact lines the producer drew rather than
+  from dark pixel runs in the analysis pixmap — and a ruled table's *rows* come from its
+  horizontal rules, so a cell whose text wraps is one row rather than two.
 
 Nothing needs enabling: wire the services as usual and the capability is used if present. A
 wrapper around a service must forward these interfaces or it will silently hide the capability —

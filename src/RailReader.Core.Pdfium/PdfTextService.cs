@@ -8,7 +8,7 @@ namespace RailReader.Core.Services;
 /// Extracts per-page text and character bounding boxes from PDFs via PDFium P/Invoke.
 /// Relies on PDFtoImage having already loaded the native pdfium library.
 /// </summary>
-public sealed class PdfTextService : IPdfTextService
+public sealed partial class PdfTextService : IPdfTextService
 {
 
     private static readonly PageText s_empty = new("", []);

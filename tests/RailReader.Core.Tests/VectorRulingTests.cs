@@ -249,6 +249,17 @@ public class VectorRulingTests
     }
 
     [Fact]
+    public void PdfPigFactorysTextService_AdvertisesRulingSupportThroughTheGate()
+    {
+        // The gated wrapper must forward IPdfRulingService — Core discovers the capability by
+        // casting, so a wrapper that only implements IPdfTextService hides it entirely.
+        var textService = new RailReader.Renderer.PdfPigSkia.PdfPigSkiaPdfServiceFactory()
+            .CreatePdfTextService();
+
+        Assert.IsAssignableFrom<IPdfRulingService>(textService);
+    }
+
+    [Fact]
     public void EndToEnd_RuledTablePdfYieldsItsOwnColumnBoundaries()
     {
         // Rules on the page, content between them, and the column boundaries the reader ends

@@ -109,6 +109,14 @@ public static class LineDetector
     /// </summary>
     internal const float RulingMergeTolerance = 1.5f;
 
+    /// <summary>
+    /// Fraction of a table block's width a horizontal rule must cross before it counts as a
+    /// row separator in <see cref="MergeRowsByRulings"/>. A rule underlining a single header
+    /// cell, or a neighbouring block's rule clipped into this one, spans far less and must not
+    /// be allowed to cut a row.
+    /// </summary>
+    internal const float RowRuleSpanFraction = 0.5f;
+
     private static readonly HashSet<BlockRole> MathRoles =
         [BlockRole.DisplayMath, BlockRole.InlineMath, BlockRole.Algorithm];
 
@@ -169,6 +177,9 @@ public static class LineDetector
             if (charLines.Count > 0)
             {
                 var rows = NormalizeLines(charLines, block.BBox, mergeOverlaps);
+                // For a ruled table the drawn row separators are the authority on where one
+                // row ends: a cell whose text wraps is one row, not two.
+                if (isTable) rows = MergeRowsByRulings(rows, rulings, block.BBox);
                 // Cells are a pure overlay on the validated row geometry — row
                 // Y/Height/X/Width are untouched, so row reading is unregressed.
                 return detectCells
@@ -535,6 +546,83 @@ public static class LineDetector
         if (blockRight > bounds[^1]) bounds.Add(blockRight);
 
         return bounds.Count >= 4 ? bounds : null;
+    }
+
+    /// <summary>
+    /// Merges the text lines of a ruled table into its actual rows, using the horizontal rules
+    /// drawn between them.
+    ///
+    /// <para>
+    /// Char clustering finds <i>text lines</i>, which is the right answer for prose and the
+    /// wrong one for a table whose cells wrap: a two-line cell becomes two rail rows, the
+    /// second of which looks like a row with content in only one column, and cell navigation
+    /// steps through a phantom. Where the table draws a rule between each row, that ambiguity
+    /// is already resolved on the page — lines sharing a band between two rules are one row.
+    /// </para>
+    /// <para>
+    /// Applied only when the rules are dense enough to be delimiting rows rather than sections:
+    /// a booktabs-style table with a rule above, below and under the header would otherwise
+    /// collapse its whole body into one row. The test is that the bands average no more than
+    /// two lines each, so the common wrapped-cell case is handled and anything sparser is left
+    /// exactly as it was.
+    /// </para>
+    /// </summary>
+    internal static List<LineInfo> MergeRowsByRulings(List<LineInfo> rows, PageRulings? rulings, BBox block)
+    {
+        if (rulings is null || rulings.Horizontal.Count == 0 || rows.Count < 2) return rows;
+        if (block.W <= 0 || block.H <= 0) return rows;
+
+        float left = block.X, right = block.X + block.W;
+        float top = block.Y, bottom = block.Y + block.H;
+        float minSpan = block.W * RowRuleSpanFraction;
+
+        // Interior rules that actually cross the table, so a rule underlining one header cell
+        // (or a neighbouring block's rule clipped into this one) cannot cut a row.
+        var cuts = new List<float>();
+        foreach (var rule in rulings.Horizontal)
+        {
+            float overlap = Math.Min(right, rule.End) - Math.Max(left, rule.Start);
+            if (overlap < minSpan) continue;
+            if (rule.Position <= top + RulingMergeTolerance || rule.Position >= bottom - RulingMergeTolerance) continue;
+            if (cuts.Count == 0 || rule.Position > cuts[^1] + RulingMergeTolerance) cuts.Add(rule.Position);
+        }
+        if (cuts.Count < 2) return rows;   // fewer than two interior rules is not a row grid
+        cuts.Sort();
+
+        int bands = cuts.Count + 1;
+        if (bands * 2 < rows.Count) return rows;   // section rules, not row rules
+
+        // Bucket each row into the band its centre falls in, then fuse each band's rows.
+        var banded = new List<LineInfo>?[bands];
+        foreach (var row in rows)
+        {
+            int band = 0;
+            while (band < cuts.Count && row.Y > cuts[band]) band++;
+            (banded[band] ??= []).Add(row);
+        }
+
+        var merged = new List<LineInfo>(bands);
+        foreach (var group in banded)
+        {
+            if (group is not { Count: > 0 }) continue;
+            if (group.Count == 1) { merged.Add(group[0]); continue; }
+
+            float rowTop = float.MaxValue, rowBottom = float.MinValue;
+            float rowLeft = float.MaxValue, rowRight = float.MinValue;
+            IReadOnlyList<CellInfo>? cells = null;
+            foreach (var r in group)
+            {
+                rowTop = Math.Min(rowTop, r.Y - r.Height / 2f);
+                rowBottom = Math.Max(rowBottom, r.Y + r.Height / 2f);
+                rowLeft = Math.Min(rowLeft, r.X);
+                rowRight = Math.Max(rowRight, r.X + r.Width);
+                cells ??= r.Cells;
+            }
+            merged.Add(new LineInfo((rowTop + rowBottom) / 2f, rowBottom - rowTop,
+                rowLeft, rowRight - rowLeft, cells));
+        }
+
+        return merged.Count > 0 ? merged : rows;
     }
 
     /// <summary>
