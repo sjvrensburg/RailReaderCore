@@ -188,11 +188,34 @@ public sealed partial class DocumentController : IDisposable
     /// How much OCR the analysis worker runs on pages with no text layer. Settable at any
     /// time; reading before <see cref="InitializeWorker"/> (or with no OCR engine wired)
     /// returns <see cref="Services.OcrMode.Off"/> and setting it is a no-op.
+    ///
+    /// <para>
+    /// Changing it retroactively drops the cached analysis (and OCR text) of every page that
+    /// has no text layer of its own, and resubmits the views sitting on those pages. The
+    /// worker's flag alone would only steer requests it has yet to receive, and an analysed
+    /// page is never resubmitted — so a scanned document read before the toggle would keep its
+    /// pre-toggle blocks until it was closed and reopened. Pages with a text layer never ran
+    /// OCR and are left alone, so toggling on a digital PDF costs nothing.
+    /// </para>
     /// </summary>
     public OcrMode OcrMode
     {
         get => _worker?.OcrMode ?? OcrMode.Off;
-        set { if (_worker is not null) _worker.OcrMode = value; }
+        set
+        {
+            if (_worker is null || _worker.OcrMode == value) return;
+            _worker.OcrMode = value;
+
+            foreach (var doc in Documents)
+            {
+                if (doc.IsDisposed) continue;
+                var affected = doc.InvalidateOcrDependentAnalysis();
+                if (affected.Count == 0) continue;
+                foreach (var vp in doc.Viewports)
+                    if (affected.Contains(vp.CurrentPage))
+                        doc.SubmitAnalysis(vp, _worker, _config.NavigableRoles);
+            }
+        }
     }
 
     // --- Document management ---

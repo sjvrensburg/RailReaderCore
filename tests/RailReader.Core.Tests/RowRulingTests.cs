@@ -116,6 +116,36 @@ public class RowRulingTests
     }
 
     [Fact]
+    public void BooktabsWithTopAndBottomRules_DoesNotCollapseTheBody()
+    {
+        // The full booktabs table: a rule above the header, one under it, one below the body.
+        // Three interior cuts make four bands, two of which are empty — so an average over
+        // bands stays under the limit while the one band holding the body fuses five data rows
+        // into a single rail row. The band that is over-full is the one that must decline.
+        var (block, chars) = Table([112f, 140f, 156f, 172f, 188f, 204f],
+            blockTop: 100f, blockHeight: 140f);
+        var rulings = new PageRulings([], [Rule(105f), Rule(130f), Rule(235f)]);
+
+        Assert.Equal(6, Detect(block, chars, rulings).Count);
+    }
+
+    [Fact]
+    public void AnOverFullBand_DoesNotForfeitTheRestOfTheTable()
+    {
+        // One ruled band holds a wrapped two-line cell (merge it) and the next holds five data
+        // rows with no rule between them (leave them alone). Declining band by band keeps both
+        // right; declining for the whole table would give back seven text lines.
+        var (block, chars) = Table([110f, 124f, 150f, 164f, 178f, 192f, 206f]);
+        var rulings = new PageRulings([], [Rule(105f), Rule(140f), Rule(295f)]);
+
+        var rows = Detect(block, chars, rulings);
+
+        Assert.Equal(6, rows.Count);
+        Assert.True(rows[0].Height > 20f, $"the wrapped row ({rows[0].Height}) should span two lines");
+        Assert.All(rows.Skip(1), r => Assert.True(r.Height < 20f, "data rows stay one line each"));
+    }
+
+    [Fact]
     public void ShortRulesThatDoNotCrossTheTable_AreIgnored()
     {
         // A rule underlining one header cell spans a fraction of the width and must not cut a row.

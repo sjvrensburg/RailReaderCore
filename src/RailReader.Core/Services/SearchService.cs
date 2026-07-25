@@ -164,9 +164,56 @@ public sealed class SearchService
         for (int i = 0; i < hitList.Count; i++)
         {
             var rects = allRects[i];
+            // A scanned page's text comes from OCR, so the PDF itself has no text layer for
+            // PDFium to measure and every range comes back with no rects. The cached PageText
+            // carries its own char boxes, though — the same ones layout analysis ran on — so
+            // the highlight geometry is recoverable from those. Without this, a page the app
+            // has just transcribed reports no matches at all.
+            if (rects.Count == 0)
+                rects = RectsFromCharBoxes(pageText, hitList[i].Index, hitList[i].Length);
             if (rects.Count > 0)
                 results.Add(new SearchMatch(page, hitList[i].Index, hitList[i].Length, rects));
         }
+    }
+
+    /// <summary>
+    /// Builds highlight rects for a text range out of a <see cref="PageText"/>'s own char boxes,
+    /// one rect per run of characters sharing a line. Used where the backend cannot measure the
+    /// range itself — a page whose text was recovered by OCR.
+    /// </summary>
+    private static List<RectF> RectsFromCharBoxes(PageText pageText, int index, int length)
+    {
+        var rects = new List<RectF>();
+        if (length <= 0 || pageText.CharBoxes.Count == 0) return rects;
+
+        int end = index + length;
+        float left = 0, top = 0, right = 0, bottom = 0;
+        bool open = false;
+
+        // Char boxes are in text order, so a run breaks where the boxes stop being adjacent in
+        // the text or step onto another line (no vertical overlap with the run so far).
+        foreach (var cb in pageText.CharBoxes)
+        {
+            if (cb.Index < index || cb.Index >= end) continue;
+            if (cb.Right <= cb.Left || cb.Bottom <= cb.Top) continue;   // whitespace box
+
+            bool sameLine = open && cb.Top < bottom && cb.Bottom > top;
+            if (!sameLine)
+            {
+                if (open) rects.Add(new RectF(left, top, right, bottom));
+                left = cb.Left; top = cb.Top; right = cb.Right; bottom = cb.Bottom;
+                open = true;
+                continue;
+            }
+
+            left = Math.Min(left, cb.Left);
+            top = Math.Min(top, cb.Top);
+            right = Math.Max(right, cb.Right);
+            bottom = Math.Max(bottom, cb.Bottom);
+        }
+
+        if (open) rects.Add(new RectF(left, top, right, bottom));
+        return rects;
     }
 
     /// <summary>

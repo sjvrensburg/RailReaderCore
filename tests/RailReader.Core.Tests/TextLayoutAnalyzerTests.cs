@@ -183,6 +183,40 @@ public class TextLayoutAnalyzerTests
     }
 
     [Fact]
+    public void TwoColumnsWithUnevenTops_StillGroupIntoParagraphs()
+    {
+        // A real two-column page's left and right lines never share an exact top — each line's
+        // box starts at its own tallest ascender. Sorted by Y they interleave, so pairing lines
+        // by Y order alone makes half of all pitch samples the sub-point difference between two
+        // columns of the same visual row. The median then collapses, the between-line gap
+        // shrinks below the real leading, and no two lines ever join: one block per line.
+        var rnd = new Random(7);
+        var lines = new List<(float, float, int)>();
+        foreach (float x in new[] { 60f, 340f })
+            for (int i = 0; i < 30; i++)
+                lines.Add((x, 100f + i * 14f + (float)(rnd.NextDouble() * 2.0 - 1.0), 25));
+
+        var blocks = Analyse(Glyphs(lines)).Blocks;
+
+        Assert.Equal(2, blocks.Count);
+        Assert.All(blocks, b => Assert.True(b.BBox.H > 300f,
+            $"block height {b.BBox.H} should span a whole column, not one line"));
+    }
+
+    [Fact]
+    public void LinePitchIsMeasuredDownAColumn_NotAcrossTheGutter()
+    {
+        // Same geometry, straight at the estimator: the answer must be the 14 pt leading, not
+        // the 1 pt stagger between the columns.
+        List<BBox> lines = [];
+        foreach (float x in new[] { 60f, 340f })
+            for (int i = 0; i < 20; i++)
+                lines.Add(new BBox(x, 100f + i * 14f + (x > 100f ? 1f : 0f), 200f, 10f));
+
+        Assert.Equal(14f, TextLayoutAnalyzer.EstimateLinePitch(lines), 1f);
+    }
+
+    [Fact]
     public void SpacingEstimateIgnoresTheLongTail()
     {
         // Ordinary inter-glyph gaps of 2, plus one huge gutter jump: the median must report

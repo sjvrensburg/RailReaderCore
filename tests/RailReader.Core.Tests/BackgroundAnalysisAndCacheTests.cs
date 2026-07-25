@@ -133,6 +133,75 @@ public class BackgroundAnalysisAndCacheTests
     }
 
     [Fact]
+    public void Caches_OcrTextIsPinnedAgainstEviction()
+    {
+        var state = NewDoc(new CoreSettings { PageCacheRadius = 1 });
+
+        state.SetText(0, new PageText("", []));   // page 0 has no text layer of its own
+        state.SetOcrText(0, FakeText(0));         // …until OCR recovers one
+
+        state.CurrentPage = 5;
+
+        // Nothing re-runs OCR: it happens inside an analysis request, and an analysed page is
+        // never resubmitted. Evicting the text would blank the page permanently for search,
+        // export and reading position.
+        Assert.True(state.TextCache.ContainsKey(0));
+
+        state.Dispose();
+    }
+
+    [Fact]
+    public void Caches_EmptyReExtraction_DoesNotOverwriteOcrText()
+    {
+        var state = NewDoc(new CoreSettings());
+        state.SetOcrText(3, FakeText(3));
+
+        // A re-prep of the same scanned page (new analysis params, a second pane) extracts the
+        // same nothing it did the first time; it must not evict what OCR recovered.
+        state.SetText(3, new PageText("", []));
+
+        Assert.Equal("page 3", state.TextCache[3].Text);
+
+        state.Dispose();
+    }
+
+    [Fact]
+    public void Caches_RealTextLayerStillWinsOverOcrText()
+    {
+        var state = NewDoc(new CoreSettings());
+        state.SetOcrText(3, FakeText(3));
+
+        state.SetText(3, new PageText("real", [new CharBox(0, 0, 0, 1, 1)]));
+
+        Assert.Equal("real", state.TextCache[3].Text);
+
+        state.Dispose();
+    }
+
+    [Fact]
+    public void InvalidateOcrDependentAnalysis_TouchesOnlyPagesWithNoTextLayer()
+    {
+        var state = NewDoc(new CoreSettings());
+        state.SetText(0, FakeText(0));                 // digital page
+        state.SetText(1, new PageText("", []));        // scanned page…
+        state.SetOcrText(1, FakeText(1));              // …recovered by OCR
+        state.SetAnalysis(0, state.DefaultAnalysisParams, new PageAnalysis());
+        state.SetAnalysis(1, state.DefaultAnalysisParams, new PageAnalysis());
+
+        var affected = state.InvalidateOcrDependentAnalysis();
+
+        // Only the scanned page's answer depends on the OCR mode, so only it is dropped —
+        // toggling OCR on a digital document costs nothing.
+        Assert.Equal([1], affected);
+        Assert.True(state.IsPageAnalysed(0));
+        Assert.False(state.IsPageAnalysed(1));
+        Assert.True(state.TextCache.ContainsKey(0));
+        Assert.False(state.TextCache.ContainsKey(1));
+
+        state.Dispose();
+    }
+
+    [Fact]
     public void Caches_NonPositiveRadius_DisablesEviction()
     {
         var state = NewDoc(new CoreSettings { PageCacheRadius = 0 });

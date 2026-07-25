@@ -2,7 +2,8 @@
 
 ## 0.50.0 — Vector table rules, model-free layout, cached page rendering
 
-The rest of the survey of BobLd's PDF ecosystem (see 0.49.0). Suite grew 979 → 1022 tests.
+The rest of the survey of BobLd's PDF ecosystem (see 0.49.0), plus a high-effort review pass over
+both releases' code. Suite grew 979 → 1056 tests.
 
 ### Exact table column grids from the page's vector rules
 
@@ -34,9 +35,10 @@ wrap: a two-line cell became two rail rows, the second looking like a row with c
 column only, and cell navigation stepped through the phantom. `LineDetector.MergeRowsByRulings`
 now fuses the lines sharing a band between two horizontal rules into one row.
 
-- Gated on the rules being dense enough to delimit rows rather than sections: the bands must
-  average no more than two lines each. A booktabs-style table (a rule above, below and under the
-  header) is left exactly as it was rather than collapsing its body into one row.
+- Gated band by band on the rules being dense enough to delimit rows rather than sections: a
+  band holding more than `MaxLinesPerRuledRow` (3) lines keeps its own text lines while the rest
+  of the table still merges. A booktabs-style table (a rule above, below and under the header) is
+  left exactly as it was rather than collapsing its body into one row.
 - A rule must cross at least half the table's width to cut a row, so a single header cell's
   underline — or a neighbouring block's rule clipped into this one — cannot.
 - Table blocks only; prose under a page rule keeps its per-line stepping.
@@ -44,10 +46,12 @@ now fuses the lines sharing a band between two horizontal rules into one row.
 ### Grids are now checked against the content they claim to cut
 
 `LineDetector.GridMatchesGlyphs` rejects a candidate grid unless most rows spread content across
-more than one column, and some row populates a fair share of them — plus an outright rejection
-when a row the glyph-gap split would have divided lands entirely inside one column. A figure
-border or a shaded code block can no longer hand the reader columns that cut nothing. Applies to
-raster and vector grids alike. Adapted from tabula-java's `isTabular` ratio test.
+more than one column, some row populates a fair share of them, and the rows that straddle the
+boundaries outnumber the rows that contradict them (content the glyph-gap split would have
+divided, landing entirely inside one column). A figure border or a shaded code block can no
+longer hand the reader columns that cut nothing, while one total or footnote row sitting in a
+single column no longer vetoes a grid the rest of the table corroborates. Applies to raster and
+vector grids alike. Adapted from tabula-java's `isTabular` ratio test.
 
 ### `TextLayoutAnalyzer`: layout with no model at all
 
@@ -78,6 +82,65 @@ upright page and the `/Rotate` fixtures.
 always just read that page's text — so search highlighting paid ~0.4 s of extraction twice per
 page. A single-entry memo (keyed by byte-array identity, page, rotation and password) removes the
 repeat with no change to what either call returns.
+
+### Review pass: ten fixes across the OCR and table work
+
+A high-effort multi-agent review of everything in 0.49.0 and 0.50.0 (four finder angles, an
+independent adversarial verifier per candidate location). All ten confirmed findings are fixed
+here, with 14 regression tests.
+
+**The OCR pipeline's cache had four holes, all of the same shape — text recovered at real cost
+with no second chance to recover it.**
+
+- **`DocumentController.OcrMode` is no longer a bare flag flip.** It only steered requests the
+  worker had yet to receive, and an analysed page is never resubmitted — so a scanned document
+  read with OCR off kept its textless blocks for the rest of the session no matter what the
+  user changed. The setter now drops the cached analysis and OCR text of every page found to
+  have no text layer of its own, and resubmits the views sitting on them. Pages *with* a text
+  layer are untouched, so toggling on a digital document costs nothing.
+- **An empty re-extraction no longer overwrites OCR text.** Re-prepping a scanned page (new
+  analysis params, a second pane) extracted the same nothing it did the first time and cached
+  it over what OCR had recovered. `SetOcrText` already guarded this collision from one side;
+  the extraction side now guards it too.
+- **OCR text is pinned against page-cache eviction.** Navigating away from a scanned page and
+  back left it permanently blank for search, export and reading position: eviction dropped the
+  text while the retained analysis cache prevented the only submission that would re-run OCR.
+- **Search now finds OCR'd pages.** Highlight rects were resolved through
+  `IPdfTextService.GetTextRangeRects` against the (empty) real text layer, and every match with
+  no rects was discarded — so a page the app had just transcribed reported no matches at all.
+  `SearchService` falls back to the cached `PageText`'s own char boxes, one rect per line-run.
+
+**Analysis input**
+
+- **`PageText.DedupedCharBoxes` no longer deletes real characters.** The duplicate tolerance was
+  a third of the glyph box's *larger* extent, which for a tall narrow glyph exceeds the
+  character's own advance: in 11 pt Helvetica the second 'l' of "all", "well", "will" was
+  dropped as a fake-bold repeat. The tolerance is now applied per axis against that axis's
+  extent. Since 0.49.0 these boxes are what feeds `RunAnalysis` / `AssignOrder` /
+  `BlockPostProcessor`, so the loss was biasing every statistic derived from the glyph
+  population, not just the extracted text.
+- **The dedup pass is no longer quadratic in a character's page-wide frequency.** Candidates are
+  bucketed by `(character, Y-band)` with the search span derived from the tolerance, instead of
+  every 'e' on the page being compared against every other. It runs on the UI thread.
+
+**Layout and tables**
+
+- **`TextLayoutAnalyzer` no longer emits one block per line on multi-column pages.** Line pitch
+  was the median delta between consecutive lines in Y order, which on two columns is half real
+  leading and half the sub-point stagger between the two columns of one visual row — the median
+  collapsed to ~1 pt and no two lines could ever join a block. Each line is now paired with the
+  nearest line below it that shares its column.
+- **A booktabs table with a top and bottom rule no longer fuses its body into one row**
+  (see above — the guard is now per band, not an average over bands, so empty bands can't buy
+  budget for an over-full one).
+- **One atypical row no longer discards a correct ruled column grid** (see above).
+
+**Backend cost**
+
+- **Vector rulings are cached per (page, rotation).** All three analysis-submission paths called
+  `ExtractRulings` for the same pages with nothing cached, and on the PdfPig backend that is a
+  second full document open and content-stream parse on top of text extraction, holding the same
+  gate that serialises rendering — and synchronously on the UI thread in the background path.
 
 Measured, and deliberately *not* done: porting CalyPdf's text-only content parser. Extraction cost
 divides roughly into glyph processing (~27%), PdfPig's word grouping (~38%) and our own

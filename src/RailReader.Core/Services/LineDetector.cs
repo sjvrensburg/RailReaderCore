@@ -117,6 +117,14 @@ public static class LineDetector
     /// </summary>
     internal const float RowRuleSpanFraction = 0.5f;
 
+    /// <summary>
+    /// Most text lines a band between two horizontal rules may hold before
+    /// <see cref="MergeRowsByRulings"/> declines to fuse them into one row. A wrapped table cell
+    /// runs to two lines, occasionally three; beyond that the rules are separating sections of
+    /// the table, and fusing would collapse every data row in the section into a single rail row.
+    /// </summary>
+    internal const int MaxLinesPerRuledRow = 3;
+
     private static readonly HashSet<BlockRole> MathRoles =
         [BlockRole.DisplayMath, BlockRole.InlineMath, BlockRole.Algorithm];
 
@@ -397,12 +405,20 @@ public static class LineDetector
     /// something that is not a column separator is rejected before it reaches the reader.
     ///
     /// <para>
-    /// Two conditions, both about correspondence between rules and content: most rows that have
+    /// Three conditions, all about correspondence between rules and content: most rows that have
     /// content must spread it across more than one column (otherwise the "columns" cut nothing),
-    /// and some row must populate a fair share of the columns (otherwise the grid claims far
-    /// more structure than the text supports — the signature of stray vertical strokes). A grid
-    /// that fails either is discarded and the caller falls through to glyph-derived bands and
-    /// then to the per-row split.
+    /// the rows that support the boundaries must outnumber the rows that contradict them, and
+    /// some row must populate a fair share of the columns (otherwise the grid claims far more
+    /// structure than the text supports — the signature of stray vertical strokes). A grid that
+    /// fails any is discarded and the caller falls through to glyph-derived bands and then to
+    /// the per-row split.
+    /// </para>
+    /// <para>
+    /// Contradiction is counted, not fatal. A single row that sits entirely in one column while
+    /// carrying a gap the per-row split would divide — a total line, a footnote, a spanning
+    /// note — says nothing about the twenty rows above it that straddle the rules correctly, and
+    /// rejecting the whole grid for it costs exactly the aligned blank-cell column index the
+    /// ruled path exists to provide.
     /// </para>
     /// </summary>
     internal static bool GridMatchesGlyphs(
@@ -411,7 +427,7 @@ public static class LineDetector
         int columns = bounds.Count - 1;
         if (columns < 2) return false;
 
-        int rowsWithGlyphs = 0, rowsSpanningColumns = 0, maxOccupied = 0;
+        int rowsWithGlyphs = 0, rowsSpanningColumns = 0, rowsContradicting = 0, maxOccupied = 0;
 
         foreach (var glyphs in rowGlyphs)
         {
@@ -439,13 +455,15 @@ public static class LineDetector
             else if (count == 1 && SplitRowCells(glyphs, gapThreshold).Count > 1)
             {
                 // Content the glyph-gap split would have divided, all landing in one column,
-                // is evidence *against* the grid: the boundaries are in the wrong places.
-                return false;
+                // is evidence *against* the grid: for this row the boundaries are in the wrong
+                // places. Weighed against the rows that straddle them, not decisive on its own.
+                rowsContradicting++;
             }
         }
 
         if (rowsWithGlyphs == 0) return false;
         return rowsSpanningColumns * 2 >= rowsWithGlyphs
+            && rowsSpanningColumns > rowsContradicting
             && maxOccupied * 2 >= columns;
     }
 
@@ -560,11 +578,13 @@ public static class LineDetector
     /// is already resolved on the page — lines sharing a band between two rules are one row.
     /// </para>
     /// <para>
-    /// Applied only when the rules are dense enough to be delimiting rows rather than sections:
+    /// Applied band by band, and only where the rules are delimiting rows rather than sections:
     /// a booktabs-style table with a rule above, below and under the header would otherwise
-    /// collapse its whole body into one row. The test is that the bands average no more than
-    /// two lines each, so the common wrapped-cell case is handled and anything sparser is left
-    /// exactly as it was.
+    /// collapse its whole body into one row. The test is that a band holds no more than
+    /// <see cref="MaxLinesPerRuledRow"/> lines — a wrapped cell runs to two or three, a section
+    /// runs to as many rows as the section has. A band that fails keeps its own text lines;
+    /// the rest of the table still merges, so one over-full band no longer forfeits the whole
+    /// table (nor does an average over bands let one hide behind the empty ones).
     /// </para>
     /// </summary>
     internal static List<LineInfo> MergeRowsByRulings(List<LineInfo> rows, PageRulings? rulings, BBox block)
@@ -590,7 +610,6 @@ public static class LineDetector
         cuts.Sort();
 
         int bands = cuts.Count + 1;
-        if (bands * 2 < rows.Count) return rows;   // section rules, not row rules
 
         // Bucket each row into the band its centre falls in, then fuse each band's rows.
         var banded = new List<LineInfo>?[bands];
@@ -606,6 +625,13 @@ public static class LineDetector
         {
             if (group is not { Count: > 0 }) continue;
             if (group.Count == 1) { merged.Add(group[0]); continue; }
+            if (group.Count > MaxLinesPerRuledRow)
+            {
+                // Section rules, not row rules — for this band at least. Fusing here would
+                // hand rail one "row" covering a whole block of the table.
+                merged.AddRange(group);
+                continue;
+            }
 
             float rowTop = float.MaxValue, rowBottom = float.MinValue;
             float rowLeft = float.MaxValue, rowRight = float.MinValue;

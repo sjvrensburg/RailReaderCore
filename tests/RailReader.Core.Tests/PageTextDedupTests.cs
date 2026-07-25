@@ -41,6 +41,47 @@ public class PageTextDedupTests
     }
 
     [Fact]
+    public void AdjacentNarrowGlyphs_AreKept()
+    {
+        // The two 'l's of "all" in 11 pt Helvetica: the tight char box is ~1.1 pt wide and
+        // ~7.9 pt tall, and the pair sits one 2.44 pt advance apart. A tolerance taken from the
+        // taller extent is 2.63 pt and swallows the second — quietly deleting real characters
+        // from the glyph set every line-split and cell-gap statistic is computed over.
+        var text = new PageText("ll", [
+            new CharBox(0, 100f, 50f, 101.1f, 57.9f),
+            new CharBox(1, 102.44f, 50f, 103.54f, 57.9f),
+        ]);
+
+        Assert.Equal(2, text.DedupedCharBoxes.Count);
+    }
+
+    [Fact]
+    public void FakeBoldRepeatOfANarrowGlyph_IsStillDropped()
+    {
+        // The other half of the same case: a narrow glyph stroked twice a fifth of a point
+        // apart is still a duplicate. Tightening the tolerance must not blind the check.
+        var text = new PageText("ll", [
+            new CharBox(0, 100f, 50f, 101.1f, 57.9f),
+            new CharBox(1, 100.2f, 50.1f, 101.3f, 58f),
+        ]);
+
+        Assert.Single(text.DedupedCharBoxes);
+    }
+
+    [Fact]
+    public void DuplicatesStraddlingABandBoundary_AreStillFound()
+    {
+        // The search is bucketed by Y so a glyph is never compared against every same-valued
+        // glyph on the page. A pair either side of a bucket boundary must still be compared.
+        var text = new PageText("AA", [
+            new CharBox(0, 100f, 51.9f, 107f, 61.9f),
+            new CharBox(1, 100.1f, 52.1f, 107.1f, 62.1f),
+        ]);
+
+        Assert.Single(text.DedupedCharBoxes);
+    }
+
+    [Fact]
     public void DifferentCharactersAtTheSamePlace_AreKept()
     {
         // Overlapping but distinct glyphs (a composed accent, or an overprinted symbol) are

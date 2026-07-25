@@ -83,6 +83,42 @@ public class ColumnGridGuardTests
     }
 
     [Fact]
+    public void OneContradictingRowAmongMany_DoesNotDiscardTheGrid()
+    {
+        // A financial table whose last row is a total sitting entirely in the first column,
+        // with a space-grouped figure the glyph split would cut. Every other row straddles the
+        // rules correctly, so the grid is right and the one odd row must not veto it — losing
+        // it costs exactly the aligned column index and blank-cell handling issue #67 added.
+        List<float> bounds = [100f, 200f, 300f, 400f];
+        List<LineDetector.GlyphRef>?[] rows =
+        [
+            Runs((110f, 150f), (210f, 250f), (310f, 350f)),
+            Runs((110f, 150f), (210f, 250f), (310f, 350f)),
+            Runs((110f, 150f), (210f, 250f), (310f, 350f)),
+            Runs((110f, 130f), (160f, 190f)),   // "Total    1 288", all inside column 0
+        ];
+
+        Assert.True(LineDetector.GridMatchesGlyphs(bounds, rows, 10f));
+    }
+
+    [Fact]
+    public void ContradictingRowsOutnumberingSupportingOnes_RejectTheGrid()
+    {
+        // Half the rows straddle the boundaries and half are cut in the wrong place. That is
+        // not a table's grid, and the majority-straddle test alone would let it through.
+        List<float> bounds = [100f, 300f, 400f, 500f];
+        List<LineDetector.GlyphRef>?[] rows =
+        [
+            Runs((110f, 150f), (310f, 350f)),
+            Runs((110f, 150f), (310f, 350f)),
+            Runs((110f, 150f), (240f, 280f)),   // two runs, both inside column 0
+            Runs((110f, 150f), (240f, 280f)),
+        ];
+
+        Assert.False(LineDetector.GridMatchesGlyphs(bounds, rows, 10f));
+    }
+
+    [Fact]
     public void EmptyOrDegenerateInput_IsRejected()
     {
         Assert.False(LineDetector.GridMatchesGlyphs([100f, 200f], [null, null], 10f));

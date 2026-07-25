@@ -63,6 +63,13 @@ public sealed class TextLayoutAnalyzer : ILayoutAnalyzer
     /// </summary>
     private const float BlockOverlapFraction = 0.25f;
 
+    /// <summary>
+    /// A line counts as following another only once its top clears this fraction of the first
+    /// line's height. Below that the two are side by side on one visual row, not one after the
+    /// other — see <see cref="EstimateLinePitch"/>.
+    /// </summary>
+    private const float SuccessorClearanceFraction = 0.5f;
+
     public LayoutModelCapabilities Capabilities { get; } =
         new(DefaultInputSize, [], ProvidesReadingOrder: false);
 
@@ -225,6 +232,15 @@ public sealed class TextLayoutAnalyzer : ILayoutAnalyzer
     /// Estimates the page's line pitch — the median vertical distance from one line's top to
     /// the next's, over lines that actually follow one another. Falls back to the median line
     /// height when there are too few lines to measure.
+    ///
+    /// <para>
+    /// "Follow one another" means <i>in the same column</i>. Pairing lines by Y order alone
+    /// would take the delta between two columns' lines on the same visual row — a point or two,
+    /// the difference between their tallest ascenders — and on a two-column page half of all
+    /// deltas are those, dragging the median to near zero and leaving
+    /// <see cref="BuildBlocks"/> unable to join any two lines. So each line is paired with the
+    /// nearest line below it that shares its horizontal span.
+    /// </para>
     /// </summary>
     internal static float EstimateLinePitch(List<BBox> lines)
     {
@@ -235,10 +251,22 @@ public sealed class TextLayoutAnalyzer : ILayoutAnalyzer
         ordered.Sort((a, b) => a.Y.CompareTo(b.Y));
 
         var pitches = new List<float>();
-        for (int i = 1; i < ordered.Count; i++)
+        for (int i = 0; i < ordered.Count; i++)
         {
-            float d = ordered[i].Y - ordered[i - 1].Y;
-            if (d > 0) pitches.Add(d);
+            var a = ordered[i];
+            for (int j = i + 1; j < ordered.Count; j++)
+            {
+                var b = ordered[j];
+                float d = b.Y - a.Y;
+                if (d <= 0) continue;
+                // Clear of this line's own band — a run at the same Y is a neighbouring
+                // column's line (or this line's other half after a wide internal gap).
+                if (d < a.H * SuccessorClearanceFraction) continue;
+                float overlap = Math.Min(a.X + a.W, b.X + b.W) - Math.Max(a.X, b.X);
+                if (overlap < Math.Min(a.W, b.W) * BlockOverlapFraction) continue;
+                pitches.Add(d);
+                break;
+            }
         }
 
         if (pitches.Count == 0)

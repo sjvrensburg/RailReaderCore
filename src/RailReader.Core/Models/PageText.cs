@@ -24,9 +24,25 @@ public record PageText(string Text, List<CharBox> CharBoxes)
     /// Fraction of a glyph's own size within which a same-valued glyph counts as an
     /// overlapping duplicate. A fake-bold glyph pair is offset by a fraction of a
     /// stroke width — far below a third of the glyph box — while two legitimately
-    /// distinct instances of the same character are at least a full glyph apart.
+    /// distinct instances of the same character are at least an advance apart.
+    ///
+    /// <para>
+    /// Applied <b>per axis</b>, against that axis's extent. A single tolerance taken from
+    /// the larger extent is wrong for narrow glyphs: the tight box of an 11pt Helvetica
+    /// 'l' is about 1.1pt wide and 7.9pt tall, so a height-derived tolerance of 2.6pt
+    /// exceeds the character's own 2.4pt advance and the second 'l' of "all" reads as a
+    /// duplicate of the first.
+    /// </para>
     /// </summary>
     private const float DuplicateToleranceFraction = 1f / 3f;
+
+    /// <summary>
+    /// Height in page points of the vertical bands the duplicate search is bucketed into, so
+    /// a glyph is only ever compared against same-valued glyphs near it rather than against
+    /// every occurrence on the page. Roughly a line's worth: small enough to prune hard on a
+    /// dense page, large enough that a typical tolerance spans one band either side.
+    /// </summary>
+    private const float DuplicateBandHeight = 4f;
 
     /// <summary>
     /// <see cref="CharBoxes"/> with overlapping duplicates removed: where the same
@@ -70,10 +86,12 @@ public record PageText(string Text, List<CharBox> CharBoxes)
     private List<CharBox> BuildDeduped()
     {
         var kept = new List<CharBox>(CharBoxes.Count);
-        // Candidate duplicates are looked up by character value, so the geometric
-        // test only ever runs against glyphs that could actually be duplicates.
+        // Candidate duplicates are looked up by character value AND vertical band, so the
+        // geometric test only ever runs against glyphs that could actually be duplicates —
+        // the other 1500 'e's on the page are never visited. Keying on the value alone left
+        // the pass quadratic in each character's page-wide frequency, on the UI thread.
         // Values are indices into `kept`, so the boxes stay in one contiguous list.
-        var byChar = new Dictionary<char, List<int>>();
+        var byCharBand = new Dictionary<(char Value, int Band), List<int>>();
 
         foreach (var cb in CharBoxes)
         {
@@ -85,30 +103,36 @@ public record PageText(string Text, List<CharBox> CharBoxes)
             }
 
             char value = Text[cb.Index];
-            float tol = Math.Max(w, h) * DuplicateToleranceFraction;
+            float tolX = w * DuplicateToleranceFraction;
+            float tolY = h * DuplicateToleranceFraction;
 
-            if (byChar.TryGetValue(value, out var candidates))
+            // A glyph within tolY of this one sits at most ceil(tolY / band) bands away, so
+            // that span covers every candidate the un-bucketed scan would have found.
+            int band = (int)MathF.Floor(cb.Top / DuplicateBandHeight);
+            int span = (int)MathF.Ceiling(tolY / DuplicateBandHeight);
+
+            bool duplicate = false;
+            for (int b = band - span; b <= band + span && !duplicate; b++)
             {
-                bool duplicate = false;
+                if (!byCharBand.TryGetValue((value, b), out var candidates)) continue;
                 foreach (int i in candidates)
                 {
                     var other = kept[i];
                     // Same glyph, same orientation, same place (within tolerance).
                     if (other.Angle == cb.Angle
-                        && Math.Abs(other.Left - cb.Left) <= tol
-                        && Math.Abs(other.Top - cb.Top) <= tol)
+                        && Math.Abs(other.Left - cb.Left) <= tolX
+                        && Math.Abs(other.Top - cb.Top) <= tolY)
                     {
                         duplicate = true;
                         break;
                     }
                 }
-                if (duplicate) continue;
-                candidates.Add(kept.Count);
             }
-            else
-            {
-                byChar[value] = [kept.Count];
-            }
+            if (duplicate) continue;
+
+            var key = (value, band);
+            if (byCharBand.TryGetValue(key, out var bucket)) bucket.Add(kept.Count);
+            else byCharBand[key] = [kept.Count];
 
             kept.Add(cb);
         }

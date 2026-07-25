@@ -112,6 +112,38 @@ public class SearchServiceTests : IDisposable
     }
 
     // ---------------------------------------------------------------
+    // SearchPage
+    // ---------------------------------------------------------------
+
+    [Fact]
+    public void SearchPage_OcrRecoveredText_StillProducesHighlightRects()
+    {
+        // A scanned page's text comes from OCR: the PDF itself has no text layer for the
+        // backend to measure, so every range comes back with no rects and the match is dropped
+        // — telling the user there is nothing on a page the app has just transcribed. The
+        // cached PageText carries its own char boxes, so the highlight is recoverable.
+        const string term = "zebracrossing";
+        string ocrText = new string('.', 400) + term;   // past the end of the real text layer
+        var boxes = new List<CharBox>();
+        for (int i = 0; i < term.Length; i++)
+        {
+            float left = 100f + i * 6f;
+            boxes.Add(new CharBox(400 + i, left, 200f, left + 5f, 210f));
+        }
+        _state.SetOcrText(0, new PageText(ocrText, boxes));
+
+        var results = new List<SearchMatch>();
+        SearchService.SearchPage(_state, 0, term, null, StringComparison.Ordinal, results);
+
+        var match = Assert.Single(results);
+        var rect = Assert.Single(match.Rects);
+        Assert.Equal(100f, rect.Left, 0.5f);
+        Assert.Equal(100f + (term.Length - 1) * 6f + 5f, rect.Right, 0.5f);
+        Assert.Equal(200f, rect.Top, 0.5f);
+        Assert.Equal(210f, rect.Bottom, 0.5f);
+    }
+
+    // ---------------------------------------------------------------
     // Navigation via FinalizeSearch
     // ---------------------------------------------------------------
 
