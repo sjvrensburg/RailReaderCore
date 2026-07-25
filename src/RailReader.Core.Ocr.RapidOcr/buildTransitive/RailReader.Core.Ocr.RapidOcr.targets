@@ -1,0 +1,60 @@
+<Project>
+
+  <!--
+    Copies the PP-OCR model files into the consuming app's output.
+
+    RapidOcrNet ships its own copy target under `build/`, which NuGet imports only for
+    projects that reference RapidOcrNet *directly*. An app that references this package
+    instead gets the assembly but no models beside its binaries, and OCR then fails to
+    start with "models not found". This file lives under `buildTransitive/`, so it runs
+    for every consumer of this package however deep the reference chain is.
+
+    The RapidOcrNet package folder is derived from the resolved assembly
+    (`<pkg>/lib/<tfm>/RapidOcrNet.dll` -> `<pkg>/models/v5/`) rather than from a pinned
+    version number, so a floating or overridden RapidOcrNet version still resolves.
+
+    Set RailReaderCopyOcrModels=false to opt out (e.g. an app that ships its own model set,
+    or one using PP-OCRv6).
+  -->
+  <Target Name="RailReaderResolveOcrModels" Condition="'$(RailReaderCopyOcrModels)' != 'false'">
+    <ItemGroup>
+      <_RailReaderRapidOcrAssembly Include="@(ReferenceCopyLocalPaths)"
+                                   Condition="'%(ReferenceCopyLocalPaths.NuGetPackageId)' == 'RapidOcrNet'
+                                              and '%(ReferenceCopyLocalPaths.Extension)' == '.dll'" />
+    </ItemGroup>
+
+    <!-- Item transforms do not expand wildcards, so the directory is resolved to a property
+         first and the glob is applied to a literal Include. -->
+    <PropertyGroup>
+      <_RailReaderOcrModelDir>@(_RailReaderRapidOcrAssembly->'%(RootDir)%(Directory)../../models/v5/')</_RailReaderOcrModelDir>
+      <_RailReaderOcrModelDir Condition="'$(_RailReaderOcrModelDir)' != ''">$([System.IO.Path]::GetFullPath('$(_RailReaderOcrModelDir)'))</_RailReaderOcrModelDir>
+    </PropertyGroup>
+
+    <!-- Existence-guarded: if RapidOcrNet ever moves its models, this quietly copies nothing
+         and OCR reports missing models at runtime, rather than failing a consumer's build. -->
+    <ItemGroup Condition="'$(_RailReaderOcrModelDir)' != '' and Exists('$(_RailReaderOcrModelDir)')">
+      <_RailReaderOcrModel Include="$(_RailReaderOcrModelDir)*.*" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="RailReaderCopyOcrModelsToOutput"
+          AfterTargets="ResolveReferences"
+          DependsOnTargets="RailReaderResolveOcrModels"
+          Condition="'$(RailReaderCopyOcrModels)' != 'false'">
+    <Copy SourceFiles="@(_RailReaderOcrModel)"
+          DestinationFolder="$(TargetDir)models/v5/"
+          SkipUnchangedFiles="true"
+          Condition="'@(_RailReaderOcrModel)' != ''" />
+  </Target>
+
+  <Target Name="RailReaderCopyOcrModelsToPublish"
+          AfterTargets="Publish"
+          DependsOnTargets="RailReaderResolveOcrModels"
+          Condition="'$(RailReaderCopyOcrModels)' != 'false'">
+    <Copy SourceFiles="@(_RailReaderOcrModel)"
+          DestinationFolder="$(PublishDir)models/v5/"
+          SkipUnchangedFiles="true"
+          Condition="'@(_RailReaderOcrModel)' != ''" />
+  </Target>
+
+</Project>

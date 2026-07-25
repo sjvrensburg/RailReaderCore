@@ -1,5 +1,218 @@
 # Changelog
 
+## 0.50.0 — Vector table rules, model-free layout, cached page rendering
+
+The rest of the survey of BobLd's PDF ecosystem (see 0.49.0), plus a high-effort review pass over
+both releases' code. Suite grew 979 → 1056 tests.
+
+### Exact table column grids from the page's vector rules
+
+`DetectColumnGrid` infers column separators from long dark pixel runs, which is bounded by the
+analysis pixmap's resolution and can be fooled by anything else dark and tall. Where a backend
+can read page paths, the separators are simply known.
+
+- **New optional Core seam `IPdfRulingService`** (+ `PageRulings`, `RulingSegment`), implemented
+  by `RailReader.Core.PdfPig`'s `PdfTextService`. Adapted from tabula-java's object extractor:
+  stroked or filled subpaths made only of straight segments become rulings; curves and diagonals
+  are ignored; near-duplicates merge, so a hairline drawn as a thin filled rectangle (which
+  contributes both long edges) reads as one rule.
+- **Discovered by cast, not by wiring.** Core tests whether the platform's `IPdfTextService`
+  also implements `IPdfRulingService`, so a consumer gains exact grids with no factory or
+  constructor change. `GatedPdfPigTextService` forwards it, which is what keeps the capability
+  reaching the Skia/PdfPig backend.
+- `LineDetector.DetectColumnGridFromRulings` takes precedence over the raster scan.
+- **Both backends implement it.** `Core.Pdfium`'s `PdfTextService` reads the page's object list
+  through new path P/Invokes (`FPDFPage_GetObject` / `FPDFPath_GetPathSegment` / …), descending
+  into form XObjects with their matrices composed — a table drawn inside a form is invisible to
+  `FPDFPage_GetObject` alone, which is common in LaTeX and Word output. PDFium reports path
+  points in each object's own space, so the object matrix is applied before anything else;
+  without it, rules land wherever the identity transform happens to put them.
+
+### Table rows from horizontal rules
+
+Char clustering finds *text lines*, which is right for prose and wrong for a table whose cells
+wrap: a two-line cell became two rail rows, the second looking like a row with content in one
+column only, and cell navigation stepped through the phantom. `LineDetector.MergeRowsByRulings`
+now fuses the lines sharing a band between two horizontal rules into one row.
+
+- Gated band by band on the rules being dense enough to delimit rows rather than sections: a
+  band holding more than `MaxLinesPerRuledRow` (3) lines keeps its own text lines while the rest
+  of the table still merges. A booktabs-style table (a rule above, below and under the header) is
+  left exactly as it was rather than collapsing its body into one row.
+- A rule must cross at least half the table's width to cut a row, so a single header cell's
+  underline — or a neighbouring block's rule clipped into this one — cannot.
+- Table blocks only; prose under a page rule keeps its per-line stepping.
+
+### Grids are now checked against the content they claim to cut
+
+`LineDetector.GridMatchesGlyphs` rejects a candidate grid unless most rows spread content across
+more than one column, some row populates a fair share of them, and the rows that straddle the
+boundaries outnumber the rows that contradict them (content the glyph-gap split would have
+divided, landing entirely inside one column). A figure border or a shaded code block can no
+longer hand the reader columns that cut nothing, while one total or footnote row sitting in a
+single column no longer vetoes a grid the rest of the table corroborates. Applies to raster and
+vector grids alike. Adapted from tabula-java's `isTabular` ratio test.
+
+### `TextLayoutAnalyzer`: layout with no model at all
+
+A pure-geometry `ILayoutAnalyzer` in Core — no ONNX Runtime, no weights, no native dependency —
+that recovers blocks from the text layer by bottom-up grouping. Gives a web or low-end mobile
+build a working rail pipeline out of the box, and any build a fallback when the model is missing.
+Borrows Docstrum's central idea (via PdfPig's implementation and CalyPdf's optimised port):
+thresholds come from the page's own nearest-neighbour spacing distribution, so the same code
+handles a dense journal page and a large-print book.
+
+Stated limits: every block is `BlockRole.Text` (no model, no classes), so role-keyed features —
+table-row reading, cell navigation, figure framing, auto-scroll stop classes — do nothing; and it
+needs a text layer, so a scan yields nothing unless OCR supplied one.
+
+### Rendering: pages are recorded once, replayed per render
+
+`PdfPigSkiaPdfService` now caches each page as an `SKPicture` (bounded, 8 pages, LRU) and
+rasterises from it, instead of re-parsing the content stream on every render. Parsing is the
+expensive half of rendering and does not depend on scale, so a rail reader — which re-renders one
+page constantly through zoom steps, the DPI state machine, thumbnails and the analysis pixmap —
+stops paying it repeatedly. Measured 1.34–1.49× on a text-heavy page (paired interleaved runs).
+Output is pixel-equivalent to the previous path, verified against the direct renderer on both an
+upright page and the `/Rotate` fixtures.
+
+### PdfPig text extraction no longer parses the same page twice
+
+`GetTextRangeRects` derives its rects from a full page extraction, and its caller has almost
+always just read that page's text — so search highlighting paid ~0.4 s of extraction twice per
+page. A single-entry memo (keyed by byte-array identity, page, rotation and password) removes the
+repeat with no change to what either call returns.
+
+### Review pass: ten fixes across the OCR and table work
+
+A high-effort multi-agent review of everything in 0.49.0 and 0.50.0 (four finder angles, an
+independent adversarial verifier per candidate location). All ten confirmed findings are fixed
+here, with 14 regression tests.
+
+**The OCR pipeline's cache had four holes, all of the same shape — text recovered at real cost
+with no second chance to recover it.**
+
+- **`DocumentController.OcrMode` is no longer a bare flag flip.** It only steered requests the
+  worker had yet to receive, and an analysed page is never resubmitted — so a scanned document
+  read with OCR off kept its textless blocks for the rest of the session no matter what the
+  user changed. The setter now drops the cached analysis and OCR text of every page found to
+  have no text layer of its own, and resubmits the views sitting on them. Pages *with* a text
+  layer are untouched, so toggling on a digital document costs nothing.
+- **An empty re-extraction no longer overwrites OCR text.** Re-prepping a scanned page (new
+  analysis params, a second pane) extracted the same nothing it did the first time and cached
+  it over what OCR had recovered. `SetOcrText` already guarded this collision from one side;
+  the extraction side now guards it too.
+- **OCR text is pinned against page-cache eviction.** Navigating away from a scanned page and
+  back left it permanently blank for search, export and reading position: eviction dropped the
+  text while the retained analysis cache prevented the only submission that would re-run OCR.
+- **Search now finds OCR'd pages.** Highlight rects were resolved through
+  `IPdfTextService.GetTextRangeRects` against the (empty) real text layer, and every match with
+  no rects was discarded — so a page the app had just transcribed reported no matches at all.
+  `SearchService` falls back to the cached `PageText`'s own char boxes, one rect per line-run.
+
+**Analysis input**
+
+- **`PageText.DedupedCharBoxes` no longer deletes real characters.** The duplicate tolerance was
+  a third of the glyph box's *larger* extent, which for a tall narrow glyph exceeds the
+  character's own advance: in 11 pt Helvetica the second 'l' of "all", "well", "will" was
+  dropped as a fake-bold repeat. The tolerance is now applied per axis against that axis's
+  extent. Since 0.49.0 these boxes are what feeds `RunAnalysis` / `AssignOrder` /
+  `BlockPostProcessor`, so the loss was biasing every statistic derived from the glyph
+  population, not just the extracted text.
+- **The dedup pass is no longer quadratic in a character's page-wide frequency.** Candidates are
+  bucketed by `(character, Y-band)` with the search span derived from the tolerance, instead of
+  every 'e' on the page being compared against every other. It runs on the UI thread.
+
+**Layout and tables**
+
+- **`TextLayoutAnalyzer` no longer emits one block per line on multi-column pages.** Line pitch
+  was the median delta between consecutive lines in Y order, which on two columns is half real
+  leading and half the sub-point stagger between the two columns of one visual row — the median
+  collapsed to ~1 pt and no two lines could ever join a block. Each line is now paired with the
+  nearest line below it that shares its column.
+- **A booktabs table with a top and bottom rule no longer fuses its body into one row**
+  (see above — the guard is now per band, not an average over bands, so empty bands can't buy
+  budget for an over-full one).
+- **One atypical row no longer discards a correct ruled column grid** (see above).
+
+**Backend cost**
+
+- **Vector rulings are cached per (page, rotation).** All three analysis-submission paths called
+  `ExtractRulings` for the same pages with nothing cached, and on the PdfPig backend that is a
+  second full document open and content-stream parse on top of text extraction, holding the same
+  gate that serialises rendering — and synchronously on the UI thread in the background path.
+
+Measured, and deliberately *not* done: porting CalyPdf's text-only content parser. Extraction cost
+divides roughly into glyph processing (~27%), PdfPig's word grouping (~38%) and our own
+`BuildPageText` (~35%), with `PdfDocument.Open` at ~1.5%; doubling a page's vector content changed
+letter-extraction time by less than measurement noise. The parser targets the one bucket that
+turned out not to matter.
+
+## 0.49.0 — OCR for scanned pages, unruled table columns, duplicate-glyph filtering
+
+Three borrows from BobLd's PDF ecosystem ([RapidOcrNet](https://github.com/BobLd/RapidOcrNet),
+[tabula-sharp](https://github.com/BobLd/tabula-sharp), [CalyPdf](https://github.com/CalyPdf/CalyPdf)),
+each closing a gap in how RailReader handles real-world documents. Suite grew 937 → 979 tests.
+
+### New package: `RailReader.Core.Ocr.RapidOcr`
+
+RailReader had no OCR path, so a scanned PDF lost char-clustering line detection, the
+reading-order text tie-break, table cells, search, Markdown export, and VLM grounding — five
+separate degradations with one root cause. All of them consume a `PageText`, so recovering
+one repairs all of them without touching any of those algorithms.
+
+- **New Core seam `IOcrService`** (+ `OcrMode`, `OcrPage`, `OcrLine`). Core gains no
+  dependency; the engine lives in the new sibling package, backed by PaddleOCR PP-OCR ONNX
+  models via `RapidOcrNet` (Apache-2.0).
+- **Three modes.** `Off` (default, unchanged behaviour); `Lines` — detection only, giving rail
+  mode real line geometry instead of pixel projection, for the cost of the detection model
+  alone; `Full` — adds per-line recognition, so a scanned page takes the same char-clustering,
+  table-cell, search and export paths as a born-digital one.
+- **Runs on the analysis worker**, reusing the pixmap already rendered for the layout model
+  (no extra rasterisation) and only for pages that arrive with no char boxes. Accuracy tracks
+  that pixmap's size — pair `Full` with PP-DocLayout-S (1920 px) rather than the 800 px models.
+- **Wired via `DocumentController.InitializeWorker(…, ocrServiceFactory, ocrMode)`**; the mode
+  is settable at runtime through `DocumentController.OcrMode` / `AnalysisWorker.OcrMode`.
+  Recovered text is cached as the page's `PageText`, so search and export see it.
+- **Failure is contained.** A model that will not load records `AnalysisWorker.OcrStartupError`
+  and leaves layout analysis working; a page OCR cannot read still gets analysed.
+- Conservative ORT defaults (intra-op ≤4 threads, arena off, sequential) mirror
+  `Core.Analysis` rather than inheriting RapidOcrNet's all-cores/arena-on defaults.
+- The PP-OCRv5 Latin models (~14 MB) ship with `RapidOcrNet` and are copied into consumers'
+  build and publish output by a `buildTransitive` target in this package — RapidOcrNet's own
+  copy target reaches direct references only.
+
+### Unruled tables get shared column bands
+
+`LineDetector` split each table row's glyphs independently, so a row with a blank cell, a
+merged cell or a short entry produced a different cell count and different spans than its
+neighbours — column *k* meant something different on every row and cell navigation drifted
+sideways while stepping down. Rows' glyph runs are now pooled and merged into shared bands
+(the same outcome `DetectColumnGrid` already got from ruling lines), so blanks become empty
+navigable cells at the right index. Adapted from tabula-java's stream-mode column detection.
+
+- Applies only when the evidence is there: ≥3 bands, and more than half the contributing rows
+  showing multiple runs. Otherwise the per-row split runs exactly as before.
+- Rows whose single run spans ≥80% of the block (headings set inside the table body) are
+  excluded from band construction — they straddle every column and would collapse the grid.
+- **Behavioural:** for an unruled table that qualifies, `LineInfo.Cells` are now contiguous
+  column bands covering the block rather than boxes hugging each row's glyphs — matching what
+  the ruled path has produced since 0.39.0. Cell *content* membership is unchanged; the
+  geometry now includes the gutters, which is what gives a blank cell somewhere to live.
+
+### Duplicate overlapping glyphs are filtered before analysis
+
+Producers fake bold (and drop shadows) by stroking a glyph several times at sub-pixel offsets.
+Those repeats are real text-layer entries, and they biased the median char height behind the
+line-split threshold and the 90th-percentile anchor behind the table cell-gap threshold.
+
+- **New `PageText.DedupedCharBoxes`** — same character, same orientation, within a third of a
+  glyph of the same place ⇒ keep the first. Computed once per page and cached; returns the
+  original list when there is nothing to drop. Adapted from CalyPdf's
+  `CalyDuplicateOverlappingTextProcessor`.
+- `PageText.Text` and every `CharBox.Index` are untouched, so text extraction is unaffected;
+  the analysis pipeline now consumes the deduplicated boxes.
+
 ## 0.48.0 — Full-codebase audit: 52 verified fixes
 
 A 63-agent audit (9 area finders + adversarial verification of every finding) surfaced 52

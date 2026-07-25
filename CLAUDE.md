@@ -68,6 +68,7 @@ RailReaderCore.slnx
 ├── src/RailReader.Core.Pdfium/      ← Desktop PDFium impls of IPdfTextService/IPdfLinkService/IPdfOutlineService + filesystem-backed AppConfig/AnnotationService/ConsoleLogger/LayoutModelLocator + native PDF annotation read/write (PdfAnnotationReader/Writer/Store, CompositeAnnotationStore)
 ├── src/RailReader.Core.Analysis/    ← ONNX-backed ILayoutAnalyzer (PP-DocLayoutV3, PP-DocLayout-S, Docling Heron)
 ├── src/RailReader.Core.Vlm.OpenAI/  ← IVlmService impl for OpenAI-compatible chat-completions endpoints
+├── src/RailReader.Core.Ocr.RapidOcr/ ← IOcrService impl (RapidOcrNet / PaddleOCR PP-OCR ONNX) for pages with no text layer
 ├── src/RailReader.Renderer.Skia/    ← SkiaSharp rasterisation + IPdfServiceFactory (PDFium-backed)
 └── tests/RailReader.Core.Tests/     ← xUnit headless tests
 ```
@@ -79,6 +80,7 @@ Renderer.Skia    ──→ Core + Core.Pdfium
 Core.Analysis    ──→ Core
 Core.Pdfium      ──→ Core
 Core.Vlm.OpenAI  ──→ Core
+Core.Ocr.RapidOcr ─→ Core
 Core             ←── (root; no project refs, no non-system NuGet deps)
 ```
 
@@ -86,13 +88,15 @@ The deliberate split: `Core` is the only project a non-desktop consumer (Lite / 
 
 ### RailReader.Core (the portable layer)
 
-UI-free, rendering-free, IO-free. Holds the orchestration surface (`DocumentController`, `DocumentState`), the data models, and the platform-boundary interfaces in `Services/I*.cs` (`IPdfService`, `IPdfTextService`, `IPdfLinkService`, `IPdfOutlineService`, `IPdfServiceFactory`, `IAnnotationStore`, `IRecentFilesStore`, `ILayoutAnalyzer`, `IReadingOrderResolver`, `IVlmService`, `IMarkdownExportService`). The reading-order resolvers (`ModelOrderResolver`, `XYCutPlusPlusResolver`) also live here — pure-geometry, no model. Logging is injected once via `RailReaderLogging.Logger`; defaults to `NullLogger.Instance`.
+UI-free, rendering-free, IO-free. Holds the orchestration surface (`DocumentController`, `DocumentState`), the data models, and the platform-boundary interfaces in `Services/I*.cs` (`IPdfService`, `IPdfTextService`, `IPdfLinkService`, `IPdfOutlineService`, `IPdfServiceFactory`, `IAnnotationStore`, `IRecentFilesStore`, `ILayoutAnalyzer`, `IReadingOrderResolver`, `IVlmService`, `IMarkdownExportService`). The reading-order resolvers (`ModelOrderResolver`, `XYCutPlusPlusResolver`) also live here — pure-geometry, no model. So does `TextLayoutAnalyzer`, a model-free `ILayoutAnalyzer` that recovers blocks from the text layer by bottom-up grouping (Docstrum-style: thresholds from the page's own nearest-neighbour spacing, not constants) — it exists so a no-ONNX build (web / low-end mobile) still has a rail pipeline, and as a fallback when a model is missing. All blocks come back `BlockRole.Text` (no model ⇒ no classes, so role-keyed features are inert) and it needs a text layer. Logging is injected once via `RailReaderLogging.Logger`; defaults to `NullLogger.Instance`.
 
 **Multi-viewport (`Viewport`).** A `DocumentState` is the document *model* and owns N independent `Viewport`s (`DocumentState.Viewports`, with `Viewports[0] == Primary`) — each carries its own camera, `RailNav` rail state, current page + dimensions, render cache, render-DPI state machine, and zoom/auto-scroll/edge-hold animation, so split-pane and tear-off reading can show different pages/zooms of one open PDF. `DocumentState` keeps its **full single-view surface as a thin facade over `Primary`** (`CurrentPage`, `Camera`, `Rail`, display prefs, the analysis/nav methods all delegate), so a single-viewport consumer is byte-for-byte unaffected. On the controller: `FocusedViewport` is the input/search/annotation target and the **single source of truth** — `ActiveDocument`/`ActiveDocumentIndex` derive from it. A host adds/removes panes with `DocumentState.AddViewport()`/`RemoveViewport(vp)`, drives each visible pane's frame from `controller.TickViewport(vp, dt, pumpAnalysis:…)` (pump the worker once per frame, not once per view), subscribes to per-`Viewport` `PageChanged`/`ReadingPositionChanged` for pane chrome, and toggles per-view `Viewport.IsLive` + display prefs (`DebugOverlay`/`ColourEffect`/`LineFocusBlur`/`LineHighlightEnabled`/`MarginCropping`). Analysis fans out to every view sitting on the analysed page (§5.4); config (`OnConfigChanged`/`OnSliderChanged`) fans out to every view. Controller input/camera methods (`GoToPage`/`FitPage`/`FitWidth`/`HandleZoom`/`HandlePan`/`ScrollToDestination`/`HandleVerticalNav`/…) route through `FocusedViewport`. As of 0.41.0 (#74) the routing is complete: **annotations and search resolve the focused view's page** (`AnnotationInteractionHandler` methods take a `Viewport`; `SearchService` is focused-view-aware with `MatchesForPage(page)` for per-pane highlights), and **per-view geometry is threaded everywhere** — `TickViewport`, clamp, the async rail seat (`ApplyAnalysisToViewport`), and the input/camera methods read each view's own `Viewport.Width/Height` rather than the controller's ambient `GetViewportSize()`. Full design + phase status: `docs/multi-viewport-design.md`.
 
 `VlmService` (static, in Core) is the pure half of the VLM surface: prompt assembly, structured-output JSON schemas, layout-class → action routing, and the `BlockAction`/`PromptStyle` enums. The actual chat-completions call lives behind `IVlmService` in a provider-specific sibling package.
 
 Settings flow through `CoreSettings` (an immutable record): the platform builds one from its own mutable config and pushes updates via `controller.OnConfigChanged(newSettings)`. Core never sees a mutable settings type and never writes anything.
+
+**Optional backend capabilities.** Some interfaces are opt-in extras discovered by *casting* the service Core was handed, rather than by widening `IPdfServiceFactory` (which would force every consumer to change wiring for something one backend supports). `IPdfRulingService` — a page's vector ruling lines, used for exact table column grids and for row recovery — is the current example, implemented by **both** backends: `Core.PdfPig` walks `page.Paths`, `Core.Pdfium` walks the page object list (`FPDFPage_GetObject`/`FPDFPath_GetPathSegment`) and descends into form XObjects with matrices composed. **PDFium reports path points in the object's own space**, so the object matrix must be applied — omit it and rules land wherever identity puts them. A decorator around a service **must forward these interfaces** or it silently hides the capability; `GatedPdfPigTextService` does.
 
 ### RailReader.Core.Pdfium (desktop PDFium + filesystem impls)
 
@@ -120,6 +124,35 @@ PP-DocLayout-S is the intended detector for any future web (WASM/ORT-Web via `Av
 
 Single class: `OpenAIVlmClient` implements `IVlmService` against any endpoint that speaks the OpenAI chat-completions protocol (OpenAI proper, Ollama, vLLM, LightOnOCR, …). Stateless — endpoint config is passed per call via `VlmEndpointConfig`. Prompts, schemas, and routing are pulled from the static `VlmService` helper in Core, so this package is purely a transport layer.
 
+### RailReader.Core.Ocr.RapidOcr (OCR for pages with no text layer)
+
+Single class: `RapidOcrService` implements Core's `IOcrService` over `RapidOcrNet` (PaddleOCR
+PP-OCR ONNX models). The point of the seam is that **everything text-driven in Core consumes a
+`PageText`** — char-clustering line detection, the XY-Cut++ text tie-break, table row/cell
+detection, search, Markdown export, VLM grounding — so a scanned page is repaired by
+*synthesising* one rather than by special-casing any of those algorithms.
+
+`AnalysisWorker` is the single integration point: when a request arrives with no char boxes and
+`OcrMode != Off`, it runs OCR on the pixmap it already has, maps the result into page-point
+space (`OcrPageMapper`), and feeds the recovered char boxes into `RunAnalysis` / `AssignOrder` /
+`BlockPostProcessor` exactly as a real text layer would be. `OcrMode.Lines` skips recognition
+and supplies line boxes only, which `LineDetector` uses in preference to pixel projection;
+`OcrMode.Full` also returns a `PageText` that the controller caches for the page. OCR quality
+tracks the layout model's input size (the pixmap is shared) — PP-DocLayout-S at 1920 is the one
+to pair with `Full`. ORT session defaults mirror `Core.Analysis` (intra-op ≤4, arena off).
+
+**The OCR text cache is one-way.** OCR only ever runs inside an analysis request, and an
+analysed page is never resubmitted, so recovered text has no second chance: `DocumentModel`
+pins it against `EvictDistantPageCaches`, and `CacheExtractedText` refuses to let a later empty
+re-extraction of the same scanned page overwrite it (`SetOcrText` guards the same collision from
+the other side). For the same reason `DocumentController.OcrMode`'s setter is not just a flag
+flip — it drops the cached analysis and OCR text of every page with no text layer of its own
+(tracked as they are extracted) and resubmits the views sitting on them, so toggling the mode
+reaches pages already read. Pages *with* a text layer never ran OCR, so a digital document pays
+nothing for the toggle. Search closes the loop: where the backend can't measure a match (a
+scanned page has no text layer for `GetTextRangeRects`), `SearchService` derives highlight rects
+from the cached `PageText`'s own char boxes.
+
 ### RailReader.Renderer.Skia (SkiaSharp rasterisation)
 
 The only project that imports both `Core` and `Core.Pdfium`. `SkiaPdfServiceFactory` is what desktop consumers wire into Core: it hands out a `SkiaPdfService` for rasterisation alongside the Core.Pdfium text/link/outline services. Also owns the Skia-side renderers (annotation, overlay, screenshot compositor, SkSL colour-effect shaders) and the 300-DPI block crop renderer used for VLM transcription.
@@ -129,6 +162,7 @@ The only project that imports both `Core` and `Core.Pdfium`. `SkiaPdfServiceFact
 - Set `RailReaderLogging.Logger` once at startup (or accept the `NullLogger` default).
 - Construct `CoreSettings` from your config layer and pass it into `DocumentController`; on change, build a new `CoreSettings` and call `OnConfigChanged`.
 - Supply `IPdfServiceFactory`, `IAnnotationStore`, `IRecentFilesStore`. Desktop wires `SkiaPdfServiceFactory` + `AppConfig` and either `AnnotationService` (sidecar) or `CompositeAnnotationStore.Default` (native PDF annotations); a Lite/mobile consumer would substitute its own.
+- Optionally pass `ocrServiceFactory` / `ocrMode` to `InitializeWorker` to handle scanned PDFs (`new RapidOcrService()`). Off by default; `DocumentController.OcrMode` toggles it at runtime.
 
 ## Key Concepts
 
@@ -152,11 +186,16 @@ When the user changes a setting in the UI, the UI mutates `AppConfig` directly, 
 
 1. **Atomic-class collapse** — pure-visual blocks (`chart`, `image`, `header_image`, `footer_image`, `table`) become a single line spanning the full block. Equations and algorithms are deliberately *not* atomic — stepwise derivations read line-by-line.
 2. **PDFium char-box clustering** — when `IPdfTextService.ExtractPageText` returned per-character bounding boxes, cluster them by mid-Y with a 1.0× median-char-height split threshold. Subscripts and superscripts stay on their parent line; line height spans from cluster `min-top` to `max-bottom` so ascenders/descenders aren't clipped.
-3. **Pixel projection** — fallback for scanned PDFs with no text layer.
+3. **OCR line boxes** — when an `IOcrService` is wired and the page has no text layer, the
+   detected text lines are used in preference to pixel projection (they are real detections,
+   not density peaks). Lines are assigned to a block by centre-in-band plus ≥60% width overlap
+   so a neighbouring column's lines stay out. In `OcrMode.Full` this path is not reached at
+   all: OCR supplies char boxes and strategy 2 runs instead.
+4. **Pixel projection** — last-resort fallback for scanned PDFs with no text layer and no OCR.
 
 `DocumentState`'s three analysis-submission paths (`SubmitAnalysis`, `SubmitPendingLookahead`, `SubmitBackgroundAnalysis`) extract `PageText` alongside the page pixmap and pass `CharBoxes` to the worker — char clustering is the load-bearing strategy for math-heavy content.
 
-**Table cells.** When `CoreSettings.TableRowReading` is on, a `Table` block is un-collapsed and split into per-row lines (char clustering) so rail can step rows; with `CellNavigation` on, each row's `LineInfo.Cells` is populated so rail can step cell-by-cell. Two cell strategies: for **ruled** tables `LineDetector.DetectColumnGrid` recovers the column grid from the page's vertical rules (longest continuous dark run per pixel column on the rasterised page — DPI-robust to 0.3pt hairlines at 800px) and snaps every row to the shared bands, giving a stable column index with empty cells for blanks (fixes right-aligned numerics, dash placeholders, ragged/missing cells, hierarchical headers — issue #67); **unruled** tables fall back to a glyph-gap split with `RobustGapThreshold` (anchored on the 90th-percentile glyph height so a dash/dot-leader cluster can't collapse the threshold and shatter space-grouped numbers like `1 288 272`).
+**Table cells.** When `CoreSettings.TableRowReading` is on, a `Table` block is un-collapsed and split into per-row lines (char clustering) so rail can step rows; with `CellNavigation` on, each row's `LineInfo.Cells` is populated so rail can step cell-by-cell. Cell strategies are tried in order, and any grid must then survive `GridMatchesGlyphs` (a tabula `isTabular`-style check that the table's own content actually populates the columns — a figure border or shaded block must not hand the reader columns that cut nothing; rows that contradict the boundaries are *counted* against the rows that straddle them, so one total or footnote row sitting in a single column can't veto a grid the rest of the table corroborates). First, **vector rules**: where the backend implements `IPdfRulingService` (PdfPig today), `DetectColumnGridFromRulings` reads the separators the producer actually drew — exact, resolution-independent, immune to a tall glyph masquerading as a rule. Failing that, for **ruled** tables `LineDetector.DetectColumnGrid` recovers the column grid from the page's vertical rules (longest continuous dark run per pixel column on the rasterised page — DPI-robust to 0.3pt hairlines at 800px) and snaps every row to the shared bands, giving a stable column index with empty cells for blanks (fixes right-aligned numerics, dash placeholders, ragged/missing cells, hierarchical headers — issue #67); for **unruled** tables `LineDetector.DetectColumnBands` recovers the same shared bands from glyph geometry instead, pooling every row's runs and merging those closer than one cell gap (tabula-java's stream-mode idea) — gated on ≥3 bands and >half the rows showing multiple runs, with block-spanning heading rows excluded so they can't collapse the grid; anything that fails both falls back to the per-row glyph-gap split with `RobustGapThreshold` (anchored on the 90th-percentile glyph height so a dash/dot-leader cluster can't collapse the threshold and shatter space-grouped numbers like `1 288 272`). **Rows** get the same treatment: `MergeRowsByRulings` fuses the char-clustered text lines sharing a band between two horizontal rules into one table row (a wrapped cell is one row, not two), decided band by band and capped at `MaxLinesPerRuledRow` (3) lines per row, so a booktabs table — rule above, below, under the header — keeps its body as text lines instead of collapsing it (an *average* over bands let the empty top/bottom bands buy budget for the one band holding every data row). Note the first two column strategies produce *contiguous* bands covering the block (gutters included) — that is what lets a blank cell exist at the right column index — while the fallback hugs each row's content.
 
 ### Rail Mode
 

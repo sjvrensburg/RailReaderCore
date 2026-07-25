@@ -266,4 +266,62 @@ internal static class PdfiumNative
     [DllImport(Lib)] internal static extern int FPDFText_CountRects(IntPtr textPage, int startIndex, int count);
     [DllImport(Lib)] internal static extern bool FPDFText_GetRect(IntPtr textPage, int rectIndex,
         ref double left, ref double top, ref double right, ref double bottom);
+
+    // --- Page objects and paths (vector ruling extraction) -------------------------
+    // Used by PdfTextService's IPdfRulingService implementation to read a page's table
+    // rules from the drawing operators themselves rather than inferring them from dark
+    // pixel runs. Read-only: nothing here mutates the document.
+
+    /// <summary>Page-object type constants returned by <see cref="FPDFPageObj_GetType"/>.</summary>
+    internal const int FPDF_PAGEOBJ_PATH = 2;
+    internal const int FPDF_PAGEOBJ_FORM = 5;
+
+    /// <summary>Segment types returned by <see cref="FPDFPathSegment_GetType"/>.</summary>
+    internal const int FPDF_SEGMENT_UNKNOWN = -1;
+    internal const int FPDF_SEGMENT_LINETO = 0;
+    internal const int FPDF_SEGMENT_BEZIERTO = 1;
+    internal const int FPDF_SEGMENT_MOVETO = 2;
+
+    /// <summary>PDF transformation matrix, PDFium's <c>FS_MATRIX</c> ([a b c d e f]).</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct FsMatrix
+    {
+        public float A, B, C, D, E, F;
+
+        internal static FsMatrix Identity => new() { A = 1, B = 0, C = 0, D = 1, E = 0, F = 0 };
+
+        /// <summary>Applies this matrix to a point in the object's own space.</summary>
+        internal readonly (float X, float Y) Apply(float x, float y)
+            => (A * x + C * y + E, B * x + D * y + F);
+
+        /// <summary>Returns <c>this ∘ outer</c> — this matrix followed by <paramref name="outer"/>.</summary>
+        internal readonly FsMatrix Concat(in FsMatrix outer) => new()
+        {
+            A = A * outer.A + B * outer.C,
+            B = A * outer.B + B * outer.D,
+            C = C * outer.A + D * outer.C,
+            D = C * outer.B + D * outer.D,
+            E = E * outer.A + F * outer.C + outer.E,
+            F = E * outer.B + F * outer.D + outer.F,
+        };
+    }
+
+    [DllImport(Lib)] internal static extern int FPDFPage_CountObjects(IntPtr page);
+    [DllImport(Lib)] internal static extern IntPtr FPDFPage_GetObject(IntPtr page, int index);
+    [DllImport(Lib)] internal static extern int FPDFPageObj_GetType(IntPtr pageObject);
+    [DllImport(Lib)] internal static extern bool FPDFPageObj_GetMatrix(IntPtr pageObject, ref FsMatrix matrix);
+
+    [DllImport(Lib)] internal static extern int FPDFPath_CountSegments(IntPtr path);
+    [DllImport(Lib)] internal static extern IntPtr FPDFPath_GetPathSegment(IntPtr path, int index);
+    // `stroke` is an FPDF_BOOL out-param (4-byte int in C); taken as int rather than
+    // ref bool so the marshalling is unambiguous.
+    [DllImport(Lib)] internal static extern bool FPDFPath_GetDrawMode(IntPtr path, ref int fillMode, ref int stroke);
+    [DllImport(Lib)] internal static extern int FPDFPathSegment_GetType(IntPtr segment);
+    [DllImport(Lib)] internal static extern bool FPDFPathSegment_GetPoint(IntPtr segment, ref float x, ref float y);
+    [DllImport(Lib)] internal static extern bool FPDFPathSegment_GetClose(IntPtr segment);
+
+    // Form XObjects nest their own object lists; a table drawn inside one is invisible to
+    // FPDFPage_GetObject alone.
+    [DllImport(Lib)] internal static extern int FPDFFormObj_CountObjects(IntPtr formObject);
+    [DllImport(Lib)] internal static extern IntPtr FPDFFormObj_GetObject(IntPtr formObject, uint index);
 }

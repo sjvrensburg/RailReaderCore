@@ -369,13 +369,18 @@ public class LineDetectorTests
             Assert.True(l.Cells![0].CenterX < l.Cells[1].CenterX);
             Assert.True(l.Cells[1].CenterX < l.Cells[2].CenterX);
         }
-        // The Nth cell starts at the Nth column's left edge, identical across every row.
-        Assert.All(lines, l =>
+        // The Nth cell holds the Nth column's content, with identical geometry on every row.
+        // Cells are the table's shared column bands (block edge to gutter midpoint to block
+        // edge), not boxes hugging each row's glyphs — the same contiguous form the ruled
+        // path produces, which is what lets a blank cell exist at the right column index.
+        var first = lines[0].Cells!;
+        Assert.All(lines, l => Assert.Equal(first, l.Cells));
+        foreach (var (columnLeft, index) in new[] { (100f, 0), (300f, 1), (450f, 2) })
         {
-            Assert.Equal(100f, l.Cells![0].X, 1f);
-            Assert.Equal(300f, l.Cells[1].X, 1f);
-            Assert.Equal(450f, l.Cells[2].X, 1f);
-        });
+            var cell = first[index];
+            Assert.InRange(columnLeft, cell.X, cell.X + cell.Width);          // column start...
+            Assert.InRange(columnLeft + 31f, cell.X, cell.X + cell.Width);    // ...and its last glyph
+        }
     }
 
     [Fact]

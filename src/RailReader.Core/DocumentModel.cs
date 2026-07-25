@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
 
@@ -11,6 +12,10 @@ public sealed class DocumentModel : IDisposable
 {
     private readonly IPdfService _pdf;
     private readonly IPdfTextService _pdfText;
+    // Optional capability (see IPdfRulingService): non-null when the platform's text service can
+    // also read the page's vector ruling lines, which give exact table column grids. Discovered
+    // by cast so no consumer has to change its wiring to gain it.
+    private readonly IPdfRulingService? _pdfRulings;
     private readonly IPdfLinkService _pdfLink;
     private readonly IThreadMarshaller _marshaller;
     private readonly ILogger _logger;
@@ -144,6 +149,9 @@ public sealed class DocumentModel : IDisposable
     private void OnViewRotationChanged()
     {
         _textCache.Clear();
+        _ocrPages.Clear();
+        _textlessPages.Clear();
+        _rulingCache.Clear();
         _linkCache.Clear();
         _analysisCache.Clear();
         DocumentContentFraction = null;
@@ -188,6 +196,19 @@ public sealed class DocumentModel : IDisposable
     private readonly Dictionary<int, Dictionary<AnalysisParams, PageAnalysis>> _analysisCache = [];
     private readonly Dictionary<int, PageText> _textCache = [];
     private readonly Dictionary<int, List<PdfLink>> _linkCache = [];
+    // Pages whose cached text came from OCR rather than from a text layer. Pinned against
+    // eviction (see EvictDistantPageCaches) and the exact set whose analysis depends on the OCR
+    // mode (see InvalidateOcrDependentAnalysis).
+    private readonly HashSet<int> _ocrPages = [];
+    // Pages the extractor found to have no text layer of their own — the pages where turning OCR
+    // on or off changes the answer. Recorded even when an OCR entry is what stays cached.
+    private readonly HashSet<int> _textlessPages = [];
+    // Vector rulings by (page, view rotation). Extraction re-opens and re-parses the whole
+    // document on the PdfPig backend — a second full parse per page, under the same gate that
+    // serialises rendering — and all three submission paths ask for the same pages, so this is
+    // cached. Concurrent because the prep tasks run it off the UI thread; keyed on the rotation
+    // so an in-flight task can never seed the cache with old-frame geometry.
+    private readonly ConcurrentDictionary<(int Page, int Rotation), PageRulings?> _rulingCache = new();
     public IReadOnlyDictionary<int, PageText> TextCache => _textCache;
     public IReadOnlyDictionary<int, List<PdfLink>> LinkCache => _linkCache;
 
@@ -342,6 +363,7 @@ public sealed class DocumentModel : IDisposable
         FilePath = filePath;
         _pdf = pdf;
         _pdfText = pdfText;
+        _pdfRulings = pdfText as IPdfRulingService;
         _pdfLink = pdfLink;
         PageCount = _pdf.PageCount;
         _title = Path.GetFileName(filePath);
@@ -395,15 +417,27 @@ public sealed class DocumentModel : IDisposable
     internal void EvictDistantPageCaches()
     {
         if (_pageCacheRadius <= 0) return;
-        EvictUnneeded(_textCache);
+        // OCR-recovered text is pinned. It cost a full recognition pass, it is small, and
+        // nothing would ever re-run it: OCR only happens inside an analysis request, and a page
+        // whose analysis is already cached is never resubmitted. Evicting it would silently and
+        // permanently blank the page for search, export and reading position.
+        EvictUnneeded(_textCache, _ocrPages);
         EvictUnneeded(_linkCache);
+
+        List<(int, int)>? staleRulings = null;
+        foreach (var key in _rulingCache.Keys)
+            if (!AnyViewportNeeds(key.Page))
+                (staleRulings ??= []).Add(key);
+        if (staleRulings is null) return;
+        foreach (var key in staleRulings)
+            _rulingCache.TryRemove(key, out _);
     }
 
-    private void EvictUnneeded<TValue>(Dictionary<int, TValue> cache)
+    private void EvictUnneeded<TValue>(Dictionary<int, TValue> cache, HashSet<int>? pinned = null)
     {
         List<int>? stale = null;
         foreach (var page in cache.Keys)
-            if (!AnyViewportNeeds(page))
+            if (!AnyViewportNeeds(page) && pinned?.Contains(page) != true)
                 (stale ??= []).Add(page);
         if (stale is null) return;
         foreach (var page in stale)
@@ -619,6 +653,7 @@ public sealed class DocumentModel : IDisposable
                 ct.ThrowIfCancellationRequested();
                 var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize, viewRotation);
                 var pageText = _pdfText.ExtractPageText(_pdf.PdfBytes, page, viewRotation, _pdf.Password);
+                var rulings = ExtractRulings(page, viewRotation);
                 _logger.Debug($"[SubmitAnalysis] Page {page}: pixmap ready {pxW}x{pxH}, {pageText.CharBoxes.Count} chars, submitting...");
                 _marshaller.Post(() =>
                 {
@@ -629,8 +664,9 @@ public sealed class DocumentModel : IDisposable
                     // and pixmap must not repopulate them (SetViewRotation resubmits in the new frame).
                     if (IsDisposed || vp.IsDisposed || vp.CurrentPage != page
                         || viewRotation != _viewRotation) return;
-                    _textCache[page] = pageText;
-                    worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, pars, viewRotation));
+                    CacheExtractedText(page, pageText);
+                    worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH,
+                        pageText.DedupedCharBoxes, pars, rulings, viewRotation));
                 });
             }
             catch (OperationCanceledException) { }
@@ -698,14 +734,16 @@ public sealed class DocumentModel : IDisposable
                     ct.ThrowIfCancellationRequested();
                     var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize, viewRotation);
                     var pageText = _pdfText.ExtractPageText(_pdf.PdfBytes, page, viewRotation, _pdf.Password);
+                    var rulings = ExtractRulings(page, viewRotation);
                     _marshaller.Post(() =>
                     {
                         // viewRotation: same stale-frame guard as SubmitAnalysis — don't repopulate
                         // the caches a mid-prep rotation just cleared with old-frame geometry.
                         if (!IsDisposed && viewRotation == _viewRotation)
                         {
-                            _textCache[page] = pageText;
-                            worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, pars, viewRotation));
+                            CacheExtractedText(page, pageText);
+                            worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH,
+                        pageText.DedupedCharBoxes, pars, rulings, viewRotation));
                         }
                     });
                 }
@@ -725,8 +763,9 @@ public sealed class DocumentModel : IDisposable
     /// <summary>
     /// Submits the next background analysis page (outside the lookahead window).
     /// Returns true if a page was submitted, false if exhausted or worker busy.
-    /// Renders the pixmap synchronously on the UI thread to avoid concurrent
-    /// PDFium access — the pixmap is only 800x800 so this takes ~5ms.
+    /// Prepares its input synchronously on the UI thread to avoid concurrent PDFium access —
+    /// the pixmap is only 800x800 so that part takes ~5ms. Ruling extraction (backends that
+    /// support it) is the expensive part, which is why it is cached per page.
     /// </summary>
     public bool SubmitBackgroundAnalysis(AnalysisWorker worker)
     {
@@ -752,7 +791,8 @@ public sealed class DocumentModel : IDisposable
             var (pageW, pageH) = _pdf.GetPageSize(page, _viewRotation);
             var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize, _viewRotation);
             var pageText = GetOrExtractText(page);
-            worker.Submit(new AnalysisRequest(FilePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, pars, _viewRotation));
+            worker.Submit(new AnalysisRequest(FilePath, page, rgb, pxW, pxH, pageW, pageH,
+                pageText.DedupedCharBoxes, pars, ExtractRulings(page, _viewRotation), _viewRotation));
             return true;
         }
         catch (Exception ex)
@@ -1000,7 +1040,9 @@ public sealed class DocumentModel : IDisposable
         if (_textCache.TryGetValue(pageIndex, out var cached))
             return cached;
         var text = _pdfText.ExtractPageText(_pdf.PdfBytes, pageIndex, _viewRotation, _pdf.Password);
-        _textCache[pageIndex] = text;
+        // No cached entry, so this always installs `text` — the guard inside only bites when
+        // an OCR entry is already there.
+        CacheExtractedText(pageIndex, text);
         return text;
     }
 
@@ -1059,7 +1101,117 @@ public sealed class DocumentModel : IDisposable
     internal void SetText(int page, PageText text)
     {
         _marshaller.AssertUIThread();
+        CacheExtractedText(page, text);
+    }
+
+    /// <summary>
+    /// Caches the text a prep task extracted from the page's own text layer.
+    ///
+    /// <para>
+    /// An empty extraction must not evict OCR-recovered text for the same page. OCR only ever
+    /// runs where the extractor found nothing, so re-extraction of that page produces nothing
+    /// again — and overwriting with it blanks the page for search, export and reading position
+    /// until the next analysis result lands (and, once the analysis is cached, for good).
+    /// <see cref="SetOcrText"/> guards the same collision from the other side.
+    /// </para>
+    /// <para>
+    /// An empty extraction is also how a page is known to have no text layer, which is what
+    /// <see cref="InvalidateOcrDependentAnalysis"/> keys on — so it is recorded either way.
+    /// </para>
+    /// </summary>
+    private void CacheExtractedText(int page, PageText text)
+    {
+        if (text.CharBoxes.Count == 0)
+        {
+            _textlessPages.Add(page);
+            if (_textCache.TryGetValue(page, out var existing) && existing.CharBoxes.Count > 0) return;
+        }
+        else
+        {
+            _textlessPages.Remove(page);
+            _ocrPages.Remove(page);
+        }
         _textCache[page] = text;
+    }
+
+    /// <summary>
+    /// Reads a page's vector ruling lines, or null when the backend cannot supply them.
+    ///
+    /// <para>
+    /// Called from the analysis-prep background tasks, alongside text extraction and on the
+    /// same thread, so it inherits their thread-safety story. Best-effort by design: rulings
+    /// only ever sharpen table column detection, and a backend that throws on an unusual page
+    /// must cost that page nothing more than the raster fallback it would have used anyway.
+    /// </para>
+    /// <para>
+    /// Cached per (page, rotation): on the PdfPig backend this re-opens the document and walks
+    /// the page's paths, a second full content-stream parse on top of text extraction and under
+    /// the same gate that serialises rendering — and the foreground, lookahead and background
+    /// submission paths all ask for the same pages.
+    /// </para>
+    /// </summary>
+    private PageRulings? ExtractRulings(int page, int viewRotation)
+    {
+        if (_pdfRulings is null) return null;
+        var key = (page, viewRotation);
+        if (_rulingCache.TryGetValue(key, out var cached)) return cached;
+        try
+        {
+            var rulings = _pdfRulings.ExtractRulings(_pdf.PdfBytes, page, viewRotation, _pdf.Password);
+            var result = rulings.IsEmpty ? null : rulings;
+            _rulingCache[key] = result;
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Ruling extraction failed for page {page}; falling back to raster rules", ex);
+            _rulingCache[key] = null;
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Installs OCR-recovered text for a page that has no text layer of its own. Refuses to
+    /// overwrite a cached entry that already carries char boxes: OCR only ever runs for a page
+    /// the extractor found empty, but the extraction and the analysis race (the prep task
+    /// caches the extracted text, the worker returns the OCR text later), and a real text layer
+    /// must always win.
+    /// </summary>
+    internal void SetOcrText(int page, PageText text)
+    {
+        _marshaller.AssertUIThread();
+        if (_textCache.TryGetValue(page, out var existing) && existing.CharBoxes.Count > 0) return;
+        _textCache[page] = text;
+        _textlessPages.Add(page);
+        if (text.CharBoxes.Count > 0) _ocrPages.Add(page);
+    }
+
+    /// <summary>
+    /// Drops the cached analysis — and any OCR text — for every page with no text layer of its
+    /// own, so a change to the OCR mode actually reaches pages that were already analysed.
+    /// Returns those pages, for the caller to resubmit the views sitting on them.
+    ///
+    /// <para>
+    /// The worker's mode flag only steers requests it has yet to receive, and a page whose
+    /// analysis is cached is never resubmitted — so without this, switching OCR on affects
+    /// nothing already read and switching it off leaves OCR-derived blocks in place, both for
+    /// the rest of the session. Pages that have a text layer are untouched: OCR never ran for
+    /// them and never will, so their analysis cannot depend on the mode.
+    /// </para>
+    /// </summary>
+    internal IReadOnlyList<int> InvalidateOcrDependentAnalysis()
+    {
+        _marshaller.AssertUIThread();
+        if (_textlessPages.Count == 0) return [];
+
+        var affected = new List<int>();
+        foreach (int page in _textlessPages)
+        {
+            if (_analysisCache.Remove(page)) affected.Add(page);
+            if (_ocrPages.Remove(page)) _textCache.Remove(page);
+        }
+        if (affected.Count > 0) BackgroundQueue.Reset(Primary.CurrentPage);
+        return affected;
     }
 
     internal void SetLinks(int page, List<PdfLink> links)

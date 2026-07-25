@@ -11,8 +11,26 @@ namespace RailReader.Renderer.PdfPigSkia;
 /// made through this backend inside the single gate that also serialises
 /// <see cref="PdfPigSkiaPdfService"/> rendering.
 /// </summary>
-internal sealed class GatedPdfPigTextService(IPdfTextService inner) : IPdfTextService
+/// <remarks>
+/// Also forwards <see cref="IPdfRulingService"/>, which Core discovers by casting the text
+/// service it was handed. A wrapper that did not implement it would silently hide the
+/// capability from every consumer of this backend — table column grids would quietly fall back
+/// to the raster scan with nothing to indicate why.
+/// </remarks>
+internal sealed class GatedPdfPigTextService(IPdfTextService inner) : IPdfTextService, IPdfRulingService
 {
+    public PageRulings ExtractRulings(byte[] pdfBytes, int pageIndex, string? password = null)
+    {
+        if (inner is not IPdfRulingService rulings) return PageRulings.Empty;
+        lock (PdfPigGate.Lock) return rulings.ExtractRulings(pdfBytes, pageIndex, password);
+    }
+
+    public PageRulings ExtractRulings(byte[] pdfBytes, int pageIndex, int viewRotation, string? password = null)
+    {
+        if (inner is not IPdfRulingService rulings) return PageRulings.Empty;
+        lock (PdfPigGate.Lock) return rulings.ExtractRulings(pdfBytes, pageIndex, viewRotation, password);
+    }
+
     public PageText ExtractPageText(byte[] pdfBytes, int pageIndex, string? password = null)
     {
         lock (PdfPigGate.Lock) return inner.ExtractPageText(pdfBytes, pageIndex, password);

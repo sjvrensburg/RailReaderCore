@@ -16,6 +16,132 @@ public record PageText(string Text, List<CharBox> CharBoxes)
     private float[]? _yMid;
     private readonly object _ySync = new();
 
+    // Lazily-built deduplicated view of CharBoxes — see DedupedCharBoxes.
+    private List<CharBox>? _deduped;
+    private readonly object _dedupSync = new();
+
+    /// <summary>
+    /// Fraction of a glyph's own size within which a same-valued glyph counts as an
+    /// overlapping duplicate. A fake-bold glyph pair is offset by a fraction of a
+    /// stroke width — far below a third of the glyph box — while two legitimately
+    /// distinct instances of the same character are at least an advance apart.
+    ///
+    /// <para>
+    /// Applied <b>per axis</b>, against that axis's extent. A single tolerance taken from
+    /// the larger extent is wrong for narrow glyphs: the tight box of an 11pt Helvetica
+    /// 'l' is about 1.1pt wide and 7.9pt tall, so a height-derived tolerance of 2.6pt
+    /// exceeds the character's own 2.4pt advance and the second 'l' of "all" reads as a
+    /// duplicate of the first.
+    /// </para>
+    /// </summary>
+    private const float DuplicateToleranceFraction = 1f / 3f;
+
+    /// <summary>
+    /// Height in page points of the vertical bands the duplicate search is bucketed into, so
+    /// a glyph is only ever compared against same-valued glyphs near it rather than against
+    /// every occurrence on the page. Roughly a line's worth: small enough to prune hard on a
+    /// dense page, large enough that a typical tolerance spans one band either side.
+    /// </summary>
+    private const float DuplicateBandHeight = 4f;
+
+    /// <summary>
+    /// <see cref="CharBoxes"/> with overlapping duplicates removed: where the same
+    /// character is drawn two or more times at (nearly) the same place, only the
+    /// first occurrence is kept.
+    ///
+    /// <para>
+    /// PDF producers fake bold by stroking a glyph several times at sub-pixel
+    /// offsets (and fake shadows the same way). Those repeats are real entries in
+    /// the text layer, so they inflate the glyph population that
+    /// <see cref="Services.LineDetector"/> reasons over — biasing the median char
+    /// height that sets the line-split threshold, and the 90th-percentile anchor
+    /// behind the table cell-gap threshold. Filtering them costs one pass and
+    /// leaves genuinely distinct glyphs untouched.
+    /// </para>
+    /// <para>
+    /// <see cref="Text"/> and the <see cref="CharBox.Index"/> values are unchanged —
+    /// this only drops boxes, so text extraction (which indexes into
+    /// <see cref="Text"/>) is unaffected and every surviving index stays valid.
+    /// Zero-area boxes (whitespace and other non-marking glyphs) are always kept:
+    /// they carry no geometry to duplicate and consumers already skip them.
+    /// </para>
+    /// <para>Computed once and cached; safe to call from any thread.</para>
+    /// </summary>
+    public List<CharBox> DedupedCharBoxes
+    {
+        get
+        {
+            var cached = Volatile.Read(ref _deduped);
+            if (cached is not null) return cached;
+            lock (_dedupSync)
+            {
+                if (_deduped is not null) return _deduped;
+                var result = BuildDeduped();
+                Volatile.Write(ref _deduped, result);
+                return result;
+            }
+        }
+    }
+
+    private List<CharBox> BuildDeduped()
+    {
+        var kept = new List<CharBox>(CharBoxes.Count);
+        // Candidate duplicates are looked up by character value AND vertical band, so the
+        // geometric test only ever runs against glyphs that could actually be duplicates —
+        // the other 1500 'e's on the page are never visited. Keying on the value alone left
+        // the pass quadratic in each character's page-wide frequency, on the UI thread.
+        // Values are indices into `kept`, so the boxes stay in one contiguous list.
+        var byCharBand = new Dictionary<(char Value, int Band), List<int>>();
+
+        foreach (var cb in CharBoxes)
+        {
+            float w = cb.Right - cb.Left, h = cb.Bottom - cb.Top;
+            if (w <= 0 || h <= 0 || cb.Index < 0 || cb.Index >= Text.Length)
+            {
+                kept.Add(cb);
+                continue;
+            }
+
+            char value = Text[cb.Index];
+            float tolX = w * DuplicateToleranceFraction;
+            float tolY = h * DuplicateToleranceFraction;
+
+            // A glyph within tolY of this one sits at most ceil(tolY / band) bands away, so
+            // that span covers every candidate the un-bucketed scan would have found.
+            int band = (int)MathF.Floor(cb.Top / DuplicateBandHeight);
+            int span = (int)MathF.Ceiling(tolY / DuplicateBandHeight);
+
+            bool duplicate = false;
+            for (int b = band - span; b <= band + span && !duplicate; b++)
+            {
+                if (!byCharBand.TryGetValue((value, b), out var candidates)) continue;
+                foreach (int i in candidates)
+                {
+                    var other = kept[i];
+                    // Same glyph, same orientation, same place (within tolerance).
+                    if (other.Angle == cb.Angle
+                        && Math.Abs(other.Left - cb.Left) <= tolX
+                        && Math.Abs(other.Top - cb.Top) <= tolY)
+                    {
+                        duplicate = true;
+                        break;
+                    }
+                }
+            }
+            if (duplicate) continue;
+
+            var key = (value, band);
+            if (byCharBand.TryGetValue(key, out var bucket)) bucket.Add(kept.Count);
+            else byCharBand[key] = [kept.Count];
+
+            kept.Add(cb);
+        }
+
+        // No duplicates found — hand back the original list so the common case
+        // costs nothing beyond the scan and callers can compare by reference.
+        return kept.Count == CharBoxes.Count ? CharBoxes : kept;
+    }
+
     private (CharBox[] Boxes, float[] Mid) YIndex()
     {
         var boxes = Volatile.Read(ref _yBoxes);

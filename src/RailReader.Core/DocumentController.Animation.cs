@@ -348,6 +348,11 @@ public sealed partial class DocumentController
                 // Cache at the model level under the params it was produced with (railreader2#180 #3).
                 doc.SetAnalysis(result.Page, result.Params, result.Analysis);
 
+                // A scanned page's text only exists once OCR has run, and this is where it
+                // arrives — cache it so search, export, and VLM prompts see the page as text.
+                if (result.OcrText is { } ocrText)
+                    doc.SetOcrText(result.Page, ocrText);
+
                 // Fan out to every view of this document sitting on the analysed page, waiting for its
                 // rail, AND whose post-processing params match this result (§5.4). Two views on the
                 // same page each get seated independently; a view with different params keeps waiting

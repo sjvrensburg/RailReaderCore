@@ -13,15 +13,58 @@ namespace RailReader.Core.PdfPig;
 /// implementation, so consumers can swap backends without coordinate
 /// fix-ups downstream.
 /// </summary>
-public sealed class PdfTextService : IPdfTextService
+public sealed partial class PdfTextService : IPdfTextService
 {
     private static readonly PageText s_empty = new("", []);
+
+    /// <summary>
+    /// The most recently extracted page, so that a second question about the same page does
+    /// not re-parse it.
+    ///
+    /// <para>
+    /// This matters because <see cref="GetTextRangeRects(byte[], int, List{ValueTuple{int, int}}, int, string?)"/>
+    /// derives its rects from a full page extraction, and its caller has almost always just
+    /// asked for that very page's text — search highlighting does exactly this, page by page.
+    /// Extraction on this backend is dominated by glyph work and word grouping (measured at
+    /// roughly 0.4 s for a dense page), so the repeat is the single most expensive redundant
+    /// operation on the PdfPig path.
+    /// </para>
+    /// <para>
+    /// One entry, because the access pattern is a pair of calls about one page rather than
+    /// random access, and because a real cache belongs at the document level (which
+    /// <c>DocumentModel</c> already has) rather than in a stateless service. Keyed by
+    /// <i>reference</i> equality on the PDF bytes: callers pass the same long-lived array for
+    /// a given document, and hashing megabytes to identify it would cost more than the parse
+    /// it saves. <see cref="PageText"/> is immutable, so handing the same instance to two
+    /// callers is safe.
+    /// </para>
+    /// </summary>
+    private sealed record CachedPage(byte[] Bytes, int PageIndex, int ViewRotation, string? Password, PageText Text);
+
+    // Written and read from several threads (analysis prep on the pool, search on the UI
+    // thread). A single reference swap of an immutable record needs no lock: a racing pair of
+    // extractions costs one redundant parse and one of the two results wins, both correct.
+    private CachedPage? _lastPage;
+
+    private PageText? TryGetCached(byte[] pdfBytes, int pageIndex, int viewRotation, string? password)
+    {
+        var cached = Volatile.Read(ref _lastPage);
+        return cached is not null
+            && ReferenceEquals(cached.Bytes, pdfBytes)
+            && cached.PageIndex == pageIndex
+            && cached.ViewRotation == viewRotation
+            && cached.Password == password
+            ? cached.Text
+            : null;
+    }
 
     public PageText ExtractPageText(byte[] pdfBytes, int pageIndex, string? password = null)
         => ExtractPageText(pdfBytes, pageIndex, 0, password);
 
     public PageText ExtractPageText(byte[] pdfBytes, int pageIndex, int viewRotation, string? password = null)
     {
+        if (TryGetCached(pdfBytes, pageIndex, viewRotation, password) is { } hit) return hit;
+
         try
         {
             using var doc = PdfDocument.Open(pdfBytes, PdfPigOpen.Options(password));
@@ -29,7 +72,9 @@ public sealed class PdfTextService : IPdfTextService
 
             // PdfPig pages are 1-indexed; Core's IPdfTextService is 0-indexed.
             var page = doc.GetPage(pageIndex + 1);
-            return RotateBoxes(BuildPageText(page), page.Width, page.Height, viewRotation);
+            var text = RotateBoxes(BuildPageText(page), page.Width, page.Height, viewRotation);
+            Volatile.Write(ref _lastPage, new CachedPage(pdfBytes, pageIndex, viewRotation, password, text));
+            return text;
         }
         catch (Exception ex)
         {
@@ -51,11 +96,10 @@ public sealed class PdfTextService : IPdfTextService
 
         try
         {
-            using var doc = PdfDocument.Open(pdfBytes, PdfPigOpen.Options(password));
-            if (pageIndex < 0 || pageIndex >= doc.NumberOfPages) return result;
-
-            var page = doc.GetPage(pageIndex + 1);
-            var pageText = RotateBoxes(BuildPageText(page), page.Width, page.Height, viewRotation);
+            // Goes through ExtractPageText so a highlight query for the page whose text the
+            // caller just read reuses that parse instead of repeating it.
+            var pageText = ExtractPageText(pdfBytes, pageIndex, viewRotation, password);
+            if (pageText.CharBoxes.Count == 0) return result;
             var boxes = pageText.CharBoxes;
             int textLen = pageText.Text.Length;
 

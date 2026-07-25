@@ -83,6 +83,48 @@ public static class LineDetector
     /// </summary>
     internal const float RuleRunFraction = 0.5f;
 
+    /// <summary>
+    /// A table row consisting of one run at least this fraction of the block's width is a
+    /// spanning heading rather than a data row, and is excluded from unruled column-band
+    /// construction in <see cref="DetectColumnBands"/> — it straddles every column, so
+    /// pooling it would merge them all into one band.
+    /// </summary>
+    internal const float BandSpannerWidthFraction = 0.8f;
+
+    /// <summary>
+    /// Fraction of an OCR-detected line's width that must fall inside a block before the line
+    /// is treated as that block's. Text lines are detected page-wide with no knowledge of the
+    /// layout blocks, so in a two-column page a line from the left column shares its Y band
+    /// with the right column's block; requiring most of the line's width to be inside keeps
+    /// each line with its own block. Loose enough to tolerate a block box that clips a
+    /// hanging indent or a trailing glyph.
+    /// </summary>
+    internal const float OcrLineBlockOverlapFraction = 0.6f;
+
+    /// <summary>
+    /// Distance in points within which two vector rulings are the same rule. Producers draw
+    /// hairlines as thin filled rectangles as often as stroked lines, and a filled rectangle
+    /// contributes both of its long edges — a fraction of a point apart. Also folds a rule
+    /// sitting a hair inside the block's edge into that edge.
+    /// </summary>
+    internal const float RulingMergeTolerance = 1.5f;
+
+    /// <summary>
+    /// Fraction of a table block's width a horizontal rule must cross before it counts as a
+    /// row separator in <see cref="MergeRowsByRulings"/>. A rule underlining a single header
+    /// cell, or a neighbouring block's rule clipped into this one, spans far less and must not
+    /// be allowed to cut a row.
+    /// </summary>
+    internal const float RowRuleSpanFraction = 0.5f;
+
+    /// <summary>
+    /// Most text lines a band between two horizontal rules may hold before
+    /// <see cref="MergeRowsByRulings"/> declines to fuse them into one row. A wrapped table cell
+    /// runs to two lines, occasionally three; beyond that the rules are separating sections of
+    /// the table, and fusing would collapse every data row in the section into a single rail row.
+    /// </summary>
+    internal const int MaxLinesPerRuledRow = 3;
+
     private static readonly HashSet<BlockRole> MathRoles =
         [BlockRole.DisplayMath, BlockRole.InlineMath, BlockRole.Algorithm];
 
@@ -98,12 +140,24 @@ public static class LineDetector
     /// a text layer (char boxes); the pixel-projection fallback produces no cells. Has no
     /// effect on non-table blocks or when <paramref name="tableRowReading"/> is false.
     /// </param>
+    /// <param name="ocrLines">
+    /// Text-line boxes recovered by OCR for a page with no text layer, in page-point space.
+    /// Used only when char clustering produced nothing — they are real detected lines, so
+    /// they take precedence over the pixel-projection fallback. Null when the page has a
+    /// text layer or OCR is off.
+    /// </param>
+    /// <param name="rulings">
+    /// The page's vector ruling lines, when the backend can read them. Used for exact table
+    /// column grids in preference to the raster scan; null falls back to the raster path.
+    /// </param>
     public static List<LineInfo> DetectLines(
         LayoutBlock block,
         IReadOnlyList<CharBox>? charBoxes,
         byte[] rgbBytes, int imgW, int imgH, float scaleX, float scaleY,
         bool tableRowReading = true,
-        bool cellNavigation = false)
+        bool cellNavigation = false,
+        IReadOnlyList<BBox>? ocrLines = null,
+        PageRulings? rulings = null)
     {
         bool isTable = block.Role == BlockRole.Table;
         // Rotated-text blocks collapse to one atomic line: mid-Y char clustering
@@ -131,15 +185,57 @@ public static class LineDetector
             if (charLines.Count > 0)
             {
                 var rows = NormalizeLines(charLines, block.BBox, mergeOverlaps);
+                // For a ruled table the drawn row separators are the authority on where one
+                // row ends: a cell whose text wraps is one row, not two.
+                if (isTable) rows = MergeRowsByRulings(rows, rulings, block.BBox);
                 // Cells are a pure overlay on the validated row geometry — row
                 // Y/Height/X/Width are untouched, so row reading is unregressed.
                 return detectCells
-                    ? AssignCells(rows, charBoxes, block.BBox, rgbBytes, imgW, imgH, scaleX, scaleY)
+                    ? AssignCells(rows, charBoxes, block.BBox, rgbBytes, imgW, imgH, scaleX, scaleY, rulings)
                     : rows;
             }
         }
 
+        if (ocrLines is { Count: > 0 })
+        {
+            var detected = LinesFromOcr(block.BBox, ocrLines);
+            if (detected.Count > 0) return NormalizeLines(detected, block.BBox, mergeOverlaps);
+        }
+
         return NormalizeLines(DetectLinesFromPixels(block, rgbBytes, imgW, imgH, scaleX, scaleY), block.BBox, mergeOverlaps);
+    }
+
+    /// <summary>
+    /// Selects the OCR-detected lines belonging to <paramref name="block"/> and clips them to it.
+    ///
+    /// <para>
+    /// A line belongs to the block when its vertical centre lies inside the block and most of
+    /// its width does too. Centre-in-band assigns each line to exactly one of two vertically
+    /// adjacent blocks; the width test then keeps a neighbouring column's line — which shares
+    /// the same Y band in multi-column layouts — out of this block.
+    /// </para>
+    /// </summary>
+    internal static List<LineInfo> LinesFromOcr(BBox block, IReadOnlyList<BBox> ocrLines)
+    {
+        float top = block.Y, bottom = block.Y + block.H;
+        float left = block.X, right = block.X + block.W;
+
+        var lines = new List<LineInfo>();
+        foreach (var l in ocrLines)
+        {
+            if (l.H <= 0 || l.W <= 0) continue;
+
+            float centreY = l.Y + l.H / 2f;
+            if (centreY < top || centreY > bottom) continue;
+
+            float lx = Math.Max(left, l.X);
+            float lr = Math.Min(right, l.X + l.W);
+            float overlap = lr - lx;
+            if (overlap <= 0 || overlap < l.W * OcrLineBlockOverlapFraction) continue;
+
+            lines.Add(new LineInfo(centreY, l.H, lx, overlap));
+        }
+        return lines;
     }
 
     /// <summary>
@@ -206,7 +302,7 @@ public static class LineDetector
 
     // One glyph's horizontal extent, kept while splitting a table row into cells.
     // Vertical extent is irrelevant once a glyph is bucketed to a row.
-    private readonly record struct GlyphRef(float Left, float Right);
+    internal readonly record struct GlyphRef(float Left, float Right);
 
     /// <summary>
     /// Overlays per-row cell geometry onto already-detected table rows. Each in-block,
@@ -220,7 +316,8 @@ public static class LineDetector
     /// </summary>
     internal static List<LineInfo> AssignCells(
         List<LineInfo> rows, IReadOnlyList<CharBox> charBoxes, BBox block,
-        byte[] rgbBytes, int imgW, int imgH, float scaleX, float scaleY)
+        byte[] rgbBytes, int imgW, int imgH, float scaleX, float scaleY,
+        PageRulings? rulings = null)
     {
         if (rows.Count == 0) return rows;
 
@@ -260,7 +357,21 @@ public static class LineDetector
         // with vertical rules — recovering that grid gives a fixed, aligned column count with empty
         // cells for blanks (stable column index across rows). Unruled tables fall back to the gap
         // split below, so this is purely additive.
-        var grid = DetectColumnGrid(rgbBytes, imgW, imgH, block, scaleX, scaleY);
+        float gapThreshold = RobustGapThreshold(heights);
+
+        // Prefer the page's own vector rules when the backend can read them: they are the
+        // exact lines the producer drew, where the raster scan can only infer them from dark
+        // pixel runs at whatever resolution the analysis pixmap happens to be.
+        var grid = DetectColumnGridFromRulings(rulings, block);
+        grid ??= DetectColumnGrid(rgbBytes, imgW, imgH, block, scaleX, scaleY);
+
+        // A "grid" is only believable if the table's own content sits in it. A figure's border,
+        // a code block's background or a tall bracket can read as a rule — producing columns no
+        // row actually populates. Tabula guards its lattice extraction the same way, by checking
+        // the ruled structure against the structure the text alone implies.
+        if (grid is not null && !GridMatchesGlyphs(grid, rowGlyphs, gapThreshold))
+            grid = null;
+
         if (grid is not null)
         {
             var gridCells = BuildGridCells(grid); // identical bands for every row → aligned columns
@@ -270,11 +381,324 @@ public static class LineDetector
             return rows;
         }
 
-        float gapThreshold = RobustGapThreshold(heights);
+        // Phase 3: unruled tables get their column grid recovered from glyph geometry
+        // across *all* rows rather than each row splitting itself. Same payoff as the
+        // ruled path above — a stable column index and empty cells for blanks.
+        var bands = DetectColumnBands(rowGlyphs, block, gapThreshold);
+        if (bands is not null)
+        {
+            var bandCells = BuildGridCells(bands);
+            for (int r = 0; r < rows.Count; r++)
+                if (rowGlyphs[r] is { Count: > 0 })
+                    rows[r] = rows[r] with { Cells = bandCells };
+            return rows;
+        }
+
         for (int r = 0; r < rows.Count; r++)
             if (rowGlyphs[r] is { Count: > 0 } glyphs)
                 rows[r] = rows[r] with { Cells = SplitRowCells(glyphs, gapThreshold) };
         return rows;
+    }
+
+    /// <summary>
+    /// Checks a candidate column grid against the table's glyphs, so a grid recovered from
+    /// something that is not a column separator is rejected before it reaches the reader.
+    ///
+    /// <para>
+    /// Three conditions, all about correspondence between rules and content: most rows that have
+    /// content must spread it across more than one column (otherwise the "columns" cut nothing),
+    /// the rows that support the boundaries must outnumber the rows that contradict them, and
+    /// some row must populate a fair share of the columns (otherwise the grid claims far more
+    /// structure than the text supports — the signature of stray vertical strokes). A grid that
+    /// fails any is discarded and the caller falls through to glyph-derived bands and then to
+    /// the per-row split.
+    /// </para>
+    /// <para>
+    /// Contradiction is counted, not fatal. A single row that sits entirely in one column while
+    /// carrying a gap the per-row split would divide — a total line, a footnote, a spanning
+    /// note — says nothing about the twenty rows above it that straddle the rules correctly, and
+    /// rejecting the whole grid for it costs exactly the aligned blank-cell column index the
+    /// ruled path exists to provide.
+    /// </para>
+    /// </summary>
+    internal static bool GridMatchesGlyphs(
+        List<float> bounds, IReadOnlyList<List<GlyphRef>?> rowGlyphs, float gapThreshold)
+    {
+        int columns = bounds.Count - 1;
+        if (columns < 2) return false;
+
+        int rowsWithGlyphs = 0, rowsSpanningColumns = 0, rowsContradicting = 0, maxOccupied = 0;
+
+        foreach (var glyphs in rowGlyphs)
+        {
+            if (glyphs is not { Count: > 0 }) continue;
+            rowsWithGlyphs++;
+
+            // Which columns this row actually puts content in (by glyph centre).
+            var occupied = new bool[columns];
+            foreach (var g in glyphs)
+            {
+                float centre = (g.Left + g.Right) * 0.5f;
+                for (int c = 0; c < columns; c++)
+                {
+                    if (centre >= bounds[c] && centre <= bounds[c + 1]) { occupied[c] = true; break; }
+                }
+            }
+
+            int count = 0;
+            foreach (bool o in occupied) if (o) count++;
+            if (count > maxOccupied) maxOccupied = count;
+
+            // A row whose content is one run inside a single column tells us nothing about
+            // whether the boundaries are real; a row that straddles boundaries does.
+            if (count > 1) rowsSpanningColumns++;
+            else if (count == 1 && SplitRowCells(glyphs, gapThreshold).Count > 1)
+            {
+                // Content the glyph-gap split would have divided, all landing in one column,
+                // is evidence *against* the grid: for this row the boundaries are in the wrong
+                // places. Weighed against the rows that straddle them, not decisive on its own.
+                rowsContradicting++;
+            }
+        }
+
+        if (rowsWithGlyphs == 0) return false;
+        return rowsSpanningColumns * 2 >= rowsWithGlyphs
+            && rowsSpanningColumns > rowsContradicting
+            && maxOccupied * 2 >= columns;
+    }
+
+    /// <summary>
+    /// Recovers a shared column grid for an <b>unruled</b> table by pooling every row's
+    /// glyph runs and merging the ones that occupy the same horizontal band.
+    ///
+    /// <para>
+    /// Splitting each row independently (<see cref="SplitRowCells"/>) is correct for that
+    /// row but not across rows: a row with a blank cell, a merged cell, or a short entry
+    /// yields a different cell count and different spans than its neighbours, so column
+    /// <c>k</c> means something different on every row and cell navigation drifts sideways
+    /// as it steps down. Pooling the runs recovers the column structure the table is
+    /// actually laid out on — the same thing <see cref="DetectColumnGrid"/> reads off the
+    /// ruling lines when they exist — and every row then gets the identical band list, so
+    /// blanks become empty navigable cells at the right index.
+    /// </para>
+    /// <para>
+    /// Rows whose single run spans most of the block (section headings and titles set
+    /// inside the table body) are excluded from band construction: they overlap every
+    /// column at once and would collapse the whole table into one band. They still receive
+    /// the resulting bands like any other row.
+    /// </para>
+    /// <para>
+    /// Returns sorted column boundaries in the same shape as <see cref="DetectColumnGrid"/>,
+    /// or <c>null</c> when the evidence for a columnar layout is too weak (fewer than three
+    /// bands, or too few rows showing more than one run) — the caller then falls back to
+    /// the per-row split. Adapted from tabula-java's stream-mode column detection
+    /// (<c>BasicExtractionAlgorithm.ColumnPositions</c>).
+    /// </para>
+    /// </summary>
+    internal static List<float>? DetectColumnBands(
+        IReadOnlyList<List<GlyphRef>?> rowGlyphs, BBox block, float gapThreshold)
+    {
+        if (gapThreshold <= 0) return null;
+
+        float blockLeft = block.X, blockRight = block.X + block.W;
+        if (blockRight - blockLeft <= 0) return null;
+
+        float spannerWidth = block.W * BandSpannerWidthFraction;
+
+        // Pool every contributing row's runs. Note SplitRowCells sorts each row's glyph
+        // list by left edge in place; the caller's fallback re-splits the same (now
+        // sorted) lists, which is why this can run ahead of it without disturbing it.
+        var runs = new List<CellInfo>();
+        int contributingRows = 0, multiCellRows = 0;
+        foreach (var glyphs in rowGlyphs)
+        {
+            if (glyphs is not { Count: > 0 }) continue;
+
+            var rowRuns = SplitRowCells(glyphs, gapThreshold);
+            // A lone run covering most of the block is a spanning heading, not a column.
+            if (rowRuns.Count == 1 && rowRuns[0].Width >= spannerWidth) continue;
+
+            contributingRows++;
+            if (rowRuns.Count > 1) multiCellRows++;
+            runs.AddRange(rowRuns);
+        }
+
+        // If most rows are single-run this is a list or a paragraph block, not a grid.
+        if (contributingRows == 0 || multiCellRows * 2 < contributingRows) return null;
+
+        runs.Sort((a, b) => a.X.CompareTo(b.X));
+
+        // Merge runs into bands. Runs closer than one cell gap belong to the same column:
+        // overlap alone is too strict, since a narrow entry on one row and a wide one on
+        // another can sit side by side without ever overlapping.
+        var bandLeft = new List<float>();
+        var bandRight = new List<float>();
+        float curLeft = runs[0].X, curRight = runs[0].X + runs[0].Width;
+        for (int i = 1; i < runs.Count; i++)
+        {
+            float l = runs[i].X, r = l + runs[i].Width;
+            if (l - curRight < gapThreshold)
+            {
+                if (r > curRight) curRight = r;
+            }
+            else
+            {
+                bandLeft.Add(curLeft); bandRight.Add(curRight);
+                curLeft = l; curRight = r;
+            }
+        }
+        bandLeft.Add(curLeft); bandRight.Add(curRight);
+
+        // Same confidence bar as the ruled path: ≥3 columns before we claim a grid.
+        if (bandLeft.Count < 3) return null;
+
+        // Boundaries: block edges plus the midpoint of each inter-band gutter. Clamped
+        // and kept strictly increasing so BuildGridCells can't emit a zero/negative span.
+        var bounds = new List<float>(bandLeft.Count + 1) { blockLeft };
+        for (int i = 1; i < bandLeft.Count; i++)
+        {
+            float mid = (bandRight[i - 1] + bandLeft[i]) * 0.5f;
+            mid = Math.Clamp(mid, blockLeft, blockRight);
+            if (mid > bounds[^1]) bounds.Add(mid);
+        }
+        if (blockRight > bounds[^1]) bounds.Add(blockRight);
+
+        return bounds.Count >= 4 ? bounds : null;
+    }
+
+    /// <summary>
+    /// Merges the text lines of a ruled table into its actual rows, using the horizontal rules
+    /// drawn between them.
+    ///
+    /// <para>
+    /// Char clustering finds <i>text lines</i>, which is the right answer for prose and the
+    /// wrong one for a table whose cells wrap: a two-line cell becomes two rail rows, the
+    /// second of which looks like a row with content in only one column, and cell navigation
+    /// steps through a phantom. Where the table draws a rule between each row, that ambiguity
+    /// is already resolved on the page — lines sharing a band between two rules are one row.
+    /// </para>
+    /// <para>
+    /// Applied band by band, and only where the rules are delimiting rows rather than sections:
+    /// a booktabs-style table with a rule above, below and under the header would otherwise
+    /// collapse its whole body into one row. The test is that a band holds no more than
+    /// <see cref="MaxLinesPerRuledRow"/> lines — a wrapped cell runs to two or three, a section
+    /// runs to as many rows as the section has. A band that fails keeps its own text lines;
+    /// the rest of the table still merges, so one over-full band no longer forfeits the whole
+    /// table (nor does an average over bands let one hide behind the empty ones).
+    /// </para>
+    /// </summary>
+    internal static List<LineInfo> MergeRowsByRulings(List<LineInfo> rows, PageRulings? rulings, BBox block)
+    {
+        if (rulings is null || rulings.Horizontal.Count == 0 || rows.Count < 2) return rows;
+        if (block.W <= 0 || block.H <= 0) return rows;
+
+        float left = block.X, right = block.X + block.W;
+        float top = block.Y, bottom = block.Y + block.H;
+        float minSpan = block.W * RowRuleSpanFraction;
+
+        // Interior rules that actually cross the table, so a rule underlining one header cell
+        // (or a neighbouring block's rule clipped into this one) cannot cut a row.
+        var cuts = new List<float>();
+        foreach (var rule in rulings.Horizontal)
+        {
+            float overlap = Math.Min(right, rule.End) - Math.Max(left, rule.Start);
+            if (overlap < minSpan) continue;
+            if (rule.Position <= top + RulingMergeTolerance || rule.Position >= bottom - RulingMergeTolerance) continue;
+            if (cuts.Count == 0 || rule.Position > cuts[^1] + RulingMergeTolerance) cuts.Add(rule.Position);
+        }
+        if (cuts.Count < 2) return rows;   // fewer than two interior rules is not a row grid
+        cuts.Sort();
+
+        int bands = cuts.Count + 1;
+
+        // Bucket each row into the band its centre falls in, then fuse each band's rows.
+        var banded = new List<LineInfo>?[bands];
+        foreach (var row in rows)
+        {
+            int band = 0;
+            while (band < cuts.Count && row.Y > cuts[band]) band++;
+            (banded[band] ??= []).Add(row);
+        }
+
+        var merged = new List<LineInfo>(bands);
+        foreach (var group in banded)
+        {
+            if (group is not { Count: > 0 }) continue;
+            if (group.Count == 1) { merged.Add(group[0]); continue; }
+            if (group.Count > MaxLinesPerRuledRow)
+            {
+                // Section rules, not row rules — for this band at least. Fusing here would
+                // hand rail one "row" covering a whole block of the table.
+                merged.AddRange(group);
+                continue;
+            }
+
+            float rowTop = float.MaxValue, rowBottom = float.MinValue;
+            float rowLeft = float.MaxValue, rowRight = float.MinValue;
+            IReadOnlyList<CellInfo>? cells = null;
+            foreach (var r in group)
+            {
+                rowTop = Math.Min(rowTop, r.Y - r.Height / 2f);
+                rowBottom = Math.Max(rowBottom, r.Y + r.Height / 2f);
+                rowLeft = Math.Min(rowLeft, r.X);
+                rowRight = Math.Max(rowRight, r.X + r.Width);
+                cells ??= r.Cells;
+            }
+            merged.Add(new LineInfo((rowTop + rowBottom) / 2f, rowBottom - rowTop,
+                rowLeft, rowRight - rowLeft, cells));
+        }
+
+        return merged.Count > 0 ? merged : rows;
+    }
+
+    /// <summary>
+    /// Recovers a table's column grid from the page's **vector** ruling lines.
+    ///
+    /// <para>
+    /// This is the exact form of what <see cref="DetectColumnGrid"/> approximates from pixels:
+    /// the separators are read from the PDF's own drawing operators, so there is no resolution
+    /// floor, no luminance threshold, and no way for a tall glyph or a shaded background to
+    /// masquerade as a rule. Available only where the backend can read page paths — see
+    /// <see cref="IPdfRulingService"/> — and the caller falls back to the raster scan otherwise.
+    /// </para>
+    /// <para>
+    /// A ruling counts as one of this block's column separators when it lies inside the block
+    /// horizontally and spans most of it vertically, which excludes the short rules that
+    /// underline a single header cell. Returns boundaries in the same shape as
+    /// <see cref="DetectColumnGrid"/>, or null when fewer than two interior separators are
+    /// found.
+    /// </para>
+    /// </summary>
+    internal static List<float>? DetectColumnGridFromRulings(PageRulings? rulings, BBox block)
+    {
+        if (rulings is null || rulings.Vertical.Count == 0 || block.W <= 0 || block.H <= 0)
+            return null;
+
+        float top = block.Y, bottom = block.Y + block.H;
+        float left = block.X, right = block.X + block.W;
+        float minSpan = block.H * RuleRunFraction;
+        float edgeEps = RulingMergeTolerance;
+
+        var interior = new List<float>();
+        foreach (var rule in rulings.Vertical)
+        {
+            // Overlap with the block's vertical extent, not the raw rule length: a long rule
+            // running past the table still separates this block's columns.
+            float overlap = Math.Min(bottom, rule.End) - Math.Max(top, rule.Start);
+            if (overlap < minSpan) continue;
+            if (rule.Position <= left + edgeEps || rule.Position >= right - edgeEps) continue;
+            interior.Add(rule.Position);
+        }
+
+        if (interior.Count < 2) return null;
+        interior.Sort();
+
+        var bounds = new List<float>(interior.Count + 2) { left };
+        foreach (float x in interior)
+            if (x > bounds[^1] + edgeEps) bounds.Add(x);
+        if (right > bounds[^1] + edgeEps) bounds.Add(right); else bounds[^1] = right;
+
+        return bounds.Count >= 4 ? bounds : null;
     }
 
     /// <summary>

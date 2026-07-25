@@ -10,6 +10,7 @@ Portable libraries powering [RailReader2](https://github.com/sjvrensburg/railrea
 | `RailReader.Core.Pdfium` | Desktop PDFium implementations of the Core interfaces + filesystem-backed `AppConfig` / `AnnotationService` / `ConsoleLogger` / `LayoutModelLocator` | PDFium native libraries |
 | `RailReader.Core.Analysis` | ONNX-backed `ILayoutAnalyzer` implementations (PP-DocLayoutV3, PP-DocLayout-S, Docling Heron) | `Microsoft.ML.OnnxRuntime` |
 | `RailReader.Core.Vlm.OpenAI` | `IVlmService` for OpenAI-compatible chat-completions endpoints (OpenAI, Ollama, vLLM, LightOnOCR, …) | `OpenAI` |
+| `RailReader.Core.Ocr.RapidOcr` | `IOcrService` for pages with no text layer, via PaddleOCR PP-OCR ONNX models | `RapidOcrNet`, `SkiaSharp` |
 | `RailReader.Renderer.Skia` | SkiaSharp rasterisation + `IPdfServiceFactory` that desktop consumers wire into Core | `SkiaSharp`, `PDFtoImage` |
 
 ## Reference graph
@@ -19,6 +20,7 @@ RailReader.Core              ← no native deps, no IO
   ├─ Core.Pdfium             → Core
   ├─ Core.Analysis           → Core
   ├─ Core.Vlm.OpenAI         → Core
+  ├─ Core.Ocr.RapidOcr       → Core
   └─ Renderer.Skia           → Core + Core.Pdfium
 ```
 
@@ -33,7 +35,16 @@ Core defines two seams that let any layout-detection model drive RailReader:
   - `ModelOrderResolver` (trusts the analyzer's order hints — default pick for models with `ProvidesReadingOrder=true`)
   - `XYCutPlusPlusResolver` (column-aware recursive XY-cut, default for non-ordering models — handles two/three-column papers and full-width spanners correctly)
 
-`Core.Analysis` ships three analyzers today:
+Core itself ships a fourth, model-free analyzer: **`TextLayoutAnalyzer`** recovers blocks from
+the text layer by bottom-up grouping (Docstrum's idea — thresholds taken from the page's own
+nearest-neighbour spacing rather than constants), with no ONNX runtime, no weights, and no native
+dependency. It gives a web or low-end mobile build a rail pipeline out of the box and any build a
+fallback when the model is missing. Every block is `BlockRole.Text` — with no model there is no
+class signal, so role-keyed features (table-row reading, cell navigation, figure framing,
+auto-scroll stop classes) do nothing — and it needs a text layer, so a scan yields nothing unless
+OCR supplied one.
+
+`Core.Analysis` ships three model-backed analyzers:
 
 | Analyzer | Model | Input | Reading order | Notes |
 |---|---|---|---|---|
@@ -42,6 +53,59 @@ Core defines two seams that let any layout-detection model drive RailReader:
 | `HeronLayoutAnalyzer` | Docling Heron (RT-DETRv2) | 640×640 resize | XYCut++ | 17 classes; broader category space (code, forms, key-value regions) (~164 MB) |
 
 Additional analyzers slot in as further `Core.Analysis` types or as separate sibling packages — the existing three are the template.
+
+## OCR for pages with no text layer
+
+Almost everything RailReader does with text — char-clustering line detection, the
+reading-order tie-break, table row and cell detection, search, Markdown export, VLM prompt
+assembly — reads a `PageText`. A scanned PDF has none, so those paths degrade to
+pixel-projection line detection and no text at all. `RailReader.Core.Ocr.RapidOcr` fills the
+gap by *synthesising* a `PageText`, which upgrades all of them at once.
+
+Wire it in alongside the layout analyzer and pick how much work to do:
+
+```csharp
+controller.InitializeWorker(
+    capabilities, analyzerFactory,
+    ocrServiceFactory: () => new RapidOcrService(),
+    ocrMode: OcrMode.Full);
+
+controller.OcrMode = OcrMode.Lines;   // changeable at any time
+```
+
+| Mode | Cost | What a scanned page gets |
+|---|---|---|
+| `Off` (default) | none | pixel-projection lines, no text |
+| `Lines` | detection pass only | real line geometry for rail mode |
+| `Full` | detection + per-line recognition | text, per-character boxes, table cells, search, export |
+
+OCR runs on the analysis worker's thread, reusing the pixmap already rendered for the layout
+model — so it costs no extra rasterisation, but its accuracy tracks that model's input size.
+At the 800 px PP-DocLayoutV3 and Heron ask for, body text is only a few pixels tall; pair
+`Full` with PP-DocLayout-S (1920 px) for usable transcription. Pages that already have a text
+layer never invoke OCR, and a failure to load or run it leaves layout analysis working
+(`AnalysisWorker.OcrStartupError` records why).
+
+The PP-OCRv5 Latin models (~14 MB) arrive with the `RapidOcrNet` package and are copied
+beside your binaries automatically on build and publish. `OcrModelLocator` also probes the
+app directory, `$APPDIR`, the user data directory and the working directory, so
+hand-installed models — including the smaller PP-OCRv6 sets — are picked up too.
+
+## Optional backend capabilities
+
+Some backends can do more than the core interfaces require. Rather than widen those interfaces
+(and every consumer's wiring) for something only one backend supports, Core discovers the extra
+by casting the service it was given:
+
+- **`IPdfRulingService`** — a page's vector ruling lines. Both backends implement it
+  (`Core.PdfPig` via `page.Paths`, `Core.Pdfium` via the page object list, descending into form
+  XObjects), so tables get their column grid from the exact lines the producer drew rather than
+  from dark pixel runs in the analysis pixmap — and a ruled table's *rows* come from its
+  horizontal rules, so a cell whose text wraps is one row rather than two.
+
+Nothing needs enabling: wire the services as usual and the capability is used if present. A
+wrapper around a service must forward these interfaces or it will silently hide the capability —
+see `GatedPdfPigTextService`.
 
 ## Build & test
 

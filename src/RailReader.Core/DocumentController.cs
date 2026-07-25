@@ -164,13 +164,58 @@ public sealed partial class DocumentController : IDisposable
     /// capabilities (model order if available, top-down otherwise).
     /// Must be called before opening documents.
     /// </summary>
+    /// <param name="ocrServiceFactory">
+    /// Optional OCR engine (e.g. <c>RailReader.Core.Ocr.RapidOcr</c>) used for pages with no
+    /// text layer. Constructed on the worker thread; a load failure is recorded on
+    /// <see cref="AnalysisWorker.OcrStartupError"/> and leaves layout analysis working.
+    /// </param>
+    /// <param name="ocrMode">
+    /// How much OCR to run. Off by default; change later via <see cref="OcrMode"/>.
+    /// </param>
     public void InitializeWorker(
         LayoutModelCapabilities capabilities,
         Func<ILayoutAnalyzer> analyzerFactory,
-        IReadingOrderResolver? readingOrderResolver = null)
+        IReadingOrderResolver? readingOrderResolver = null,
+        Func<IOcrService>? ocrServiceFactory = null,
+        OcrMode ocrMode = OcrMode.Off)
     {
-        _worker = new AnalysisWorker(capabilities, analyzerFactory, _marshaller, readingOrderResolver, _logger);
+        _worker = new AnalysisWorker(capabilities, analyzerFactory, _marshaller, readingOrderResolver,
+            _logger, ocrServiceFactory, ocrMode);
         _logger.Debug("[Analysis] Worker started (analyzer loading in background)");
+    }
+
+    /// <summary>
+    /// How much OCR the analysis worker runs on pages with no text layer. Settable at any
+    /// time; reading before <see cref="InitializeWorker"/> (or with no OCR engine wired)
+    /// returns <see cref="Services.OcrMode.Off"/> and setting it is a no-op.
+    ///
+    /// <para>
+    /// Changing it retroactively drops the cached analysis (and OCR text) of every page that
+    /// has no text layer of its own, and resubmits the views sitting on those pages. The
+    /// worker's flag alone would only steer requests it has yet to receive, and an analysed
+    /// page is never resubmitted — so a scanned document read before the toggle would keep its
+    /// pre-toggle blocks until it was closed and reopened. Pages with a text layer never ran
+    /// OCR and are left alone, so toggling on a digital PDF costs nothing.
+    /// </para>
+    /// </summary>
+    public OcrMode OcrMode
+    {
+        get => _worker?.OcrMode ?? OcrMode.Off;
+        set
+        {
+            if (_worker is null || _worker.OcrMode == value) return;
+            _worker.OcrMode = value;
+
+            foreach (var doc in Documents)
+            {
+                if (doc.IsDisposed) continue;
+                var affected = doc.InvalidateOcrDependentAnalysis();
+                if (affected.Count == 0) continue;
+                foreach (var vp in doc.Viewports)
+                    if (affected.Contains(vp.CurrentPage))
+                        doc.SubmitAnalysis(vp, _worker, _config.NavigableRoles);
+            }
+        }
     }
 
     // --- Document management ---
