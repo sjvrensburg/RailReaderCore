@@ -35,6 +35,20 @@ public sealed class PdfPigSkiaPdfService : IPdfService, IDisposable
     private readonly PdfDocument _doc;
     private bool _disposed;
 
+    /// <summary>
+    /// Pages to keep as recorded display lists. A page's <see cref="SKPicture"/> is
+    /// resolution-independent, so one recording serves every zoom level, the analysis pixmap
+    /// and the thumbnail — but it retains that page's decoded images, so the cache is bounded.
+    /// Sized for the page in view plus its neighbours under prefetch, in each of a couple of
+    /// split panes.
+    /// </summary>
+    private const int PictureCacheSize = 8;
+
+    // Guarded by PdfPigGate.Lock, like every other _doc touch. _pictureOrder is least-recently-
+    // used first.
+    private readonly Dictionary<int, SKPicture> _pictures = [];
+    private readonly List<int> _pictureOrder = [];
+
     public byte[] PdfBytes { get; }
 
     /// <summary>The password the document was opened with, or null when unencrypted.</summary>
@@ -184,16 +198,15 @@ public sealed class PdfPigSkiaPdfService : IPdfService, IDisposable
     {
         lock (PdfPigGate.Lock)
         {
-            return _doc.GetPageAsSKBitmap(pageIndex + 1, scale, SKColors.White);
+            var page = _doc.GetPage(pageIndex + 1);
+            return DrawPicture(pageIndex, page.Width, page.Height, scale);
         }
     }
 
     /// <summary>
-    /// Renders to an exact pixel size. <c>GetPageAsSKBitmap</c> only
-    /// accepts a uniform scale, so we compute the scale that fits the
-    /// longest edge to the target. The resulting bitmap may be slightly
-    /// smaller than the requested (W,H) on the shorter edge — same as
-    /// <c>SkiaPdfService</c>'s behaviour.
+    /// Renders to an exact pixel size. Rendering is uniformly scaled, so we compute the scale
+    /// that fits the longest edge to the target. The resulting bitmap may be slightly smaller
+    /// than the requested (W,H) on the shorter edge — same as <c>SkiaPdfService</c>'s behaviour.
     /// </summary>
     private SKBitmap RenderAtPixelSize(int pageIndex, int pixW, int pixH)
     {
@@ -203,8 +216,74 @@ public sealed class PdfPigSkiaPdfService : IPdfService, IDisposable
         {
             var page = _doc.GetPage(pageIndex + 1);
             double scale = Math.Min(pixW / page.Width, pixH / page.Height);
-            return _doc.GetPageAsSKBitmap(pageIndex + 1, (float)scale, SKColors.White);
+            return DrawPicture(pageIndex, page.Width, page.Height, (float)scale);
         }
+    }
+
+    /// <summary>
+    /// Rasterises a page from its cached display list at an arbitrary scale.
+    ///
+    /// <para>
+    /// This is the point of recording pictures: parsing and interpreting a page's content
+    /// stream is the expensive half of rendering, and it does not depend on scale. A rail
+    /// reader re-renders the same page constantly — zoom steps, the render-DPI state machine,
+    /// thumbnails, the analysis pixmap — and each of those used to re-parse the page from
+    /// scratch. Replaying a recorded picture skips straight to rasterisation.
+    /// </para>
+    /// <para>Caller must hold <see cref="PdfPigGate.Lock"/>.</para>
+    /// </summary>
+    private SKBitmap DrawPicture(int pageIndex, double pageWidth, double pageHeight, float scale)
+    {
+        var picture = GetOrRecordPicture(pageIndex);
+
+        // Match GetPageAsSKBitmap's sizing exactly — it rounds the scaled page box *up*, so
+        // truncating here would silently shave a pixel off every render relative to the path
+        // this replaces.
+        int width = Math.Max(1, (int)Math.Ceiling(pageWidth * scale));
+        int height = Math.Max(1, (int)Math.Ceiling(pageHeight * scale));
+
+        var bitmap = new SKBitmap(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
+        try
+        {
+            using var canvas = new SKCanvas(bitmap);
+            canvas.Clear(SKColors.White);
+            canvas.Scale(scale);
+            canvas.DrawPicture(picture);
+            canvas.Flush();
+            return bitmap;
+        }
+        catch
+        {
+            bitmap.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Returns the page's recorded display list, recording it on first use. Caller must hold
+    /// <see cref="PdfPigGate.Lock"/>; the cache and its LRU order are guarded by it.
+    /// </summary>
+    private SKPicture GetOrRecordPicture(int pageIndex)
+    {
+        if (_pictures.TryGetValue(pageIndex, out var cached))
+        {
+            _pictureOrder.Remove(pageIndex);
+            _pictureOrder.Add(pageIndex);
+            return cached;
+        }
+
+        var picture = _doc.GetPageAsSKPicture(pageIndex + 1);
+
+        while (_pictureOrder.Count >= PictureCacheSize)
+        {
+            int evict = _pictureOrder[0];
+            _pictureOrder.RemoveAt(0);
+            if (_pictures.Remove(evict, out var stale)) stale.Dispose();
+        }
+
+        _pictures[pageIndex] = picture;
+        _pictureOrder.Add(pageIndex);
+        return picture;
     }
 
     public void Dispose()
@@ -213,6 +292,9 @@ public sealed class PdfPigSkiaPdfService : IPdfService, IDisposable
         _disposed = true;
         lock (PdfPigGate.Lock)
         {
+            foreach (var picture in _pictures.Values) picture.Dispose();
+            _pictures.Clear();
+            _pictureOrder.Clear();
             _doc.Dispose();
         }
     }

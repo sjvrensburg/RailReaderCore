@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.50.0 — Vector table rules, model-free layout, cached page rendering
+
+The rest of the survey of BobLd's PDF ecosystem (see 0.49.0). Suite grew 979 → 1022 tests.
+
+### Exact table column grids from the page's vector rules
+
+`DetectColumnGrid` infers column separators from long dark pixel runs, which is bounded by the
+analysis pixmap's resolution and can be fooled by anything else dark and tall. Where a backend
+can read page paths, the separators are simply known.
+
+- **New optional Core seam `IPdfRulingService`** (+ `PageRulings`, `RulingSegment`), implemented
+  by `RailReader.Core.PdfPig`'s `PdfTextService`. Adapted from tabula-java's object extractor:
+  stroked or filled subpaths made only of straight segments become rulings; curves and diagonals
+  are ignored; near-duplicates merge, so a hairline drawn as a thin filled rectangle (which
+  contributes both long edges) reads as one rule.
+- **Discovered by cast, not by wiring.** Core tests whether the platform's `IPdfTextService`
+  also implements `IPdfRulingService`, so a consumer gains exact grids with no factory or
+  constructor change. `GatedPdfPigTextService` forwards it, which is what keeps the capability
+  reaching the Skia/PdfPig backend.
+- `LineDetector.DetectColumnGridFromRulings` takes precedence over the raster scan; PDFium has
+  no path-reading implementation yet, so the desktop backend keeps the raster path.
+
+### Grids are now checked against the content they claim to cut
+
+`LineDetector.GridMatchesGlyphs` rejects a candidate grid unless most rows spread content across
+more than one column, and some row populates a fair share of them — plus an outright rejection
+when a row the glyph-gap split would have divided lands entirely inside one column. A figure
+border or a shaded code block can no longer hand the reader columns that cut nothing. Applies to
+raster and vector grids alike. Adapted from tabula-java's `isTabular` ratio test.
+
+### `TextLayoutAnalyzer`: layout with no model at all
+
+A pure-geometry `ILayoutAnalyzer` in Core — no ONNX Runtime, no weights, no native dependency —
+that recovers blocks from the text layer by bottom-up grouping. Gives a web or low-end mobile
+build a working rail pipeline out of the box, and any build a fallback when the model is missing.
+Borrows Docstrum's central idea (via PdfPig's implementation and CalyPdf's optimised port):
+thresholds come from the page's own nearest-neighbour spacing distribution, so the same code
+handles a dense journal page and a large-print book.
+
+Stated limits: every block is `BlockRole.Text` (no model, no classes), so role-keyed features —
+table-row reading, cell navigation, figure framing, auto-scroll stop classes — do nothing; and it
+needs a text layer, so a scan yields nothing unless OCR supplied one.
+
+### Rendering: pages are recorded once, replayed per render
+
+`PdfPigSkiaPdfService` now caches each page as an `SKPicture` (bounded, 8 pages, LRU) and
+rasterises from it, instead of re-parsing the content stream on every render. Parsing is the
+expensive half of rendering and does not depend on scale, so a rail reader — which re-renders one
+page constantly through zoom steps, the DPI state machine, thumbnails and the analysis pixmap —
+stops paying it repeatedly. Measured 1.34–1.49× on a text-heavy page (paired interleaved runs).
+Output is pixel-equivalent to the previous path, verified against the direct renderer on both an
+upright page and the `/Rotate` fixtures.
+
+### PdfPig text extraction no longer parses the same page twice
+
+`GetTextRangeRects` derives its rects from a full page extraction, and its caller has almost
+always just read that page's text — so search highlighting paid ~0.4 s of extraction twice per
+page. A single-entry memo (keyed by byte-array identity, page, rotation and password) removes the
+repeat with no change to what either call returns.
+
+Measured, and deliberately *not* done: porting CalyPdf's text-only content parser. Extraction cost
+divides roughly into glyph processing (~27%), PdfPig's word grouping (~38%) and our own
+`BuildPageText` (~35%), with `PdfDocument.Open` at ~1.5%; doubling a page's vector content changed
+letter-extraction time by less than measurement noise. The parser targets the one bucket that
+turned out not to matter.
+
 ## 0.49.0 — OCR for scanned pages, unruled table columns, duplicate-glyph filtering
 
 Three borrows from BobLd's PDF ecosystem ([RapidOcrNet](https://github.com/BobLd/RapidOcrNet),

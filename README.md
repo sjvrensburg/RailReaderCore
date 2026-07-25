@@ -35,7 +35,16 @@ Core defines two seams that let any layout-detection model drive RailReader:
   - `ModelOrderResolver` (trusts the analyzer's order hints — default pick for models with `ProvidesReadingOrder=true`)
   - `XYCutPlusPlusResolver` (column-aware recursive XY-cut, default for non-ordering models — handles two/three-column papers and full-width spanners correctly)
 
-`Core.Analysis` ships three analyzers today:
+Core itself ships a fourth, model-free analyzer: **`TextLayoutAnalyzer`** recovers blocks from
+the text layer by bottom-up grouping (Docstrum's idea — thresholds taken from the page's own
+nearest-neighbour spacing rather than constants), with no ONNX runtime, no weights, and no native
+dependency. It gives a web or low-end mobile build a rail pipeline out of the box and any build a
+fallback when the model is missing. Every block is `BlockRole.Text` — with no model there is no
+class signal, so role-keyed features (table-row reading, cell navigation, figure framing,
+auto-scroll stop classes) do nothing — and it needs a text layer, so a scan yields nothing unless
+OCR supplied one.
+
+`Core.Analysis` ships three model-backed analyzers:
 
 | Analyzer | Model | Input | Reading order | Notes |
 |---|---|---|---|---|
@@ -81,6 +90,21 @@ The PP-OCRv5 Latin models (~14 MB) arrive with the `RapidOcrNet` package and are
 beside your binaries automatically on build and publish. `OcrModelLocator` also probes the
 app directory, `$APPDIR`, the user data directory and the working directory, so
 hand-installed models — including the smaller PP-OCRv6 sets — are picked up too.
+
+## Optional backend capabilities
+
+Some backends can do more than the core interfaces require. Rather than widen those interfaces
+(and every consumer's wiring) for something only one backend supports, Core discovers the extra
+by casting the service it was given:
+
+- **`IPdfRulingService`** — a page's vector ruling lines. `RailReader.Core.PdfPig`'s
+  `PdfTextService` implements it, so tables get their column grid from the exact lines the
+  producer drew rather than from dark pixel runs in the analysis pixmap. PDFium exposes no path
+  reading through our P/Invoke surface today, so that backend keeps the raster path.
+
+Nothing needs enabling: wire the services as usual and the capability is used if present. A
+wrapper around a service must forward these interfaces or it will silently hide the capability —
+see `GatedPdfPigTextService`.
 
 ## Build & test
 

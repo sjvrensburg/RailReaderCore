@@ -11,6 +11,10 @@ public sealed class DocumentModel : IDisposable
 {
     private readonly IPdfService _pdf;
     private readonly IPdfTextService _pdfText;
+    // Optional capability (see IPdfRulingService): non-null when the platform's text service can
+    // also read the page's vector ruling lines, which give exact table column grids. Discovered
+    // by cast so no consumer has to change its wiring to gain it.
+    private readonly IPdfRulingService? _pdfRulings;
     private readonly IPdfLinkService _pdfLink;
     private readonly IThreadMarshaller _marshaller;
     private readonly ILogger _logger;
@@ -342,6 +346,7 @@ public sealed class DocumentModel : IDisposable
         FilePath = filePath;
         _pdf = pdf;
         _pdfText = pdfText;
+        _pdfRulings = pdfText as IPdfRulingService;
         _pdfLink = pdfLink;
         PageCount = _pdf.PageCount;
         _title = Path.GetFileName(filePath);
@@ -619,6 +624,7 @@ public sealed class DocumentModel : IDisposable
                 ct.ThrowIfCancellationRequested();
                 var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize, viewRotation);
                 var pageText = _pdfText.ExtractPageText(_pdf.PdfBytes, page, viewRotation, _pdf.Password);
+                var rulings = ExtractRulings(page, viewRotation);
                 _logger.Debug($"[SubmitAnalysis] Page {page}: pixmap ready {pxW}x{pxH}, {pageText.CharBoxes.Count} chars, submitting...");
                 _marshaller.Post(() =>
                 {
@@ -630,7 +636,8 @@ public sealed class DocumentModel : IDisposable
                     if (IsDisposed || vp.IsDisposed || vp.CurrentPage != page
                         || viewRotation != _viewRotation) return;
                     _textCache[page] = pageText;
-                    worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.DedupedCharBoxes, pars, viewRotation));
+                    worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH,
+                        pageText.DedupedCharBoxes, pars, rulings, viewRotation));
                 });
             }
             catch (OperationCanceledException) { }
@@ -698,6 +705,7 @@ public sealed class DocumentModel : IDisposable
                     ct.ThrowIfCancellationRequested();
                     var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize, viewRotation);
                     var pageText = _pdfText.ExtractPageText(_pdf.PdfBytes, page, viewRotation, _pdf.Password);
+                    var rulings = ExtractRulings(page, viewRotation);
                     _marshaller.Post(() =>
                     {
                         // viewRotation: same stale-frame guard as SubmitAnalysis — don't repopulate
@@ -705,7 +713,8 @@ public sealed class DocumentModel : IDisposable
                         if (!IsDisposed && viewRotation == _viewRotation)
                         {
                             _textCache[page] = pageText;
-                            worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.DedupedCharBoxes, pars, viewRotation));
+                            worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH,
+                        pageText.DedupedCharBoxes, pars, rulings, viewRotation));
                         }
                     });
                 }
@@ -752,7 +761,8 @@ public sealed class DocumentModel : IDisposable
             var (pageW, pageH) = _pdf.GetPageSize(page, _viewRotation);
             var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize, _viewRotation);
             var pageText = GetOrExtractText(page);
-            worker.Submit(new AnalysisRequest(FilePath, page, rgb, pxW, pxH, pageW, pageH, pageText.DedupedCharBoxes, pars, _viewRotation));
+            worker.Submit(new AnalysisRequest(FilePath, page, rgb, pxW, pxH, pageW, pageH,
+                pageText.DedupedCharBoxes, pars, ExtractRulings(page, _viewRotation), _viewRotation));
             return true;
         }
         catch (Exception ex)
@@ -1069,6 +1079,31 @@ public sealed class DocumentModel : IDisposable
     /// caches the extracted text, the worker returns the OCR text later), and a real text layer
     /// must always win.
     /// </summary>
+    /// <summary>
+    /// Reads a page's vector ruling lines, or null when the backend cannot supply them.
+    ///
+    /// <para>
+    /// Called from the analysis-prep background tasks, alongside text extraction and on the
+    /// same thread, so it inherits their thread-safety story. Best-effort by design: rulings
+    /// only ever sharpen table column detection, and a backend that throws on an unusual page
+    /// must cost that page nothing more than the raster fallback it would have used anyway.
+    /// </para>
+    /// </summary>
+    private PageRulings? ExtractRulings(int page, int viewRotation)
+    {
+        if (_pdfRulings is null) return null;
+        try
+        {
+            var rulings = _pdfRulings.ExtractRulings(_pdf.PdfBytes, page, viewRotation, _pdf.Password);
+            return rulings.IsEmpty ? null : rulings;
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Ruling extraction failed for page {page}; falling back to raster rules", ex);
+            return null;
+        }
+    }
+
     internal void SetOcrText(int page, PageText text)
     {
         _marshaller.AssertUIThread();

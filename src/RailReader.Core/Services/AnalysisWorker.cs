@@ -9,6 +9,9 @@ public sealed record AnalysisRequest(
     int PxW, int PxH, double PageW, double PageH,
     IReadOnlyList<CharBox>? CharBoxes,
     AnalysisParams Params,
+    // The page's vector ruling lines, when the PDF backend can read them (see
+    // IPdfRulingService). Null for a backend that cannot, or a page with no vector content.
+    PageRulings? Rulings = null,
     // The document ViewRotation the pixmap was rasterised under. Carried through to the result so
     // the consumer can reject a result whose geometry is in a display frame the document has since
     // rotated away from (the caches were cleared; old-frame blocks must not repopulate them).
@@ -184,7 +187,7 @@ public sealed class AnalysisWorker : IDisposable
                     BlockPostProcessor.PostProcess(
                         analysis.Blocks, request.RgbBytes, request.PxW, request.PxH,
                         mapScaleX, mapScaleY, charBoxes, request.Params.TableRowReading,
-                        request.Params.CellNavigation, ocrLines);
+                        request.Params.CellNavigation, ocrLines, request.Rulings);
 
                     _logger.Debug($"[Worker] Page {request.Page}: {analysis.Blocks.Count} blocks detected");
 
