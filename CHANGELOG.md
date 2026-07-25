@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.49.0 — OCR for scanned pages, unruled table columns, duplicate-glyph filtering
+
+Three borrows from BobLd's PDF ecosystem ([RapidOcrNet](https://github.com/BobLd/RapidOcrNet),
+[tabula-sharp](https://github.com/BobLd/tabula-sharp), [CalyPdf](https://github.com/CalyPdf/CalyPdf)),
+each closing a gap in how RailReader handles real-world documents. Suite grew 937 → 979 tests.
+
+### New package: `RailReader.Core.Ocr.RapidOcr`
+
+RailReader had no OCR path, so a scanned PDF lost char-clustering line detection, the
+reading-order text tie-break, table cells, search, Markdown export, and VLM grounding — five
+separate degradations with one root cause. All of them consume a `PageText`, so recovering
+one repairs all of them without touching any of those algorithms.
+
+- **New Core seam `IOcrService`** (+ `OcrMode`, `OcrPage`, `OcrLine`). Core gains no
+  dependency; the engine lives in the new sibling package, backed by PaddleOCR PP-OCR ONNX
+  models via `RapidOcrNet` (Apache-2.0).
+- **Three modes.** `Off` (default, unchanged behaviour); `Lines` — detection only, giving rail
+  mode real line geometry instead of pixel projection, for the cost of the detection model
+  alone; `Full` — adds per-line recognition, so a scanned page takes the same char-clustering,
+  table-cell, search and export paths as a born-digital one.
+- **Runs on the analysis worker**, reusing the pixmap already rendered for the layout model
+  (no extra rasterisation) and only for pages that arrive with no char boxes. Accuracy tracks
+  that pixmap's size — pair `Full` with PP-DocLayout-S (1920 px) rather than the 800 px models.
+- **Wired via `DocumentController.InitializeWorker(…, ocrServiceFactory, ocrMode)`**; the mode
+  is settable at runtime through `DocumentController.OcrMode` / `AnalysisWorker.OcrMode`.
+  Recovered text is cached as the page's `PageText`, so search and export see it.
+- **Failure is contained.** A model that will not load records `AnalysisWorker.OcrStartupError`
+  and leaves layout analysis working; a page OCR cannot read still gets analysed.
+- Conservative ORT defaults (intra-op ≤4 threads, arena off, sequential) mirror
+  `Core.Analysis` rather than inheriting RapidOcrNet's all-cores/arena-on defaults.
+- The PP-OCRv5 Latin models (~14 MB) ship with `RapidOcrNet` and are copied into consumers'
+  build and publish output by a `buildTransitive` target in this package — RapidOcrNet's own
+  copy target reaches direct references only.
+
+### Unruled tables get shared column bands
+
+`LineDetector` split each table row's glyphs independently, so a row with a blank cell, a
+merged cell or a short entry produced a different cell count and different spans than its
+neighbours — column *k* meant something different on every row and cell navigation drifted
+sideways while stepping down. Rows' glyph runs are now pooled and merged into shared bands
+(the same outcome `DetectColumnGrid` already got from ruling lines), so blanks become empty
+navigable cells at the right index. Adapted from tabula-java's stream-mode column detection.
+
+- Applies only when the evidence is there: ≥3 bands, and more than half the contributing rows
+  showing multiple runs. Otherwise the per-row split runs exactly as before.
+- Rows whose single run spans ≥80% of the block (headings set inside the table body) are
+  excluded from band construction — they straddle every column and would collapse the grid.
+- **Behavioural:** for an unruled table that qualifies, `LineInfo.Cells` are now contiguous
+  column bands covering the block rather than boxes hugging each row's glyphs — matching what
+  the ruled path has produced since 0.39.0. Cell *content* membership is unchanged; the
+  geometry now includes the gutters, which is what gives a blank cell somewhere to live.
+
+### Duplicate overlapping glyphs are filtered before analysis
+
+Producers fake bold (and drop shadows) by stroking a glyph several times at sub-pixel offsets.
+Those repeats are real text-layer entries, and they biased the median char height behind the
+line-split threshold and the 90th-percentile anchor behind the table cell-gap threshold.
+
+- **New `PageText.DedupedCharBoxes`** — same character, same orientation, within a third of a
+  glyph of the same place ⇒ keep the first. Computed once per page and cached; returns the
+  original list when there is nothing to drop. Adapted from CalyPdf's
+  `CalyDuplicateOverlappingTextProcessor`.
+- `PageText.Text` and every `CharBox.Index` are untouched, so text extraction is unaffected;
+  the analysis pipeline now consumes the deduplicated boxes.
+
 ## 0.48.0 — Full-codebase audit: 52 verified fixes
 
 A 63-agent audit (9 area finders + adversarial verification of every finding) surfaced 52

@@ -16,6 +16,108 @@ public record PageText(string Text, List<CharBox> CharBoxes)
     private float[]? _yMid;
     private readonly object _ySync = new();
 
+    // Lazily-built deduplicated view of CharBoxes — see DedupedCharBoxes.
+    private List<CharBox>? _deduped;
+    private readonly object _dedupSync = new();
+
+    /// <summary>
+    /// Fraction of a glyph's own size within which a same-valued glyph counts as an
+    /// overlapping duplicate. A fake-bold glyph pair is offset by a fraction of a
+    /// stroke width — far below a third of the glyph box — while two legitimately
+    /// distinct instances of the same character are at least a full glyph apart.
+    /// </summary>
+    private const float DuplicateToleranceFraction = 1f / 3f;
+
+    /// <summary>
+    /// <see cref="CharBoxes"/> with overlapping duplicates removed: where the same
+    /// character is drawn two or more times at (nearly) the same place, only the
+    /// first occurrence is kept.
+    ///
+    /// <para>
+    /// PDF producers fake bold by stroking a glyph several times at sub-pixel
+    /// offsets (and fake shadows the same way). Those repeats are real entries in
+    /// the text layer, so they inflate the glyph population that
+    /// <see cref="Services.LineDetector"/> reasons over — biasing the median char
+    /// height that sets the line-split threshold, and the 90th-percentile anchor
+    /// behind the table cell-gap threshold. Filtering them costs one pass and
+    /// leaves genuinely distinct glyphs untouched.
+    /// </para>
+    /// <para>
+    /// <see cref="Text"/> and the <see cref="CharBox.Index"/> values are unchanged —
+    /// this only drops boxes, so text extraction (which indexes into
+    /// <see cref="Text"/>) is unaffected and every surviving index stays valid.
+    /// Zero-area boxes (whitespace and other non-marking glyphs) are always kept:
+    /// they carry no geometry to duplicate and consumers already skip them.
+    /// </para>
+    /// <para>Computed once and cached; safe to call from any thread.</para>
+    /// </summary>
+    public List<CharBox> DedupedCharBoxes
+    {
+        get
+        {
+            var cached = Volatile.Read(ref _deduped);
+            if (cached is not null) return cached;
+            lock (_dedupSync)
+            {
+                if (_deduped is not null) return _deduped;
+                var result = BuildDeduped();
+                Volatile.Write(ref _deduped, result);
+                return result;
+            }
+        }
+    }
+
+    private List<CharBox> BuildDeduped()
+    {
+        var kept = new List<CharBox>(CharBoxes.Count);
+        // Candidate duplicates are looked up by character value, so the geometric
+        // test only ever runs against glyphs that could actually be duplicates.
+        // Values are indices into `kept`, so the boxes stay in one contiguous list.
+        var byChar = new Dictionary<char, List<int>>();
+
+        foreach (var cb in CharBoxes)
+        {
+            float w = cb.Right - cb.Left, h = cb.Bottom - cb.Top;
+            if (w <= 0 || h <= 0 || cb.Index < 0 || cb.Index >= Text.Length)
+            {
+                kept.Add(cb);
+                continue;
+            }
+
+            char value = Text[cb.Index];
+            float tol = Math.Max(w, h) * DuplicateToleranceFraction;
+
+            if (byChar.TryGetValue(value, out var candidates))
+            {
+                bool duplicate = false;
+                foreach (int i in candidates)
+                {
+                    var other = kept[i];
+                    // Same glyph, same orientation, same place (within tolerance).
+                    if (other.Angle == cb.Angle
+                        && Math.Abs(other.Left - cb.Left) <= tol
+                        && Math.Abs(other.Top - cb.Top) <= tol)
+                    {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (duplicate) continue;
+                candidates.Add(kept.Count);
+            }
+            else
+            {
+                byChar[value] = [kept.Count];
+            }
+
+            kept.Add(cb);
+        }
+
+        // No duplicates found — hand back the original list so the common case
+        // costs nothing beyond the scan and callers can compare by reference.
+        return kept.Count == CharBoxes.Count ? CharBoxes : kept;
+    }
+
     private (CharBox[] Boxes, float[] Mid) YIndex()
     {
         var boxes = Volatile.Read(ref _yBoxes);

@@ -630,7 +630,7 @@ public sealed class DocumentModel : IDisposable
                     if (IsDisposed || vp.IsDisposed || vp.CurrentPage != page
                         || viewRotation != _viewRotation) return;
                     _textCache[page] = pageText;
-                    worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, pars, viewRotation));
+                    worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.DedupedCharBoxes, pars, viewRotation));
                 });
             }
             catch (OperationCanceledException) { }
@@ -705,7 +705,7 @@ public sealed class DocumentModel : IDisposable
                         if (!IsDisposed && viewRotation == _viewRotation)
                         {
                             _textCache[page] = pageText;
-                            worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, pars, viewRotation));
+                            worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH, pageText.DedupedCharBoxes, pars, viewRotation));
                         }
                     });
                 }
@@ -752,7 +752,7 @@ public sealed class DocumentModel : IDisposable
             var (pageW, pageH) = _pdf.GetPageSize(page, _viewRotation);
             var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize, _viewRotation);
             var pageText = GetOrExtractText(page);
-            worker.Submit(new AnalysisRequest(FilePath, page, rgb, pxW, pxH, pageW, pageH, pageText.CharBoxes, pars, _viewRotation));
+            worker.Submit(new AnalysisRequest(FilePath, page, rgb, pxW, pxH, pageW, pageH, pageText.DedupedCharBoxes, pars, _viewRotation));
             return true;
         }
         catch (Exception ex)
@@ -1059,6 +1059,20 @@ public sealed class DocumentModel : IDisposable
     internal void SetText(int page, PageText text)
     {
         _marshaller.AssertUIThread();
+        _textCache[page] = text;
+    }
+
+    /// <summary>
+    /// Installs OCR-recovered text for a page that has no text layer of its own. Refuses to
+    /// overwrite a cached entry that already carries char boxes: OCR only ever runs for a page
+    /// the extractor found empty, but the extraction and the analysis race (the prep task
+    /// caches the extracted text, the worker returns the OCR text later), and a real text layer
+    /// must always win.
+    /// </summary>
+    internal void SetOcrText(int page, PageText text)
+    {
+        _marshaller.AssertUIThread();
+        if (_textCache.TryGetValue(page, out var existing) && existing.CharBoxes.Count > 0) return;
         _textCache[page] = text;
     }
 

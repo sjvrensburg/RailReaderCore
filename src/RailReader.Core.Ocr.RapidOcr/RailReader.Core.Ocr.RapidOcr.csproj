@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsPackable>true</IsPackable>
+    <PackageId>RailReader.Core.Ocr.RapidOcr</PackageId>
+    <Description>IOcrService implementation backed by RapidOcrNet (PaddleOCR PP-OCR ONNX models), for reading PDFs with no text layer.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RailReader.Core.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../RailReader.Core/RailReader.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- RapidOcrNet is Apache-2.0 (this package stays MIT; the dependency is referenced,
+         not vendored). Its own package carries the PP-OCRv5 Latin models (~14 MB) and a
+         .targets file that copies them beside the consuming app's binaries, so Latin OCR
+         works with no extra download. SkiaSharp comes in transitively and is pinned to the
+         same 3.119.* the Skia renderer uses so one native binary serves both. -->
+    <PackageReference Include="RapidOcrNet" Version="3.0.*" />
+    <PackageReference Include="SkiaSharp" Version="3.119.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <!-- Ships the model-copy target to consumers; see the file for why it is needed. -->
+    <None Include="buildTransitive\$(PackageId).targets" Pack="true" PackagePath="buildTransitive\" />
+  </ItemGroup>
+
+</Project>

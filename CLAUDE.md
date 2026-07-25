@@ -68,6 +68,7 @@ RailReaderCore.slnx
 ├── src/RailReader.Core.Pdfium/      ← Desktop PDFium impls of IPdfTextService/IPdfLinkService/IPdfOutlineService + filesystem-backed AppConfig/AnnotationService/ConsoleLogger/LayoutModelLocator + native PDF annotation read/write (PdfAnnotationReader/Writer/Store, CompositeAnnotationStore)
 ├── src/RailReader.Core.Analysis/    ← ONNX-backed ILayoutAnalyzer (PP-DocLayoutV3, PP-DocLayout-S, Docling Heron)
 ├── src/RailReader.Core.Vlm.OpenAI/  ← IVlmService impl for OpenAI-compatible chat-completions endpoints
+├── src/RailReader.Core.Ocr.RapidOcr/ ← IOcrService impl (RapidOcrNet / PaddleOCR PP-OCR ONNX) for pages with no text layer
 ├── src/RailReader.Renderer.Skia/    ← SkiaSharp rasterisation + IPdfServiceFactory (PDFium-backed)
 └── tests/RailReader.Core.Tests/     ← xUnit headless tests
 ```
@@ -79,6 +80,7 @@ Renderer.Skia    ──→ Core + Core.Pdfium
 Core.Analysis    ──→ Core
 Core.Pdfium      ──→ Core
 Core.Vlm.OpenAI  ──→ Core
+Core.Ocr.RapidOcr ─→ Core
 Core             ←── (root; no project refs, no non-system NuGet deps)
 ```
 
@@ -120,6 +122,23 @@ PP-DocLayout-S is the intended detector for any future web (WASM/ORT-Web via `Av
 
 Single class: `OpenAIVlmClient` implements `IVlmService` against any endpoint that speaks the OpenAI chat-completions protocol (OpenAI proper, Ollama, vLLM, LightOnOCR, …). Stateless — endpoint config is passed per call via `VlmEndpointConfig`. Prompts, schemas, and routing are pulled from the static `VlmService` helper in Core, so this package is purely a transport layer.
 
+### RailReader.Core.Ocr.RapidOcr (OCR for pages with no text layer)
+
+Single class: `RapidOcrService` implements Core's `IOcrService` over `RapidOcrNet` (PaddleOCR
+PP-OCR ONNX models). The point of the seam is that **everything text-driven in Core consumes a
+`PageText`** — char-clustering line detection, the XY-Cut++ text tie-break, table row/cell
+detection, search, Markdown export, VLM grounding — so a scanned page is repaired by
+*synthesising* one rather than by special-casing any of those algorithms.
+
+`AnalysisWorker` is the single integration point: when a request arrives with no char boxes and
+`OcrMode != Off`, it runs OCR on the pixmap it already has, maps the result into page-point
+space (`OcrPageMapper`), and feeds the recovered char boxes into `RunAnalysis` / `AssignOrder` /
+`BlockPostProcessor` exactly as a real text layer would be. `OcrMode.Lines` skips recognition
+and supplies line boxes only, which `LineDetector` uses in preference to pixel projection;
+`OcrMode.Full` also returns a `PageText` that the controller caches for the page. OCR quality
+tracks the layout model's input size (the pixmap is shared) — PP-DocLayout-S at 1920 is the one
+to pair with `Full`. ORT session defaults mirror `Core.Analysis` (intra-op ≤4, arena off).
+
 ### RailReader.Renderer.Skia (SkiaSharp rasterisation)
 
 The only project that imports both `Core` and `Core.Pdfium`. `SkiaPdfServiceFactory` is what desktop consumers wire into Core: it hands out a `SkiaPdfService` for rasterisation alongside the Core.Pdfium text/link/outline services. Also owns the Skia-side renderers (annotation, overlay, screenshot compositor, SkSL colour-effect shaders) and the 300-DPI block crop renderer used for VLM transcription.
@@ -129,6 +148,7 @@ The only project that imports both `Core` and `Core.Pdfium`. `SkiaPdfServiceFact
 - Set `RailReaderLogging.Logger` once at startup (or accept the `NullLogger` default).
 - Construct `CoreSettings` from your config layer and pass it into `DocumentController`; on change, build a new `CoreSettings` and call `OnConfigChanged`.
 - Supply `IPdfServiceFactory`, `IAnnotationStore`, `IRecentFilesStore`. Desktop wires `SkiaPdfServiceFactory` + `AppConfig` and either `AnnotationService` (sidecar) or `CompositeAnnotationStore.Default` (native PDF annotations); a Lite/mobile consumer would substitute its own.
+- Optionally pass `ocrServiceFactory` / `ocrMode` to `InitializeWorker` to handle scanned PDFs (`new RapidOcrService()`). Off by default; `DocumentController.OcrMode` toggles it at runtime.
 
 ## Key Concepts
 
@@ -152,11 +172,16 @@ When the user changes a setting in the UI, the UI mutates `AppConfig` directly, 
 
 1. **Atomic-class collapse** — pure-visual blocks (`chart`, `image`, `header_image`, `footer_image`, `table`) become a single line spanning the full block. Equations and algorithms are deliberately *not* atomic — stepwise derivations read line-by-line.
 2. **PDFium char-box clustering** — when `IPdfTextService.ExtractPageText` returned per-character bounding boxes, cluster them by mid-Y with a 1.0× median-char-height split threshold. Subscripts and superscripts stay on their parent line; line height spans from cluster `min-top` to `max-bottom` so ascenders/descenders aren't clipped.
-3. **Pixel projection** — fallback for scanned PDFs with no text layer.
+3. **OCR line boxes** — when an `IOcrService` is wired and the page has no text layer, the
+   detected text lines are used in preference to pixel projection (they are real detections,
+   not density peaks). Lines are assigned to a block by centre-in-band plus ≥60% width overlap
+   so a neighbouring column's lines stay out. In `OcrMode.Full` this path is not reached at
+   all: OCR supplies char boxes and strategy 2 runs instead.
+4. **Pixel projection** — last-resort fallback for scanned PDFs with no text layer and no OCR.
 
 `DocumentState`'s three analysis-submission paths (`SubmitAnalysis`, `SubmitPendingLookahead`, `SubmitBackgroundAnalysis`) extract `PageText` alongside the page pixmap and pass `CharBoxes` to the worker — char clustering is the load-bearing strategy for math-heavy content.
 
-**Table cells.** When `CoreSettings.TableRowReading` is on, a `Table` block is un-collapsed and split into per-row lines (char clustering) so rail can step rows; with `CellNavigation` on, each row's `LineInfo.Cells` is populated so rail can step cell-by-cell. Two cell strategies: for **ruled** tables `LineDetector.DetectColumnGrid` recovers the column grid from the page's vertical rules (longest continuous dark run per pixel column on the rasterised page — DPI-robust to 0.3pt hairlines at 800px) and snaps every row to the shared bands, giving a stable column index with empty cells for blanks (fixes right-aligned numerics, dash placeholders, ragged/missing cells, hierarchical headers — issue #67); **unruled** tables fall back to a glyph-gap split with `RobustGapThreshold` (anchored on the 90th-percentile glyph height so a dash/dot-leader cluster can't collapse the threshold and shatter space-grouped numbers like `1 288 272`).
+**Table cells.** When `CoreSettings.TableRowReading` is on, a `Table` block is un-collapsed and split into per-row lines (char clustering) so rail can step rows; with `CellNavigation` on, each row's `LineInfo.Cells` is populated so rail can step cell-by-cell. Three cell strategies, tried in order: for **ruled** tables `LineDetector.DetectColumnGrid` recovers the column grid from the page's vertical rules (longest continuous dark run per pixel column on the rasterised page — DPI-robust to 0.3pt hairlines at 800px) and snaps every row to the shared bands, giving a stable column index with empty cells for blanks (fixes right-aligned numerics, dash placeholders, ragged/missing cells, hierarchical headers — issue #67); for **unruled** tables `LineDetector.DetectColumnBands` recovers the same shared bands from glyph geometry instead, pooling every row's runs and merging those closer than one cell gap (tabula-java's stream-mode idea) — gated on ≥3 bands and >half the rows showing multiple runs, with block-spanning heading rows excluded so they can't collapse the grid; anything that fails both falls back to the per-row glyph-gap split with `RobustGapThreshold` (anchored on the 90th-percentile glyph height so a dash/dot-leader cluster can't collapse the threshold and shatter space-grouped numbers like `1 288 272`). Note the first two produce *contiguous* bands covering the block (gutters included) — that is what lets a blank cell exist at the right column index — while the fallback hugs each row's content.
 
 ### Rail Mode
 

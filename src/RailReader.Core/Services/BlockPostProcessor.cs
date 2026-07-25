@@ -26,13 +26,14 @@ public static class BlockPostProcessor
         float scaleY,
         IReadOnlyList<CharBox>? charBoxes,
         bool tableRowReading = true,
-        bool cellNavigation = false)
+        bool cellNavigation = false,
+        IReadOnlyList<BBox>? ocrLines = null)
     {
         ResolveVerticalOverlaps(blocks);
         // Orientation before line detection: a sideways block must collapse to one
         // atomic line rather than be shattered by horizontal char clustering.
         OrientationDetector.DetectBlockOrientations(blocks, charBoxes, rgbBytes, imgW, imgH, scaleX, scaleY);
-        DetectLinesForBlocks(blocks, rgbBytes, imgW, imgH, scaleX, scaleY, charBoxes, tableRowReading, cellNavigation);
+        DetectLinesForBlocks(blocks, rgbBytes, imgW, imgH, scaleX, scaleY, charBoxes, tableRowReading, cellNavigation, ocrLines);
     }
 
     /// <summary>
@@ -81,11 +82,12 @@ public static class BlockPostProcessor
 
     private static void DetectLinesForBlocks(
         List<LayoutBlock> blocks, byte[] rgbBytes, int imgW, int imgH,
-        float scaleX, float scaleY, IReadOnlyList<CharBox>? charBoxes, bool tableRowReading, bool cellNavigation)
+        float scaleX, float scaleY, IReadOnlyList<CharBox>? charBoxes, bool tableRowReading,
+        bool cellNavigation, IReadOnlyList<BBox>? ocrLines)
     {
         foreach (var block in blocks)
         {
-            block.Lines = LineDetector.DetectLines(block, charBoxes, rgbBytes, imgW, imgH, scaleX, scaleY, tableRowReading, cellNavigation);
+            block.Lines = LineDetector.DetectLines(block, charBoxes, rgbBytes, imgW, imgH, scaleX, scaleY, tableRowReading, cellNavigation, ocrLines);
             if (block.Lines.Count == 0)
                 block.Lines.Add(new LineInfo(block.BBox.Y + block.BBox.H / 2, block.BBox.H,
                     block.BBox.X, block.BBox.W));

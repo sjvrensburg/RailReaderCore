@@ -83,6 +83,24 @@ public static class LineDetector
     /// </summary>
     internal const float RuleRunFraction = 0.5f;
 
+    /// <summary>
+    /// A table row consisting of one run at least this fraction of the block's width is a
+    /// spanning heading rather than a data row, and is excluded from unruled column-band
+    /// construction in <see cref="DetectColumnBands"/> — it straddles every column, so
+    /// pooling it would merge them all into one band.
+    /// </summary>
+    internal const float BandSpannerWidthFraction = 0.8f;
+
+    /// <summary>
+    /// Fraction of an OCR-detected line's width that must fall inside a block before the line
+    /// is treated as that block's. Text lines are detected page-wide with no knowledge of the
+    /// layout blocks, so in a two-column page a line from the left column shares its Y band
+    /// with the right column's block; requiring most of the line's width to be inside keeps
+    /// each line with its own block. Loose enough to tolerate a block box that clips a
+    /// hanging indent or a trailing glyph.
+    /// </summary>
+    internal const float OcrLineBlockOverlapFraction = 0.6f;
+
     private static readonly HashSet<BlockRole> MathRoles =
         [BlockRole.DisplayMath, BlockRole.InlineMath, BlockRole.Algorithm];
 
@@ -98,12 +116,19 @@ public static class LineDetector
     /// a text layer (char boxes); the pixel-projection fallback produces no cells. Has no
     /// effect on non-table blocks or when <paramref name="tableRowReading"/> is false.
     /// </param>
+    /// <param name="ocrLines">
+    /// Text-line boxes recovered by OCR for a page with no text layer, in page-point space.
+    /// Used only when char clustering produced nothing — they are real detected lines, so
+    /// they take precedence over the pixel-projection fallback. Null when the page has a
+    /// text layer or OCR is off.
+    /// </param>
     public static List<LineInfo> DetectLines(
         LayoutBlock block,
         IReadOnlyList<CharBox>? charBoxes,
         byte[] rgbBytes, int imgW, int imgH, float scaleX, float scaleY,
         bool tableRowReading = true,
-        bool cellNavigation = false)
+        bool cellNavigation = false,
+        IReadOnlyList<BBox>? ocrLines = null)
     {
         bool isTable = block.Role == BlockRole.Table;
         // Rotated-text blocks collapse to one atomic line: mid-Y char clustering
@@ -139,7 +164,46 @@ public static class LineDetector
             }
         }
 
+        if (ocrLines is { Count: > 0 })
+        {
+            var detected = LinesFromOcr(block.BBox, ocrLines);
+            if (detected.Count > 0) return NormalizeLines(detected, block.BBox, mergeOverlaps);
+        }
+
         return NormalizeLines(DetectLinesFromPixels(block, rgbBytes, imgW, imgH, scaleX, scaleY), block.BBox, mergeOverlaps);
+    }
+
+    /// <summary>
+    /// Selects the OCR-detected lines belonging to <paramref name="block"/> and clips them to it.
+    ///
+    /// <para>
+    /// A line belongs to the block when its vertical centre lies inside the block and most of
+    /// its width does too. Centre-in-band assigns each line to exactly one of two vertically
+    /// adjacent blocks; the width test then keeps a neighbouring column's line — which shares
+    /// the same Y band in multi-column layouts — out of this block.
+    /// </para>
+    /// </summary>
+    internal static List<LineInfo> LinesFromOcr(BBox block, IReadOnlyList<BBox> ocrLines)
+    {
+        float top = block.Y, bottom = block.Y + block.H;
+        float left = block.X, right = block.X + block.W;
+
+        var lines = new List<LineInfo>();
+        foreach (var l in ocrLines)
+        {
+            if (l.H <= 0 || l.W <= 0) continue;
+
+            float centreY = l.Y + l.H / 2f;
+            if (centreY < top || centreY > bottom) continue;
+
+            float lx = Math.Max(left, l.X);
+            float lr = Math.Min(right, l.X + l.W);
+            float overlap = lr - lx;
+            if (overlap <= 0 || overlap < l.W * OcrLineBlockOverlapFraction) continue;
+
+            lines.Add(new LineInfo(centreY, l.H, lx, overlap));
+        }
+        return lines;
     }
 
     /// <summary>
@@ -206,7 +270,7 @@ public static class LineDetector
 
     // One glyph's horizontal extent, kept while splitting a table row into cells.
     // Vertical extent is irrelevant once a glyph is bucketed to a row.
-    private readonly record struct GlyphRef(float Left, float Right);
+    internal readonly record struct GlyphRef(float Left, float Right);
 
     /// <summary>
     /// Overlays per-row cell geometry onto already-detected table rows. Each in-block,
@@ -271,10 +335,123 @@ public static class LineDetector
         }
 
         float gapThreshold = RobustGapThreshold(heights);
+
+        // Phase 3: unruled tables get their column grid recovered from glyph geometry
+        // across *all* rows rather than each row splitting itself. Same payoff as the
+        // ruled path above — a stable column index and empty cells for blanks.
+        var bands = DetectColumnBands(rowGlyphs, block, gapThreshold);
+        if (bands is not null)
+        {
+            var bandCells = BuildGridCells(bands);
+            for (int r = 0; r < rows.Count; r++)
+                if (rowGlyphs[r] is { Count: > 0 })
+                    rows[r] = rows[r] with { Cells = bandCells };
+            return rows;
+        }
+
         for (int r = 0; r < rows.Count; r++)
             if (rowGlyphs[r] is { Count: > 0 } glyphs)
                 rows[r] = rows[r] with { Cells = SplitRowCells(glyphs, gapThreshold) };
         return rows;
+    }
+
+    /// <summary>
+    /// Recovers a shared column grid for an <b>unruled</b> table by pooling every row's
+    /// glyph runs and merging the ones that occupy the same horizontal band.
+    ///
+    /// <para>
+    /// Splitting each row independently (<see cref="SplitRowCells"/>) is correct for that
+    /// row but not across rows: a row with a blank cell, a merged cell, or a short entry
+    /// yields a different cell count and different spans than its neighbours, so column
+    /// <c>k</c> means something different on every row and cell navigation drifts sideways
+    /// as it steps down. Pooling the runs recovers the column structure the table is
+    /// actually laid out on — the same thing <see cref="DetectColumnGrid"/> reads off the
+    /// ruling lines when they exist — and every row then gets the identical band list, so
+    /// blanks become empty navigable cells at the right index.
+    /// </para>
+    /// <para>
+    /// Rows whose single run spans most of the block (section headings and titles set
+    /// inside the table body) are excluded from band construction: they overlap every
+    /// column at once and would collapse the whole table into one band. They still receive
+    /// the resulting bands like any other row.
+    /// </para>
+    /// <para>
+    /// Returns sorted column boundaries in the same shape as <see cref="DetectColumnGrid"/>,
+    /// or <c>null</c> when the evidence for a columnar layout is too weak (fewer than three
+    /// bands, or too few rows showing more than one run) — the caller then falls back to
+    /// the per-row split. Adapted from tabula-java's stream-mode column detection
+    /// (<c>BasicExtractionAlgorithm.ColumnPositions</c>).
+    /// </para>
+    /// </summary>
+    internal static List<float>? DetectColumnBands(
+        IReadOnlyList<List<GlyphRef>?> rowGlyphs, BBox block, float gapThreshold)
+    {
+        if (gapThreshold <= 0) return null;
+
+        float blockLeft = block.X, blockRight = block.X + block.W;
+        if (blockRight - blockLeft <= 0) return null;
+
+        float spannerWidth = block.W * BandSpannerWidthFraction;
+
+        // Pool every contributing row's runs. Note SplitRowCells sorts each row's glyph
+        // list by left edge in place; the caller's fallback re-splits the same (now
+        // sorted) lists, which is why this can run ahead of it without disturbing it.
+        var runs = new List<CellInfo>();
+        int contributingRows = 0, multiCellRows = 0;
+        foreach (var glyphs in rowGlyphs)
+        {
+            if (glyphs is not { Count: > 0 }) continue;
+
+            var rowRuns = SplitRowCells(glyphs, gapThreshold);
+            // A lone run covering most of the block is a spanning heading, not a column.
+            if (rowRuns.Count == 1 && rowRuns[0].Width >= spannerWidth) continue;
+
+            contributingRows++;
+            if (rowRuns.Count > 1) multiCellRows++;
+            runs.AddRange(rowRuns);
+        }
+
+        // If most rows are single-run this is a list or a paragraph block, not a grid.
+        if (contributingRows == 0 || multiCellRows * 2 < contributingRows) return null;
+
+        runs.Sort((a, b) => a.X.CompareTo(b.X));
+
+        // Merge runs into bands. Runs closer than one cell gap belong to the same column:
+        // overlap alone is too strict, since a narrow entry on one row and a wide one on
+        // another can sit side by side without ever overlapping.
+        var bandLeft = new List<float>();
+        var bandRight = new List<float>();
+        float curLeft = runs[0].X, curRight = runs[0].X + runs[0].Width;
+        for (int i = 1; i < runs.Count; i++)
+        {
+            float l = runs[i].X, r = l + runs[i].Width;
+            if (l - curRight < gapThreshold)
+            {
+                if (r > curRight) curRight = r;
+            }
+            else
+            {
+                bandLeft.Add(curLeft); bandRight.Add(curRight);
+                curLeft = l; curRight = r;
+            }
+        }
+        bandLeft.Add(curLeft); bandRight.Add(curRight);
+
+        // Same confidence bar as the ruled path: ≥3 columns before we claim a grid.
+        if (bandLeft.Count < 3) return null;
+
+        // Boundaries: block edges plus the midpoint of each inter-band gutter. Clamped
+        // and kept strictly increasing so BuildGridCells can't emit a zero/negative span.
+        var bounds = new List<float>(bandLeft.Count + 1) { blockLeft };
+        for (int i = 1; i < bandLeft.Count; i++)
+        {
+            float mid = (bandRight[i - 1] + bandLeft[i]) * 0.5f;
+            mid = Math.Clamp(mid, blockLeft, blockRight);
+            if (mid > bounds[^1]) bounds.Add(mid);
+        }
+        if (blockRight > bounds[^1]) bounds.Add(blockRight);
+
+        return bounds.Count >= 4 ? bounds : null;
     }
 
     /// <summary>

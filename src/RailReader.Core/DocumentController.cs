@@ -164,13 +164,35 @@ public sealed partial class DocumentController : IDisposable
     /// capabilities (model order if available, top-down otherwise).
     /// Must be called before opening documents.
     /// </summary>
+    /// <param name="ocrServiceFactory">
+    /// Optional OCR engine (e.g. <c>RailReader.Core.Ocr.RapidOcr</c>) used for pages with no
+    /// text layer. Constructed on the worker thread; a load failure is recorded on
+    /// <see cref="AnalysisWorker.OcrStartupError"/> and leaves layout analysis working.
+    /// </param>
+    /// <param name="ocrMode">
+    /// How much OCR to run. Off by default; change later via <see cref="OcrMode"/>.
+    /// </param>
     public void InitializeWorker(
         LayoutModelCapabilities capabilities,
         Func<ILayoutAnalyzer> analyzerFactory,
-        IReadingOrderResolver? readingOrderResolver = null)
+        IReadingOrderResolver? readingOrderResolver = null,
+        Func<IOcrService>? ocrServiceFactory = null,
+        OcrMode ocrMode = OcrMode.Off)
     {
-        _worker = new AnalysisWorker(capabilities, analyzerFactory, _marshaller, readingOrderResolver, _logger);
+        _worker = new AnalysisWorker(capabilities, analyzerFactory, _marshaller, readingOrderResolver,
+            _logger, ocrServiceFactory, ocrMode);
         _logger.Debug("[Analysis] Worker started (analyzer loading in background)");
+    }
+
+    /// <summary>
+    /// How much OCR the analysis worker runs on pages with no text layer. Settable at any
+    /// time; reading before <see cref="InitializeWorker"/> (or with no OCR engine wired)
+    /// returns <see cref="Services.OcrMode.Off"/> and setting it is a no-op.
+    /// </summary>
+    public OcrMode OcrMode
+    {
+        get => _worker?.OcrMode ?? OcrMode.Off;
+        set { if (_worker is not null) _worker.OcrMode = value; }
     }
 
     // --- Document management ---
