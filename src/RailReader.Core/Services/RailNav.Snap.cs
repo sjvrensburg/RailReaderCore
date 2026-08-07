@@ -34,7 +34,11 @@ public sealed partial class RailNav
         {
             targetX = windowWidth - blockRight * zoom;
             if (blockWidthPx > windowWidth)
-                targetX = KeepLineInFrame(targetX, blockLeft, blockRight, zoom, windowWidth);
+            {
+                double maxX = -blockLeft * zoom;
+                double minX = windowWidth - blockRight * zoom;
+                targetX = KeepLineInFrame(targetX, minX, maxX, zoom, windowWidth);
+            }
         }
         var (_, targetY) = ComputeTargetCamera(zoom, windowWidth, windowHeight);
 
@@ -116,7 +120,7 @@ public sealed partial class RailNav
             double maxX = -blockLeft * zoom;
             double minX = windowWidth - blockRight * zoom;
             targetX = maxX - horizontalFraction * (maxX - minX);
-            targetX = KeepLineInFrame(targetX, blockLeft, blockRight, zoom, windowWidth);
+            targetX = KeepLineInFrame(targetX, minX, maxX, zoom, windowWidth);
         }
 
         targetX = ClampX(targetX, zoom, windowWidth);
@@ -193,7 +197,7 @@ public sealed partial class RailNav
             double maxX = -chunkLeft * zoom;                  // left boundary
             double minX = windowWidth - chunkRight * zoom;    // right boundary
             targetX = Math.Clamp(targetX, minX, maxX);
-            targetX = KeepLineInFrame(targetX, chunkLeft, chunkRight, zoom, windowWidth);
+            targetX = KeepLineInFrame(targetX, minX, maxX, zoom, windowWidth);
         }
 
         if (_config.PixelSnapping)
@@ -215,15 +219,12 @@ public sealed partial class RailNav
     /// spans (or exceeds) the window's width has one edge at the normal align inset already
     /// and its trailing-off far edge is expected, NOT a bug — the two branches below only
     /// fire when the line's near edge itself has crossed the midpoint, so ordinary wide-line
-    /// framing is untouched. <paramref name="left"/>/<paramref name="right"/> are the same
-    /// chunk/block bounds (page points) callers already derive their own minX/maxX from —
-    /// passed raw so the scroll-range formula lives in exactly one place.
+    /// framing is untouched. <paramref name="minX"/>/<paramref name="maxX"/> are the same
+    /// scroll-range bounds every caller already computes for its own clamp/fraction maths,
+    /// passed straight through rather than re-derived here.
     /// </summary>
-    private double KeepLineInFrame(double targetX, double left, double right, double zoom, double windowWidth)
+    private double KeepLineInFrame(double targetX, double minX, double maxX, double zoom, double windowWidth)
     {
-        double maxX = -left * zoom;
-        double minX = windowWidth - right * zoom;
-
         var (lineLeft, lineRight, _) = GetLineBounds(zoom);
         double lineScreenLeft = lineLeft * zoom + targetX;
         double lineScreenRight = lineRight * zoom + targetX;
