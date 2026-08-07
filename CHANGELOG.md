@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.51.0 — Rail-mode camera stranding fix
+
+Rail-mode camera snap (line advance, backward edge-hold, zoom-restore) could strand a
+short/narrow line far outside the viewport when it was chunk-merged with a much wider
+neighbouring block, forcing a long manual scroll to find the line.
+
+- `RailNav`'s snap-target computation (`ComputeTargetCamera`, `StartSnapToCurrentEnd`,
+  `StartSnapPreservingPosition`) derives its horizontal target from the chunk/block union
+  rather than the current line, so a line whose own bounds diverge enough from that union
+  could land off-screen. New `KeepLineInFrame` nudges the target back so the current line's
+  own bounds stay within the viewport, correcting both a rightward strand (forward
+  line-advance) and the mirror-image leftward strand (backward edge-hold).
+- Behaviour-only fix, no public API change.
+
 ## 0.50.0 — Vector table rules, model-free layout, cached page rendering
 
 The rest of the survey of BobLd's PDF ecosystem (see 0.49.0), plus a high-effort review pass over
