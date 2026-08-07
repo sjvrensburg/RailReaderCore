@@ -1034,13 +1034,12 @@ public class RailNavTests
     }
 
     /// <summary>
-    /// Regression for the "camera stranded far left of the new line" bug: a short,
-    /// indented block chunk-merged with a much wider block above it (no real column
-    /// split, so the chunk-spanner barrier never fires) must still land the camera on
-    /// the SHORT block's own line, not on the wide chunk's left-aligned anchor.
+    /// Shared fixture for the "camera stranded far from the new line" regressions: a short,
+    /// indented block chunk-merged with a much wider block above it (no real column split,
+    /// so the chunk-spanner barrier never fires) — merged, but the short block's own line
+    /// sits well right of the chunk's left edge.
     /// </summary>
-    [Fact]
-    public void ComputeSnapTarget_ShortIndentedBlockInWideChunk_LandsOnItsOwnLine()
+    private static PageAnalysis ShortIndentedBlockInWideChunkAnalysis()
     {
         // Block 0: wide, spans X=72..540 (matches CreateAnalysis's 468pt width).
         var wideBlock = new LayoutBlock
@@ -1058,7 +1057,18 @@ public class RailNavTests
         };
         shortBlock.Lines.Add(new LineInfo(92, 20, 300, 100));
 
-        var analysis = new PageAnalysis { Blocks = [wideBlock, shortBlock], PageWidth = 612, PageHeight = 792 };
+        return new PageAnalysis { Blocks = [wideBlock, shortBlock], PageWidth = 612, PageHeight = 792 };
+    }
+
+    /// <summary>
+    /// Regression for the "camera stranded far left of the new line" bug: forward
+    /// line-advance must land the camera on the SHORT block's own line, not on the wide
+    /// chunk's left-aligned anchor.
+    /// </summary>
+    [Fact]
+    public void ComputeSnapTarget_ShortIndentedBlockInWideChunk_LandsOnItsOwnLine()
+    {
+        var analysis = ShortIndentedBlockInWideChunkAnalysis();
         _nav.SetAnalysis(analysis, new HashSet<BlockRole> { TextRole });
         Assert.Equal(0, _nav.CurrentChunk); // sanity: both blocks merged into one chunk
 
@@ -1071,6 +1081,36 @@ public class RailNavTests
         // viewport) because the camera left-aligns to the wide block's X=72, not the short
         // block's own X=300. With the fix the line's own start is brought near the screen.
         Assert.InRange(lineLeftOnScreen, 0, WindowWidth / 2.0);
+    }
+
+    /// <summary>
+    /// Mirror-image regression: backward edge-hold (<see cref="RailNav.StartSnapToCurrentEnd"/>)
+    /// right-aligns to the wide chunk's right edge, which can strand a short block's own line
+    /// entirely off-screen to the LEFT instead.
+    /// </summary>
+    [Fact]
+    public void StartSnapToCurrentEnd_ShortIndentedBlockInWideChunk_LandsOnItsOwnLine()
+    {
+        var analysis = ShortIndentedBlockInWideChunkAnalysis();
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { TextRole });
+        _nav.Active = true;
+        Assert.Equal(0, _nav.CurrentChunk); // sanity: both blocks merged into one chunk
+
+        _nav.TrySetCurrentByPageIndex(1); // seat on the short block's line
+
+        double cx = 0, cy = 0;
+        _nav.StartSnapToCurrentEnd(cx, cy, 4.0, WindowWidth, WindowHeight);
+        Thread.Sleep(5);
+        _nav.Tick(ref cx, ref cy, 0.016, 4.0, WindowWidth);
+
+        double lineLeftOnScreen = 300 * 4.0 + cx;
+        double lineRightOnScreen = 400 * 4.0 + cx;
+
+        // Without the fix this lands well below 0 (fully off the left edge of an 800-wide
+        // viewport) because the camera right-aligns to the wide block's right edge (X=540),
+        // not the short block's own extent. With the fix the line's own bounds are visible.
+        Assert.InRange(lineLeftOnScreen, 0, WindowWidth);
+        Assert.InRange(lineRightOnScreen, 0, WindowWidth);
     }
 
     // ===== Forward line-advance trigger fires at the line end, not the block edge =====
