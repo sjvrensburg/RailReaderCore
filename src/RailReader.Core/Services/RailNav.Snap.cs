@@ -31,7 +31,15 @@ public sealed partial class RailNav
         if (ShouldCenterUnit(blockWidthPx, windowWidth))
             targetX = windowWidth / 2.0 - (blockLeft + blockRight) / 2.0 * zoom;
         else
+        {
             targetX = windowWidth - blockRight * zoom;
+            if (blockWidthPx > windowWidth)
+            {
+                double maxX = -blockLeft * zoom;
+                double minX = windowWidth - blockRight * zoom;
+                targetX = KeepLineInFrame(targetX, minX, maxX, zoom, windowWidth);
+            }
+        }
         var (_, targetY) = ComputeTargetCamera(zoom, windowWidth, windowHeight);
 
         BeginSnap(cameraX, cameraY, SnapX(targetX, zoom), SnapY(targetY));
@@ -112,6 +120,7 @@ public sealed partial class RailNav
             double maxX = -blockLeft * zoom;
             double minX = windowWidth - blockRight * zoom;
             targetX = maxX - horizontalFraction * (maxX - minX);
+            targetX = KeepLineInFrame(targetX, minX, maxX, zoom, windowWidth);
         }
 
         targetX = ClampX(targetX, zoom, windowWidth);
@@ -188,6 +197,7 @@ public sealed partial class RailNav
             double maxX = -chunkLeft * zoom;                  // left boundary
             double minX = windowWidth - chunkRight * zoom;    // right boundary
             targetX = Math.Clamp(targetX, minX, maxX);
+            targetX = KeepLineInFrame(targetX, minX, maxX, zoom, windowWidth);
         }
 
         if (_config.PixelSnapping)
@@ -197,6 +207,33 @@ public sealed partial class RailNav
         }
 
         return (targetX, targetY);
+    }
+
+    /// <summary>
+    /// Nudges a chunk/block-derived camera target so the CURRENT LINE's own bounds don't
+    /// land implausibly far into the viewport. A short/narrow line chunk-merged with a much
+    /// wider neighbouring block (e.g. a bold run-in line pulled into the same chunk as an
+    /// adjacent equation block) can diverge from the chunk's left- or right-align anchor
+    /// enough to strand the line entirely on the far side of the window's midpoint, leaving
+    /// the near half of the screen empty. Deliberately coarse: a line that legitimately
+    /// spans (or exceeds) the window's width has one edge at the normal align inset already
+    /// and its trailing-off far edge is expected, NOT a bug — the two branches below only
+    /// fire when the line's near edge itself has crossed the midpoint, so ordinary wide-line
+    /// framing is untouched. <paramref name="minX"/>/<paramref name="maxX"/> are the same
+    /// scroll-range bounds every caller already computes for its own clamp/fraction maths,
+    /// passed straight through rather than re-derived here.
+    /// </summary>
+    private double KeepLineInFrame(double targetX, double minX, double maxX, double zoom, double windowWidth)
+    {
+        var (lineLeft, lineRight, _) = GetLineBounds(zoom);
+        double lineScreenLeft = lineLeft * zoom + targetX;
+        double lineScreenRight = lineRight * zoom + targetX;
+        if (lineScreenLeft > windowWidth / 2.0)
+            targetX -= lineScreenLeft - windowWidth * 0.05;
+        else if (lineScreenRight < windowWidth / 2.0)
+            targetX += windowWidth * 0.95 - lineScreenRight;
+
+        return Math.Clamp(targetX, minX, maxX);
     }
 
     private bool TickSnapAnimation(ref double cameraX, ref double cameraY)

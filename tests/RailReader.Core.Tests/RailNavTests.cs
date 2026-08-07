@@ -1033,6 +1033,86 @@ public class RailNavTests
         Assert.True(blockCenterX * 4.0 + xWide > WindowWidth / 2.0);
     }
 
+    /// <summary>
+    /// Shared fixture for the "camera stranded far from the new line" regressions: a short,
+    /// indented block chunk-merged with a much wider block above it (no real column split,
+    /// so the chunk-spanner barrier never fires) — merged, but the short block's own line
+    /// sits well right of the chunk's left edge.
+    /// </summary>
+    private static PageAnalysis ShortIndentedBlockInWideChunkAnalysis()
+    {
+        // Block 0: wide, spans X=72..540 (matches CreateAnalysis's 468pt width).
+        var wideBlock = new LayoutBlock
+        {
+            BBox = new BBox(72, 72, 468, 20), Role = TextRole, Confidence = 0.95f, Order = 0,
+        };
+        wideBlock.Lines.Add(new LineInfo(72, 20, 72, 468));
+
+        // Block 1: short, indented run-in line at X=300..400, directly below block 0 —
+        // horizontal overlap and vertical gap both satisfy SameChunk, so it merges into
+        // block 0's chunk even though its own line sits well right of the chunk's left edge.
+        var shortBlock = new LayoutBlock
+        {
+            BBox = new BBox(300, 92, 100, 20), Role = TextRole, Confidence = 0.95f, Order = 1,
+        };
+        shortBlock.Lines.Add(new LineInfo(92, 20, 300, 100));
+
+        return new PageAnalysis { Blocks = [wideBlock, shortBlock], PageWidth = 612, PageHeight = 792 };
+    }
+
+    /// <summary>
+    /// Regression for the "camera stranded far left of the new line" bug: forward
+    /// line-advance must land the camera on the SHORT block's own line, not on the wide
+    /// chunk's left-aligned anchor.
+    /// </summary>
+    [Fact]
+    public void ComputeSnapTarget_ShortIndentedBlockInWideChunk_LandsOnItsOwnLine()
+    {
+        var analysis = ShortIndentedBlockInWideChunkAnalysis();
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { TextRole });
+        Assert.Equal(0, _nav.CurrentChunk); // sanity: both blocks merged into one chunk
+
+        _nav.TrySetCurrentByPageIndex(1); // seat on the short block's line
+
+        var (x, _) = _nav.ComputeSnapTarget(4.0, WindowWidth, WindowHeight);
+        double lineLeftOnScreen = 300 * 4.0 + x;
+
+        // Without the fix this lands past 800px (fully off the right edge of an 800-wide
+        // viewport) because the camera left-aligns to the wide block's X=72, not the short
+        // block's own X=300. With the fix the line's own start is brought near the screen.
+        Assert.InRange(lineLeftOnScreen, 0, WindowWidth / 2.0);
+    }
+
+    /// <summary>
+    /// Mirror-image regression: backward edge-hold (<see cref="RailNav.StartSnapToCurrentEnd"/>)
+    /// right-aligns to the wide chunk's right edge, which can strand a short block's own line
+    /// entirely off-screen to the LEFT instead.
+    /// </summary>
+    [Fact]
+    public void StartSnapToCurrentEnd_ShortIndentedBlockInWideChunk_LandsOnItsOwnLine()
+    {
+        var analysis = ShortIndentedBlockInWideChunkAnalysis();
+        _nav.SetAnalysis(analysis, new HashSet<BlockRole> { TextRole });
+        _nav.Active = true;
+        Assert.Equal(0, _nav.CurrentChunk); // sanity: both blocks merged into one chunk
+
+        _nav.TrySetCurrentByPageIndex(1); // seat on the short block's line
+
+        double cx = 0, cy = 0;
+        _nav.StartSnapToCurrentEnd(cx, cy, 4.0, WindowWidth, WindowHeight);
+        Thread.Sleep(5);
+        _nav.Tick(ref cx, ref cy, 0.016, 4.0, WindowWidth);
+
+        double lineLeftOnScreen = 300 * 4.0 + cx;
+        double lineRightOnScreen = 400 * 4.0 + cx;
+
+        // Without the fix this lands well below 0 (fully off the left edge of an 800-wide
+        // viewport) because the camera right-aligns to the wide block's right edge (X=540),
+        // not the short block's own extent. With the fix the line's own bounds are visible.
+        Assert.InRange(lineLeftOnScreen, 0, WindowWidth);
+        Assert.InRange(lineRightOnScreen, 0, WindowWidth);
+    }
+
     // ===== Forward line-advance trigger fires at the line end, not the block edge =====
 
     /// <summary>Single wide block whose only line has the given (short) width at x=72.</summary>
