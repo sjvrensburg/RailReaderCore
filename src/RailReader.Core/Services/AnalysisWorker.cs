@@ -39,7 +39,7 @@ public sealed class AnalysisWorker : IDisposable
     private readonly IThreadMarshaller _marshaller;
     private readonly IReadingOrderResolver _readingOrder;
     private readonly Func<IOcrService>? _ocrServiceFactory;
-    private readonly LayoutTuning? _tuning;
+    private readonly LayoutTuning _tuning;
 
     /// <summary>Static capabilities of the analyzer running in this worker. Available before the analyzer finishes loading.</summary>
     public LayoutModelCapabilities Capabilities { get; }
@@ -92,8 +92,7 @@ public sealed class AnalysisWorker : IDisposable
     /// <param name="tuning">
     /// Optional override of the raster thresholds used by post-processing (see
     /// <see cref="LayoutTuning"/>). Detection thresholds are the analyzer's business — set
-    /// those on the instance <paramref name="analyzerFactory"/> builds. Null keeps the
-    /// <see cref="LayoutConstants"/> defaults.
+    /// those on the instance <paramref name="analyzerFactory"/> builds.
     /// </param>
     public AnalysisWorker(
         LayoutModelCapabilities capabilities,
@@ -106,7 +105,7 @@ public sealed class AnalysisWorker : IDisposable
         LayoutTuning? tuning = null)
     {
         Capabilities = capabilities;
-        _tuning = tuning;
+        _tuning = tuning ?? LayoutTuning.Default;
         _ocrMode = (int)ocrMode;
         _ocrServiceFactory = ocrServiceFactory;
         _readingOrder = readingOrderResolver ?? (capabilities.ProvidesReadingOrder

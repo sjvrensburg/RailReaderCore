@@ -42,9 +42,8 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
     /// with a different label space. Defaults to <see cref="PPDocLayoutV3Roles.Capabilities"/>.
     /// </param>
     /// <param name="tuning">
-    /// Optional detection-threshold override (confidence, NMS IoU, minimum detection
-    /// size). Defaults to <see cref="LayoutTuning.Default"/>, i.e. the
-    /// <see cref="LayoutConstants"/> values.
+    /// Optional detection-threshold override — confidence, NMS IoU, minimum detection
+    /// size; see <see cref="LayoutTuning"/>.
     /// </param>
     public LayoutAnalyzer(string modelPath, LayoutModelCapabilities? capabilities = null,
         LayoutTuning? tuning = null)

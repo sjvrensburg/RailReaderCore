@@ -29,14 +29,6 @@ public class LayoutTuningTests
     }
 
     [Fact]
-    public void With_OverridesOnlyTheNamedValue()
-    {
-        var t = LayoutTuning.Default with { ConfidenceThreshold = 0.1f };
-        Assert.Equal(0.1f, t.ConfidenceThreshold);
-        Assert.Equal(LayoutConstants.NmsIouThreshold, t.NmsIouThreshold);
-    }
-
-    [Fact]
     public void TryBuildBlock_LowerConfidenceThreshold_KeepsFaintDetection()
     {
         const float confidence = 0.2f; // below the 0.4 default
@@ -78,8 +70,7 @@ public class LayoutTuningTests
         for (int i = 4; i < 8; i++) densities[i] = 1f;
 
         Assert.Single(LineDetector.FindLineRuns(densities));
-        Assert.Empty(LineDetector.FindLineRuns(densities,
-            LayoutTuning.Default with { MinLineHeightPx = 5 }));
+        Assert.Empty(LineDetector.FindLineRuns(densities, minLineHeightPx: 5));
     }
 
     [Fact]
@@ -91,9 +82,7 @@ public class LayoutTuningTests
         Array.Fill(rgb, (byte)180);
 
         Assert.All(LineDetector.ComputeRowDensities(rgb, w, 0, 0, w, h), d => Assert.Equal(0f, d));
-        Assert.All(
-            LineDetector.ComputeRowDensities(rgb, w, 0, 0, w, h,
-                LayoutTuning.Default with { DarkLuminanceThreshold = 200f }),
+        Assert.All(LineDetector.ComputeRowDensities(rgb, w, 0, 0, w, h, darkThreshold: 200f),
             d => Assert.Equal(1f, d));
     }
 

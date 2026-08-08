@@ -263,7 +263,7 @@ public class AuditServicesFixesTests : IDisposable
             Role = BlockRole.Text,
         };
 
-        var lines = LineDetector.DetectLinesFromPixels(block, rgb, imgW, imgH, 1f, 1f);
+        var lines = LineDetector.DetectLinesFromPixels(block, rgb, imgW, imgH, 1f, 1f, LayoutTuning.Default);
         Assert.NotNull(lines); // degrades gracefully instead of IndexOutOfRangeException
     }
 }

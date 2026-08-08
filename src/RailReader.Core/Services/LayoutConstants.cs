@@ -4,12 +4,7 @@ namespace RailReader.Core.Services;
 /// Model-agnostic tuning constants used by the post-processing pipeline. Per-model
 /// values (input size, class table, role mappings) live on the analyzer via
 /// <see cref="LayoutModelCapabilities"/>.
-///
-/// <para>
-/// These are the <i>defaults</i>. To override any of them for a given analyzer or
-/// pipeline run, pass a <see cref="LayoutTuning"/> instead of relying on these
-/// constants — every <see cref="LayoutTuning"/> property defaults to the value here.
-/// </para>
+/// These are the defaults; <see cref="LayoutTuning"/> overrides them per instance.
 /// </summary>
 public static class LayoutConstants
 {

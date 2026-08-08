@@ -15,9 +15,8 @@ public static class BlockPostProcessor
     /// Runs overlap resolution and line detection on the given blocks. Blocks
     /// are expected to already be sorted by reading order. The pixmap and
     /// scale factors are needed by the pixel-projection fallback in
-    /// <see cref="LineDetector"/>. Pass <paramref name="tuning"/> to override the
-    /// raster thresholds that fallback uses; null keeps the <see cref="LayoutConstants"/>
-    /// defaults.
+    /// <see cref="LineDetector"/>. Pass <paramref name="tuning"/> to override the raster
+    /// thresholds that fallback uses; see <see cref="LayoutTuning"/>.
     /// </summary>
     public static void PostProcess(
         List<LayoutBlock> blocks,

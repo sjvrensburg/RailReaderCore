@@ -95,9 +95,8 @@ public sealed class PPDocLayoutSLayoutAnalyzer : ILayoutAnalyzer
     /// variants with a different class table can pass their own.
     /// </param>
     /// <param name="tuning">
-    /// Optional detection-threshold override (confidence, NMS IoU, minimum detection
-    /// size). Defaults to <see cref="LayoutTuning.Default"/>, i.e. the
-    /// <see cref="LayoutConstants"/> values.
+    /// Optional detection-threshold override — confidence, NMS IoU, minimum detection
+    /// size; see <see cref="LayoutTuning"/>.
     /// </param>
     public PPDocLayoutSLayoutAnalyzer(string modelPath, LayoutModelCapabilities? capabilities = null,
         LayoutTuning? tuning = null)
@@ -152,7 +151,7 @@ public sealed class PPDocLayoutSLayoutAnalyzer : ILayoutAnalyzer
 
         // NMS is baked into the ONNX graph at score_threshold=0.3, but reuse
         // the shared NMS for safety against near-duplicate detections (and to
-        // honour LayoutConstants.NmsIouThreshold uniformly across analyzers).
+        // honour the tuning's NmsIouThreshold uniformly across analyzers).
         LayoutAnalyzer.Nms(rawBlocks, _tuning.NmsIouThreshold);
         LayoutAnalyzer.SuppressNestedBlocks(rawBlocks);
 

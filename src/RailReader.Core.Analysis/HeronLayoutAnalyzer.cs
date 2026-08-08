@@ -79,9 +79,8 @@ public sealed class HeronLayoutAnalyzer : ILayoutAnalyzer
     /// variants with a different class table can pass their own.
     /// </param>
     /// <param name="tuning">
-    /// Optional detection-threshold override (confidence, NMS IoU, minimum detection
-    /// size). Defaults to <see cref="LayoutTuning.Default"/>, i.e. the
-    /// <see cref="LayoutConstants"/> values.
+    /// Optional detection-threshold override — confidence, NMS IoU, minimum detection
+    /// size; see <see cref="LayoutTuning"/>.
     /// </param>
     public HeronLayoutAnalyzer(string modelPath, LayoutModelCapabilities? capabilities = null,
         LayoutTuning? tuning = null)

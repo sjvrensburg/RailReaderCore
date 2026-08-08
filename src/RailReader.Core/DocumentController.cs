@@ -176,7 +176,7 @@ public sealed partial class DocumentController : IDisposable
     /// Optional override of the raster thresholds used by block post-processing (see
     /// <see cref="LayoutTuning"/>). Detection thresholds (confidence, NMS IoU, minimum
     /// detection size) belong to the analyzer — pass a <see cref="LayoutTuning"/> to its
-    /// constructor inside <paramref name="analyzerFactory"/>. Null keeps the defaults.
+    /// constructor inside <paramref name="analyzerFactory"/>.
     /// </param>
     public void InitializeWorker(
         LayoutModelCapabilities capabilities,
