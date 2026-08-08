@@ -50,7 +50,7 @@ public sealed class HeronLayoutAnalyzer : ILayoutAnalyzer
 
     private readonly InferenceSession _session;
     private readonly LayoutModelCapabilities _capabilities;
-    private readonly LayoutTuning _tuning;
+    private readonly LayoutDetectionTuning _tuning;
 #if DEBUG
     private bool _loggedIoShapes;
 #endif
@@ -80,13 +80,13 @@ public sealed class HeronLayoutAnalyzer : ILayoutAnalyzer
     /// </param>
     /// <param name="tuning">
     /// Optional detection-threshold override — confidence, NMS IoU, minimum detection
-    /// size; see <see cref="LayoutTuning"/>.
+    /// size; see <see cref="LayoutDetectionTuning"/>.
     /// </param>
     public HeronLayoutAnalyzer(string modelPath, LayoutModelCapabilities? capabilities = null,
-        LayoutTuning? tuning = null)
+        LayoutDetectionTuning? tuning = null)
     {
         _capabilities = capabilities ?? DoclingHeronRoles.Capabilities;
-        _tuning = tuning ?? LayoutTuning.Default;
+        _tuning = tuning ?? LayoutDetectionTuning.Default;
 
         // ORT copies the options into the session at creation, so the native
         // handle is safe to dispose immediately (and on constructor throw).

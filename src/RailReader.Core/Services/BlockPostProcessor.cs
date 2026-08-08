@@ -16,7 +16,7 @@ public static class BlockPostProcessor
     /// are expected to already be sorted by reading order. The pixmap and
     /// scale factors are needed by the pixel-projection fallback in
     /// <see cref="LineDetector"/>. Pass <paramref name="tuning"/> to override the raster
-    /// thresholds that fallback uses; see <see cref="LayoutTuning"/>.
+    /// thresholds that fallback uses; see <see cref="LineDetectionTuning"/>.
     /// </summary>
     public static void PostProcess(
         List<LayoutBlock> blocks,
@@ -30,7 +30,7 @@ public static class BlockPostProcessor
         bool cellNavigation = false,
         IReadOnlyList<BBox>? ocrLines = null,
         PageRulings? rulings = null,
-        LayoutTuning? tuning = null)
+        LineDetectionTuning? tuning = null)
     {
         ResolveVerticalOverlaps(blocks);
         // Orientation before line detection: a sideways block must collapse to one
@@ -86,7 +86,7 @@ public static class BlockPostProcessor
     private static void DetectLinesForBlocks(
         List<LayoutBlock> blocks, byte[] rgbBytes, int imgW, int imgH,
         float scaleX, float scaleY, IReadOnlyList<CharBox>? charBoxes, bool tableRowReading,
-        bool cellNavigation, IReadOnlyList<BBox>? ocrLines, PageRulings? rulings, LayoutTuning? tuning)
+        bool cellNavigation, IReadOnlyList<BBox>? ocrLines, PageRulings? rulings, LineDetectionTuning? tuning)
     {
         foreach (var block in blocks)
         {

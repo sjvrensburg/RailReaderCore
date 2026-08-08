@@ -5,11 +5,11 @@ using Xunit;
 namespace RailReader.Core.Tests;
 
 /// <summary>
-/// Covers the per-instance <see cref="LayoutTuning"/> overrides of the values that
-/// used to be reachable only as <see cref="LayoutConstants"/> compile-time constants
-/// (issue #89).
+/// Covers the per-instance <see cref="LayoutDetectionTuning"/> / <see cref="LineDetectionTuning"/>
+/// overrides of the values that used to be reachable only as <see cref="LayoutConstants"/>
+/// compile-time constants (issue #89).
 /// </summary>
-public class LayoutTuningTests
+public class TuningOverrideTests
 {
     private static readonly IReadOnlyList<LayoutClassDescriptor> ClassTable =
     [
@@ -17,15 +17,17 @@ public class LayoutTuningTests
     ];
 
     [Fact]
-    public void Default_MatchesLayoutConstants()
+    public void Defaults_MatchLayoutConstants()
     {
-        var t = LayoutTuning.Default;
-        Assert.Equal(LayoutConstants.ConfidenceThreshold, t.ConfidenceThreshold);
-        Assert.Equal(LayoutConstants.NmsIouThreshold, t.NmsIouThreshold);
-        Assert.Equal(LayoutConstants.DarkLuminanceThreshold, t.DarkLuminanceThreshold);
-        Assert.Equal(LayoutConstants.DensityThresholdFraction, t.DensityThresholdFraction);
-        Assert.Equal(LayoutConstants.MinLineHeightPx, t.MinLineHeightPx);
-        Assert.Equal(LayoutConstants.MinDetectionSizePx, t.MinDetectionSizePx);
+        var detection = LayoutDetectionTuning.Default;
+        Assert.Equal(LayoutConstants.ConfidenceThreshold, detection.ConfidenceThreshold);
+        Assert.Equal(LayoutConstants.NmsIouThreshold, detection.NmsIouThreshold);
+        Assert.Equal(LayoutConstants.MinDetectionSizePx, detection.MinDetectionSizePx);
+
+        var lines = LineDetectionTuning.Default;
+        Assert.Equal(LayoutConstants.DarkLuminanceThreshold, lines.DarkLuminanceThreshold);
+        Assert.Equal(LayoutConstants.DensityThresholdFraction, lines.DensityThresholdFraction);
+        Assert.Equal(LayoutConstants.MinLineHeightPx, lines.MinLineHeightPx);
     }
 
     [Fact]
@@ -34,11 +36,11 @@ public class LayoutTuningTests
         const float confidence = 0.2f; // below the 0.4 default
 
         Assert.False(LayoutAnalyzer.TryBuildBlock(0, confidence, 0, 0, 100, 100,
-            200, 200, 1f, 1f, ClassTable, order: 0, LayoutTuning.Default, out _));
+            200, 200, 1f, 1f, ClassTable, order: 0, LayoutDetectionTuning.Default, out _));
 
         Assert.True(LayoutAnalyzer.TryBuildBlock(0, confidence, 0, 0, 100, 100,
             200, 200, 1f, 1f, ClassTable, order: 0,
-            LayoutTuning.Default with { ConfidenceThreshold = 0.15f }, out var block));
+            LayoutDetectionTuning.Default with { ConfidenceThreshold = 0.15f }, out var block));
         Assert.Equal(confidence, block.Confidence);
     }
 
@@ -47,7 +49,7 @@ public class LayoutTuningTests
     {
         Assert.False(LayoutAnalyzer.TryBuildBlock(0, 0.5f, 0, 0, 100, 100,
             200, 200, 1f, 1f, ClassTable, order: 0,
-            LayoutTuning.Default with { ConfidenceThreshold = 0.9f }, out _));
+            LayoutDetectionTuning.Default with { ConfidenceThreshold = 0.9f }, out _));
     }
 
     [Fact]
@@ -55,11 +57,11 @@ public class LayoutTuningTests
     {
         // 8×8 detection: kept at the default 5px floor, rejected at a 10px floor.
         Assert.True(LayoutAnalyzer.TryBuildBlock(0, 0.9f, 0, 0, 8, 8,
-            200, 200, 1f, 1f, ClassTable, order: 0, LayoutTuning.Default, out _));
+            200, 200, 1f, 1f, ClassTable, order: 0, LayoutDetectionTuning.Default, out _));
 
         Assert.False(LayoutAnalyzer.TryBuildBlock(0, 0.9f, 0, 0, 8, 8,
             200, 200, 1f, 1f, ClassTable, order: 0,
-            LayoutTuning.Default with { MinDetectionSizePx = 10f }, out _));
+            LayoutDetectionTuning.Default with { MinDetectionSizePx = 10f }, out _));
     }
 
     [Fact]
@@ -104,7 +106,7 @@ public class LayoutTuningTests
         var block = new LayoutBlock { BBox = new BBox(0, 0, w, h), Role = BlockRole.Text };
 
         var loose = LineDetector.DetectLines(block, charBoxes: null, rgb, w, h, 1f, 1f,
-            tuning: LayoutTuning.Default with { DarkLuminanceThreshold = 200f });
+            tuning: LineDetectionTuning.Default with { DarkLuminanceThreshold = 200f });
         Assert.Single(loose);
         Assert.InRange(loose[0].Y, 8f, 14f);
 

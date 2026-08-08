@@ -152,7 +152,7 @@ public static class LineDetector
     /// </param>
     /// <param name="tuning">
     /// Optional override of the raster thresholds used by the pixel-projection fallback and
-    /// the vertical-rule scan; see <see cref="LayoutTuning"/>. Null keeps the defaults.
+    /// the vertical-rule scan; see <see cref="LineDetectionTuning"/>. Null keeps the defaults.
     /// </param>
     public static List<LineInfo> DetectLines(
         LayoutBlock block,
@@ -162,9 +162,9 @@ public static class LineDetector
         bool cellNavigation = false,
         IReadOnlyList<BBox>? ocrLines = null,
         PageRulings? rulings = null,
-        LayoutTuning? tuning = null)
+        LineDetectionTuning? tuning = null)
     {
-        tuning ??= LayoutTuning.Default;
+        tuning ??= LineDetectionTuning.Default;
         bool isTable = block.Role == BlockRole.Table;
         // Rotated-text blocks collapse to one atomic line: mid-Y char clustering
         // (and the row-density fallback) assume horizontal lines and would shatter
@@ -324,7 +324,7 @@ public static class LineDetector
         List<LineInfo> rows, IReadOnlyList<CharBox> charBoxes, BBox block,
         byte[] rgbBytes, int imgW, int imgH, float scaleX, float scaleY,
         PageRulings? rulings,
-        LayoutTuning tuning)
+        LineDetectionTuning tuning)
     {
         if (rows.Count == 0) return rows;
 
@@ -1020,7 +1020,7 @@ public static class LineDetector
     /// </summary>
     internal static List<LineInfo> DetectLinesFromPixels(
         LayoutBlock block, byte[] rgbBytes, int imgW, int imgH, float scaleX, float scaleY,
-        LayoutTuning tuning)
+        LineDetectionTuning tuning)
     {
         // Clamp both bounds (like DetectColumnGrid): a block with a slightly negative origin
         // must degrade gracefully, not index rgbBytes with a negative pixel offset.

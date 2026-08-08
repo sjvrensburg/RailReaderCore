@@ -4,7 +4,8 @@ namespace RailReader.Core.Services;
 /// Model-agnostic tuning constants used by the post-processing pipeline. Per-model
 /// values (input size, class table, role mappings) live on the analyzer via
 /// <see cref="LayoutModelCapabilities"/>.
-/// These are the defaults; <see cref="LayoutTuning"/> overrides them per instance.
+/// These are the defaults; <see cref="LayoutDetectionTuning"/> (analyzer thresholds) and
+/// <see cref="LineDetectionTuning"/> (raster thresholds) override them per instance.
 /// </summary>
 public static class LayoutConstants
 {

@@ -174,8 +174,8 @@ public sealed partial class DocumentController : IDisposable
     /// </param>
     /// <param name="tuning">
     /// Optional override of the raster thresholds used by block post-processing (see
-    /// <see cref="LayoutTuning"/>). Detection thresholds (confidence, NMS IoU, minimum
-    /// detection size) belong to the analyzer — pass a <see cref="LayoutTuning"/> to its
+    /// <see cref="LineDetectionTuning"/>). Detection thresholds (confidence, NMS IoU, minimum
+    /// detection size) belong to the analyzer — pass a <see cref="LineDetectionTuning"/> to its
     /// constructor inside <paramref name="analyzerFactory"/>.
     /// </param>
     public void InitializeWorker(
@@ -184,7 +184,7 @@ public sealed partial class DocumentController : IDisposable
         IReadingOrderResolver? readingOrderResolver = null,
         Func<IOcrService>? ocrServiceFactory = null,
         OcrMode ocrMode = OcrMode.Off,
-        LayoutTuning? tuning = null)
+        LineDetectionTuning? tuning = null)
     {
         _worker = new AnalysisWorker(capabilities, analyzerFactory, _marshaller, readingOrderResolver,
             _logger, ocrServiceFactory, ocrMode, tuning);

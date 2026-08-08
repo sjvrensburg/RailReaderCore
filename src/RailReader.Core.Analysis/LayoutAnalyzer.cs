@@ -11,7 +11,7 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
 
     private readonly InferenceSession _session;
     private readonly LayoutModelCapabilities _capabilities;
-    private readonly LayoutTuning _tuning;
+    private readonly LayoutDetectionTuning _tuning;
 #if DEBUG
     private bool _loggedOutputShapes;
 #endif
@@ -43,13 +43,13 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
     /// </param>
     /// <param name="tuning">
     /// Optional detection-threshold override — confidence, NMS IoU, minimum detection
-    /// size; see <see cref="LayoutTuning"/>.
+    /// size; see <see cref="LayoutDetectionTuning"/>.
     /// </param>
     public LayoutAnalyzer(string modelPath, LayoutModelCapabilities? capabilities = null,
-        LayoutTuning? tuning = null)
+        LayoutDetectionTuning? tuning = null)
     {
         _capabilities = capabilities ?? PPDocLayoutV3Roles.Capabilities;
-        _tuning = tuning ?? LayoutTuning.Default;
+        _tuning = tuning ?? LayoutDetectionTuning.Default;
 
         // ORT copies the options into the session at creation, so the native
         // OrtSessionOptions handle can (and must) be disposed here — including
@@ -224,7 +224,7 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
     /// <summary>
     /// Shared post-detection construction: validates confidence and class id,
     /// clamps the box to the pixmap, rejects detections smaller than
-    /// <see cref="LayoutTuning.MinDetectionSizePx"/>, and scales the
+    /// <see cref="LayoutDetectionTuning.MinDetectionSizePx"/>, and scales the
     /// pixel-space box into page-space via <paramref name="mapScaleX"/>/
     /// <paramref name="mapScaleY"/>.
     /// </summary>
@@ -233,7 +233,7 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
         float xmin, float ymin, float xmax, float ymax,
         int pxW, int pxH, float mapScaleX, float mapScaleY,
         IReadOnlyList<LayoutClassDescriptor> classTable, int order,
-        LayoutTuning tuning,
+        LayoutDetectionTuning tuning,
         out LayoutBlock block)
     {
         block = default!;

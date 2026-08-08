@@ -4,22 +4,26 @@
 
 The model-agnostic thresholds in `LayoutConstants` were compile-time `const`s, so a
 consumer could not lower the detection confidence threshold (or any of the others)
-without forking the library.
+without forking the library. They are now overridable per instance, through two records
+split along the seam that consumes them.
 
-- New `LayoutTuning` record (Core, `RailReader.Core.Services`) — an immutable per-instance
-  override of every `LayoutConstants` value: `ConfidenceThreshold`, `NmsIouThreshold`,
-  `DarkLuminanceThreshold`, `DensityThresholdFraction`, `MinLineHeightPx`,
-  `MinDetectionSizePx`. Each property defaults to the corresponding constant, so
-  `LayoutTuning.Default` reproduces the built-in behaviour exactly; derive a variant with
-  `LayoutTuning.Default with { ConfidenceThreshold = 0.25f }`.
-- All three ONNX analyzers (`LayoutAnalyzer`, `PPDocLayoutSLayoutAnalyzer`,
-  `HeronLayoutAnalyzer`) take an optional `LayoutTuning? tuning = null` constructor
+- New `LayoutDetectionTuning` (Core, `RailReader.Core.Services`) — `ConfidenceThreshold`,
+  `NmsIouThreshold`, `MinDetectionSizePx`. All three ONNX analyzers (`LayoutAnalyzer`,
+  `PPDocLayoutSLayoutAnalyzer`, `HeronLayoutAnalyzer`) take one as an optional constructor
   parameter and apply it to confidence filtering, NMS, and the minimum-detection-size
   rejection.
-- The raster thresholds are threaded through the post-processing path too:
-  `LineDetector.DetectLines`, `BlockPostProcessor.PostProcess`, the `AnalysisWorker`
-  constructor, and `DocumentController.InitializeWorker` each take an optional
-  `LayoutTuning?`.
+- New `LineDetectionTuning` — `DarkLuminanceThreshold`, `DensityThresholdFraction`,
+  `MinLineHeightPx`, the raster thresholds of the pixel-projection line fallback and the
+  vertical-rule scan. Accepted as an optional parameter by `LineDetector.DetectLines`,
+  `BlockPostProcessor.PostProcess`, the `AnalysisWorker` constructor, and
+  `DocumentController.InitializeWorker`.
+- They are separate types on purpose: each seam ignores the other's values, so a single
+  record would let a caller set a detection threshold on the worker and have it silently
+  do nothing.
+- Each property defaults to the corresponding `LayoutConstants` constant, so
+  `LayoutDetectionTuning.Default` / `LineDetectionTuning.Default` reproduce the built-in
+  behaviour exactly; derive a variant with
+  `LayoutDetectionTuning.Default with { ConfidenceThreshold = 0.25f }`.
 - `LayoutConstants` is unchanged and remains the source of the defaults.
 - Fully additive — every new parameter is optional and defaults to today's behaviour.
 
