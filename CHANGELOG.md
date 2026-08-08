@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.52.0 — Configurable layout tuning (#89)
+
+The model-agnostic thresholds in `LayoutConstants` were compile-time `const`s, so a
+consumer could not lower the detection confidence threshold (or any of the others)
+without forking the library. They are now overridable per instance, through two records
+split along the seam that consumes them.
+
+- New `LayoutDetectionTuning` (Core, `RailReader.Core.Services`) — `ConfidenceThreshold`,
+  `NmsIouThreshold`, `MinDetectionSizePx`. All three ONNX analyzers (`LayoutAnalyzer`,
+  `PPDocLayoutSLayoutAnalyzer`, `HeronLayoutAnalyzer`) take one as an optional constructor
+  parameter and apply it to confidence filtering, NMS, and the minimum-detection-size
+  rejection.
+- New `LineDetectionTuning` — `DarkLuminanceThreshold`, `DensityThresholdFraction`,
+  `MinLineHeightPx`, the raster thresholds of the pixel-projection line fallback and the
+  vertical-rule scan. Accepted as an optional parameter by `LineDetector.DetectLines`,
+  `BlockPostProcessor.PostProcess`, the `AnalysisWorker` constructor, and
+  `DocumentController.InitializeWorker`.
+- They are separate types on purpose: each seam ignores the other's values, so a single
+  record would let a caller set a detection threshold on the worker and have it silently
+  do nothing.
+- Each property defaults to the corresponding `LayoutConstants` constant, so
+  `LayoutDetectionTuning.Default` / `LineDetectionTuning.Default` reproduce the built-in
+  behaviour exactly; derive a variant with
+  `LayoutDetectionTuning.Default with { ConfidenceThreshold = 0.25f }`.
+- `LayoutConstants` is unchanged and remains the source of the defaults.
+- Fully additive — every new parameter is optional and defaults to today's behaviour.
+
 ## 0.51.0 — Rail-mode camera stranding fix
 
 Rail-mode camera snap (line advance, backward edge-hold, zoom-restore) could strand a

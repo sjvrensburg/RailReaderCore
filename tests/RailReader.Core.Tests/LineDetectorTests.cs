@@ -449,7 +449,7 @@ public class LineDetectorTests
             }
 
         // scaleX = scaleY = 1 → point space == pixel space.
-        var bounds = LineDetector.DetectColumnGrid(rgb, W, H, new BBox(0, 0, W, H), 1f, 1f);
+        var bounds = LineDetector.DetectColumnGrid(rgb, W, H, new BBox(0, 0, W, H), 1f, 1f, LineDetectionTuning.Default);
 
         Assert.NotNull(bounds);
         Assert.Equal(new[] { 0f, 25f, 50f, 75f, 100f }, bounds!.ToArray());
@@ -462,7 +462,7 @@ public class LineDetectorTests
         const int W = 60, H = 40;
         var rgb = new byte[W * H * 3];
         Array.Fill(rgb, (byte)255);
-        Assert.Null(LineDetector.DetectColumnGrid(rgb, W, H, new BBox(0, 0, W, H), 1f, 1f));
+        Assert.Null(LineDetector.DetectColumnGrid(rgb, W, H, new BBox(0, 0, W, H), 1f, 1f, LineDetectionTuning.Default));
     }
 
     [Fact]

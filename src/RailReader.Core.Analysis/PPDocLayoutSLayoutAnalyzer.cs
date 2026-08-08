@@ -66,6 +66,7 @@ public sealed class PPDocLayoutSLayoutAnalyzer : ILayoutAnalyzer
 
     private readonly InferenceSession _session;
     private readonly LayoutModelCapabilities _capabilities;
+    private readonly LayoutDetectionTuning _tuning;
 #if DEBUG
     private bool _loggedIoShapes;
 #endif
@@ -93,9 +94,15 @@ public sealed class PPDocLayoutSLayoutAnalyzer : ILayoutAnalyzer
     /// <see cref="PPDocLayoutSRoles.Capabilities"/>. Custom-trained PP-S
     /// variants with a different class table can pass their own.
     /// </param>
-    public PPDocLayoutSLayoutAnalyzer(string modelPath, LayoutModelCapabilities? capabilities = null)
+    /// <param name="tuning">
+    /// Optional detection-threshold override — confidence, NMS IoU, minimum detection
+    /// size; see <see cref="LayoutDetectionTuning"/>.
+    /// </param>
+    public PPDocLayoutSLayoutAnalyzer(string modelPath, LayoutModelCapabilities? capabilities = null,
+        LayoutDetectionTuning? tuning = null)
     {
         _capabilities = capabilities ?? PPDocLayoutSRoles.Capabilities;
+        _tuning = tuning ?? LayoutDetectionTuning.Default;
 
         // ORT copies the options into the session at creation, so the native
         // handle is safe to dispose immediately (and on constructor throw).
@@ -144,8 +151,8 @@ public sealed class PPDocLayoutSLayoutAnalyzer : ILayoutAnalyzer
 
         // NMS is baked into the ONNX graph at score_threshold=0.3, but reuse
         // the shared NMS for safety against near-duplicate detections (and to
-        // honour LayoutConstants.NmsIouThreshold uniformly across analyzers).
-        LayoutAnalyzer.Nms(rawBlocks, LayoutConstants.NmsIouThreshold);
+        // honour the tuning's NmsIouThreshold uniformly across analyzers).
+        LayoutAnalyzer.Nms(rawBlocks, _tuning.NmsIouThreshold);
         LayoutAnalyzer.SuppressNestedBlocks(rawBlocks);
 
         return new PageAnalysis
@@ -220,7 +227,7 @@ public sealed class PPDocLayoutSLayoutAnalyzer : ILayoutAnalyzer
             float ymax = detectionData[off + 5];
 
             if (LayoutAnalyzer.TryBuildBlock(classId, confidence, xmin, ymin, xmax, ymax,
-                    pxW, pxH, mapScaleX, mapScaleY, classTable, order: 0, out var block))
+                    pxW, pxH, mapScaleX, mapScaleY, classTable, order: 0, _tuning, out var block))
                 rawBlocks.Add(block);
         }
 

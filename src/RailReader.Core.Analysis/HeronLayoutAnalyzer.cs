@@ -50,6 +50,7 @@ public sealed class HeronLayoutAnalyzer : ILayoutAnalyzer
 
     private readonly InferenceSession _session;
     private readonly LayoutModelCapabilities _capabilities;
+    private readonly LayoutDetectionTuning _tuning;
 #if DEBUG
     private bool _loggedIoShapes;
 #endif
@@ -77,9 +78,15 @@ public sealed class HeronLayoutAnalyzer : ILayoutAnalyzer
     /// <see cref="DoclingHeronRoles.Capabilities"/>. Custom-trained Heron
     /// variants with a different class table can pass their own.
     /// </param>
-    public HeronLayoutAnalyzer(string modelPath, LayoutModelCapabilities? capabilities = null)
+    /// <param name="tuning">
+    /// Optional detection-threshold override — confidence, NMS IoU, minimum detection
+    /// size; see <see cref="LayoutDetectionTuning"/>.
+    /// </param>
+    public HeronLayoutAnalyzer(string modelPath, LayoutModelCapabilities? capabilities = null,
+        LayoutDetectionTuning? tuning = null)
     {
         _capabilities = capabilities ?? DoclingHeronRoles.Capabilities;
+        _tuning = tuning ?? LayoutDetectionTuning.Default;
 
         // ORT copies the options into the session at creation, so the native
         // handle is safe to dispose immediately (and on constructor throw).
@@ -126,7 +133,7 @@ public sealed class HeronLayoutAnalyzer : ILayoutAnalyzer
 
         // RT-DETR is NMS-free by design but the 300-query output sometimes
         // produces near-duplicate detections; reuse the existing NMS for safety.
-        LayoutAnalyzer.Nms(rawBlocks, LayoutConstants.NmsIouThreshold);
+        LayoutAnalyzer.Nms(rawBlocks, _tuning.NmsIouThreshold);
         LayoutAnalyzer.SuppressNestedBlocks(rawBlocks);
 
         return new PageAnalysis
@@ -190,7 +197,7 @@ public sealed class HeronLayoutAnalyzer : ILayoutAnalyzer
             float ymax = boxes[o + 3];
 
             if (LayoutAnalyzer.TryBuildBlock(classId, confidence, xmin, ymin, xmax, ymax,
-                    pxW, pxH, mapScaleX, mapScaleY, classTable, order: 0, out var block))
+                    pxW, pxH, mapScaleX, mapScaleY, classTable, order: 0, _tuning, out var block))
                 rawBlocks.Add(block);
         }
 
