@@ -11,6 +11,7 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
 
     private readonly InferenceSession _session;
     private readonly LayoutModelCapabilities _capabilities;
+    private readonly LayoutTuning _tuning;
 #if DEBUG
     private bool _loggedOutputShapes;
 #endif
@@ -40,9 +41,16 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
     /// reading-order availability. Use this to load a custom model trained
     /// with a different label space. Defaults to <see cref="PPDocLayoutV3Roles.Capabilities"/>.
     /// </param>
-    public LayoutAnalyzer(string modelPath, LayoutModelCapabilities? capabilities = null)
+    /// <param name="tuning">
+    /// Optional detection-threshold override (confidence, NMS IoU, minimum detection
+    /// size). Defaults to <see cref="LayoutTuning.Default"/>, i.e. the
+    /// <see cref="LayoutConstants"/> values.
+    /// </param>
+    public LayoutAnalyzer(string modelPath, LayoutModelCapabilities? capabilities = null,
+        LayoutTuning? tuning = null)
     {
         _capabilities = capabilities ?? PPDocLayoutV3Roles.Capabilities;
+        _tuning = tuning ?? LayoutTuning.Default;
 
         // ORT copies the options into the session at creation, so the native
         // OrtSessionOptions handle can (and must) be disposed here — including
@@ -90,7 +98,7 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
         if (rawBlocks is null)
             return new PageAnalysis { Blocks = [], PageWidth = pageW, PageHeight = pageH };
 
-        Nms(rawBlocks, LayoutConstants.NmsIouThreshold);
+        Nms(rawBlocks, _tuning.NmsIouThreshold);
         SuppressNestedBlocks(rawBlocks);
 
         return new PageAnalysis
@@ -156,7 +164,7 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
             int modelOrder = hasReadingOrder ? (int)detectionData[off + 6] : 0;
 
             if (TryBuildBlock(classId, confidence, xmin, ymin, xmax, ymax,
-                    pxW, pxH, mapScaleX, mapScaleY, classTable, modelOrder, out var block))
+                    pxW, pxH, mapScaleX, mapScaleY, classTable, modelOrder, _tuning, out var block))
                 rawBlocks.Add(block);
         }
 
@@ -217,7 +225,7 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
     /// <summary>
     /// Shared post-detection construction: validates confidence and class id,
     /// clamps the box to the pixmap, rejects detections smaller than
-    /// <see cref="LayoutConstants.MinDetectionSizePx"/>, and scales the
+    /// <see cref="LayoutTuning.MinDetectionSizePx"/>, and scales the
     /// pixel-space box into page-space via <paramref name="mapScaleX"/>/
     /// <paramref name="mapScaleY"/>.
     /// </summary>
@@ -226,17 +234,18 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
         float xmin, float ymin, float xmax, float ymax,
         int pxW, int pxH, float mapScaleX, float mapScaleY,
         IReadOnlyList<LayoutClassDescriptor> classTable, int order,
+        LayoutTuning tuning,
         out LayoutBlock block)
     {
         block = default!;
-        if (confidence < LayoutConstants.ConfidenceThreshold) return false;
+        if (confidence < tuning.ConfidenceThreshold) return false;
         if (classId < 0 || classId >= classTable.Count) return false;
 
         float x = Math.Max(xmin, 0);
         float y = Math.Max(ymin, 0);
         float w = Math.Min(xmax, pxW) - x;
         float h = Math.Min(ymax, pxH) - y;
-        if (w < LayoutConstants.MinDetectionSizePx || h < LayoutConstants.MinDetectionSizePx) return false;
+        if (w < tuning.MinDetectionSizePx || h < tuning.MinDetectionSizePx) return false;
 
         block = new LayoutBlock
         {

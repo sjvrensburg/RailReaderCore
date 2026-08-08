@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.52.0 — Configurable layout tuning (#89)
+
+The model-agnostic thresholds in `LayoutConstants` were compile-time `const`s, so a
+consumer could not lower the detection confidence threshold (or any of the others)
+without forking the library.
+
+- New `LayoutTuning` record (Core, `RailReader.Core.Services`) — an immutable per-instance
+  override of every `LayoutConstants` value: `ConfidenceThreshold`, `NmsIouThreshold`,
+  `DarkLuminanceThreshold`, `DensityThresholdFraction`, `MinLineHeightPx`,
+  `MinDetectionSizePx`. Each property defaults to the corresponding constant, so
+  `LayoutTuning.Default` reproduces the built-in behaviour exactly; derive a variant with
+  `LayoutTuning.Default with { ConfidenceThreshold = 0.25f }`.
+- All three ONNX analyzers (`LayoutAnalyzer`, `PPDocLayoutSLayoutAnalyzer`,
+  `HeronLayoutAnalyzer`) take an optional `LayoutTuning? tuning = null` constructor
+  parameter and apply it to confidence filtering, NMS, and the minimum-detection-size
+  rejection.
+- The raster thresholds are threaded through the post-processing path too:
+  `LineDetector.DetectLines`, `BlockPostProcessor.PostProcess`, the `AnalysisWorker`
+  constructor, and `DocumentController.InitializeWorker` each take an optional
+  `LayoutTuning?`.
+- `LayoutConstants` is unchanged and remains the source of the defaults.
+- Fully additive — every new parameter is optional and defaults to today's behaviour.
+
 ## 0.51.0 — Rail-mode camera stranding fix
 
 Rail-mode camera snap (line advance, backward edge-hold, zoom-restore) could strand a

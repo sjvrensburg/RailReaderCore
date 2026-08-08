@@ -172,15 +172,22 @@ public sealed partial class DocumentController : IDisposable
     /// <param name="ocrMode">
     /// How much OCR to run. Off by default; change later via <see cref="OcrMode"/>.
     /// </param>
+    /// <param name="tuning">
+    /// Optional override of the raster thresholds used by block post-processing (see
+    /// <see cref="LayoutTuning"/>). Detection thresholds (confidence, NMS IoU, minimum
+    /// detection size) belong to the analyzer — pass a <see cref="LayoutTuning"/> to its
+    /// constructor inside <paramref name="analyzerFactory"/>. Null keeps the defaults.
+    /// </param>
     public void InitializeWorker(
         LayoutModelCapabilities capabilities,
         Func<ILayoutAnalyzer> analyzerFactory,
         IReadingOrderResolver? readingOrderResolver = null,
         Func<IOcrService>? ocrServiceFactory = null,
-        OcrMode ocrMode = OcrMode.Off)
+        OcrMode ocrMode = OcrMode.Off,
+        LayoutTuning? tuning = null)
     {
         _worker = new AnalysisWorker(capabilities, analyzerFactory, _marshaller, readingOrderResolver,
-            _logger, ocrServiceFactory, ocrMode);
+            _logger, ocrServiceFactory, ocrMode, tuning);
         _logger.Debug("[Analysis] Worker started (analyzer loading in background)");
     }
 

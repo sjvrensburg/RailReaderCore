@@ -15,7 +15,9 @@ public static class BlockPostProcessor
     /// Runs overlap resolution and line detection on the given blocks. Blocks
     /// are expected to already be sorted by reading order. The pixmap and
     /// scale factors are needed by the pixel-projection fallback in
-    /// <see cref="LineDetector"/>.
+    /// <see cref="LineDetector"/>. Pass <paramref name="tuning"/> to override the
+    /// raster thresholds that fallback uses; null keeps the <see cref="LayoutConstants"/>
+    /// defaults.
     /// </summary>
     public static void PostProcess(
         List<LayoutBlock> blocks,
@@ -28,13 +30,14 @@ public static class BlockPostProcessor
         bool tableRowReading = true,
         bool cellNavigation = false,
         IReadOnlyList<BBox>? ocrLines = null,
-        PageRulings? rulings = null)
+        PageRulings? rulings = null,
+        LayoutTuning? tuning = null)
     {
         ResolveVerticalOverlaps(blocks);
         // Orientation before line detection: a sideways block must collapse to one
         // atomic line rather than be shattered by horizontal char clustering.
         OrientationDetector.DetectBlockOrientations(blocks, charBoxes, rgbBytes, imgW, imgH, scaleX, scaleY);
-        DetectLinesForBlocks(blocks, rgbBytes, imgW, imgH, scaleX, scaleY, charBoxes, tableRowReading, cellNavigation, ocrLines, rulings);
+        DetectLinesForBlocks(blocks, rgbBytes, imgW, imgH, scaleX, scaleY, charBoxes, tableRowReading, cellNavigation, ocrLines, rulings, tuning);
     }
 
     /// <summary>
@@ -84,11 +87,11 @@ public static class BlockPostProcessor
     private static void DetectLinesForBlocks(
         List<LayoutBlock> blocks, byte[] rgbBytes, int imgW, int imgH,
         float scaleX, float scaleY, IReadOnlyList<CharBox>? charBoxes, bool tableRowReading,
-        bool cellNavigation, IReadOnlyList<BBox>? ocrLines, PageRulings? rulings)
+        bool cellNavigation, IReadOnlyList<BBox>? ocrLines, PageRulings? rulings, LayoutTuning? tuning)
     {
         foreach (var block in blocks)
         {
-            block.Lines = LineDetector.DetectLines(block, charBoxes, rgbBytes, imgW, imgH, scaleX, scaleY, tableRowReading, cellNavigation, ocrLines, rulings);
+            block.Lines = LineDetector.DetectLines(block, charBoxes, rgbBytes, imgW, imgH, scaleX, scaleY, tableRowReading, cellNavigation, ocrLines, rulings, tuning);
             if (block.Lines.Count == 0)
                 block.Lines.Add(new LineInfo(block.BBox.Y + block.BBox.H / 2, block.BBox.H,
                     block.BBox.X, block.BBox.W));
