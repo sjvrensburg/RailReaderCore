@@ -370,7 +370,7 @@ public static class LineDetector
         // exact lines the producer drew, where the raster scan can only infer them from dark
         // pixel runs at whatever resolution the analysis pixmap happens to be.
         var grid = DetectColumnGridFromRulings(rulings, block);
-        grid ??= DetectColumnGrid(rgbBytes, imgW, imgH, block, scaleX, scaleY, tuning.DarkLuminanceThreshold);
+        grid ??= DetectColumnGrid(rgbBytes, imgW, imgH, block, scaleX, scaleY, tuning);
 
         // A "grid" is only believable if the table's own content sits in it. A figure's border,
         // a code block's background or a tall bracket can read as a rule — producing columns no
@@ -721,9 +721,10 @@ public static class LineDetector
     /// </summary>
     internal static List<float>? DetectColumnGrid(
         byte[] rgbBytes, int imgW, int imgH, BBox block, float scaleX, float scaleY,
-        float darkThreshold = LayoutConstants.DarkLuminanceThreshold)
+        LineDetectionTuning tuning)
     {
         if (rgbBytes is null || rgbBytes.Length == 0 || scaleX <= 0 || scaleY <= 0) return null;
+        float darkThreshold = tuning.DarkLuminanceThreshold;
 
         int pxX = Math.Max(0, Math.Min((int)Math.Round(block.X / scaleX), imgW - 1));
         int pxY = Math.Max(0, Math.Min((int)Math.Round(block.Y / scaleY), imgH - 1));
@@ -1032,8 +1033,8 @@ public static class LineDetector
         if (pxW <= 0 || pxH <= 0)
             return [];
 
-        var densities = ComputeRowDensities(rgbBytes, imgW, pxX, pxY, pxW, pxH, tuning.DarkLuminanceThreshold);
-        var runs = FindLineRuns(densities, tuning.DensityThresholdFraction, tuning.MinLineHeightPx);
+        var densities = ComputeRowDensities(rgbBytes, imgW, pxX, pxY, pxW, pxH, tuning);
+        var runs = FindLineRuns(densities, tuning);
 
         var lines = new List<LineInfo>(runs.Count);
         foreach (var run in runs)
@@ -1046,8 +1047,9 @@ public static class LineDetector
     }
 
     internal static float[] ComputeRowDensities(byte[] rgbBytes, int imgW, int cropX, int cropY, int cropW, int cropH,
-        float darkThreshold = LayoutConstants.DarkLuminanceThreshold)
+        LineDetectionTuning tuning)
     {
+        float darkThreshold = tuning.DarkLuminanceThreshold;
         var profile = new float[cropH];
         for (int row = 0; row < cropH; row++)
         {
@@ -1088,10 +1090,9 @@ public static class LineDetector
     /// and bottom of the block with a low absolute threshold to catch short lines (e.g. the
     /// last few words of a paragraph) that fall below the density-fraction threshold.
     /// </summary>
-    internal static List<(int Start, int Height)> FindLineRuns(float[] densities,
-        float densityThresholdFraction = LayoutConstants.DensityThresholdFraction,
-        int minLineHeightPx = LayoutConstants.MinLineHeightPx)
+    internal static List<(int Start, int Height)> FindLineRuns(float[] densities, LineDetectionTuning tuning)
     {
+        int minLineHeightPx = tuning.MinLineHeightPx;
         // Primary pass: density-fraction threshold — works well for dense text
         float nonZeroSum = 0;
         int nonZeroCount = 0;
@@ -1101,7 +1102,7 @@ public static class LineDetector
         }
         float threshold = nonZeroCount == 0
             ? 0.005f
-            : Math.Max(nonZeroSum / nonZeroCount * densityThresholdFraction, 0.005f);
+            : Math.Max(nonZeroSum / nonZeroCount * tuning.DensityThresholdFraction, 0.005f);
 
         var runs = FindRunsAboveThreshold(densities, threshold, minLineHeightPx);
 

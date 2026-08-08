@@ -89,7 +89,7 @@ public sealed class AnalysisWorker : IDisposable
     /// <paramref name="ocrMode"/> is not <see cref="Services.OcrMode.Off"/>.
     /// </param>
     /// <param name="ocrMode">Initial <see cref="OcrMode"/>; changeable later via the property.</param>
-    /// <param name="tuning">
+    /// <param name="lineTuning">
     /// Optional override of the raster thresholds used by post-processing (see
     /// <see cref="LineDetectionTuning"/>). Detection thresholds are the analyzer's business — set
     /// those on the instance <paramref name="analyzerFactory"/> builds.
@@ -102,10 +102,10 @@ public sealed class AnalysisWorker : IDisposable
         ILogger? logger = null,
         Func<IOcrService>? ocrServiceFactory = null,
         OcrMode ocrMode = OcrMode.Off,
-        LineDetectionTuning? tuning = null)
+        LineDetectionTuning? lineTuning = null)
     {
         Capabilities = capabilities;
-        _tuning = tuning ?? LineDetectionTuning.Default;
+        _tuning = lineTuning ?? LineDetectionTuning.Default;
         _ocrMode = (int)ocrMode;
         _ocrServiceFactory = ocrServiceFactory;
         _readingOrder = readingOrderResolver ?? (capabilities.ProvidesReadingOrder

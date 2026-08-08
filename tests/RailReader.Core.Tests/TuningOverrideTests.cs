@@ -30,26 +30,21 @@ public class TuningOverrideTests
         Assert.Equal(LayoutConstants.MinLineHeightPx, lines.MinLineHeightPx);
     }
 
-    [Fact]
-    public void TryBuildBlock_LowerConfidenceThreshold_KeepsFaintDetection()
+    // The default threshold is 0.4: a 0.2 detection is dropped by it, kept once the
+    // threshold is lowered past it, and a 0.5 detection is dropped once it is raised.
+    [Theory]
+    [InlineData(0.2f, LayoutConstants.ConfidenceThreshold, false)]
+    [InlineData(0.2f, 0.15f, true)]
+    [InlineData(0.5f, 0.9f, false)]
+    public void TryBuildBlock_ConfidenceThreshold_IsReadFromTuning(
+        float confidence, float threshold, bool kept)
     {
-        const float confidence = 0.2f; // below the 0.4 default
-
-        Assert.False(LayoutAnalyzer.TryBuildBlock(0, confidence, 0, 0, 100, 100,
-            200, 200, 1f, 1f, ClassTable, order: 0, LayoutDetectionTuning.Default, out _));
-
-        Assert.True(LayoutAnalyzer.TryBuildBlock(0, confidence, 0, 0, 100, 100,
+        bool built = LayoutAnalyzer.TryBuildBlock(0, confidence, 0, 0, 100, 100,
             200, 200, 1f, 1f, ClassTable, order: 0,
-            LayoutDetectionTuning.Default with { ConfidenceThreshold = 0.15f }, out var block));
-        Assert.Equal(confidence, block.Confidence);
-    }
+            LayoutDetectionTuning.Default with { ConfidenceThreshold = threshold }, out var block);
 
-    [Fact]
-    public void TryBuildBlock_HigherConfidenceThreshold_RejectsDetection()
-    {
-        Assert.False(LayoutAnalyzer.TryBuildBlock(0, 0.5f, 0, 0, 100, 100,
-            200, 200, 1f, 1f, ClassTable, order: 0,
-            LayoutDetectionTuning.Default with { ConfidenceThreshold = 0.9f }, out _));
+        Assert.Equal(kept, built);
+        if (kept) Assert.Equal(confidence, block.Confidence);
     }
 
     [Fact]
@@ -65,27 +60,35 @@ public class TuningOverrideTests
     }
 
     [Fact]
-    public void FindLineRuns_MinLineHeight_IsHonoured()
+    public void FindLineRuns_MinLineHeight_IsReadFromTuning()
     {
         // A single 4-row run: survives the default 3px floor, dropped at a 5px floor.
         var densities = new float[12];
         for (int i = 4; i < 8; i++) densities[i] = 1f;
 
-        Assert.Single(LineDetector.FindLineRuns(densities));
-        Assert.Empty(LineDetector.FindLineRuns(densities, minLineHeightPx: 5));
+        Assert.Single(LineDetector.FindLineRuns(densities, LineDetectionTuning.Default));
+        Assert.Empty(LineDetector.FindLineRuns(densities,
+            LineDetectionTuning.Default with { MinLineHeightPx = 5 }));
     }
 
     [Fact]
-    public void ComputeRowDensities_DarkLuminanceThreshold_IsHonoured()
+    public void FindLineRuns_DensityThresholdFraction_IsReadFromTuning()
     {
-        // Mid-grey (180) rows: above the default ink threshold (160), below a raised one.
-        const int w = 4, h = 2;
-        var rgb = new byte[w * h * 3];
-        Array.Fill(rgb, (byte)180);
+        // Two dense bands separated by three faint rows (30% density). A permissive fraction
+        // keeps the faint gap above threshold, so the whole block reads as one run; raising
+        // the fraction past the gap splits it into the two real lines. The faint rows sit in
+        // the middle deliberately — the top/bottom recovery pass would resurrect them at an
+        // edge regardless of the fraction.
+        var densities = new float[11];
+        for (int i = 0; i < 11; i++) densities[i] = i is >= 4 and < 7 ? 0.3f : 1f;
 
-        Assert.All(LineDetector.ComputeRowDensities(rgb, w, 0, 0, w, h), d => Assert.Equal(0f, d));
-        Assert.All(LineDetector.ComputeRowDensities(rgb, w, 0, 0, w, h, darkThreshold: 200f),
-            d => Assert.Equal(1f, d));
+        Assert.Single(LineDetector.FindLineRuns(densities,
+            LineDetectionTuning.Default with { DensityThresholdFraction = 0.01f }));
+
+        var strict = LineDetector.FindLineRuns(densities,
+            LineDetectionTuning.Default with { DensityThresholdFraction = 0.9f });
+        Assert.Equal(2, strict.Count);
+        Assert.All(strict, r => Assert.Equal(4, r.Height));
     }
 
     [Fact]
