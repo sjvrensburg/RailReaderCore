@@ -73,17 +73,24 @@ public sealed class MarkdownExportService : IMarkdownExportService
             var pageEntries = outlineByPage.GetValueOrDefault(pageIdx)
                 ?? (IReadOnlyList<HeadingLevelResolver.FlatOutlineEntry>)[];
 
-            if (analyzer != null)
+            try
             {
-                pageMd = await ExportPageWithLayout(
-                    pdfService, pageIdx, analyzer, textService, pageEntries,
-                    vlmAvailable ? vlmEndpoint : null, options,
-                    annotationFile, ct);
+                pageMd = analyzer != null
+                    ? await ExportPageWithLayout(
+                        pdfService, pageIdx, analyzer, textService, pageEntries,
+                        vlmAvailable ? vlmEndpoint : null, options,
+                        annotationFile, ct)
+                    : ExportPagePlainText(
+                        pdfService, pageIdx, textService, pageEntries, annotationFile, options);
             }
-            else
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                pageMd = ExportPagePlainText(
-                    pdfService, pageIdx, textService, pageEntries, annotationFile, options);
+                // A single page failing (a malformed layout block, a transient VLM error, a
+                // pdfium quirk on that specific page) must not abort the rest of a large
+                // document — the caller would otherwise get a silently truncated export with no
+                // indication which page it stopped at. Record the failure inline and continue.
+                _logger.Error($"[Export] Page {pageIdx + 1} failed, skipping", ex);
+                pageMd = $"\n> **[railmark export error]** Page {pageIdx + 1} failed to export: {ex.Message}\n";
             }
 
             if (string.IsNullOrWhiteSpace(pageMd))
