@@ -177,6 +177,43 @@ public class DocumentControllerTests : IDisposable
     }
 
     [Fact]
+    public void GoToPage_ClearsStaleTextSelection()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+
+        // Simulate a completed text-select drag on page 0 without driving actual pointer
+        // events/OCR — the bug (railreader2#209) is that these page-local rects survive
+        // navigation, not how they were produced.
+        _controller.Annotations.SelectedText = "stale";
+        _controller.Annotations.TextSelectionRects = [new HighlightRect(0, 0, 10, 10)];
+
+        _controller.GoToPage(1);
+
+        Assert.Null(_controller.Annotations.SelectedText);
+        Assert.Null(_controller.Annotations.TextSelectionRects);
+    }
+
+    [Fact]
+    public void GoToPage_SamePage_DoesNotClearTextSelection()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+
+        _controller.Annotations.SelectedText = "current page selection";
+        _controller.Annotations.TextSelectionRects = [new HighlightRect(0, 0, 10, 10)];
+
+        _controller.GoToPage(0); // no-op: already on page 0
+
+        Assert.Equal("current page selection", _controller.Annotations.SelectedText);
+        Assert.NotNull(_controller.Annotations.TextSelectionRects);
+    }
+
+    [Fact]
     public void ToggleAutoScroll_ActivatesAndDeactivates()
     {
         var state = _controller.CreateDocument(_pdfPath);

@@ -1114,6 +1114,12 @@ public sealed partial class DocumentController : IDisposable
     /// own <see cref="Viewport.PageChanged"/>.</summary>
     private void RaisePageChanged(Viewport vp)
     {
+        // Text selection is page-local geometry built against the focused view's page (annotations
+        // resolve the focused view per §5.4); it goes stale the instant that view turns the page, so
+        // every page-change path funnels through here to drop it rather than letting the UI keep
+        // redrawing yesterday's rects on the new page (issue railreader2#209).
+        if (ReferenceEquals(vp, FocusedViewport))
+            Annotations.ClearTextSelection();
         vp.PageChanged?.Invoke(vp.CurrentPage);
     }
 

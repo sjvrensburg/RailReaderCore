@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.53.0 — Stale text selection fix + multilingual OCR model registry (railreader2#209)
+
+A user (railreader2#209) reported that selecting scanned-page text left a highlight box drawn
+on screen after turning the page, and that OCR-based selection/highlighting only reads Latin
+script well. Both addressed on the Core side.
+
+- **Fix**: `AnnotationInteractionHandler.SelectedText`/`TextSelectionRects` are page-local
+  geometry but were only cleared on a tool switch or a new selection drag — never when the
+  page itself changed, so the UI kept redrawing the previous page's highlight rects. New
+  `AnnotationInteractionHandler.ClearTextSelection()` is now called from
+  `DocumentController.RaisePageChanged` whenever the *focused* viewport's page changes (every
+  page-change path funnels through that one chokepoint, including auto-scroll/animation page
+  turns). Additive method, no signature changes.
+- **New**: `OcrModelDescriptor` / `OcrModelRegistry` (`RailReader.Core.Ocr.RapidOcr`) catalogue
+  the PP-OCRv6 Tiny/Small/Medium recognition model sets — RapidOCR's multilingual recognizers
+  ("Latin + CJK and more") — alongside a new `scripts/download-ocr-model.sh` to fetch them. The
+  bundled default (PP-OCRv5-Latin, still what `RapidOcrService` uses with no arguments) only
+  recognizes Latin-script text; a scanned CJK/Cyrillic/etc. page previously read back as
+  garbage or empty even though the shared detector still finds the text regions. Pass a
+  registry entry's `ModelSet` into `RapidOcrService`'s existing `RapidOcrModelSet?` constructor
+  parameter to opt in — the seam already existed, this is the missing catalogue + fetch path
+  for it. Download URLs and SHA-256 hashes are sourced from RapidOCR's own model manifest and
+  were independently verified (downloaded and re-hashed, not trusted from the manifest text
+  alone). Fully additive; no existing API changed.
+- Also investigated and confirmed real (via a visual char-box overlay against the reporter's
+  own attached scan): OCR selection boxes visibly don't hug individual glyphs on real scanned
+  body text, traced to the underlying RapidOcrNet recognizer's own box-width estimate, not a
+  Core bug. A proper pixel-level tightening fix is scoped and tracked separately (not in this
+  release). Two further symptoms from the same report — a selection box surviving after
+  deleting an annotation and re-adding one, and multi-line selection sometimes collapsing to a
+  whole line — were root-caused to the `railreader2` GUI layer (a z-order render cache with a
+  stale count-based invalidation check, and no reproducible cause found in Core's selection
+  geometry respectively), not this repository; flagged here for the GUI-side follow-up rather
+  than as separate issues on that repo.
+- `.gitignore`: `models/*.onnx`/`models/*.model` were non-recursive globs that didn't cover the
+  new `models/v6/` nesting the OCR download script writes to — widened to `models/**/*.onnx`
+  etc. (also now excludes `models/**/*.txt` for the recognizer dictionary files).
+
+## 0.52.1 — Per-page export failure isolation
+
+A page-level exception during Markdown export (a malformed layout block, a transient VLM
+error, a pdfium quirk specific to that page) aborted the entire document export with no
+indication which page it stopped at. `MarkdownExportService.ExportAsync` now catches per-page
+and inlines an error marker so the rest of the document still exports.
+
 ## 0.52.0 — Configurable layout tuning (#89)
 
 The model-agnostic thresholds in `LayoutConstants` were compile-time `const`s, so a
