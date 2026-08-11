@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.54.0 — OCR char-box pixel tightening (railreader2#209)
+
+Follow-up to 0.53.0's investigation: OCR selection/highlight boxes visibly didn't hug individual
+glyphs on real scanned pages (confirmed against the reporter's own attached scan) — traced to
+RapidOcrNet's own per-character box-width estimate, a shared line-level average rather than a
+per-glyph measurement, which clean rendered-text testing hadn't exposed.
+
+- New internal `CharBoxTightener` (`RailReader.Core.Ocr.RapidOcr`) snaps each recognised
+  character's box horizontally to the ink it actually contains, via the same column-wise
+  dark-pixel-projection idiom `LineDetector.DetectColumnGrid` already uses for vertical-rule
+  detection. Wired into `RapidOcrService.ToLine`, so every `OcrMode.Full` recognition benefits
+  automatically — no consumer-visible API change.
+- Strictly non-regressive by construction: a box can only shrink toward its own original
+  estimate, never grow past it, and any window with no usable ink (or an implausibly small
+  result) is left untouched.
+- Verified against the reporter's attached scan (before/after box-overlay comparison, both a
+  large heading and ordinary body-text paragraphs) and with deterministic synthetic-pixmap unit
+  tests (`CharBoxTightenerTests`) covering the shrink, never-widen, no-ink-fallback, and
+  degenerate-result-fallback behaviours.
+
 ## 0.53.0 — Stale text selection fix + multilingual OCR model registry (railreader2#209)
 
 A user (railreader2#209) reported that selecting scanned-page text left a highlight box drawn
