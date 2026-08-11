@@ -165,14 +165,26 @@ approximation on clean rendered text, but visibly misaligned on a real scan (ske
 ink), where it reads as an oversized, offset selection/highlight rect (issue railreader2#209,
 confirmed by overlaying boxes on a reporter-submitted scanned page). `CharBoxTightener.Tighten`
 (called from `RapidOcrService.ToLine` after `CharBoxesFor` builds the estimate) snaps each box
-horizontally to the ink it actually contains, using the same column-wise dark-pixel-projection
-idiom `LineDetector.DetectColumnGrid` already uses for vertical-rule detection. It can only
-shrink a box, never grow one — adjacent estimated boxes already tile the line without
-overlapping (RapidOcrNet's own overlap adjustment), so confining the search to a box's own
-extent is sufficient to guarantee no encroachment on a neighbour, with no neighbour-midpoint
-bookkeeping needed. A window with no usable ink (or an implausibly small result) is left
-untouched — strictly non-regressive by construction. Top/bottom are never touched (RapidOcrNet
-already sets them to the line's own height).
+to the ink it actually contains — both horizontally *and vertically* — using the same
+dark-pixel-projection idiom `LineDetector.DetectColumnGrid` already uses for vertical-rule
+detection (vertical scanning uses the just-tightened horizontal window, so a neighbour's ink
+can't leak in). It can only shrink a box, never grow one — adjacent estimated boxes already tile
+the line without overlapping (RapidOcrNet's own overlap adjustment), so confining the search to
+a box's own extent is sufficient to guarantee no encroachment on a neighbour, with no
+neighbour-midpoint bookkeeping needed. A window with no usable ink on an axis (or an implausibly
+small result) is left untouched on that axis — strictly non-regressive by construction.
+
+Vertical tightening exists because every character in a word originally inherited the *word's*
+full Top/Bottom (`CharBoxesFor` has no intra-word glyph vertical extent to report), close to the
+full line height. `LineDetector.DetectLinesFromChars`'s median-char-height split threshold and
+`AnnotationInteractionHandler`'s vertical-overlap line grouping both assume a character's own
+height is small relative to the gap between lines — true for real PDFium glyph boxes, false for
+the pre-fix OCR ones whenever a scan's line spacing was tighter than its line height (common in
+single-spaced book text): several real printed lines merged into one, both for rail navigation
+and for a multi-line drag selection's highlight rects. Tightening Top/Bottom to each glyph's own
+ink extent — exactly like a real PDFium char box — fixes both for free; neither consumer needed
+to change. Verified against the same reporter's `test.pdf`: a 34-real-line paragraph that
+detected as 2 rail lines pre-fix now detects ~31.
 
 **The OCR text cache is one-way.** OCR only ever runs inside an analysis request, and an
 analysed page is never resubmitted, so recovered text has no second chance: `DocumentModel`
