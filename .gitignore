@@ -11,9 +11,11 @@ dist/
 # Rust legacy build artifacts (local only)
 target/
 
-# Model artefacts (large, downloaded via scripts/download-model.sh)
-models/*.onnx
-models/*.model
+# Model artefacts (large, downloaded via scripts/download-model.sh and
+# scripts/download-ocr-model.sh — the latter nests under models/v6/, hence **/)
+models/**/*.onnx
+models/**/*.model
+models/**/*.txt
 
 # Test runner output
 **/TestResults/

@@ -31,6 +31,11 @@ dotnet test tests/RailReader.Core.Tests --filter "FullyQualifiedName~TestMethodN
 ./scripts/download-model.sh pps       # PP-DocLayout-S (~4.7 MB, lightweight)
 ./scripts/download-model.sh heron     # Docling Heron (~164 MB)
 ./scripts/download-model.sh all       # all three
+
+# Download a multilingual OCR recognition model (opt-in; bundled default is Latin-only)
+./scripts/download-ocr-model.sh       # default: PP-OCRv6 Tiny (~6 MB)
+./scripts/download-ocr-model.sh small   # PP-OCRv6 Small (~31 MB)
+./scripts/download-ocr-model.sh medium  # PP-OCRv6 Medium (~138 MB, most accurate)
 ```
 
 **Always use `-c Release`** — debug builds are significantly slower for the inference paths.
@@ -142,6 +147,16 @@ and supplies line boxes only, which `LineDetector` uses in preference to pixel p
 `OcrMode.Full` also returns a `PageText` that the controller caches for the page. OCR quality
 tracks the layout model's input size (the pixmap is shared) — PP-DocLayout-S at 1920 is the one
 to pair with `Full`. ORT session defaults mirror `Core.Analysis` (intra-op ≤4, arena off).
+
+**Model sets / language coverage.** `RapidOcrService`'s `models` constructor parameter selects a
+`RapidOcrModelSet`; `OcrModelLocator.LocateDefault()` resolves the bundled PP-OCRv5-Latin set with
+no download (it ships via the RapidOcrNet package's own build target), but that set only
+recognizes Latin-script text (issue railreader2#209 — a scanned CJK/Cyrillic/etc. page reads back
+as garbage or empty even though the shared detector still finds the text regions). `OcrModelRegistry`
+lists the additional PP-OCRv6 sets (Tiny/Small/Medium — multilingual, "Latin + CJK and more")
+`scripts/download-ocr-model.sh` can fetch (hash-verified against RapidOCR's own manifest); pass
+the resolved `OcrModelDescriptor.ModelSet` into `RapidOcrService`'s constructor to use one. A
+GUI-side language picker is not implemented here — this is the seam it would sit on top of.
 
 **The OCR text cache is one-way.** OCR only ever runs inside an analysis request, and an
 analysed page is never resubmitted, so recovered text has no second chance: `DocumentModel`
