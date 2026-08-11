@@ -89,6 +89,19 @@ public sealed class AnnotationInteractionHandler
     // Clipboard callback (set by UI)
     public Action<string>? CopyToClipboard { get; set; }
 
+    /// <summary>
+    /// Drops the active text selection. Selection rects are page-local, so they read as valid
+    /// (and get redrawn in the wrong place) on any page after the one they were built for —
+    /// callers must invoke this whenever the underlying page changes out from under a selection,
+    /// not just when the user switches tools or starts a new drag.
+    /// </summary>
+    public void ClearTextSelection()
+    {
+        SelectedText = null;
+        TextSelectionRects = null;
+        _textSelectCharStart = -1;
+    }
+
     public void SetAnnotationTool(AnnotationTool tool)
     {
         ActiveTool = tool;
@@ -100,11 +113,7 @@ public sealed class AnnotationInteractionHandler
         _highlightCharStart = -1;
 
         if (tool != AnnotationTool.TextSelect)
-        {
-            SelectedText = null;
-            TextSelectionRects = null;
-            _textSelectCharStart = -1;
-        }
+            ClearTextSelection();
 
         switch (tool)
         {
