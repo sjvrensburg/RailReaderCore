@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.55.0 — OCR char-box vertical tightening (railreader2#209 follow-up)
+
+A GUI smoke-test of 0.54.0 against the reporter's own `test.pdf` surfaced a second, more severe
+symptom of the same root defect: rail mode's "Line" counter merged whole paragraphs (34 real
+printed lines) into 1-2 giant rail lines, and a multi-line drag selection collapsed to a single
+oversized highlight rect covering the merged span — this is very likely what earlier looked like
+an unreproducible "multi-line selection collapses to one line" report.
+
+- Root cause: every character in an OCR-recognised word inherited the *word's* full Top/Bottom
+  as its own vertical extent (RapidOcrNet reports no intra-word glyph vertical position), close
+  to the full line height. Two consumers cluster characters into lines by vertical position on
+  the assumption that a character's own height is small relative to the gap between lines — true
+  for real PDFium glyph boxes, false here: `LineDetector.DetectLinesFromChars`'s median-height
+  split threshold and `AnnotationInteractionHandler`'s vertical-overlap line grouping both merge
+  adjacent real lines whenever a scan's line spacing is tighter than its (inherited) line height
+  — common in single-spaced book text.
+- `CharBoxTightener` (0.54.0's horizontal-only fix) now also tightens `CharBox.Top`/`Bottom` to
+  each glyph's own ink extent, scanning vertically within the already horizontally-tightened
+  column window so a neighbour's ink can't leak in. Same non-regressive, shrink-only contract as
+  the horizontal axis. Neither `LineDetector` nor `AnnotationInteractionHandler` needed to
+  change — both were already built and tuned against real per-glyph vertical extents.
+- Verified against the reporter's `test.pdf`: the FOREWORD paragraph's rail-line count went from
+  2 (pre-fix) to 31 (of 34 real printed lines); a full-text `BuildHighlightRects` selection over
+  4 tightly-spaced synthetic lines went from 1 merged rect to 4 separate ones. New
+  `OcrLineSegmentationRegressionTests` (checked against the pre-fix code first, to confirm they
+  actually catch the regression) plus 3 new `CharBoxTightenerTests` covering the vertical shrink,
+  never-grow, and no-ink-fallback behaviours; 2 existing tests adjusted for the extended contract.
+
 ## 0.54.0 — OCR char-box pixel tightening (railreader2#209)
 
 Follow-up to 0.53.0's investigation: OCR selection/highlight boxes visibly didn't hug individual

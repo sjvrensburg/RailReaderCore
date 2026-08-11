@@ -86,8 +86,10 @@ public class CharBoxTightenerTests
     }
 
     [Fact]
-    public void Tighten_LeavesTopAndBottomUnchanged()
+    public void Tighten_LeavesTopAndBottomUnchangedWhenInkFillsTheFullHeight()
     {
+        // Ink spans the full pixmap height (0..H), a superset of the box's own Top..Bottom
+        // (3..17) — so there is no headroom to shrink into on this axis.
         var rgb = WhiteWithBlackColumns(inkLeft: 15, inkRight: 20);
         var box = new CharBox(0, 5, 3, 35, 17);
 
@@ -95,6 +97,48 @@ public class CharBoxTightenerTests
 
         Assert.Equal(box.Top, result[0].Top);
         Assert.Equal(box.Bottom, result[0].Bottom);
+    }
+
+    [Fact]
+    public void Tighten_ShrinksAnOversizedBoxVerticallyToItsRealInk()
+    {
+        // A short glyph (ink rows [8,12)) inside a box estimated as the full line height
+        // (Top=0, Bottom=H) — the OCR-inherited-word-height case this axis exists for.
+        var rgb = WhiteWithBlackColumns(inkLeft: 15, inkRight: 20, inkTop: 8, inkBottom: 12);
+        var box = new CharBox(0, 10, 0, 25, H);
+
+        var result = CharBoxTightener.Tighten([box], rgb, W, H);
+
+        Assert.Single(result);
+        var r = result[0];
+        Assert.True(r.Top > box.Top, "tightened box should have moved its top edge down");
+        Assert.True(r.Bottom < box.Bottom, "tightened box should have moved its bottom edge up");
+        Assert.InRange(r.Top, 6, 9);
+        Assert.InRange(r.Bottom, 11, 14);
+    }
+
+    [Fact]
+    public void Tighten_NeverGrowsTopOrBottomPastTheOriginalEstimate()
+    {
+        var rgb = WhiteWithBlackColumns(inkLeft: 10, inkRight: 20, inkTop: 0, inkBottom: H);
+        var box = new CharBox(0, 10, 5, 20, 15);
+
+        var result = CharBoxTightener.Tighten([box], rgb, W, H);
+
+        Assert.True(result[0].Top >= box.Top);
+        Assert.True(result[0].Bottom <= box.Bottom);
+    }
+
+    [Fact]
+    public void Tighten_LeavesVerticalExtentUnchangedWhenNoInkInWindow()
+    {
+        var rgb = new byte[W * H * 3];
+        Array.Fill(rgb, (byte)255); // all white — no ink anywhere
+        var box = new CharBox(0, 10, 2, 20, 18);
+
+        var result = CharBoxTightener.Tighten([box], rgb, W, H);
+
+        Assert.Equal(box, result[0]);
     }
 
     [Fact]
