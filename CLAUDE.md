@@ -158,6 +158,22 @@ lists the additional PP-OCRv6 sets (Tiny/Small/Medium — multilingual, "Latin +
 the resolved `OcrModelDescriptor.ModelSet` into `RapidOcrService`'s constructor to use one. A
 GUI-side language picker is not implemented here — this is the seam it would sit on top of.
 
+**Char-box tightening.** RapidOcrNet's per-character boxes (`ReturnSingleCharBox=true`, the
+`_fullOptions` path) carry a genuine per-character X-centre from the recogniser's own CTC column
+decode, but a shared line-level *average* character width for every box's size — a fair
+approximation on clean rendered text, but visibly misaligned on a real scan (skew, noise, uneven
+ink), where it reads as an oversized, offset selection/highlight rect (issue railreader2#209,
+confirmed by overlaying boxes on a reporter-submitted scanned page). `CharBoxTightener.Tighten`
+(called from `RapidOcrService.ToLine` after `CharBoxesFor` builds the estimate) snaps each box
+horizontally to the ink it actually contains, using the same column-wise dark-pixel-projection
+idiom `LineDetector.DetectColumnGrid` already uses for vertical-rule detection. It can only
+shrink a box, never grow one — adjacent estimated boxes already tile the line without
+overlapping (RapidOcrNet's own overlap adjustment), so confining the search to a box's own
+extent is sufficient to guarantee no encroachment on a neighbour, with no neighbour-midpoint
+bookkeeping needed. A window with no usable ink (or an implausibly small result) is left
+untouched — strictly non-regressive by construction. Top/bottom are never touched (RapidOcrNet
+already sets them to the line's own height).
+
 **The OCR text cache is one-way.** OCR only ever runs inside an analysis request, and an
 analysed page is never resubmitted, so recovered text has no second chance: `DocumentModel`
 pins it against `EvictDistantPageCaches`, and `CacheExtractedText` refuses to let a later empty

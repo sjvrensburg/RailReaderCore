@@ -125,17 +125,19 @@ public sealed class RapidOcrService : IOcrService
 
         var recognised = new List<OcrLine>(result.TextBlocks.Length);
         foreach (var block in result.TextBlocks)
-            recognised.Add(ToLine(block));
+            recognised.Add(ToLine(block, rgbBytes, width, height));
         return new OcrPage(recognised);
     }
 
-    private static OcrLine ToLine(TextBlock block)
+    private static OcrLine ToLine(TextBlock block, byte[] rgbBytes, int width, int height)
     {
         var bounds = Bounds(block.BoxPoints);
         string text = block.Text;
         if (string.IsNullOrEmpty(text)) return new OcrLine(bounds, Confidence: block.BoxScore);
 
-        return new OcrLine(bounds, text, CharBoxesFor(block, text), block.BoxScore);
+        var chars = CharBoxesFor(block, text);
+        if (chars is not null) chars = CharBoxTightener.Tighten(chars, rgbBytes, width, height);
+        return new OcrLine(bounds, text, chars, block.BoxScore);
     }
 
     /// <summary>
