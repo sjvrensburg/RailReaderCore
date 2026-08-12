@@ -48,11 +48,15 @@ layer, rasterised at 1920 px):
 | 1 | 43 | 0.72° | 0.18° | 0.72° | 42 / 38 — **+4 recovered** |
 
 Page 0 is genuinely square and correctly no-ops; page 1 carries a real rigid skew whose 0.18°
-interquartile spread is exactly the tight agreement a rotated sheet produces. Note 0.72° is
-enough to cost four lines: merging starts once a line's drift across the column,
-`width × tan(θ)`, exceeds the median glyph height, and real book text has small glyphs relative
-to its column width. The synthetic tests need ~2° to reproduce the same effect at their larger
-text size, which is why the real-scan case is the one that matters.
+interquartile spread is exactly the tight agreement a rotated sheet produces.
+
+Note 0.72° is enough to cost four lines. Misgrouping starts once a line's drift across the
+column, `width × tan(θ)`, passes one of two thresholds — the median glyph height, past which a
+single line *fragments* into several bands, or the line pitch, past which neighbouring lines
+*merge*. Which one you meet depends on the page's proportions rather than on the angle: long
+lines fragment, short tightly-set lines merge, and real book text (small glyphs, wide column)
+crosses below 1° either way. Synthetic pages at larger text need several degrees, which is why
+the real-scan case above is the one that matters.
 
 Known limitations, all deliberate:
 

@@ -217,9 +217,13 @@ Three things to know before touching it. **`TrueHeight > 0`, not `Angle != 0`, i
 counting the latter is a silent vote for uprightness. **The per-quad tilt cap (15°) is
 deliberately looser than the page gate (5°)** — filtering samples at the threshold the page is
 judged by discards most of a genuinely 6° page's evidence and then reports confidence in the
-surviving tail. **Merging is not a function of angle alone**: a line reaches its neighbour's band
-once `width × tan(θ)` exceeds the median glyph height, so ordinary book text merges below 1°
-while large text needs several degrees — do not tune thresholds against synthetic pages.
+surviving tail. **Skew misgroups in two opposite directions**, and which one you see depends on
+the page's proportions, not on the angle: once a line's drift across the column, `width × tan(θ)`,
+passes the median glyph height that single line *fragments* into several bands; once it passes the
+line *pitch*, neighbouring lines *merge*. Long lines hit the first and yield too many bands; short
+tightly-set lines hit the second and yield too few (the form railreader2#209 took). Never assert a
+direction — compare against the detector's own line count. Ordinary book text crosses below 1°
+while large synthetic text needs several degrees, so do not tune thresholds against synthetic pages.
 `tools/deskew-probe` reports all of this per page. Toggle: `CoreSettings.DeskewOcrLines`
 (default on), `DocumentController.DeskewOcrLines`. Not deskewed: the pixel-projection fallback
 (no estimator exists with `OcrMode.Off`) and table interiors (`AssignCells` row bucketing,
