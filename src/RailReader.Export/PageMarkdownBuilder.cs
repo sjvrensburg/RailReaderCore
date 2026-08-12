@@ -35,7 +35,8 @@ public static class PageMarkdownBuilder
         {
             var role = blocks[i].Role;
             var vlm = vlmResults?.GetValueOrDefault(i);
-            blockTexts.TryGetValue(i, out var text);
+            blockTexts.TryGetValue(i, out var rawText);
+            var text = MarkdownText.CleanOrNull(rawText);
 
             var blockMd = RenderBlock(role, i, text, headingLevels, vlm, figurePaths);
             if (blockMd != null)
@@ -78,11 +79,11 @@ public static class PageMarkdownBuilder
         foreach (var heading in pageHeadings)
         {
             var prefix = new string('#', Math.Clamp(heading.Depth, 1, 6));
-            sb.AppendLine($"{prefix} {heading.Title}");
+            sb.AppendLine($"{prefix} {MarkdownText.Clean(heading.Title)}");
             sb.AppendLine();
         }
 
-        var trimmed = pageText.Text.Trim();
+        var trimmed = MarkdownText.Clean(pageText.Text).Trim();
         if (!string.IsNullOrEmpty(trimmed))
         {
             sb.AppendLine(trimmed);
@@ -157,7 +158,7 @@ public static class PageMarkdownBuilder
 
         // The reviewer's note attached to the markup (PDF /Contents) — for moderation
         // this comment is the substance, distinct from the text being marked.
-        var comment = markup.EffectiveContents;
+        var comment = MarkdownText.Clean(markup.EffectiveContents);
         if (!string.IsNullOrWhiteSpace(comment))
             sb.AppendLine($"> — {comment.Trim()}");
 
@@ -183,14 +184,14 @@ public static class PageMarkdownBuilder
             var t = pageText.ExtractTextInRect(rect.X, rect.Y, rect.X + rect.W, rect.Y + rect.H);
             if (t != null) texts.Add(t);
         }
-        return texts.Count > 0 ? string.Join(" ", texts) : null;
+        return texts.Count > 0 ? MarkdownText.Clean(string.Join(" ", texts)) : null;
     }
 
     private static void AppendComment(StringBuilder sb, string label, string contents)
     {
         if (string.IsNullOrWhiteSpace(contents))
             return;
-        sb.AppendLine($"> **{label}:** {contents.Trim()}");
+        sb.AppendLine($"> **{label}:** {MarkdownText.Clean(contents).Trim()}");
         sb.AppendLine();
     }
 

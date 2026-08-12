@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.56.1 — Markdown export no longer leaks PDFium's soft-hyphen marker
+
+Fixes [#101](https://github.com/sjvrensburg/RailReaderCore/issues/101).
+
+PDFium's text layer signals a soft-hyphen join in band: a word the producer split across a
+line break (`inter-` / `pretable`) comes back as `inter` + **U+0002** + `pretable`, with no
+hyphen. That is a useful signal on a *text-extraction* API — a consumer that wants the
+distinction can act on it — and `IPdfTextService.ExtractPageText` still reports it unchanged.
+
+`RailReader.Export` was passing it straight through to Markdown, which is output meant for
+humans. Because U+0002 is unprintable, the export *looked* like it said `interpretable`
+while containing no such string: neither `grep` nor a reader's Ctrl-F found the word, and
+anything that quotes text back out of the export (RailMark's `--apply-markup` agent loop)
+carried an invisible control character into the quote or dropped it and no longer matched.
+
+Markdown generation now strips the invisible-control class — C0/C1 controls other than tab,
+LF and CR, DEL, and the soft hyphen U+00AD — from every path that puts extracted text into
+the document: block text, plain-text pages, outline headings, markup-covered text, and
+annotation comments. Tab and the line breaks carry real layout and are untouched. No API
+change; the fix is in the renderer, not the text-service contract.
+
 ## 0.56.0 — Automatic deskew for OCR'd scanned pages
 
 0.54.0 and 0.55.0 fixed the *glyph* boxes on a skewed scan. This fixes the *grouping* built on
