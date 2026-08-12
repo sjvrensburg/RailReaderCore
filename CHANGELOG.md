@@ -39,6 +39,21 @@ signature or behaviour changes — the full suite passes unchanged, which is the
 claim under test. No `AppConfig` schema bump: a config written before this keeps the field's
 initialiser, which is the intended value.
 
+Verified against the reporter's own scanned `test.pdf` from railreader2#209 (two pages, no text
+layer, rasterised at 1920 px):
+
+| page | measured lines | raw median | IQR | estimate | lines corrected / uncorrected |
+|------|---------------|-----------|-----|----------|------------------------------|
+| 0 | 33 | 0.00° | 0.15° | 0.00° (dead band) | 33 / 33 — no change |
+| 1 | 43 | 0.72° | 0.18° | 0.72° | 42 / 38 — **+4 recovered** |
+
+Page 0 is genuinely square and correctly no-ops; page 1 carries a real rigid skew whose 0.18°
+interquartile spread is exactly the tight agreement a rotated sheet produces. Note 0.72° is
+enough to cost four lines: merging starts once a line's drift across the column,
+`width × tan(θ)`, exceeds the median glyph height, and real book text has small glyphs relative
+to its column width. The synthetic tests need ~2° to reproduce the same effect at their larger
+text size, which is why the real-scan case is the one that matters.
+
 Known limitations, all deliberate:
 
 - **Needs OCR.** The only estimator is the detector's quads, so `OcrMode.Off` leaves the
