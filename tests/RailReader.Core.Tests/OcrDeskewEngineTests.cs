@@ -14,23 +14,38 @@ namespace RailReader.Core.Tests;
 /// OCR pass produced.
 ///
 /// <para>
-/// Rendered at the tight ~1.05× line pitch <see cref="OcrLineSegmentationRegressionTests"/>
-/// uses, because that is what makes skew bite: at generous spacing a line can drift a long way
-/// before it reaches its neighbour's band, and the bug does not reproduce.
+/// <b>Skew misgroups in two opposite directions</b>, and these tests are written not to care
+/// which. Once a line's drift across the column, <c>width × tan(θ)</c>, passes the median glyph
+/// height, that single line splits into several bands; once it passes the line <i>pitch</i>,
+/// neighbouring lines interleave and merge instead. Long lines reach the first threshold first
+/// and produce <i>too many</i> bands; short tightly-set lines reach the second and produce too
+/// few — which is the form the reported scan took. Assertions are therefore stated as distance
+/// from the detector's own line count, never as a direction.
+/// </para>
+/// <para>
+/// <b>Long lines at ordinary spacing</b>, deliberately not the ~1.05× pitch
+/// <see cref="OcrLineSegmentationRegressionTests"/> renders at. Skew bites when a line's drift
+/// across the column, <c>width × tan(θ)</c>, exceeds the line pitch — so the way to make it
+/// bite without also starving the split threshold is to make the lines <i>long</i>, not to
+/// crowd them. Crowding puts glyph ink height and line pitch within a few pixels of each other,
+/// where whether two lines separate depends on the host's font metrics; that compounds the
+/// tightening regression with this one and makes the result differ between a CI image and a
+/// developer's machine. At ~1600&#160;px lines and 1.4× pitch, drift passes pitch by 2.5° while
+/// the pitch stays comfortably above any plausible ink height.
 /// </para>
 /// </summary>
 public class OcrDeskewEngineTests
 {
     private static readonly string[] Paragraph =
     [
-        "This is the first line of a tightly set paragraph",
-        "and this is the second line right below it here",
-        "followed by a third line with similar content now",
-        "then a fourth line continuing the same block of text",
-        "a fifth line to give the estimator enough evidence",
-        "a sixth line so the confidence gate is satisfied too",
-        "a seventh line of ordinary prose for good measure",
-        "and finally an eighth and last line to close it out",
+        "This is the first line of a paragraph set wide enough that skew has room to bite",
+        "and this is the second line running right below it at the very same generous width",
+        "followed by a third line carrying similar content across the full column once more",
+        "then a fourth line continuing the same block of ordinary prose without interruption",
+        "a fifth line included so that the page level estimator has ample evidence to work on",
+        "a sixth line so that the confidence gate sees far more than its minimum sample count",
+        "a seventh line of unremarkable text present purely to lengthen the rendered paragraph",
+        "and finally an eighth and last line to close out the block and end the page cleanly",
     ];
 
     /// <summary>
@@ -39,7 +54,7 @@ public class OcrDeskewEngineTests
     /// so rotation cannot clip the text, which would cost detections and confound the counts.
     /// </summary>
     private static (byte[] Rgb, int W, int H) RenderSkewed(string[] lines, float degrees,
-        float textSize = 44f, int width = 1100, int height = 800)
+        float textSize = 40f, int width = 1900, int height = 900)
     {
         var info = new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Opaque);
         using var surface = SKSurface.Create(info);
@@ -53,7 +68,7 @@ public class OcrDeskewEngineTests
         using var paint = new SKPaint { Color = SKColors.Black, IsAntialias = true };
         using var font = new SKFont(SKTypeface.Default, textSize);
         for (int i = 0; i < lines.Length; i++)
-            canvas.DrawText(lines[i], 60f, 200f + i * (textSize * 1.05f), font, paint);
+            canvas.DrawText(lines[i], 60f, 200f + i * (textSize * 1.4f), font, paint);
 
         using var image = surface.Snapshot();
         using var bitmap = SKBitmap.FromImage(image);
@@ -170,25 +185,43 @@ public class OcrDeskewEngineTests
     }
 
     [OcrModelTheory]
+    [InlineData(0f)]
+    [InlineData(1.5f)]
+    [InlineData(2.5f)]
+    [InlineData(3.5f)]
+    [InlineData(-3f)]
+    public void Correction_IsNeverFurtherFromTheTruthThanNoCorrection(float degrees)
+    {
+        // Stated as distance from the detector's count rather than as a direction, because
+        // skew misgroups BOTH ways and which one shows up depends on the page's proportions
+        // (see the class remarks). A directional assertion passes on one geometry and fails on
+        // another for reasons that have nothing to do with the correction being right.
+        var (detected, corrected, uncorrected) = GroupBothWays(degrees);
+
+        Assert.True(Math.Abs(corrected - detected) <= Math.Abs(uncorrected - detected),
+            $"at {degrees}°: corrected {corrected}, uncorrected {uncorrected}, detected {detected}");
+    }
+
+    [OcrModelTheory]
+    [InlineData(2.5f)]
     [InlineData(3.5f)]
     [InlineData(-4f)]
-    public void SkewedPage_LosesLinesWithoutTheCorrection(float degrees)
+    public void SkewedPage_IsMisgroupedWithoutTheCorrection(float degrees)
     {
-        // The paired half: the same char boxes grouped without the shear merge into fewer bands
-        // than the detector found lines. This is what makes the test above evidence of a fix
-        // rather than of a lenient tolerance.
+        // The paired half: without the shear the same char boxes land on a materially wrong
+        // number of lines. This is what makes the recovery test evidence of a fix rather than
+        // of a lenient tolerance.
         //
-        // Note these angles are steeper than the theory above uses. Merging is not a function
-        // of skew alone — a line only reaches its neighbour's band once its drift across the
-        // column, width × tan(θ), exceeds the median glyph height that sets the split
-        // threshold. At this text size that crossover sits near 2°, so a milder angle leaves
-        // nothing to demonstrate; these are chosen far enough past it that the margin survives
-        // whatever font the host renders with. Tightly-set body text, whose glyphs are far
-        // smaller relative to the column, crosses over below 1° — which is why the real-world
-        // report reproduced at a skew this synthetic page shrugs off.
-        var (_, corrected, uncorrected) = GroupBothWays(degrees);
+        // These angles are steeper than the recovery theory uses because misgrouping has a
+        // threshold: nothing goes wrong until the drift across a line, width × tan(θ), passes
+        // either the glyph height (fragmenting one line into several) or the line pitch
+        // (merging neighbours). On this page the first crossover sits near 2°. Real book text,
+        // whose glyphs are far smaller relative to the column, crosses below 1° — which is why
+        // the reported scan reproduced at a skew a synthetic page at this text size shrugs off.
+        var (detected, corrected, uncorrected) = GroupBothWays(degrees);
 
-        Assert.True(uncorrected < corrected,
-            $"expected merging without deskew at {degrees}°: {uncorrected} vs {corrected}");
+        Assert.True(Math.Abs(uncorrected - detected) > Math.Abs(corrected - detected),
+            $"expected misgrouping without deskew at {degrees}°: " +
+            $"uncorrected {uncorrected}, corrected {corrected}, detected {detected}");
     }
 }
