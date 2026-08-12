@@ -13,7 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build & Develop
 
-Prerequisites: .NET 10 SDK.
+Prerequisites: .NET 10 SDK. Uses RTK (Rust Token Killer) for token-optimized CLI commands — `rtk --version` to verify installation.
 
 ```bash
 # Build all four projects + tests
@@ -26,9 +26,12 @@ dotnet test tests/RailReader.Core.Tests -c Release
 dotnet test tests/RailReader.Core.Tests --filter "ClassName=RailReader.Core.Tests.CameraTests"
 dotnet test tests/RailReader.Core.Tests --filter "FullyQualifiedName~TestMethodName"
 
+# Run a single test repeatedly (useful for flaky test diagnostics)
+for i in {1..10}; do dotnet test tests/RailReader.Core.Tests -c Release --filter "FullyQualifiedName~TestName" || break; done
+
 # Download a layout-detection ONNX model (only needed for RailReader.Core.Analysis consumers)
 ./scripts/download-model.sh           # default: PP-DocLayoutV3 (~50 MB)
-./scripts/download-model.sh pps       # PP-DocLayout-S (~4.7 MB, lightweight)
+./scripts/download-model.sh pps       # PP-DocLayout-S (~4.7 MB, lightweight, Lite/web/mobile target)
 ./scripts/download-model.sh heron     # Docling Heron (~164 MB)
 ./scripts/download-model.sh all       # all three
 
@@ -38,7 +41,19 @@ dotnet test tests/RailReader.Core.Tests --filter "FullyQualifiedName~TestMethodN
 ./scripts/download-ocr-model.sh medium  # PP-OCRv6 Medium (~138 MB, most accurate)
 ```
 
-**Always use `-c Release`** — debug builds are significantly slower for the inference paths.
+**Always use `-c Release`** — debug builds are significantly slower for the inference paths. OCR char-box tightening (v0.54.0+) requires the corresponding model set; validate output validity when upgrading models.
+
+### Model Selection Guide
+
+| Use Case | Layout Model | OCR Model | Why |
+|----------|--------------|-----------|-----|
+| Desktop (RailReader2) | PP-DocLayoutV3 (50 MB) | Small or Medium | Max accuracy, local resources available |
+| Web / Lite (WASM / low-end mobile) | PP-DocLayout-S (4.7 MB) | Tiny | Smallest, WASM-compatible; rasterize at 1920 for best results |
+| Mobile (MAUI) | PP-DocLayout-S (4.7 MB) | Tiny | Same as Lite; validate at device resolution |
+| Pure text (no layouts) | TextLayoutAnalyzer (built-in) | (not needed) | Fallback when no model; recovers blocks from text layer only |
+| Scanned PDFs | any model | Full recognition needed | Text layer is missing; OCR fills in char boxes & line order |
+
+**Quantization notes**: INT8 backbone quantization (Conv layers) is safe and proven ~3× faster on Heron with 99% output fidelity. MatMul/decoder quantization is risky — validate any such quant against a known-good corpus before shipping.
 
 ```bash
 # Produce NuGet packages (output in dist/)
@@ -253,9 +268,49 @@ Activates above `CoreSettings.RailZoomThreshold` when analysis is available. Loc
 - **Thread pool**: `IPdfService.RenderPagePixmap()` can be called from `Task.Run()`. PDFium serialization is enforced by `lock (PdfiumGate.Lock)` inside every PDFium-touching call site.
 - **Critical**: Never modify `DocumentState` or any `Viewport` from a background thread — use `IThreadMarshaller.Post()` to dispatch to the UI thread. (Per-viewport render/analysis-prep tasks run on the thread pool but marshal their results back; they also guard against the document or the view being disposed mid-flight.)
 
+**Concrete do's/don'ts**:
+  - ❌ Call PDFium outside the render path without `lock (PdfiumGate.Lock)` — segfault.
+  - ❌ Assign to `Viewport.Focus`, `Viewport.Page`, or `Viewport.RailNav` from a background thread — use `IThreadMarshaller.Post()`.
+  - ❌ Clear/modify `DocumentState.Viewports` while a background task is running — check `IThreadMarshaller.IsUIThread` first or marshal the call.
+  - ✓ Call `ILayoutAnalyzer.RunAnalysis` from the worker thread (it has no PDFium or state refs).
+  - ✓ Read `DocumentState` and `Viewport` properties from render/analysis-prep tasks (reads are thread-safe; see footnote §5.6 for disposal guards).
+
 ## Testing
 
 Tests in `tests/RailReader.Core.Tests/` are xUnit. `TestFixtures.cs` generates synthetic PDFs at runtime via SkiaSharp's `SKDocument.CreatePdf` — that's why the test project references `Renderer.Skia` even though the tests themselves exercise Core, Core.Pdfium, and Core.Analysis surfaces.
+
+**Flaky tests**: Use the loop command above to reproduce intermittently-failing tests. If a test fails under concurrency, run `dotnet test ... --no-parallel-level 1` to serialize execution.
+
+**Cross-backend isolation**: Do not write in-process tests that mix PDFium and PdfPig — they crash when loaded in the same process. Use golden-file comparisons or test each backend separately instead.
+
+## Debugging & Profiling
+
+**ONNX model validation**: After upgrading a layout or OCR model, spot-check a corpus page end-to-end (e.g., `tools/layout-probe` for detector output, visual inspection of block assignments). ONNX quantization changes require re-validation — INT8 backbone quantization is proven safe, but MatMul/decoder quantization risks silent correctness loss.
+
+**Performance profiling on Linux**: `perf` and `dotnet-trace`/`dotnet-counters` are unreliable in this sandbox. Fall back to:
+  - `/usr/bin/time -v dotnet <command>` for wall-clock and peak RSS
+  - `taskset -c 0-3 dotnet <command>` + manual CPU affinity to reproduce bench conditions (mimic quiet-box runs)
+  - Read `/proc/[pid]/stat` + `/proc/[pid]/io` while running for per-thread/IO snapshots
+
+**Intra-op thread scaling**: ONNX Runtime defaults to all logical cores (can saturate CPU/memory on hot machines). Constrain via `CoreSettings.ConfigureSession` if needed — the seam exists but is unwired.
+
+**Line/block geometry debugging**: `tools/rail-frame-probe` measures rail-framing slack across a page (run on a quiet box, use paired interleaving to cancel frequency noise). Useful for validating KeepLineInFrame and FrameOnOwnBlock fixes.
+
+## Troubleshooting
+
+**`DllNotFoundException: libSkiaSharp` on startup**: Missing Skia native binaries. Run in Release mode (`dotnet build -c Release`) and ensure the platform-specific runtime is installed. For Avalonia.Browser (WASM), `WasmBuildNative=true` must be set in the project.
+
+**`PdfiumGate.Lock` segfault on PDFium call**: PDFium P/Invoke was called outside the lock. All PDFium (`FPDFPage_*`, `FPDFText_*`, etc.) calls must be wrapped in `lock (PdfiumGate.Lock)`. Exception: `PdfiumResolver.EnsureLibraryInitialized()` is lock-free and MUST be called before any other PDFium code (issue: early FPDF_* calls outside the render path fail silently if the library isn't initialized).
+
+**Ubuntu `.dotnet workload install` fails silently**: The `apt` dotnet package's workload installer is broken on Ubuntu. Install via `dotnet-install.sh` (user-level) instead, or use a container/VM with the SDK pre-baked.
+
+**Scanned PDF OCR returns garbage/empty**: The OCR model set only recognizes Latin script by default. Multilingual content needs `PP-OCRv6` (Tiny/Small/Medium, not Latin-only). Download via `./scripts/download-ocr-model.sh small` and pass the `OcrModelDescriptor` to `RapidOcrService` constructor.
+
+**Layout model inference is slow (>1 sec/page)**: Likely causes: (1) Debug build — always use `-c Release`. (2) ONNX Runtime intra-op threads hitting CPU throttling — validate on a quiet machine. (3) Large pixmap (model input size mismatch) — PP-DocLayout-S expects 1920×1920 max; if you're rasterizing at higher DPI, downscale first.
+
+**Char-box selection highlights misaligned on scanned PDFs**: OCR char boxes are oversized by default (line-level averaging). v0.54.0+ includes pixel-tightening (`CharBoxTightener`), which shrinks boxes to actual ink extent. Verify the OCR model set matches the rasterization DPI (PP-S at 1920 is the pairing).
+
+**PDFium crashes on encrypted PDF**: Needs password supplied before any other operations. Call `IPdfService.ValidateAndGetPassword()` on open attempt (implements the handler contract); `PdfPasswordRequiredException` signals the need.
 
 ## Relationship to RailReader2 (the desktop app)
 
