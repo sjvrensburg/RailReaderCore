@@ -154,6 +154,12 @@ public static class LineDetector
     /// Optional override of the raster thresholds used by the pixel-projection fallback and
     /// the vertical-rule scan; see <see cref="LineDetectionTuning"/>. Null keeps the defaults.
     /// </param>
+    /// <param name="skewTan">
+    /// Tangent of the page's text-baseline skew, or 0 for none — see <see cref="DeskewY"/>.
+    /// Grouping decisions are made with it removed, so that a scan a degree or two off square
+    /// still yields one band per printed line. Every returned <see cref="LineInfo"/> remains
+    /// an axis-aligned band in ordinary page space; nothing rotated escapes this method.
+    /// </param>
     public static List<LineInfo> DetectLines(
         LayoutBlock block,
         IReadOnlyList<CharBox>? charBoxes,
@@ -162,7 +168,8 @@ public static class LineDetector
         bool cellNavigation = false,
         IReadOnlyList<BBox>? ocrLines = null,
         PageRulings? rulings = null,
-        LineDetectionTuning? tuning = null)
+        LineDetectionTuning? tuning = null,
+        float skewTan = 0f)
     {
         tuning ??= LineDetectionTuning.Default;
         bool isTable = block.Role == BlockRole.Table;
@@ -170,8 +177,21 @@ public static class LineDetector
         // (and the row-density fallback) assume horizontal lines and would shatter
         // a sideways block into per-glyph fragments. Rail then frames the whole
         // block; per-line reading of rotated text goes through rotate-to-read.
+        //
+        // Note this runs BEFORE any deskew, which is what keeps skew correction and
+        // quarter-turn rotation from ever fighting: a sideways block leaves here with its
+        // single atomic line and never reaches the sheared code below. The detector's own
+        // per-quad tilt cap enforces the same separation from the other side.
         if (AtomicLineRoles.Contains(block.Role) || block.IsRotatedText || (isTable && !tableRowReading))
             return [new LineInfo(block.BBox.Y + block.BBox.H / 2f, block.BBox.H, block.BBox.X, block.BBox.W)];
+
+        // Shear about the block's own centre. Clustering is translation-invariant, so the
+        // pivot cannot change which glyphs group together — but it does set where the
+        // resulting band is reported, and anchoring at the block centre keeps bands over
+        // their ink. A page-centre pivot would displace every band in a side column by
+        // (blockCentre − pageCentre)·tan, pushing its first and last lines out of the block
+        // box to be clamped or dropped.
+        float pivotX = block.BBox.X + block.BBox.W / 2f;
 
         // Table rows come from the same char clustering as prose, but skip the
         // vertical-overlap merge in NormalizeLines: a table's rows are already
@@ -187,10 +207,11 @@ public static class LineDetector
             // Lift oversize spanning glyphs (drop caps) out of clustering for prose,
             // but not for math — there a tall bracket legitimately spans, and should
             // merge, stacked rows (matrices, large fractions).
-            var charLines = DetectLinesFromChars(block.BBox, charBoxes, mult, excludeOversizeSpanners: !isMath);
+            var charLines = DetectLinesFromChars(block.BBox, charBoxes, mult, excludeOversizeSpanners: !isMath,
+                skewTan: skewTan, pivotX: pivotX);
             if (charLines.Count > 0)
             {
-                var rows = NormalizeLines(charLines, block.BBox, mergeOverlaps);
+                var rows = NormalizeLines(charLines, block.BBox, mergeOverlaps, skewTan, pivotX);
                 // For a ruled table the drawn row separators are the authority on where one
                 // row ends: a cell whose text wraps is one row, not two.
                 if (isTable) rows = MergeRowsByRulings(rows, rulings, block.BBox);
@@ -205,9 +226,12 @@ public static class LineDetector
         if (ocrLines is { Count: > 0 })
         {
             var detected = LinesFromOcr(block.BBox, ocrLines);
-            if (detected.Count > 0) return NormalizeLines(detected, block.BBox, mergeOverlaps);
+            if (detected.Count > 0) return NormalizeLines(detected, block.BBox, mergeOverlaps, skewTan, pivotX);
         }
 
+        // The pixel-projection fallback is left unsheared: it is only reached when neither
+        // char boxes nor OCR lines exist, and the only estimator we have comes from OCR — so
+        // skewTan is always 0 on the paths that actually arrive here.
         return NormalizeLines(DetectLinesFromPixels(block, rgbBytes, imgW, imgH, scaleX, scaleY, tuning), block.BBox, mergeOverlaps);
     }
 
@@ -239,6 +263,12 @@ public static class LineDetector
             float overlap = lr - lx;
             if (overlap <= 0 || overlap < l.W * OcrLineBlockOverlapFraction) continue;
 
+            // No shear is applied to centreY, and that is not an oversight: the box arrives
+            // already carrying the line's true height about its true centre (the mapper
+            // deflates the detector's axis-aligned bound), and the centre of a rotated line's
+            // bound IS its mid-X-anchored centre — exactly the convention the char path's
+            // bands use. The skew still matters to the NormalizeLines call that follows, which
+            // is why the caller passes it there.
             lines.Add(new LineInfo(centreY, l.H, lx, overlap));
         }
         return lines;
@@ -256,7 +286,14 @@ public static class LineDetector
     /// default. Disabled for table rows, which the greedy split already separates
     /// cleanly and whose tight spacing the merge would otherwise fuse.
     /// </param>
-    internal static List<LineInfo> NormalizeLines(List<LineInfo> lines, BBox block, bool mergeOverlaps = true)
+    /// <param name="skewTan">
+    /// Tangent of the page skew, or 0. The sort and the overlap merge run with it removed:
+    /// two adjacent lines on a skewed page genuinely do overlap in raw page-Y, so comparing
+    /// raw bands here would immediately re-fuse the lines char clustering had just separated.
+    /// The clamp above stays raw, because the block box it clamps into is raw.
+    /// </param>
+    internal static List<LineInfo> NormalizeLines(List<LineInfo> lines, BBox block, bool mergeOverlaps = true,
+        float skewTan = 0f, float pivotX = 0f)
     {
         float top = block.Y, bottom = block.Y + block.H;
         float left = block.X, right = block.X + block.W;
@@ -279,7 +316,13 @@ public static class LineDetector
             clamped.Add(new LineInfo((lt + lb) / 2f, lb - lt, lx, lw));
         }
 
-        clamped.Sort((a, b) => a.Y.CompareTo(b.Y));
+        // Each line's Y sits at its own centre-X, so that is the X its band must be sheared
+        // about to be comparable with its neighbours'. At zero skew Key is exactly l.Y and
+        // every comparison below is bit-for-bit the one that ran before deskew existed.
+        static float Key(in LineInfo l, float pivotX, float skewTan)
+            => DeskewY(l.X + l.Width / 2f, l.Y, pivotX, skewTan);
+
+        clamped.Sort((a, b) => Key(a, pivotX, skewTan).CompareTo(Key(b, pivotX, skewTan)));
 
         if (!mergeOverlaps) return clamped;
 
@@ -290,14 +333,18 @@ public static class LineDetector
             if (merged.Count > 0)
             {
                 var p = merged[^1];
-                float pt = p.Y - p.Height / 2f, pb = p.Y + p.Height / 2f;
-                float lt = l.Y - l.Height / 2f, lb = l.Y + l.Height / 2f;
+                float pk = Key(p, pivotX, skewTan), lk = Key(l, pivotX, skewTan);
+                float pt = pk - p.Height / 2f, pb = pk + p.Height / 2f;
+                float lt = lk - l.Height / 2f, lb = lk + l.Height / 2f;
                 float ov = Math.Min(pb, lb) - Math.Max(pt, lt);
                 if (ov > 0.5f * Math.Min(p.Height, l.Height))
                 {
                     float nt = Math.Min(pt, lt), nb = Math.Max(pb, lb);
                     float nx = Math.Min(p.X, l.X), nr = Math.Max(p.X + p.Width, l.X + l.Width);
-                    merged[^1] = new LineInfo((nt + nb) / 2f, nb - nt, nx, nr - nx);
+                    // Put the merged band back in page space at ITS centre-X, matching how
+                    // every line arrived here.
+                    float ny = ReskewY((nx + nr) / 2f, (nt + nb) / 2f, pivotX, skewTan);
+                    merged[^1] = new LineInfo(ny, nb - nt, nx, nr - nx);
                     continue;
                 }
             }
@@ -838,16 +885,67 @@ public static class LineDetector
         return cells;
     }
 
-    private readonly record struct GlyphBox(float MidY, float Top, float Bottom, float Height, float Left, float Right);
+    /// <summary>
+    /// The Y a point would have had if the page were square: shear about
+    /// <paramref name="pivotX"/> by the page's skew.
+    ///
+    /// <para>
+    /// A shear, not a rotation — X is deliberately untouched. At the ±5° this is bounded to,
+    /// the X term a true rotation would add is under half a percent of the offset from the
+    /// pivot, and X is only ever used for horizontal extents we keep as-is anyway. Naming it a
+    /// shear is what stops a later reader from "fixing" the missing term.
+    /// </para>
+    /// <para>
+    /// At <paramref name="skewTan"/> == 0 this is the exact identity for every finite input —
+    /// multiplying by zero and subtracting zero introduce no rounding — which is what lets the
+    /// whole feature be strictly additive rather than a behaviour change on every page.
+    /// </para>
+    /// </summary>
+    internal static float DeskewY(float x, float y, float pivotX, float skewTan)
+        => y - (x - pivotX) * skewTan;
+
+    /// <summary>Inverse of <see cref="DeskewY"/>: puts a deskewed Y back into page space.</summary>
+    internal static float ReskewY(float x, float y, float pivotX, float skewTan)
+        => y + (x - pivotX) * skewTan;
+
+    // Raw* fields stay in page space; Desk* are sheared. Both are needed: membership tests
+    // compare against the block's own axis-aligned box and so must use raw values, while
+    // every ordering and grouping decision must use the sheared ones.
+    private readonly record struct GlyphBox(
+        float MidY, float DeskMidY, float DeskTop, float DeskBottom,
+        float Height, float Left, float Right);
 
     // Vertical+horizontal extent of one detected line, accumulated before being
-    // converted to a LineInfo. A record struct held in a List and mutated only by
-    // full replacement (bands[i] = ...), never by in-place field assignment.
+    // converted to a LineInfo. Top/Bottom are in DESKEWED space (so two adjacent lines on a
+    // skewed page do not appear to overlap); Left/Right are raw, since the shear leaves X
+    // alone. A record struct held in a List and mutated only by full replacement
+    // (bands[i] = ...), never by in-place field assignment.
     private record struct Band(float Top, float Bottom, float Left, float Right)
     {
         public readonly float CenterY => (Top + Bottom) * 0.5f;
-        public readonly bool OverlapsY(in GlyphBox g) => g.Bottom > Top && g.Top < Bottom;
-        public readonly LineInfo ToLineInfo() => new(CenterY, Bottom - Top, Left, Right - Left);
+        public readonly bool OverlapsY(in GlyphBox g) => g.DeskBottom > Top && g.DeskTop < Bottom;
+
+        /// <summary>
+        /// Converts to the axis-aligned band every consumer downstream expects.
+        ///
+        /// <para>
+        /// The centre is re-sheared at the band's <b>own</b> centre-X, so the band sits over
+        /// the line's real ink rather than where that ink would be on a square page. The
+        /// height is the deskewed extent, which is the line's true height — the raw extent
+        /// would carry the <c>width × tan</c> inflation this whole path exists to remove.
+        /// </para>
+        /// <para>
+        /// The cost of keeping <see cref="LineInfo"/> axis-aligned: on a skewed line the ink
+        /// at the two ends sits up to <c>width × tan / 2</c> outside this band, which
+        /// line-focus blur and line highlight will show. Bounded by the ±5° cap and small
+        /// (a few points) at the sub-degree skews most scans have. Padding the height to cover
+        /// it would reinstate exactly the inflation that fuses neighbouring lines, so it is
+        /// left uncovered; a real fix needs an angle on <see cref="LineInfo"/> itself.
+        /// </para>
+        /// </summary>
+        public readonly LineInfo ToLineInfo(float pivotX, float skewTan)
+            => new(ReskewY((Left + Right) * 0.5f, CenterY, pivotX, skewTan),
+                   Bottom - Top, Left, Right - Left);
     }
 
     /// <summary>
@@ -877,7 +975,7 @@ public static class LineDetector
     /// </remarks>
     internal static List<LineInfo> DetectLinesFromChars(
         BBox bbox, IReadOnlyList<CharBox> charBoxes, float splitMultiplier = DefaultSplitMultiplier,
-        bool excludeOversizeSpanners = false)
+        bool excludeOversizeSpanners = false, float skewTan = 0f, float pivotX = 0f)
     {
         float left = bbox.X;
         float right = bbox.X + bbox.W;
@@ -892,10 +990,19 @@ public static class LineDetector
 
             float midX = (c.Left + c.Right) * 0.5f;
             float midY = (c.Top + c.Bottom) * 0.5f;
+            // Membership stays in raw page space: the block box is itself axis-aligned, so a
+            // sheared test would admit and exclude different glyphs at its edges — a change
+            // with no upside, and one that would break the "identical at zero skew" property
+            // the moment an estimate appeared.
             if (midX < left || midX > right) continue;
             if (midY < top || midY > bottom) continue;
 
-            chars.Add(new GlyphBox(midY, c.Top, c.Bottom, h, c.Left, c.Right));
+            // Deskew all three Y values about the glyph's OWN mid-X, which preserves its
+            // height exactly (DeskBottom − DeskTop == Bottom − Top): a single glyph is far too
+            // small for its internal shear to matter, and keeping heights untouched means the
+            // median-height threshold below is unaffected by skew.
+            float shift = (midX - pivotX) * skewTan;
+            chars.Add(new GlyphBox(midY, midY - shift, c.Top - shift, c.Bottom - shift, h, c.Left, c.Right));
         }
 
         if (chars.Count == 0) return [];
@@ -928,7 +1035,11 @@ public static class LineDetector
             else oversize = null;
         }
 
-        chars.Sort((a, b) => a.MidY.CompareTo(b.MidY));
+        // Sorting and clustering both run in deskewed space. This is the fix: on a skewed
+        // page a printed line's raw mid-Y drifts by width×tan from one end to the other, so a
+        // raw sort interleaves glyphs from adjacent lines and the greedy split below then cuts
+        // mid-line and fuses across lines.
+        chars.Sort((a, b) => a.DeskMidY.CompareTo(b.DeskMidY));
 
         // Greedy clustering. Threshold generous (>= 1.0 × refHeight) so sub/
         // superscripts and inline math don't fragment a single visual line; math
@@ -936,21 +1047,21 @@ public static class LineDetector
         float splitThreshold = refHeight * splitMultiplier;
         var bands = new List<Band>();
         int clusterStart = 0;
-        float clusterSumMidY = chars[0].MidY;
+        float clusterSumMidY = chars[0].DeskMidY;
 
         for (int i = 1; i < chars.Count; i++)
         {
             int clusterCount = i - clusterStart;
             float clusterAvgMidY = clusterSumMidY / clusterCount;
-            if (chars[i].MidY - clusterAvgMidY > splitThreshold)
+            if (chars[i].DeskMidY - clusterAvgMidY > splitThreshold)
             {
                 bands.Add(BandOf(chars, clusterStart, i));
                 clusterStart = i;
-                clusterSumMidY = chars[i].MidY;
+                clusterSumMidY = chars[i].DeskMidY;
             }
             else
             {
-                clusterSumMidY += chars[i].MidY;
+                clusterSumMidY += chars[i].DeskMidY;
             }
         }
         bands.Add(BandOf(chars, clusterStart, chars.Count));
@@ -978,7 +1089,7 @@ public static class LineDetector
                 if (span == 0)
                 {
                     // Overlaps no detected line → a stand-alone glyph: its own line.
-                    bands.Add(new Band(g.Top, g.Bottom, g.Left, g.Right));
+                    bands.Add(new Band(g.DeskTop, g.DeskBottom, g.Left, g.Right));
                     continue;
                 }
 
@@ -987,8 +1098,8 @@ public static class LineDetector
                 // glyph belongs to a SINGLE line (a tall operator / raised cap); a
                 // multi-line spanner (drop cap) must not inflate any line's height.
                 var b = bands[topBand];
-                float nt = span == 1 ? Math.Min(b.Top, g.Top) : b.Top;
-                float nb = span == 1 ? Math.Max(b.Bottom, g.Bottom) : b.Bottom;
+                float nt = span == 1 ? Math.Min(b.Top, g.DeskTop) : b.Top;
+                float nb = span == 1 ? Math.Max(b.Bottom, g.DeskBottom) : b.Bottom;
                 bands[topBand] = new Band(nt, nb, Math.Min(b.Left, g.Left), Math.Max(b.Right, g.Right));
             }
             bands.Sort((a, b) => a.CenterY.CompareTo(b.CenterY));
@@ -996,7 +1107,7 @@ public static class LineDetector
 
         var lines = new List<LineInfo>(bands.Count);
         foreach (var b in bands)
-            lines.Add(b.ToLineInfo());
+            lines.Add(b.ToLineInfo(pivotX, skewTan));
         return lines;
 
         static Band BandOf(List<GlyphBox> sorted, int start, int endExclusive)
@@ -1005,8 +1116,8 @@ public static class LineDetector
             float minLeft = float.PositiveInfinity, maxRight = float.NegativeInfinity;
             for (int i = start; i < endExclusive; i++)
             {
-                if (sorted[i].Top < minTop) minTop = sorted[i].Top;
-                if (sorted[i].Bottom > maxBottom) maxBottom = sorted[i].Bottom;
+                if (sorted[i].DeskTop < minTop) minTop = sorted[i].DeskTop;
+                if (sorted[i].DeskBottom > maxBottom) maxBottom = sorted[i].DeskBottom;
                 if (sorted[i].Left < minLeft) minLeft = sorted[i].Left;
                 if (sorted[i].Right > maxRight) maxRight = sorted[i].Right;
             }

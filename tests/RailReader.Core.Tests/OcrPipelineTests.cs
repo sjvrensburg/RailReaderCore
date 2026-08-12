@@ -18,7 +18,7 @@ public class OcrPipelineTests
     {
         var page = new OcrPage([new OcrLine(new BBox(100f, 200f, 300f, 20f))]);
 
-        var (text, lines) = OcrPageMapper.ToPageSpace(page, 0.5f, 0.25f);
+        var (text, lines, _) = OcrPageMapper.ToPageSpace(page, 0.5f, 0.25f);
 
         Assert.Null(text);                       // detection only: nothing transcribed
         Assert.Equal(new BBox(50f, 50f, 150f, 5f), lines[0]);
@@ -34,7 +34,7 @@ public class OcrPipelineTests
                 [new CharBox(0, 0f, 20f, 10f, 30f)]),
         ]);
 
-        var (text, _) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
+        var (text, _, _) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
 
         Assert.NotNull(text);
         Assert.Equal("ab\nc\n", text!.Text);
@@ -56,7 +56,7 @@ public class OcrPipelineTests
                 [new CharBox(0, 0f, 0f, 10f, 10f), new CharBox(5, 0f, 0f, 10f, 10f)]),
         ]);
 
-        var (text, _) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
+        var (text, _, _) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
 
         Assert.Single(text!.CharBoxes);
         Assert.Equal("a\n", text.Text);
@@ -70,7 +70,7 @@ public class OcrPipelineTests
             new OcrLine(new BBox(0f, 20f, 10f, 10f), "x", [new CharBox(0, 0f, 20f, 10f, 30f)]),
         ]);
 
-        var (text, lines) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
+        var (text, lines, _) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
 
         Assert.Equal(2, lines.Count);            // geometry survives for both
         Assert.Equal("x\n", text!.Text);
