@@ -88,6 +88,15 @@ public sealed class AppConfig : IRecentFilesStore
     /// <see cref="CoreSettings.CellNavigation"/>.</summary>
     public bool CellNavigation { get; set; }
 
+    /// <summary>Correct page skew when grouping OCR'd text into lines, so a scanned page a
+    /// degree or two off square still reads one rail line per printed line. On by default;
+    /// only affects pages that went through OCR. See
+    /// <see cref="CoreSettings.DeskewOcrLines"/>.</summary>
+    // No schema bump: a config written before this field simply keeps the initialiser above,
+    // which is the intended value for an existing user. The version is for renames, removed
+    // defaults and semantic shifts — none of which this is.
+    public bool DeskewOcrLines { get; set; } = true;
+
     // VLM (Vision Language Model) settings for Copy as LaTeX / Markdown / Description
     public string? VlmEndpoint { get; set; }
     public string? VlmModel { get; set; }
@@ -131,6 +140,7 @@ public sealed class AppConfig : IRecentFilesStore
         AutoScrollStopClasses = AutoScrollStopClasses,
         TableRowReading = TableRowReading,
         CellNavigation = CellNavigation,
+        DeskewOcrLines = DeskewOcrLines,
         VlmEndpoint = VlmEndpoint,
         VlmModel = VlmModel,
         VlmApiKey = VlmApiKey,
