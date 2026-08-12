@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.56.0 — Automatic deskew for OCR'd scanned pages
+
+0.54.0 and 0.55.0 fixed the *glyph* boxes on a skewed scan. This fixes the *grouping* built on
+top of them, which was the other half of the same defect.
+
+Every grouping step in line detection is an orthogonal projection onto page-Y — glyphs are
+sorted and clustered by mid-Y, lines merge when their vertical bands overlap. Skew is exactly
+the transformation those steps are blind to. On tightly-set body text (line pitch ~1.4× the
+glyph height, ordinary for single-spaced book text), two degrees off square is enough for one
+printed line's mid-Y to drift further across the column than the gap to its neighbour: the sort
+interleaves glyphs from different lines and the greedy split can no longer find the boundaries
+between them. A paragraph comes back as one or two enormous rail units.
+
+- **The angle was already being measured and thrown away.** RapidOcrNet fits a minimum-area
+  rectangle to every detected line; `RapidOcrService.Bounds()` collapsed it to an axis-aligned
+  box on the spot. `QuadMetrics` now reads the baseline direction and the true perpendicular
+  height out of that rectangle, ordering-independently, and `SkewEstimator` (new, public, in
+  Core — pure geometry, no engine dependency) aggregates them by length-weighted median.
+- **Correction is a shear applied inside grouping only.** No pixels are rotated, no coordinate
+  round-trip. `DetectLinesFromChars` sorts and clusters on a deskewed mid-Y; `NormalizeLines`
+  sorts and applies its 50%-overlap merge in the same space (without which it would immediately
+  re-fuse what the clustering had just separated). Membership tests and the median-height
+  threshold stay raw, since the block box is raw and heights are shear-invariant.
+- **`OcrPageMapper` deflates each line box to its true rotated height**, removing the
+  `width × sin(angle)` inflation — on a 400 pt line, 1° adds ~7 pt of phantom height, which is
+  by itself enough to push adjacent bands past the merge threshold. The substitution is exact:
+  the axis-aligned bound of a rotated rectangle is centred on that rectangle's own centre.
+- Bounded at **±5°, one angle per page**, behind a confidence gate (≥8 measured lines, ≤1.5°
+  spread) and a 0.15° dead band that snaps near-upright pages to exactly zero. The shear is the
+  exact identity at zero, so an unconfident or square page follows precisely the code path it
+  followed before this existed.
+
+**Additive.** New `CoreSettings.DeskewOcrLines` (default on) and `DocumentController.DeskewOcrLines`;
+`AnalysisWorker.DeskewEnabled`; trailing `skewTan` parameters on `BlockPostProcessor.PostProcess`
+and `LineDetector.DetectLines`; `OcrLine.Angle`/`TrueHeight` and `OcrPage.SkewAngle`. No existing
+signature or behaviour changes — the full suite passes unchanged, which is the zero-skew identity
+claim under test. No `AppConfig` schema bump: a config written before this keeps the field's
+initialiser, which is the intended value.
+
+Verified against the reporter's own scanned `test.pdf` from railreader2#209 (two pages, no text
+layer, rasterised at 1920 px):
+
+| page | measured lines | raw median | IQR | estimate | lines corrected / uncorrected |
+|------|---------------|-----------|-----|----------|------------------------------|
+| 0 | 33 | 0.00° | 0.15° | 0.00° (dead band) | 33 / 33 — no change |
+| 1 | 43 | 0.72° | 0.18° | 0.72° | 42 / 38 — **+4 recovered** |
+
+Page 0 is genuinely square and correctly no-ops; page 1 carries a real rigid skew whose 0.18°
+interquartile spread is exactly the tight agreement a rotated sheet produces. Note 0.72° is
+enough to cost four lines: merging starts once a line's drift across the column,
+`width × tan(θ)`, exceeds the median glyph height, and real book text has small glyphs relative
+to its column width. The synthetic tests need ~2° to reproduce the same effect at their larger
+text size, which is why the real-scan case is the one that matters.
+
+Known limitations, all deliberate:
+
+- **Needs OCR.** The only estimator is the detector's quads, so `OcrMode.Off` leaves the
+  pixel-projection fallback uncorrected. A page with its own text layer was never skewed.
+- **`LineInfo` stays axis-aligned.** A skewed line's ink at the two ends sits up to
+  `width × tan / 2` outside its reported band, which line-focus blur and line highlight will
+  show. Padding the band to cover it would reinstate exactly the inflation that fuses lines; a
+  real fix needs an angle on `LineInfo` itself.
+- **Table interiors are not deskewed.** `AssignCells` row bucketing, the column-band pooling and
+  `DetectColumnGrid`'s vertical run walk all keep their axis-aligned assumptions. Correcting the
+  columns without the rows is half a fix, so the three move together in a follow-up.
+- **One angle per page.** A badly-bound book scan whose two columns are skewed differently gets
+  the median of the two; more often the dispersion gate rejects it outright.
+
 ## 0.55.0 — OCR char-box vertical tightening (railreader2#209 follow-up)
 
 A GUI smoke-test of 0.54.0 against the reporter's own `test.pdf` surfaced a second, more severe

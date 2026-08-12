@@ -116,8 +116,12 @@ public sealed class RapidOcrService : IOcrService
             ct.ThrowIfCancellationRequested();
             var lines = new List<OcrLine>(boxes.Count);
             foreach (var box in boxes)
-                lines.Add(new OcrLine(Bounds(box.BoxPoints), Confidence: box.Score));
-            return new OcrPage(lines);
+            {
+                var (angle, trueHeight) = QuadMetrics(box.BoxPoints);
+                lines.Add(new OcrLine(Bounds(box.BoxPoints), Confidence: box.Score,
+                    Angle: angle, TrueHeight: trueHeight));
+            }
+            return new OcrPage(lines, SkewEstimator.Estimate(lines));
         }
 
         var result = _engine.Detect(bitmap, _fullOptions);
@@ -126,18 +130,20 @@ public sealed class RapidOcrService : IOcrService
         var recognised = new List<OcrLine>(result.TextBlocks.Length);
         foreach (var block in result.TextBlocks)
             recognised.Add(ToLine(block, rgbBytes, width, height));
-        return new OcrPage(recognised);
+        return new OcrPage(recognised, SkewEstimator.Estimate(recognised));
     }
 
     private static OcrLine ToLine(TextBlock block, byte[] rgbBytes, int width, int height)
     {
         var bounds = Bounds(block.BoxPoints);
+        var (angle, trueHeight) = QuadMetrics(block.BoxPoints);
         string text = block.Text;
-        if (string.IsNullOrEmpty(text)) return new OcrLine(bounds, Confidence: block.BoxScore);
+        if (string.IsNullOrEmpty(text))
+            return new OcrLine(bounds, Confidence: block.BoxScore, Angle: angle, TrueHeight: trueHeight);
 
         var chars = CharBoxesFor(block, text);
         if (chars is not null) chars = CharBoxTightener.Tighten(chars, rgbBytes, width, height);
-        return new OcrLine(bounds, text, chars, block.BoxScore);
+        return new OcrLine(bounds, text, chars, block.BoxScore, angle, trueHeight);
     }
 
     /// <summary>
@@ -187,6 +193,91 @@ public sealed class RapidOcrService : IOcrService
 
         return boxes.Count > 0 ? boxes : null;
     }
+
+    /// <summary>
+    /// Reads a detection quad's baseline direction and its height measured perpendicular to
+    /// that baseline, both in the source pixmap's pixel space. Returns <c>(0, 0)</c> when the
+    /// quad carries no usable measurement, which is the signal for every consumer to fall back
+    /// to the axis-aligned <see cref="Bounds"/> and behave exactly as it did before deskew.
+    ///
+    /// <para>
+    /// Both values are returned together on purpose: a returned angle of 0 would otherwise be
+    /// ambiguous between "this line is upright" and "we could not tell", and a page-level
+    /// estimate built from the second kind would quietly vote for uprightness. A height of 0
+    /// is unambiguous, so downstream that is the "was measured" marker.
+    /// </para>
+    /// </summary>
+    internal static (float Angle, float Height) QuadMetrics(SKPointI[] points)
+    {
+        if (points is not { Length: 4 }) return (0f, 0f);
+
+        // The engine builds these from a minimum-area rectangle and orders the corners
+        // cyclically (convex-hull order), but WHICH corner lands first is not guaranteed — so
+        // never index a specific corner as "top-left". Work with opposite edge pairs instead:
+        // in a cyclic quad p0->p1->p2->p3 the edges p0->p1 and p2->p3 are the same side of the
+        // rectangle walked in opposite directions, so negating one and averaging recovers that
+        // side's direction while halving the corner-rounding noise of both ends.
+        var e0 = Delta(points[0], points[1]);
+        var e1 = Delta(points[1], points[2]);
+        var e2 = Delta(points[2], points[3]);
+        var e3 = Delta(points[3], points[0]);
+
+        float sideAx = (e0.X - e2.X) / 2f, sideAy = (e0.Y - e2.Y) / 2f;
+        float sideBx = (e1.X - e3.X) / 2f, sideBy = (e1.Y - e3.Y) / 2f;
+
+        float lenA = MathF.Sqrt(sideAx * sideAx + sideAy * sideAy);
+        float lenB = MathF.Sqrt(sideBx * sideBx + sideBy * sideBy);
+
+        // Text runs along the longer side; the shorter one is the line's true height.
+        bool aIsLong = lenA >= lenB;
+        float alongX = aIsLong ? sideAx : sideBx;
+        float alongY = aIsLong ? sideAy : sideBy;
+        float alongLen = aIsLong ? lenA : lenB;
+        float height = aIsLong ? lenB : lenA;
+
+        if (alongLen <= 0f || height <= 0f) return (0f, 0f);
+        // Corners are integers, so a short quad's direction is mostly quantisation noise.
+        if (alongLen < MinQuadEdgePx) return (0f, 0f);
+        // Too square to say which way it runs (a lone glyph, a CJK single-character line) —
+        // and, worse, the long/short pick above becomes a coin flip.
+        if (alongLen < height * MinQuadAspect) return (0f, 0f);
+
+        float angle = MathF.Atan2(alongY, alongX);
+        // We want an undirected baseline direction, so fold sense out: right-to-left and
+        // left-to-right traversals of the same side must yield the same angle.
+        if (angle > MathF.PI / 2f) angle -= MathF.PI;
+        else if (angle <= -MathF.PI / 2f) angle += MathF.PI;
+
+        // Past this the quad is not a skewed horizontal line but a sideways one, which is the
+        // block-orientation machinery's territory. Reporting nothing keeps the two apart and
+        // leaves such a line on its pre-deskew path.
+        if (MathF.Abs(angle) > MaxQuadAngle) return (0f, 0f);
+
+        return (angle, height);
+    }
+
+    private static (float X, float Y) Delta(SKPointI a, SKPointI b) => (b.X - a.X, b.Y - a.Y);
+
+    /// <summary>Shortest long-edge that can carry a direction; below it, integer corners dominate.</summary>
+    private const float MinQuadEdgePx = 12f;
+
+    /// <summary>Long side must exceed the short side by this factor before a direction is read.</summary>
+    private const float MinQuadAspect = 1.5f;
+
+    /// <summary>
+    /// Widest tilt a single detection may report (15°).
+    ///
+    /// <para>
+    /// Deliberately three times the ±5° page-level limit rather than equal to it. This guard
+    /// exists to reject things that are not skewed lines at all — a sideways caption, a
+    /// vertical CJK run, a table rule read as text — while still letting a genuinely 6° page's
+    /// lines through, so the page-level dispersion check sees the real spread and the range
+    /// check can honestly report "consistent, but further off square than we correct for".
+    /// Clamping both gates to the same number would filter the evidence until whatever
+    /// survived looked confident.
+    /// </para>
+    /// </summary>
+    private const float MaxQuadAngle = 15f * MathF.PI / 180f;
 
     /// <summary>Axis-aligned bounds of a detection quad, in the source pixmap's pixel space.</summary>
     private static BBox Bounds(SKPointI[] points)

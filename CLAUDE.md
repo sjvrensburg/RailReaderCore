@@ -201,6 +201,30 @@ ink extent — exactly like a real PDFium char box — fixes both for free; neit
 to change. Verified against the same reporter's `test.pdf`: a 34-real-line paragraph that
 detected as 2 rail lines pre-fix now detects ~31.
 
+**Automatic deskew (0.56.0).** Tightening fixed the *glyph* boxes; the *grouping* built on them
+was still an orthogonal projection onto page-Y (mid-Y sort + cluster, vertical-band merge), which
+is exactly what skew breaks. `RapidOcrService.QuadMetrics` reads the baseline direction and the
+true perpendicular height out of the detector's minimum-area rectangle — previously discarded by
+`Bounds()` — and `SkewEstimator` (Core, public, pure geometry) aggregates them into one page
+angle by **length-weighted median**, gated on ≥8 measured lines, ≤1.5° spread and ±5°, with a
+0.15° dead band. The angle is applied as a **shear inside grouping only**: `DetectLinesFromChars`
+and `NormalizeLines` decide in deskewed space, `OcrPageMapper` deflates each line box to its true
+height. Nothing rotated escapes — every `LineInfo` is still an axis-aligned band, so rail,
+highlight, blur and annotations are untouched, and at angle 0 the shear is the exact identity.
+
+Three things to know before touching it. **`TrueHeight > 0`, not `Angle != 0`, is the
+"was measured" marker** — an angle of 0 cannot distinguish upright from unmeasurable, and
+counting the latter is a silent vote for uprightness. **The per-quad tilt cap (15°) is
+deliberately looser than the page gate (5°)** — filtering samples at the threshold the page is
+judged by discards most of a genuinely 6° page's evidence and then reports confidence in the
+surviving tail. **Merging is not a function of angle alone**: a line reaches its neighbour's band
+once `width × tan(θ)` exceeds the median glyph height, so ordinary book text merges below 1°
+while large text needs several degrees — do not tune thresholds against synthetic pages.
+`tools/deskew-probe` reports all of this per page. Toggle: `CoreSettings.DeskewOcrLines`
+(default on), `DocumentController.DeskewOcrLines`. Not deskewed: the pixel-projection fallback
+(no estimator exists with `OcrMode.Off`) and table interiors (`AssignCells` row bucketing,
+column bands, `DetectColumnGrid` — they move together or not at all).
+
 **The OCR text cache is one-way.** OCR only ever runs inside an analysis request, and an
 analysed page is never resubmitted, so recovered text has no second chance: `DocumentModel`
 pins it against `EvictDistantPageCaches`, and `CacheExtractedText` refuses to let a later empty
@@ -222,7 +246,7 @@ The only project that imports both `Core` and `Core.Pdfium`. `SkiaPdfServiceFact
 - Set `RailReaderLogging.Logger` once at startup (or accept the `NullLogger` default).
 - Construct `CoreSettings` from your config layer and pass it into `DocumentController`; on change, build a new `CoreSettings` and call `OnConfigChanged`.
 - Supply `IPdfServiceFactory`, `IAnnotationStore`, `IRecentFilesStore`. Desktop wires `SkiaPdfServiceFactory` + `AppConfig` and either `AnnotationService` (sidecar) or `CompositeAnnotationStore.Default` (native PDF annotations); a Lite/mobile consumer would substitute its own.
-- Optionally pass `ocrServiceFactory` / `ocrMode` to `InitializeWorker` to handle scanned PDFs (`new RapidOcrService()`). Off by default; `DocumentController.OcrMode` toggles it at runtime.
+- Optionally pass `ocrServiceFactory` / `ocrMode` to `InitializeWorker` to handle scanned PDFs (`new RapidOcrService()`). Off by default; `DocumentController.OcrMode` toggles it at runtime. Skew correction rides along with it (`CoreSettings.DeskewOcrLines`, default on) and needs no extra wiring — `InitializeWorker` seeds the worker from the settings snapshot, and `OnConfigChanged` keeps it current.
 
 ## Key Concepts
 
@@ -254,6 +278,8 @@ When the user changes a setting in the UI, the UI mutates `AppConfig` directly, 
 4. **Pixel projection** — last-resort fallback for scanned PDFs with no text layer and no OCR.
 
 `DocumentState`'s three analysis-submission paths (`SubmitAnalysis`, `SubmitPendingLookahead`, `SubmitBackgroundAnalysis`) extract `PageText` alongside the page pixmap and pass `CharBoxes` to the worker — char clustering is the load-bearing strategy for math-heavy content.
+
+Strategies 2 and 3, plus `NormalizeLines`' vertical-band merge, are all projections onto page-Y and so are blind to skew. On an OCR'd page they are corrected by a shear (`skewTan`, threaded from `AnalysisWorker` through `BlockPostProcessor.PostProcess` to `DetectLines`) — see **Automatic deskew** under `Core.Ocr.RapidOcr` above. Strategy 4 is not corrected: it is only reachable when no OCR ran, and OCR is the only estimator.
 
 **Table cells.** When `CoreSettings.TableRowReading` is on, a `Table` block is un-collapsed and split into per-row lines (char clustering) so rail can step rows; with `CellNavigation` on, each row's `LineInfo.Cells` is populated so rail can step cell-by-cell. Cell strategies are tried in order, and any grid must then survive `GridMatchesGlyphs` (a tabula `isTabular`-style check that the table's own content actually populates the columns — a figure border or shaded block must not hand the reader columns that cut nothing; rows that contradict the boundaries are *counted* against the rows that straddle them, so one total or footnote row sitting in a single column can't veto a grid the rest of the table corroborates). First, **vector rules**: where the backend implements `IPdfRulingService` (PdfPig today), `DetectColumnGridFromRulings` reads the separators the producer actually drew — exact, resolution-independent, immune to a tall glyph masquerading as a rule. Failing that, for **ruled** tables `LineDetector.DetectColumnGrid` recovers the column grid from the page's vertical rules (longest continuous dark run per pixel column on the rasterised page — DPI-robust to 0.3pt hairlines at 800px) and snaps every row to the shared bands, giving a stable column index with empty cells for blanks (fixes right-aligned numerics, dash placeholders, ragged/missing cells, hierarchical headers — issue #67); for **unruled** tables `LineDetector.DetectColumnBands` recovers the same shared bands from glyph geometry instead, pooling every row's runs and merging those closer than one cell gap (tabula-java's stream-mode idea) — gated on ≥3 bands and >half the rows showing multiple runs, with block-spanning heading rows excluded so they can't collapse the grid; anything that fails both falls back to the per-row glyph-gap split with `RobustGapThreshold` (anchored on the 90th-percentile glyph height so a dash/dot-leader cluster can't collapse the threshold and shatter space-grouped numbers like `1 288 272`). **Rows** get the same treatment: `MergeRowsByRulings` fuses the char-clustered text lines sharing a band between two horizontal rules into one table row (a wrapped cell is one row, not two), decided band by band and capped at `MaxLinesPerRuledRow` (3) lines per row, so a booktabs table — rule above, below, under the header — keeps its body as text lines instead of collapsing it (an *average* over bands let the empty top/bottom bands buy budget for the one band holding every data row). Note the first two column strategies produce *contiguous* bands covering the block (gutters included) — that is what lets a blank cell exist at the right column index — while the fallback hugs each row's content.
 
@@ -296,6 +322,8 @@ Tests in `tests/RailReader.Core.Tests/` are xUnit. `TestFixtures.cs` generates s
 
 **Line/block geometry debugging**: `tools/rail-frame-probe` measures rail-framing slack across a page (run on a quiet box, use paired interleaving to cancel frequency noise). Useful for validating KeepLineInFrame and FrameOnOwnBlock fixes.
 
+**Skew debugging on scanned PDFs**: `tools/deskew-probe <pdf|dir>` reports, per page, the recovered skew angle, the raw ungated per-line angles behind it, and the line count grouping recovers with and without the correction. Needs only the OCR models (no layout model). Read the raw quartiles, not just the angle: a reported `0.00` with a *tight* spread is a genuinely square page correctly left alone, while `0.00` with a *wide* spread is a confidence-gate rejection — a different thing, and worth investigating. Exit code 2 on any regression.
+
 ## Troubleshooting
 
 **`DllNotFoundException: libSkiaSharp` on startup**: Missing Skia native binaries. Run in Release mode (`dotnet build -c Release`) and ensure the platform-specific runtime is installed. For Avalonia.Browser (WASM), `WasmBuildNative=true` must be set in the project.
@@ -309,6 +337,8 @@ Tests in `tests/RailReader.Core.Tests/` are xUnit. `TestFixtures.cs` generates s
 **Layout model inference is slow (>1 sec/page)**: Likely causes: (1) Debug build — always use `-c Release`. (2) ONNX Runtime intra-op threads hitting CPU throttling — validate on a quiet machine. (3) Large pixmap (model input size mismatch) — PP-DocLayout-S expects 1920×1920 max; if you're rasterizing at higher DPI, downscale first.
 
 **Char-box selection highlights misaligned on scanned PDFs**: OCR char boxes are oversized by default (line-level averaging). v0.54.0+ includes pixel-tightening (`CharBoxTightener`), which shrinks boxes to actual ink extent. Verify the OCR model set matches the rasterization DPI (PP-S at 1920 is the pairing).
+
+**Several printed lines read as one rail line on a scanned PDF**: Two separate causes, both fixed but each with a precondition. (1) Oversized OCR char boxes — needs v0.54.0+ (`CharBoxTightener`). (2) Page skew — needs v0.56.0+ *and* `CoreSettings.DeskewOcrLines` on *and* `OcrMode != Off`, since the detector's quads are the only estimator. Run `tools/deskew-probe` on the file: if it reports an angle but `no change`, skew is not your cause; if it reports `0.00` with a wide raw spread, the confidence gate rejected the page. Note deskew never fires on a page with its own text layer.
 
 **PDFium crashes on encrypted PDF**: Needs password supplied before any other operations. Call `IPdfService.ValidateAndGetPassword()` on open attempt (implements the handler contract); `PdfPasswordRequiredException` signals the need.
 

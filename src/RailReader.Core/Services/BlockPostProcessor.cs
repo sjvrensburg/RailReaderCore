@@ -18,6 +18,11 @@ public static class BlockPostProcessor
     /// <see cref="LineDetector"/>. Pass <paramref name="tuning"/> to override the raster
     /// thresholds that fallback uses; see <see cref="LineDetectionTuning"/>.
     /// </summary>
+    /// <param name="skewTan">
+    /// Tangent of the page's text-baseline skew, or 0 for none. Only line grouping consumes
+    /// it — block geometry, orientation and every value this method returns stay in the same
+    /// axis-aligned page space they were in before.
+    /// </param>
     public static void PostProcess(
         List<LayoutBlock> blocks,
         byte[] rgbBytes,
@@ -30,13 +35,19 @@ public static class BlockPostProcessor
         bool cellNavigation = false,
         IReadOnlyList<BBox>? ocrLines = null,
         PageRulings? rulings = null,
-        LineDetectionTuning? tuning = null)
+        LineDetectionTuning? tuning = null,
+        float skewTan = 0f)
     {
+        // Overlap resolution and orientation are deliberately NOT given the skew. The first
+        // trims model-produced block boxes, which are axis-aligned bounds of skewed content —
+        // shearing that test would change the block set itself, which callers are promised is
+        // invariant across post-processing options. The second only ever decides quarter
+        // turns, and has far more slack than a few degrees of skew can consume.
         ResolveVerticalOverlaps(blocks);
         // Orientation before line detection: a sideways block must collapse to one
         // atomic line rather than be shattered by horizontal char clustering.
         OrientationDetector.DetectBlockOrientations(blocks, charBoxes, rgbBytes, imgW, imgH, scaleX, scaleY);
-        DetectLinesForBlocks(blocks, rgbBytes, imgW, imgH, scaleX, scaleY, charBoxes, tableRowReading, cellNavigation, ocrLines, rulings, tuning);
+        DetectLinesForBlocks(blocks, rgbBytes, imgW, imgH, scaleX, scaleY, charBoxes, tableRowReading, cellNavigation, ocrLines, rulings, tuning, skewTan);
     }
 
     /// <summary>
@@ -86,11 +97,12 @@ public static class BlockPostProcessor
     private static void DetectLinesForBlocks(
         List<LayoutBlock> blocks, byte[] rgbBytes, int imgW, int imgH,
         float scaleX, float scaleY, IReadOnlyList<CharBox>? charBoxes, bool tableRowReading,
-        bool cellNavigation, IReadOnlyList<BBox>? ocrLines, PageRulings? rulings, LineDetectionTuning? tuning)
+        bool cellNavigation, IReadOnlyList<BBox>? ocrLines, PageRulings? rulings, LineDetectionTuning? tuning,
+        float skewTan)
     {
         foreach (var block in blocks)
         {
-            block.Lines = LineDetector.DetectLines(block, charBoxes, rgbBytes, imgW, imgH, scaleX, scaleY, tableRowReading, cellNavigation, ocrLines, rulings, tuning);
+            block.Lines = LineDetector.DetectLines(block, charBoxes, rgbBytes, imgW, imgH, scaleX, scaleY, tableRowReading, cellNavigation, ocrLines, rulings, tuning, skewTan);
             if (block.Lines.Count == 0)
                 block.Lines.Add(new LineInfo(block.BBox.Y + block.BBox.H / 2, block.BBox.H,
                     block.BBox.X, block.BBox.W));

@@ -69,6 +69,20 @@ public sealed class AnalysisWorker : IDisposable
         set => Volatile.Write(ref _ocrMode, (int)value);
     }
 
+    // Same shape and rationale as _ocrMode: read on the worker thread, written on the UI thread.
+    private int _deskewEnabled;
+
+    /// <summary>
+    /// Whether to correct page skew when grouping OCR output into lines. Applies only to pages
+    /// that went through OCR — a page with its own text layer was never skewed to begin with,
+    /// and with <see cref="OcrMode.Off"/> there is nothing to estimate an angle from.
+    /// </summary>
+    public bool DeskewEnabled
+    {
+        get => Volatile.Read(ref _deskewEnabled) != 0;
+        set => Volatile.Write(ref _deskewEnabled, value ? 1 : 0);
+    }
+
     /// <summary>Set if the OCR service failed to load; layout analysis continues without it.</summary>
     public string? OcrStartupError { get; private set; }
 
@@ -180,8 +194,14 @@ public sealed class AnalysisWorker : IDisposable
                     // pipeline runs, so the rest of it — layout analysis, reading order, line and
                     // cell detection — takes the same path a born-digital page takes.
                     var charBoxes = request.CharBoxes;
-                    var (ocrText, ocrLines) = RunOcr(ocr, request, charBoxes, mapScaleX, mapScaleY, ct);
+                    var (ocrText, ocrLines, ocrSkew) = RunOcr(ocr, request, charBoxes, mapScaleX, mapScaleY, ct);
                     if (ocrText is not null) charBoxes = ocrText.DedupedCharBoxes;
+
+                    // The shear term line grouping reasons with. Tangent rather than the angle
+                    // because every consumer wants exactly that, and because a bare float that
+                    // is 0 on all but scanned skewed pages makes the "no angle ⇒ the code that
+                    // ran before this feature existed" invariant visible at each call site.
+                    float skewTan = ocrSkew == 0f ? 0f : MathF.Tan(ocrSkew);
 
                     _logger.Debug($"[Worker] Running analyzer for {Path.GetFileName(request.FilePath)} page {request.Page}...");
                     var analysis = analyzer.RunAnalysis(
@@ -195,7 +215,7 @@ public sealed class AnalysisWorker : IDisposable
                     BlockPostProcessor.PostProcess(
                         analysis.Blocks, request.RgbBytes, request.PxW, request.PxH,
                         mapScaleX, mapScaleY, charBoxes, request.Params.TableRowReading,
-                        request.Params.CellNavigation, ocrLines, request.Rulings, _tuning);
+                        request.Params.CellNavigation, ocrLines, request.Rulings, _tuning, skewTan);
 
                     _logger.Debug($"[Worker] Page {request.Page}: {analysis.Blocks.Count} blocks detected");
 
@@ -226,29 +246,32 @@ public sealed class AnalysisWorker : IDisposable
     /// dispose path still ends the loop.
     /// </para>
     /// </summary>
-    private (PageText? Text, List<BBox>? Lines) RunOcr(
+    private (PageText? Text, List<BBox>? Lines, float Skew) RunOcr(
         IOcrService? ocr, AnalysisRequest request, IReadOnlyList<CharBox>? charBoxes,
         float mapScaleX, float mapScaleY, CancellationToken ct)
     {
         var mode = OcrMode;
         if (ocr is null || mode == OcrMode.Off || charBoxes is { Count: > 0 })
-            return (null, null);
+            return (null, null, 0f);
 
         try
         {
             var page = ocr.Recognize(request.RgbBytes, request.PxW, request.PxH, mode, ct);
-            if (page.Lines.Count == 0) return (null, null);
+            if (page.Lines.Count == 0) return (null, null, 0f);
 
-            var (text, lines) = OcrPageMapper.ToPageSpace(page, mapScaleX, mapScaleY);
+            var (text, lines, skew) = OcrPageMapper.ToPageSpace(page, mapScaleX, mapScaleY);
+            // The skew is logged because it is the only diagnostic a field report will carry:
+            // line grouping consumes it and nothing downstream of this worker ever sees it.
             _logger.Debug(
-                $"[Worker] Page {request.Page}: OCR ({mode}) found {lines.Count} lines, {text?.CharBoxes.Count ?? 0} chars");
-            return (text, lines);
+                $"[Worker] Page {request.Page}: OCR ({mode}) found {lines.Count} lines, " +
+                $"{text?.CharBoxes.Count ?? 0} chars, skew {skew * 180f / MathF.PI:F2}°");
+            return (text, lines, DeskewEnabled ? skew : 0f);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
             _logger.Error($"[Worker] OCR failed for page {request.Page}; continuing without it", ex);
-            return (null, null);
+            return (null, null, 0f);
         }
     }
 

@@ -66,7 +66,7 @@ public class OcrLineSegmentationRegressionTests
         var (rgb, w, h) = RenderTightLines(Lines);
         using var ocr = new RapidOcrService();
         var page = ocr.Recognize(rgb, w, h, OcrMode.Full);
-        var (pageText, _) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
+        var (pageText, _, _) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
         Assert.NotNull(pageText);
 
         var block = new LayoutBlock { BBox = new BBox(0, 0, w, h), Role = BlockRole.Text, Confidence = 1f };
@@ -84,7 +84,7 @@ public class OcrLineSegmentationRegressionTests
         var (rgb, w, h) = RenderTightLines(Lines);
         using var ocr = new RapidOcrService();
         var page = ocr.Recognize(rgb, w, h, OcrMode.Full);
-        var (pageText, _) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
+        var (pageText, _, _) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
         Assert.NotNull(pageText);
 
         var rects = AnnotationInteractionHandler.BuildHighlightRects(pageText!, 0, pageText.Text.Length);

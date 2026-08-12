@@ -93,6 +93,27 @@ public sealed record CoreSettings
     /// </summary>
     public bool CellNavigation { get; init; }
 
+    /// <summary>
+    /// Correct page skew when grouping OCR'd text into lines. A page that went through a
+    /// sheet feeder is routinely a fraction of a degree off square, and on tightly-set body
+    /// text that is enough for mid-Y clustering to interleave adjacent lines and fuse a whole
+    /// paragraph into one or two rail units.
+    ///
+    /// <para>
+    /// When on, a page-global baseline angle is recovered from the OCR detector's own rotated
+    /// quads — capped at ±5°, behind a confidence gate, and snapped to zero when near-upright
+    /// — and applied as a shear <b>inside line grouping only</b>. No pixels are rotated and no
+    /// rotated geometry leaves the pipeline, so glyph boxes, annotations, search and rail
+    /// framing are unaffected.
+    /// </para>
+    /// <para>
+    /// Applies only to pages that went through OCR. A page read from its own text layer was
+    /// never skewed to begin with, and with <see cref="Services.OcrMode.Off"/> there is
+    /// nothing to estimate an angle from — so a digital document pays nothing either way.
+    /// </para>
+    /// </summary>
+    public bool DeskewOcrLines { get; init; } = true;
+
     // Visual effects (per-document defaults — UI may override per doc)
     public ColourEffect ColourEffect { get; init; } = ColourEffect.None;
     public double ColourEffectIntensity { get; init; } = 1.0;

@@ -18,10 +18,53 @@ public class OcrPipelineTests
     {
         var page = new OcrPage([new OcrLine(new BBox(100f, 200f, 300f, 20f))]);
 
-        var (text, lines) = OcrPageMapper.ToPageSpace(page, 0.5f, 0.25f);
+        var (text, lines, _) = OcrPageMapper.ToPageSpace(page, 0.5f, 0.25f);
 
         Assert.Null(text);                       // detection only: nothing transcribed
         Assert.Equal(new BBox(50f, 50f, 150f, 5f), lines[0]);
+    }
+
+    [Fact]
+    public void Mapper_ReplacesTheInflatedHeightWithTheTrueOne()
+    {
+        // A 400-wide line at 5° has an axis-aligned height of ~55 even though the line itself
+        // is 20 tall. Carrying that inflation forward is what lets neighbouring lines' bands
+        // overlap past the merge threshold and fuse.
+        var page = new OcrPage([new OcrLine(new BBox(0f, 100f, 400f, 55f), TrueHeight: 20f)]);
+
+        var (_, lines, _) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
+
+        // Same centre (127.5), true height — the axis-aligned bound of a rotated rectangle is
+        // centred on that rectangle's own centre, so deflating about the centre is exact.
+        Assert.Equal(20f, lines[0].H, 0.001f);
+        Assert.Equal(127.5f, lines[0].Y + lines[0].H / 2f, 0.001f);
+        Assert.Equal(0f, lines[0].X, 0.001f);
+        Assert.Equal(400f, lines[0].W, 0.001f);
+    }
+
+    [Fact]
+    public void Mapper_KeepsTheAxisAlignedHeightWhenNoQuadWasMeasured()
+    {
+        var page = new OcrPage([new OcrLine(new BBox(0f, 100f, 400f, 55f))]);
+
+        var (_, lines, _) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
+
+        Assert.Equal(new BBox(0f, 100f, 400f, 55f), lines[0]);
+    }
+
+    [Fact]
+    public void Mapper_CarriesTheSkewAngleIntoPageSpace()
+    {
+        float skew = 3f * MathF.PI / 180f;
+        var page = new OcrPage([new OcrLine(new BBox(0f, 0f, 400f, 20f))], skew);
+
+        var (_, _, uniform) = OcrPageMapper.ToPageSpace(page, 2f, 2f);
+        Assert.Equal(skew, uniform, 0.0001f);
+
+        // Under a non-uniform scale an angle is not preserved: the tangent picks up the axis
+        // ratio. Today's rasteriser is uniform, but the conversion must not assume it.
+        var (_, _, squashed) = OcrPageMapper.ToPageSpace(page, 2f, 1f);
+        Assert.Equal(MathF.Atan(MathF.Tan(skew) * 0.5f), squashed, 0.0001f);
     }
 
     [Fact]
@@ -34,7 +77,7 @@ public class OcrPipelineTests
                 [new CharBox(0, 0f, 20f, 10f, 30f)]),
         ]);
 
-        var (text, _) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
+        var (text, _, _) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
 
         Assert.NotNull(text);
         Assert.Equal("ab\nc\n", text!.Text);
@@ -56,7 +99,7 @@ public class OcrPipelineTests
                 [new CharBox(0, 0f, 0f, 10f, 10f), new CharBox(5, 0f, 0f, 10f, 10f)]),
         ]);
 
-        var (text, _) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
+        var (text, _, _) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
 
         Assert.Single(text!.CharBoxes);
         Assert.Equal("a\n", text.Text);
@@ -70,7 +113,7 @@ public class OcrPipelineTests
             new OcrLine(new BBox(0f, 20f, 10f, 10f), "x", [new CharBox(0, 0f, 20f, 10f, 30f)]),
         ]);
 
-        var (text, lines) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
+        var (text, lines, _) = OcrPageMapper.ToPageSpace(page, 1f, 1f);
 
         Assert.Equal(2, lines.Count);            // geometry survives for both
         Assert.Equal("x\n", text!.Text);

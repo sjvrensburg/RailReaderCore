@@ -91,6 +91,24 @@ beside your binaries automatically on build and publish. `OcrModelLocator` also 
 app directory, `$APPDIR`, the user data directory and the working directory, so
 hand-installed models — including the smaller PP-OCRv6 sets — are picked up too.
 
+### Skew
+
+A page that went through a sheet feeder is routinely a fraction of a degree off square, and line
+grouping is blind to that: glyphs are sorted and clustered by vertical position, so once a line
+drifts further across the column than the gap to its neighbour, adjacent printed lines interleave
+and merge. On ordinary book text that happens below 1°.
+
+`CoreSettings.DeskewOcrLines` (on by default) corrects it, reusing a measurement the OCR detector
+already makes — the rotated rectangle it fits to each text line. Angles are aggregated across the
+page by length-weighted median, capped at ±5°, and gated so an unconfident page falls back to
+exactly zero correction. The angle is applied as a shear **inside line grouping only**: no pixels
+are rotated and no rotated geometry leaves the pipeline, so glyph boxes, annotations, search and
+rail framing are untouched.
+
+It needs OCR — a page with its own text layer was never skewed, and with `OcrMode.Off` there is
+nothing to estimate from. `tools/deskew-probe` reports the recovered angle and its effect per
+page.
+
 ## Optional backend capabilities
 
 Some backends can do more than the core interfaces require. Rather than widen those interfaces

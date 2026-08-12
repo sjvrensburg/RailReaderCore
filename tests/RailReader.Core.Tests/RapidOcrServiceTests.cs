@@ -183,3 +183,13 @@ public sealed class OcrModelFactAttribute : FactAttribute
             Skip = "PP-OCR models not found; install them beside the test binaries to run.";
     }
 }
+
+/// <summary>The <see cref="TheoryAttribute"/> counterpart of <see cref="OcrModelFactAttribute"/>.</summary>
+public sealed class OcrModelTheoryAttribute : TheoryAttribute
+{
+    public OcrModelTheoryAttribute()
+    {
+        if (OcrModelLocator.LocateDefault() is null)
+            Skip = "PP-OCR models not found; install them beside the test binaries to run.";
+    }
+}

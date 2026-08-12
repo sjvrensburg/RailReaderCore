@@ -18,6 +18,10 @@
     <InternalsVisibleTo Include="RailReader.Core.Analysis" />
     <InternalsVisibleTo Include="RailReader.Core.Vlm.OpenAI" />
     <InternalsVisibleTo Include="RailReader.Renderer.Skia" />
+    <!-- Diagnostic tool: needs OcrPageMapper and LineDetector's per-strategy entry points to
+         report what each stage of line grouping did, which the public surface deliberately
+         hides behind DetectLines. -->
+    <InternalsVisibleTo Include="DeskewProbe" />
   </ItemGroup>
 
   <ItemGroup>

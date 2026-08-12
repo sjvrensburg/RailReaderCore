@@ -188,6 +188,9 @@ public sealed partial class DocumentController : IDisposable
     {
         _worker = new AnalysisWorker(capabilities, analyzerFactory, _marshaller, readingOrderResolver,
             _logger, ocrServiceFactory, ocrMode, lineTuning);
+        // Seed from the settings snapshot the controller was built with, so a host that never
+        // touches the property still gets the configured behaviour on its first page.
+        _worker.DeskewEnabled = _config.DeskewOcrLines;
         _logger.Debug("[Analysis] Worker started (analyzer loading in background)");
     }
 
@@ -212,6 +215,38 @@ public sealed partial class DocumentController : IDisposable
         {
             if (_worker is null || _worker.OcrMode == value) return;
             _worker.OcrMode = value;
+
+            foreach (var doc in Documents)
+            {
+                if (doc.IsDisposed) continue;
+                var affected = doc.InvalidateOcrDependentAnalysis();
+                if (affected.Count == 0) continue;
+                foreach (var vp in doc.Viewports)
+                    if (affected.Contains(vp.CurrentPage))
+                        doc.SubmitAnalysis(vp, _worker, _config.NavigableRoles);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether the analysis worker corrects page skew when grouping OCR'd text into lines
+    /// (see <see cref="CoreSettings.DeskewOcrLines"/>). Settable at any time; reading before
+    /// <see cref="InitializeWorker"/> returns false and setting it is a no-op.
+    ///
+    /// <para>
+    /// Changing it invalidates the same pages <see cref="OcrMode"/> does, and for the same
+    /// reason: the flag alone only steers requests the worker has yet to receive, and an
+    /// analysed page is never resubmitted, so a scanned document already on screen would keep
+    /// its pre-toggle lines until it was closed and reopened.
+    /// </para>
+    /// </summary>
+    public bool DeskewOcrLines
+    {
+        get => _worker?.DeskewEnabled ?? false;
+        set
+        {
+            if (_worker is null || _worker.DeskewEnabled == value) return;
+            _worker.DeskewEnabled = value;
 
             foreach (var doc in Documents)
             {
@@ -827,6 +862,9 @@ public sealed partial class DocumentController : IDisposable
     public void OnConfigChanged(CoreSettings newConfig)
     {
         _config = newConfig;
+        // Set through the property, not the worker field: a change has to invalidate the
+        // scanned pages already analysed under the old value, which its setter handles.
+        DeskewOcrLines = newConfig.DeskewOcrLines;
         foreach (var doc in Documents)
         {
             // Flip the doc-level analysis params (and caches/queue) FIRST, once per document, so the
