@@ -168,13 +168,17 @@ to pair with `Full`. ORT session defaults mirror `Core.Analysis` (intra-op ≤4,
 full pass in ~1.8 s, PP-OCRv6 Small in ~4.4 s, and PP-OCRv6 **Medium in ~65 s** — a ~15× jump for
 a 4.5× download, with the detector alone at ~16 s so `OcrMode.Lines` is no refuge at that tier.
 The intra-op cap is not the bottleneck (4→16 threads: 71 s→63 s; detection gets *worse*), so do
-not "fix" a slow page by loosening `OcrSessionOptions`. Three properties of the pipeline follow
+not "fix" a slow page by loosening `OcrSessionOptions`. Four properties of the pipeline follow
 from that cost and must be preserved: OCR runs on **its own worker thread** so it cannot stall
 layout inference for other pages; a page is **recognised at most once**, with the result and its
-measured skew handed back on later requests (`AnalysisRequest.OcrSkew`); and **background
-read-ahead never triggers OCR** — a speculative page with no text layer is left to the on-demand
-path. The deskew gate is applied where the shear is consumed, not where it is measured, so
-toggling `DeskewOcrLines` costs layout analysis only.
+measured skew handed back on later requests (`AnalysisRequest.OcrSkew`); **background read-ahead
+never triggers OCR** — a speculative page with no text layer is left to the on-demand path; and a
+request whose document closed is **abandoned** (`AnalysisRequest.Cancellation`, observed at stage
+boundaries only — `Detect` is monolithic — and deliberately not wired to navigation, whose result
+is still wanted). The deskew gate is applied where the shear is consumed, not where it is
+measured, so toggling `DeskewOcrLines` costs layout analysis only. `OcrModelDescriptor` publishes
+the measured cost (`RelativeDetectionCost`/`RelativeRecognitionCost`, Tiny = 1) because download
+size does not predict it — Medium is 23× Tiny's bytes but ~79× its recognition.
 
 **Model sets / language coverage.** `RapidOcrService`'s `models` constructor parameter selects a
 `RapidOcrModelSet`; `OcrModelLocator.LocateDefault()` resolves the bundled PP-OCRv5-Latin set with

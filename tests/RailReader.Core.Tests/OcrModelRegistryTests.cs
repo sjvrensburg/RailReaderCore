@@ -26,6 +26,54 @@ public class OcrModelRegistryTests
         Assert.Equal(d.ModelSet.KeysPath, d.Dict.RelativePath);
     }
 
+    // Full-pass milliseconds measured with tools/ocr-cost-probe on the railreader2#209 scan,
+    // page 0 at 1920px, best of two passes on a 20-core box (issue #100). Absolute numbers belong
+    // to that machine; the RATIOS are what the descriptors publish and what these tests pin.
+    private const double TinyFullMs = 2254, SmallFullMs = 4484, MediumFullMs = 67518;
+
+    [Fact]
+    public void Descriptors_PublishedCostsReproduceTheMeasuredFullPassRatios()
+    {
+        // RelativeFullCost is derived from the two published components, so if the components or
+        // the blend drift, the single "how much slower?" figure a picker shows stops being the
+        // number the user actually waits through. 2% covers the rounding in the published values.
+        AssertRatio(TinyFullMs / TinyFullMs, OcrModelRegistry.PPOCRv6Tiny.RelativeFullCost);
+        AssertRatio(SmallFullMs / TinyFullMs, OcrModelRegistry.PPOCRv6Small.RelativeFullCost);
+        AssertRatio(MediumFullMs / TinyFullMs, OcrModelRegistry.PPOCRv6Medium.RelativeFullCost);
+
+        static void AssertRatio(double measured, double published) =>
+            Assert.True(Math.Abs(published - measured) / measured <= 0.02,
+                $"published {published:F2}x vs measured {measured:F2}x — re-measure with tools/ocr-cost-probe");
+    }
+
+    [Fact]
+    public void Descriptors_AnchorAtTinyAndRiseWithTier()
+    {
+        // Tiny is the baseline the other two are quoted against; a set that claimed to be cheaper
+        // than the baseline would mean the anchor moved and every published figure is stale.
+        Assert.Equal(1.0, OcrModelRegistry.PPOCRv6Tiny.RelativeDetectionCost);
+        Assert.Equal(1.0, OcrModelRegistry.PPOCRv6Tiny.RelativeRecognitionCost);
+
+        var tiers = new[]
+        {
+            OcrModelRegistry.PPOCRv6Tiny,
+            OcrModelRegistry.PPOCRv6Small,
+            OcrModelRegistry.PPOCRv6Medium,
+        };
+        for (int i = 1; i < tiers.Length; i++)
+        {
+            Assert.True(tiers[i].RelativeDetectionCost > tiers[i - 1].RelativeDetectionCost);
+            Assert.True(tiers[i].RelativeRecognitionCost > tiers[i - 1].RelativeRecognitionCost);
+            Assert.True(tiers[i].ApproxSizeMb > tiers[i - 1].ApproxSizeMb);
+        }
+
+        // The point of publishing cost at all: it is not predictable from download size. Medium is
+        // ~23x Tiny's bytes but far more than that in recognition, which is the trap in #100.
+        double sizeRatio = (double)OcrModelRegistry.PPOCRv6Medium.ApproxSizeMb
+                           / OcrModelRegistry.PPOCRv6Tiny.ApproxSizeMb;
+        Assert.True(OcrModelRegistry.PPOCRv6Medium.RelativeRecognitionCost > sizeRatio * 2);
+    }
+
     [Theory]
     [MemberData(nameof(AllDescriptors))]
     public void Descriptor_HashesAreWellFormedSha256(OcrModelDescriptor d)

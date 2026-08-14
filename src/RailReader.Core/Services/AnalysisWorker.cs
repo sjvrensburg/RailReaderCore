@@ -21,7 +21,18 @@ public sealed record AnalysisRequest(
     // 0 means "not measured", which is also every request for a page with a real text layer.
     // Carrying it is what lets a re-analysis keep the deskew correction without re-running
     // recognition — the expensive half of the OCR path, and the whole of issue #100's cost.
-    float OcrSkew = 0f);
+    float OcrSkew = 0f,
+    // Cancelled when nobody will consume this request's result any more — in practice the
+    // submitting document's own lifetime token, so closing one tab stops that tab's queued
+    // work instead of the worker grinding through minutes of recognition for a document that
+    // is gone. Default None means "never cancelled", which is every existing call site.
+    //
+    // Two limits are inherent rather than incidental. Cancellation is observed at STAGE
+    // boundaries: RapidOcrNet's Detect is one monolithic call, so a request already inside it
+    // runs to completion. And it is deliberately NOT wired to navigation — analysis for a page
+    // the reader has left is still cached and still wanted, so abandoning it would only buy a
+    // repeat later.
+    CancellationToken Cancellation = default);
 
 public sealed record AnalysisResult(
     string FilePath, int Page, AnalysisParams Params, PageAnalysis Analysis,
@@ -196,6 +207,41 @@ public sealed class AnalysisWorker : IDisposable
         request.PxH > 0 ? (float)(request.PageH / request.PxH) : 1f);
 
     /// <summary>
+    /// Releases a request's in-flight key on the UI thread, its owner. Every path that ends a
+    /// request without publishing a result must call this: <see cref="Poll"/> is what normally
+    /// clears the key, so a dropped request would otherwise leave <see cref="IsInFlight"/> true
+    /// for its page forever (blocking resubmission) and <see cref="IsIdle"/> false (blocking
+    /// lookahead and background analysis document-wide).
+    /// </summary>
+    private void ReleaseInFlight(AnalysisRequest request)
+    {
+        var key = (request.FilePath, request.Page, request.Params);
+        _marshaller.Post(() => _inFlight.Remove(key));
+    }
+
+    /// <summary>
+    /// True when nobody will consume this request any more (see
+    /// <see cref="AnalysisRequest.Cancellation"/>). Releases the key as a side effect, so the
+    /// call sites read as a plain skip.
+    /// </summary>
+    private bool Abandoned(AnalysisRequest request)
+    {
+        if (!request.Cancellation.IsCancellationRequested) return false;
+        _logger.Debug($"[Worker] Dropping abandoned request for {Path.GetFileName(request.FilePath)} page {request.Page}");
+        ReleaseInFlight(request);
+        return true;
+    }
+
+    /// <summary>
+    /// Joins the worker's lifetime token to the request's own, so a stage stops at its next
+    /// checkpoint for either. The two are distinguished at the catch site — the worker's ends
+    /// the loop, the request's drops one request — by testing the worker's token, since
+    /// <see cref="OperationCanceledException"/> alone does not say which fired.
+    /// </summary>
+    private static CancellationTokenSource Link(AnalysisRequest request, CancellationToken workerToken)
+        => CancellationTokenSource.CreateLinkedTokenSource(workerToken, request.Cancellation);
+
+    /// <summary>
     /// The OCR stage. Recovers what a missing text layer would have given us and hands the
     /// request on to the layout stage, which is free to be working on a different page
     /// throughout — the whole point of the split (issue #100).
@@ -221,17 +267,32 @@ public sealed class AnalysisWorker : IDisposable
         {
             await foreach (var request in _ocrChannel.Reader.ReadAllAsync(ct))
             {
+                // Cheapest possible win, and the one the queue exists for: a scanned page whose
+                // document closed while it waited costs nothing at all.
+                if (Abandoned(request)) continue;
+
                 LayoutJob job;
+                using var linked = Link(request, ct);
                 try
                 {
                     var (sx, sy) = MapScale(request);
-                    var (ocrText, ocrLines, ocrSkew) = RunOcr(ocr, request, request.CharBoxes, sx, sy, ct);
+                    var (ocrText, ocrLines, ocrSkew) = RunOcr(ocr, request, request.CharBoxes, sx, sy, linked.Token);
                     // A pass that measured nothing leaves the request's own carried-forward angle
                     // standing, so this is the effective skew from here on either way.
                     job = new LayoutJob(request, ocrText, ocrLines,
                         ocrLines is null ? request.OcrSkew : ocrSkew);
                 }
-                catch (OperationCanceledException) { throw; } // Dispose path — let the loop end
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw; // Dispose path — let the loop end
+                }
+                catch (OperationCanceledException)
+                {
+                    // This request alone was abandoned mid-recognition. Release its key and take
+                    // the next one; the worker itself is still healthy.
+                    ReleaseInFlight(request);
+                    continue;
+                }
                 catch (Exception ex)
                 {
                     // RunOcr swallows engine failures itself, so reaching here means something
@@ -245,8 +306,7 @@ public sealed class AnalysisWorker : IDisposable
                 {
                     // The layout stage is gone (fatal analyzer failure, or disposal): release the
                     // key so IsInFlight/IsIdle don't stay stuck on a request nobody will finish.
-                    var key = (request.FilePath, request.Page, request.Params);
-                    _marshaller.Post(() => _inFlight.Remove(key));
+                    ReleaseInFlight(request);
                 }
             }
         }
@@ -283,12 +343,17 @@ public sealed class AnalysisWorker : IDisposable
             {
                 var request = job.Request;
 
+                // Checked again here, not only at the OCR stage: a document can close during a
+                // long recognition, and this is the first moment after it that costs anything.
+                if (Abandoned(request)) continue;
+
                 // A per-request failure (ORT exception on a bad raster, geometry edge case in the
                 // resolver, …) must not fault the loop: that would silently kill analysis for the
                 // rest of the session AND strand the request's _inFlight key, so IsInFlight stays
                 // true forever (blocking resubmission for its page) and IsIdle stays false
                 // (blocking lookahead/background analysis document-wide). Log, release the key on
                 // the UI thread (its owner), and keep serving requests.
+                using var linked = Link(request, ct);
                 try
                 {
                     var (mapScaleX, mapScaleY) = MapScale(request);
@@ -310,7 +375,7 @@ public sealed class AnalysisWorker : IDisposable
                     _logger.Debug($"[Worker] Running analyzer for {Path.GetFileName(request.FilePath)} page {request.Page}...");
                     var analysis = analyzer.RunAnalysis(
                         request.RgbBytes, request.PxW, request.PxH, request.PageW, request.PageH,
-                        charBoxes, ct);
+                        charBoxes, linked.Token);
 
                     // Pipeline: assign reading order → trim overlaps + detect lines.
                     _readingOrder.AssignOrder(analysis.Blocks, analysis.PageWidth, analysis.PageHeight,
@@ -327,12 +392,18 @@ public sealed class AnalysisWorker : IDisposable
                         new AnalysisResult(request.FilePath, request.Page, request.Params, analysis,
                             request.ViewRotation, job.OcrText, job.OcrSkew), ct);
                 }
-                catch (OperationCanceledException) { throw; } // Dispose path — let the loop end
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw; // Dispose path — let the loop end
+                }
+                catch (OperationCanceledException)
+                {
+                    ReleaseInFlight(request);   // this request alone was abandoned
+                }
                 catch (Exception ex)
                 {
                     _logger.Error($"[Worker] Analysis failed for {Path.GetFileName(request.FilePath)} page {request.Page}; worker continues", ex);
-                    var key = (request.FilePath, request.Page, request.Params);
-                    _marshaller.Post(() => _inFlight.Remove(key));
+                    ReleaseInFlight(request);
                 }
             }
         }
@@ -397,6 +468,8 @@ public sealed class AnalysisWorker : IDisposable
     public bool Submit(AnalysisRequest request)
     {
         _marshaller.AssertUIThread();
+        if (request.Cancellation.IsCancellationRequested) return false;
+
         var key = (request.FilePath, request.Page, request.Params);
         if (!_inFlight.Add(key))
             return false;

@@ -32,20 +32,26 @@ handed the pixmap already rendered for the layout model, so rasterisation is not
 
 ## Example
 
-The reporter's scan from railreader2#209 — a 34-line page at 1920 px on a 20-core box:
+The reporter's scan from railreader2#209 — a 34-line page at 1920 px on a 20-core box,
+`OCRCOST_REPEATS=2`:
 
 ```
 tier       threads page lines  chars   det ms    rec ms   full ms   ms/line
-v5-latin   default    0    35   2585      885       812      1697        24
-v6-small   default    0    35   2586     2489      1672      4162        49
-v6-medium  default    0    35   2586    16331     54696     71027      1609
+v5-latin   default    0    35   2585      825      1002      1827        29
+v6-tiny    default    0    35   2586     1591       663      2254        19
+v6-small   default    0    35   2586     2589      1894      4484        56
+v6-medium  default    0    35   2586    15277     52241     67518      1536
 ```
 
-Two things that shape the fix in #100:
+Three things that shape the fix in #100:
 
-- Small → Medium is a **~15× wall-clock jump for a 4.5× download**. The tier gap is the trap,
-  not the OCR path as such.
-- `OcrMode.Lines` is **not** a safe harbour at Medium: its detector alone is ~16 s.
+- Small → Medium is a **~15× wall-clock jump for a 4.5× download** (Tiny → Medium is ~30×). The
+  tier gap is the trap, not the OCR path as such.
+- `OcrMode.Lines` is **not** a safe harbour at Medium: its detector alone is ~15 s.
+- The two stages do **not** scale together. Tiny's detector is nearly 2× the bundled v5-Latin
+  set's while its recogniser is cheaper, so a single "how fast is this set?" number would hide
+  which mode it is fast in. That is why `OcrModelDescriptor` publishes detection and recognition
+  cost separately, both anchored on Tiny = 1; these are the numbers those fields carry.
 
 Sweeping `OCRCOST_THREADS=4,8,16` on the same page moves Medium's full pass 71 s → 65 s → 63 s
 (and makes detection *worse*: 16 s → 27 s). The intra-op cap in `OcrSessionOptions` is not the

@@ -259,9 +259,21 @@ public class OcrPipelineTests
         Blocks = [new LayoutBlock { BBox = new BBox(0f, 0f, 400f, 400f), Role = BlockRole.Text }],
     };
 
-    private static AnalysisRequest Request(IReadOnlyList<CharBox>? charBoxes, int page = 0, float skew = 0f) =>
+    private static AnalysisRequest Request(IReadOnlyList<CharBox>? charBoxes, int page = 0, float skew = 0f,
+        CancellationToken cancellation = default) =>
         new("/tmp/scan.pdf", page, new byte[800 * 800 * 3], 800, 800, 400d, 400d,
-            charBoxes, new AnalysisParams(), OcrSkew: skew);
+            charBoxes, new AnalysisParams(), OcrSkew: skew, Cancellation: cancellation);
+
+    private static void WaitUntilIdle(AnalysisWorker worker)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < 5000)
+        {
+            if (worker.IsIdle) return;
+            Thread.Sleep(5);
+        }
+        throw new TimeoutException("worker never went idle — an in-flight key was stranded");
+    }
 
     private static AnalysisResult PollUntilResult(AnalysisWorker worker)
     {
@@ -545,6 +557,66 @@ public class OcrPipelineTests
         Assert.Equal(0, ocr.Calls);
         Assert.True(result.Analysis.Blocks[0].Lines.Count < SkewLines,
             "without the shear the skewed glyphs must not resolve into one band per printed line");
+    }
+
+    // --- Abandoning work nobody will consume (issue #100) ---
+
+    [Fact]
+    public void Worker_QueuedRequestIsDroppedWhenItsDocumentGoesAway()
+    {
+        // Closing a tab with a scan queued behind another one used to cost its full recognition,
+        // for a result PollAnalysisResults would then discard as belonging to a disposed document.
+        var ocr = new GatedOcrService();
+        using var worker = MakeWorker(ocr, OcrMode.Full);
+        using var closing = new CancellationTokenSource();
+
+        Assert.True(worker.Submit(Request(charBoxes: null, page: 0)));   // occupies the OCR stage
+        ocr.WaitUntilBusy();
+        Assert.True(worker.Submit(Request(charBoxes: null, page: 1, cancellation: closing.Token)));
+
+        closing.Cancel();     // the document closed while page 1 sat in the queue
+        ocr.Release();
+
+        Assert.Equal(0, PollUntilResult(worker).Page);
+        WaitUntilIdle(worker);              // page 1's key was released, not stranded
+        Assert.Null(worker.Poll());         // …and it produced no result
+        Assert.Equal(1, ocr.Calls);         // …and never reached the engine at all
+    }
+
+    [Fact]
+    public void Worker_RequestCancelledMidRecognition_IsAbandonedAndKeepsTheWorkerHealthy()
+    {
+        // Cancellation lands at the engine's next stage boundary — RapidOcrNet's Detect is one
+        // monolithic call, so this is as preemptive as the OCR path can be — and what matters is
+        // that the abandoned request releases its key instead of stranding the whole document.
+        var ocr = new GatedOcrService();
+        using var worker = MakeWorker(ocr, OcrMode.Full);
+        using var closing = new CancellationTokenSource();
+
+        Assert.True(worker.Submit(Request(charBoxes: null, page: 0, cancellation: closing.Token)));
+        ocr.WaitUntilBusy();
+        closing.Cancel();
+
+        WaitUntilIdle(worker);
+        Assert.Null(worker.Poll());
+
+        // The worker is still serving: an unrelated page goes straight through.
+        Assert.True(worker.Submit(Request(charBoxes: null, page: 1)));
+        ocr.Release();
+        Assert.Equal(1, PollUntilResult(worker).Page);
+    }
+
+    [Fact]
+    public void Worker_RefusesAnAlreadyCancelledRequest()
+    {
+        var ocr = new FakeOcrService(_ => ThreeLines(withText: true));
+        using var worker = MakeWorker(ocr, OcrMode.Full);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        Assert.False(worker.Submit(Request(charBoxes: null, cancellation: cts.Token)));
+        Assert.True(worker.IsIdle);   // refused submissions must not claim an in-flight key
+        Assert.Equal(0, ocr.Calls);
     }
 
     [Fact]

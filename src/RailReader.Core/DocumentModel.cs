@@ -673,7 +673,7 @@ public sealed class DocumentModel : IDisposable
                     CacheExtractedText(page, pageText);
                     var (charBoxes, skew) = AnalysisInputFor(page, pageText);
                     worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH,
-                        charBoxes, pars, rulings, viewRotation, skew));
+                        charBoxes, pars, rulings, viewRotation, skew, ct));
                 });
             }
             catch (OperationCanceledException) { }
@@ -751,7 +751,7 @@ public sealed class DocumentModel : IDisposable
                             CacheExtractedText(page, pageText);
                             var (charBoxes, skew) = AnalysisInputFor(page, pageText);
                             worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH,
-                                charBoxes, pars, rulings, viewRotation, skew));
+                                charBoxes, pars, rulings, viewRotation, skew, ct));
                         }
                     });
                 }
@@ -831,7 +831,8 @@ public sealed class DocumentModel : IDisposable
                 var (pageW, pageH) = _pdf.GetPageSize(page, _viewRotation);
                 var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize, _viewRotation);
                 worker.Submit(new AnalysisRequest(FilePath, page, rgb, pxW, pxH, pageW, pageH,
-                    charBoxes, pars, ExtractRulings(page, _viewRotation), _viewRotation, skew));
+                    charBoxes, pars, ExtractRulings(page, _viewRotation), _viewRotation, skew,
+                    _cts.Token));
                 return true;
             }
             catch (Exception ex)

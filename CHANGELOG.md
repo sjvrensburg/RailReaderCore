@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — one OCR'd page no longer stalls analysis for every open document
+## 0.57.0 — one OCR'd page no longer stalls analysis for every open document
 
 Fixes [#100](https://github.com/sjvrensburg/RailReaderCore/issues/100).
 
@@ -11,20 +11,21 @@ entire recognition and every other request — including 1 s layout analyses for
 document — waited behind it.
 
 The new `tools/ocr-cost-probe` measures where the time goes. On the reporter's own scan (a
-34-line page at 1920 px, 20 cores):
+34-line page at 1920 px, best of two passes, 20 cores):
 
-| Model set | detect (`Lines`) | full (`Full`) |
-|---|---|---|
-| PP-OCRv5 Latin (bundled) | 0.9 s | 1.8 s |
-| PP-OCRv6 Small | 2.6 s | 4.4 s |
-| PP-OCRv6 Medium | **16.3 s** | **65.1 s** |
+| Model set | detect (`Lines`) | recognise | full (`Full`) |
+|---|---|---|---|
+| PP-OCRv5 Latin (bundled) | 0.8 s | 1.0 s | 1.8 s |
+| PP-OCRv6 Tiny | 1.6 s | 0.7 s | 2.3 s |
+| PP-OCRv6 Small | 2.6 s | 1.9 s | 4.5 s |
+| PP-OCRv6 Medium | **15.3 s** | **52.2 s** | **67.5 s** |
 
 Small → Medium is a ~15× wall-clock jump for a 4.5× download, and `OcrMode.Lines` is no refuge
-at Medium — its detector alone is 16 s. The intra-op thread cap is not the bottleneck: 4 → 16
+at Medium — its detector alone is 15 s. The intra-op thread cap is not the bottleneck: 4 → 16
 threads moves the full pass 71 s → 63 s, and makes detection worse.
 
-Three changes, none of which make recognition itself faster; they stop it blocking, repeating,
-and happening speculatively.
+Five changes. None makes recognition itself faster; they stop it blocking, repeating, happening
+speculatively, or being invisible in the API.
 
 - **OCR and layout inference now run on separate threads.** `AnalysisWorker.Submit` routes each
   request to the stage it needs: a page that arrives with char boxes goes straight to inference
@@ -45,9 +46,27 @@ and happening speculatively.
   side of the reader, so a scanned document would have committed the engine to two dozen pages of
   it. Such pages are left to the on-demand path. With OCR off, nothing is skipped and read-ahead
   behaves exactly as before.
+- **Requests can be abandoned.** `AnalysisRequest.Cancellation` carries a token — the submitting
+  document's own lifetime token, wired through all three submission paths — so closing one tab
+  stops that tab's queued analysis instead of the worker grinding through minutes of recognition
+  for a document that is gone (its result was discarded on arrival anyway). An abandoned request
+  releases its in-flight key, so it can never strand `IsInFlight`/`IsIdle`. Two limits are
+  inherent: cancellation is observed at **stage boundaries** — RapidOcrNet's `Detect` is one
+  monolithic call, so a request already inside it runs to completion — and it is deliberately
+  **not** wired to navigation, because analysis for a page the reader has left is still cached and
+  still wanted.
+- **Recognition cost is now advertised.** `OcrModelDescriptor` gains `RelativeDetectionCost` and
+  `RelativeRecognitionCost` (PP-OCRv6 Tiny = 1), plus a derived `RelativeFullCost` blending them
+  in the proportion a dense page actually spends in each stage. Download size was the only cost
+  signal a picker had, and it is actively misleading: Medium is 23× Tiny's bytes but ~79× its
+  recognition. The two components are split because they map onto `OcrMode.Lines` vs `Full`.
 
-Additive: `AnalysisRequest`/`AnalysisResult` gained optional trailing parameters, and no existing
-signature changed. A consumer that does nothing gets the fix.
+**Breaking:** `OcrModelDescriptor`'s constructor takes the two new cost parameters, with no
+defaults — a plausible-looking default would let a third-party descriptor silently claim to be as
+cheap as the baseline. Consumers that only read `OcrModelRegistry` are unaffected.
+
+Otherwise additive: `AnalysisRequest`/`AnalysisResult` gained optional trailing parameters and no
+existing signature changed, so a consumer that does nothing gets the fix.
 
 ## 0.56.1 — Markdown export no longer leaks PDFium's soft-hyphen marker
 
