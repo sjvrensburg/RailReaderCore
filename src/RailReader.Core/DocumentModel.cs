@@ -150,6 +150,7 @@ public sealed class DocumentModel : IDisposable
     {
         _textCache.Clear();
         _ocrPages.Clear();
+        _ocrSkew.Clear();
         _textlessPages.Clear();
         _rulingCache.Clear();
         _linkCache.Clear();
@@ -200,6 +201,11 @@ public sealed class DocumentModel : IDisposable
     // eviction (see EvictDistantPageCaches) and the exact set whose analysis depends on the OCR
     // mode (see InvalidateOcrDependentAnalysis).
     private readonly HashSet<int> _ocrPages = [];
+    // Page skew in radians as OCR measured it (raw, before the DeskewOcrLines gate), for the
+    // pages in _ocrPages. Kept beside the recovered text because it is the other half of what a
+    // re-analysis needs: hand both back on the request and the page keeps its deskewed line
+    // grouping without a second recognition pass, which is the whole cost in issue #100.
+    private readonly Dictionary<int, float> _ocrSkew = [];
     // Pages the extractor found to have no text layer of their own — the pages where turning OCR
     // on or off changes the answer. Recorded even when an OCR entry is what stays cached.
     private readonly HashSet<int> _textlessPages = [];
@@ -665,8 +671,9 @@ public sealed class DocumentModel : IDisposable
                     if (IsDisposed || vp.IsDisposed || vp.CurrentPage != page
                         || viewRotation != _viewRotation) return;
                     CacheExtractedText(page, pageText);
+                    var (charBoxes, skew) = AnalysisInputFor(page, pageText);
                     worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH,
-                        pageText.DedupedCharBoxes, pars, rulings, viewRotation));
+                        charBoxes, pars, rulings, viewRotation, skew));
                 });
             }
             catch (OperationCanceledException) { }
@@ -742,8 +749,9 @@ public sealed class DocumentModel : IDisposable
                         if (!IsDisposed && viewRotation == _viewRotation)
                         {
                             CacheExtractedText(page, pageText);
+                            var (charBoxes, skew) = AnalysisInputFor(page, pageText);
                             worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH,
-                        pageText.DedupedCharBoxes, pars, rulings, viewRotation));
+                                charBoxes, pars, rulings, viewRotation, skew));
                         }
                     });
                 }
@@ -761,11 +769,29 @@ public sealed class DocumentModel : IDisposable
     public bool SubmitPendingLookahead(AnalysisWorker? worker) => SubmitPendingLookahead(Primary, worker);
 
     /// <summary>
+    /// How many candidate pages one call may reject before giving up until the next frame. Only
+    /// pages that would trigger speculative OCR are rejected, and rejecting one costs at most a
+    /// text extraction (nothing is rasterised until a page is accepted), so a small budget is
+    /// enough to skip past a run of scanned pages without a visible hitch on the UI thread.
+    /// </summary>
+    private const int MaxBackgroundProbesPerCall = 8;
+
+    /// <summary>
     /// Submits the next background analysis page (outside the lookahead window).
     /// Returns true if a page was submitted, false if exhausted or worker busy.
     /// Prepares its input synchronously on the UI thread to avoid concurrent PDFium access —
     /// the pixmap is only 800x800 so that part takes ~5ms. Ruling extraction (backends that
     /// support it) is the expensive part, which is why it is cached per page.
+    ///
+    /// <para>
+    /// Pages that would need OCR are skipped entirely while the mode is on (issue #100).
+    /// Read-ahead is speculative by definition, and recognition is not a speculative-sized cost:
+    /// one scanned page can occupy the OCR stage for tens of seconds — and the read-ahead window
+    /// is <see cref="CoreSettings.BackgroundAnalysisWindowPages"/> pages on either side of the
+    /// reader, so a scanned document would commit the engine to that for the whole window. Such a
+    /// page is left to the on-demand path, which runs when the reader actually arrives at it.
+    /// With OCR off nothing is skipped and the scan behaves exactly as it always did.
+    /// </para>
     /// </summary>
     public bool SubmitBackgroundAnalysis(AnalysisWorker worker)
     {
@@ -782,24 +808,40 @@ public sealed class DocumentModel : IDisposable
         // document-wide index / content-fraction consume). A page counts as covered once any variant
         // is cached. Per-viewport non-default variants are produced on demand when a view navigates.
         var pars = _defaultAnalysisParams;
-        int? nextPage = BackgroundQueue.TryGetNext(
-            IsPageAnalysed, page => worker.IsInFlight(FilePath, page, pars));
-        if (nextPage is not { } page) return false;
+        bool ocrOn = worker.OcrMode != OcrMode.Off;
 
-        try
+        for (int probe = 0; probe < MaxBackgroundProbesPerCall; probe++)
         {
-            var (pageW, pageH) = _pdf.GetPageSize(page, _viewRotation);
-            var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize, _viewRotation);
-            var pageText = GetOrExtractText(page);
-            worker.Submit(new AnalysisRequest(FilePath, page, rgb, pxW, pxH, pageW, pageH,
-                pageText.DedupedCharBoxes, pars, ExtractRulings(page, _viewRotation), _viewRotation));
-            return true;
+            int? nextPage = BackgroundQueue.TryGetNext(
+                IsPageAnalysed, page => worker.IsInFlight(FilePath, page, pars));
+            if (nextPage is not { } page) return false;
+
+            // Cheapest rejection first: a page already known to have no text layer of its own, and
+            // no OCR output cached to stand in for one, needs no extraction to be ruled out.
+            if (ocrOn && _textlessPages.Contains(page) && !_ocrPages.Contains(page)) continue;
+
+            try
+            {
+                // Text before pixmap: it is the cheap half and it decides whether this page is
+                // worth rasterising at all.
+                var pageText = GetOrExtractText(page);
+                var (charBoxes, skew) = AnalysisInputFor(page, pageText);
+                if (ocrOn && charBoxes.Count == 0) continue;
+
+                var (pageW, pageH) = _pdf.GetPageSize(page, _viewRotation);
+                var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize, _viewRotation);
+                worker.Submit(new AnalysisRequest(FilePath, page, rgb, pxW, pxH, pageW, pageH,
+                    charBoxes, pars, ExtractRulings(page, _viewRotation), _viewRotation, skew));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error($"Background analysis prepare failed for page {page + 1}: {ex.Message}", ex);
+                return false;
+            }
         }
-        catch (Exception ex)
-        {
-            _logger.Error($"Background analysis prepare failed for page {page + 1}: {ex.Message}", ex);
-            return false;
-        }
+
+        return false;
     }
 
     public bool GoToPage(Viewport vp, int page, AnalysisWorker? worker, IReadOnlySet<BlockRole> navigableRoles, double windowWidth, double windowHeight)
@@ -1130,8 +1172,40 @@ public sealed class DocumentModel : IDisposable
         {
             _textlessPages.Remove(page);
             _ocrPages.Remove(page);
+            _ocrSkew.Remove(page);
         }
         _textCache[page] = text;
+    }
+
+    /// <summary>
+    /// The char boxes and skew an analysis request for <paramref name="page"/> should carry,
+    /// given what the extractor just returned in <paramref name="extracted"/>.
+    ///
+    /// <para>
+    /// For a page with a text layer this is simply that text. For a scanned page it is the OCR
+    /// output of an earlier pass, when there is one: the worker skips recognition whenever the
+    /// request already carries char boxes, so handing them back turns a re-analysis from tens of
+    /// seconds into the ~1 s of layout inference it should have been (issue #100). The skew rides
+    /// along because the worker gates it on the <i>current</i> DeskewOcrLines setting rather than
+    /// the one in force when it was measured — that is what makes toggling deskew cheap.
+    /// </para>
+    /// <para>
+    /// UI thread only: it reads the text caches. All three submission paths resolve their input
+    /// on the UI thread (the two prep tasks inside their marshalled callback) for that reason.
+    /// </para>
+    /// </summary>
+    private (IReadOnlyList<CharBox> CharBoxes, float Skew) AnalysisInputFor(int page, PageText extracted)
+    {
+        // Membership of _ocrPages is itself the test for "no text layer of its own": the moment a
+        // real extraction produces char boxes, CacheExtractedText drops the page from the set. So
+        // this needs no comparison against `extracted` — which on the background path is often the
+        // recovered text already, since it comes from the same cache.
+        if (_ocrPages.Contains(page)
+            && _textCache.TryGetValue(page, out var recovered)
+            && recovered.CharBoxes.Count > 0)
+            return (recovered.DedupedCharBoxes, _ocrSkew.GetValueOrDefault(page));
+
+        return (extracted.DedupedCharBoxes, 0f);
     }
 
     /// <summary>
@@ -1177,19 +1251,27 @@ public sealed class DocumentModel : IDisposable
     /// caches the extracted text, the worker returns the OCR text later), and a real text layer
     /// must always win.
     /// </summary>
-    internal void SetOcrText(int page, PageText text)
+    /// <param name="skew">
+    /// The page skew OCR measured, in radians, raw — i.e. before the DeskewOcrLines gate. Cached
+    /// with the text so a later request for the same page can carry both and skip recognition.
+    /// </param>
+    internal void SetOcrText(int page, PageText text, float skew = 0f)
     {
         _marshaller.AssertUIThread();
         if (_textCache.TryGetValue(page, out var existing) && existing.CharBoxes.Count > 0) return;
         _textCache[page] = text;
         _textlessPages.Add(page);
-        if (text.CharBoxes.Count > 0) _ocrPages.Add(page);
+        if (text.CharBoxes.Count > 0)
+        {
+            _ocrPages.Add(page);
+            _ocrSkew[page] = skew;
+        }
     }
 
     /// <summary>
-    /// Drops the cached analysis — and any OCR text — for every page with no text layer of its
-    /// own, so a change to the OCR mode actually reaches pages that were already analysed.
-    /// Returns those pages, for the caller to resubmit the views sitting on them.
+    /// Drops the cached analysis — and, unless told otherwise, any OCR text — for every page with
+    /// no text layer of its own, so a change to the OCR mode actually reaches pages that were
+    /// already analysed. Returns those pages, for the caller to resubmit the views sitting on them.
     ///
     /// <para>
     /// The worker's mode flag only steers requests it has yet to receive, and a page whose
@@ -1199,7 +1281,13 @@ public sealed class DocumentModel : IDisposable
     /// them and never will, so their analysis cannot depend on the mode.
     /// </para>
     /// </summary>
-    internal IReadOnlyList<int> InvalidateOcrDependentAnalysis()
+    /// <param name="dropRecoveredText">
+    /// Whether to discard the OCR text too. True for a change to the OCR <i>mode</i>, which
+    /// changes what recognition would produce. False for a setting that only changes how the
+    /// existing output is post-processed — deskew being the one that does — where keeping the
+    /// text lets the resubmission reuse it instead of paying for recognition again (issue #100).
+    /// </param>
+    internal IReadOnlyList<int> InvalidateOcrDependentAnalysis(bool dropRecoveredText = true)
     {
         _marshaller.AssertUIThread();
         if (_textlessPages.Count == 0) return [];
@@ -1208,7 +1296,12 @@ public sealed class DocumentModel : IDisposable
         foreach (int page in _textlessPages)
         {
             if (_analysisCache.Remove(page)) affected.Add(page);
-            if (_ocrPages.Remove(page)) _textCache.Remove(page);
+            if (!dropRecoveredText) continue;
+            if (_ocrPages.Remove(page))
+            {
+                _ocrSkew.Remove(page);
+                _textCache.Remove(page);
+            }
         }
         if (affected.Count > 0) BackgroundQueue.Reset(Primary.CurrentPage);
         return affected;

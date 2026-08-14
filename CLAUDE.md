@@ -163,6 +163,19 @@ and supplies line boxes only, which `LineDetector` uses in preference to pixel p
 tracks the layout model's input size (the pixmap is shared) — PP-DocLayout-S at 1920 is the one
 to pair with `Full`. ORT session defaults mirror `Core.Analysis` (intra-op ≤4, arena off).
 
+**Recognition is expensive enough to be a scheduling problem, not just a slow call** (#100).
+`tools/ocr-cost-probe` measures it: on a 34-line page at 1920 px, the bundled v5-Latin set does a
+full pass in ~1.8 s, PP-OCRv6 Small in ~4.4 s, and PP-OCRv6 **Medium in ~65 s** — a ~15× jump for
+a 4.5× download, with the detector alone at ~16 s so `OcrMode.Lines` is no refuge at that tier.
+The intra-op cap is not the bottleneck (4→16 threads: 71 s→63 s; detection gets *worse*), so do
+not "fix" a slow page by loosening `OcrSessionOptions`. Three properties of the pipeline follow
+from that cost and must be preserved: OCR runs on **its own worker thread** so it cannot stall
+layout inference for other pages; a page is **recognised at most once**, with the result and its
+measured skew handed back on later requests (`AnalysisRequest.OcrSkew`); and **background
+read-ahead never triggers OCR** — a speculative page with no text layer is left to the on-demand
+path. The deskew gate is applied where the shear is consumed, not where it is measured, so
+toggling `DeskewOcrLines` costs layout analysis only.
+
 **Model sets / language coverage.** `RapidOcrService`'s `models` constructor parameter selects a
 `RapidOcrModelSet`; `OcrModelLocator.LocateDefault()` resolves the bundled PP-OCRv5-Latin set with
 no download (it ships via the RapidOcrNet package's own build target), but that set only
@@ -294,7 +307,7 @@ Activates above `CoreSettings.RailZoomThreshold` when analysis is available. Loc
 ### Thread Safety
 
 - **UI thread**: All controller mutations, keyboard/mouse, state building, PDFium calls.
-- **Analysis Worker**: A dedicated thread reads from `Channel<AnalysisRequest>` and runs `ILayoutAnalyzer.RunAnalysis`. The ONNX implementation never touches PDFium. Results are pushed back via the result channel and consumed by the UI thread.
+- **Analysis Worker**: **two** dedicated threads, chained by a channel (#100). `Submit` routes a request to the OCR stage only if it needs one (no char boxes, engine wired, mode on); everything else goes straight to the layout stage, so a page with a text layer never queues behind a recognition pass. The layout stage runs `ILayoutAnalyzer.RunAnalysis`; the ONNX and OCR implementations never touch PDFium, and each stage owns its own engine instance (neither is thread-safe). Results are pushed back via the result channel and consumed by the UI thread — **not in submission order**, since the two stages progress independently. That is safe because every result carries its own `(file, page, params)` key and `_inFlight` admits one request per key; don't add anything that assumes ordering.
 - **Thread pool**: `IPdfService.RenderPagePixmap()` can be called from `Task.Run()`. PDFium serialization is enforced by `lock (PdfiumGate.Lock)` inside every PDFium-touching call site.
 - **Critical**: Never modify `DocumentState` or any `Viewport` from a background thread — use `IThreadMarshaller.Post()` to dispatch to the UI thread. (Per-viewport render/analysis-prep tasks run on the thread pool but marshal their results back; they also guard against the document or the view being disposed mid-flight.)
 
@@ -328,7 +341,11 @@ Tests in `tests/RailReader.Core.Tests/` are xUnit. `TestFixtures.cs` generates s
 
 **Skew debugging on scanned PDFs**: `tools/deskew-probe <pdf|dir>` reports, per page, the recovered skew angle, the raw ungated per-line angles behind it, and the line count grouping recovers with and without the correction. Needs only the OCR models (no layout model). Read the raw quartiles, not just the angle: a reported `0.00` with a *tight* spread is a genuinely square page correctly left alone, while `0.00` with a *wide* spread is a confidence-gate rejection — a different thing, and worth investigating. Exit code 2 on any regression.
 
+**OCR cost per model tier**: `tools/ocr-cost-probe <pdf> [page|first-last]` times detection and recognition separately for each installed tier, on the page you actually care about. Run it before blaming the pipeline for a slow scanned page — the tier gap (~15× between PP-OCRv6 Small and Medium) usually is the answer, and `OCRCOST_THREADS` will show you that the intra-op cap is not.
+
 ## Troubleshooting
+
+**Scanned PDF freezes analysis in every open document**: fixed in the #100 work — OCR runs on its own worker thread, recovered text is reused rather than re-recognised, and background read-ahead no longer triggers OCR. If it recurs, check in this order: (1) is it a *second* scanned page waiting on the first (expected — the OCR stage is one thread); (2) did a change start routing text-layer pages through the OCR stage (`AnalysisWorker.Submit`'s `needsOcr`); (3) is `tools/ocr-cost-probe` simply reporting a tier that costs a minute a page, in which case the answer is Tiny/Small, not the scheduler.
 
 **`DllNotFoundException: libSkiaSharp` on startup**: Missing Skia native binaries. Run in Release mode (`dotnet build -c Release`) and ensure the platform-specific runtime is installed. For Avalonia.Browser (WASM), `WasmBuildNative=true` must be set in the project.
 

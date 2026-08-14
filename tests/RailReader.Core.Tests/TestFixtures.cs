@@ -35,6 +35,18 @@ public static class TestFixtures
     }
 
     /// <summary>
+    /// Returns a path to a new 3-page PDF that carries no text layer — shapes only, the way a
+    /// scan does. This is the shape of document that sends the analysis worker down the OCR path.
+    /// </summary>
+    public static string GetTextlessTestPdfPath()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"railreader_scan_{Guid.NewGuid():N}.pdf");
+        CreateTextlessPdf(path, pageCount: 3);
+        s_tempFiles.Add(path);
+        return path;
+    }
+
+    /// <summary>
     /// Creates the standard SkiaPdfServiceFactory for tests.
     /// </summary>
     public static IPdfServiceFactory CreatePdfFactory() => new SkiaPdfServiceFactory();
@@ -154,6 +166,27 @@ public static class TestFixtures
             canvas.DrawText($"Page {i + 1} of {pageCount}", 72, 72, font, paint);
             canvas.DrawText("This is a test paragraph with some text content.", 72, 120, font, paint);
             canvas.DrawText("Second line of text for testing purposes.", 72, 140, font, paint);
+            doc.EndPage();
+        }
+
+        doc.Close();
+    }
+
+    /// <summary>
+    /// Draws bars rather than text, so the pages render as something but extract as nothing —
+    /// which is exactly how a scanned page presents to <c>IPdfTextService</c>.
+    /// </summary>
+    public static void CreateTextlessPdf(string path, int pageCount = 3)
+    {
+        using var stream = File.Create(path);
+        using var doc = SKDocument.CreatePdf(stream);
+        using var paint = new SKPaint { Color = SKColors.Black, IsAntialias = false };
+
+        for (int i = 0; i < pageCount; i++)
+        {
+            using var canvas = doc.BeginPage(612, 792);
+            for (int line = 0; line < 12; line++)
+                canvas.DrawRect(SKRect.Create(72, 100 + line * 24, 400, 10), paint);
             doc.EndPage();
         }
 

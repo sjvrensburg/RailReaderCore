@@ -259,9 +259,9 @@ public class OcrPipelineTests
         Blocks = [new LayoutBlock { BBox = new BBox(0f, 0f, 400f, 400f), Role = BlockRole.Text }],
     };
 
-    private static AnalysisRequest Request(IReadOnlyList<CharBox>? charBoxes) =>
-        new("/tmp/scan.pdf", 0, new byte[800 * 800 * 3], 800, 800, 400d, 400d,
-            charBoxes, new AnalysisParams());
+    private static AnalysisRequest Request(IReadOnlyList<CharBox>? charBoxes, int page = 0, float skew = 0f) =>
+        new("/tmp/scan.pdf", page, new byte[800 * 800 * 3], 800, 800, 400d, 400d,
+            charBoxes, new AnalysisParams(), OcrSkew: skew);
 
     private static AnalysisResult PollUntilResult(AnalysisWorker worker)
     {
@@ -407,5 +407,128 @@ public class OcrPipelineTests
 
         Assert.Single(result.Analysis.Blocks);
         Assert.Contains("no models here", worker.OcrStartupError);
+    }
+
+    // --- Recognition must not stall layout inference for other pages (issue #100) ---
+
+    /// <summary>OCR engine that blocks until released, standing in for a heavy model set: one
+    /// page of PP-OCRv6 Medium was measured at over a minute.</summary>
+    private sealed class BlockingOcrService : IOcrService
+    {
+        private readonly ManualResetEventSlim _release = new(false);
+
+        public void Release() => _release.Set();
+
+        public OcrPage Recognize(byte[] rgbBytes, int width, int height, OcrMode mode, CancellationToken ct = default)
+        {
+            _release.Wait(ct);
+            return ThreeLines(withText: true);
+        }
+
+        public void Dispose() => _release.Dispose();
+    }
+
+    [Fact]
+    public void Worker_PageNeedingOcr_DoesNotStallAPageThatDoesNot()
+    {
+        // The reported failure in miniature: a scanned page under a heavy model set held the only
+        // worker for its whole recognition, and layout analysis stopped everywhere — including
+        // for a different document with a perfectly good text layer.
+        var ocr = new BlockingOcrService();          // the worker owns and disposes it
+        using var worker = MakeWorker(ocr, OcrMode.Full);
+
+        Assert.True(worker.Submit(Request(charBoxes: null, page: 0)));            // needs OCR; will block
+        List<CharBox> existing = [new(0, 10f, 10f, 17f, 20f)];
+        Assert.True(worker.Submit(Request(existing, page: 1)));                   // has a text layer
+
+        // The second request must come back while the first is still inside the engine.
+        var result = PollUntilResult(worker);
+        Assert.Equal(1, result.Page);
+        Assert.False(worker.IsIdle);     // page 0 is still in flight
+
+        ocr.Release();
+        Assert.Equal(0, PollUntilResult(worker).Page);
+        Assert.True(worker.IsIdle);
+    }
+
+    // --- Reusing an earlier pass's OCR output instead of re-running it (issue #100) ---
+
+    // Tightly-set body text on a page a couple of degrees off square: the geometry from
+    // DeskewLineGroupingTests, which grouping only resolves into one band per printed line when
+    // the shear is applied.
+    private const int SkewLines = 12, SkewGlyphs = 40;
+    private const float SkewDegrees = 2f;
+
+    private static List<CharBox> SkewedParagraph()
+    {
+        const float advance = 10f, glyphW = 8f, glyphH = 10f, pitch = 14f, firstBaseline = 100f;
+        float pivotX = SkewGlyphs * advance / 2f;
+        float tan = MathF.Tan(SkewDegrees * MathF.PI / 180f);
+
+        var boxes = new List<CharBox>(SkewLines * SkewGlyphs);
+        int index = 0;
+        for (int line = 0; line < SkewLines; line++)
+        {
+            float baseline = firstBaseline + pitch * line;
+            for (int g = 0; g < SkewGlyphs; g++)
+            {
+                float left = g * advance;
+                float centreY = baseline + (left + glyphW / 2f - pivotX) * tan;
+                boxes.Add(new CharBox(index++, left, centreY - glyphH / 2f, left + glyphW, centreY + glyphH / 2f));
+            }
+        }
+        return boxes;
+    }
+
+    private static float SkewRadians => SkewDegrees * MathF.PI / 180f;
+
+    [Fact]
+    public void Worker_ReusesSuppliedOcrCharBoxes_WithoutRecognisingAgain()
+    {
+        // A page whose OCR output the consumer cached and handed back: recognition is the
+        // expensive half and must not run twice, but the correction it measured has to survive,
+        // or the caller would be trading tens of seconds for wrong line grouping.
+        var ocr = new FakeOcrService(_ => ThreeLines(withText: true));
+        using var worker = MakeWorker(ocr, OcrMode.Full);
+        worker.DeskewEnabled = true;
+
+        Assert.True(worker.Submit(Request(SkewedParagraph(), skew: SkewRadians)));
+        var result = PollUntilResult(worker);
+
+        Assert.Equal(0, ocr.Calls);
+        Assert.Equal(SkewLines, result.Analysis.Blocks[0].Lines.Count);
+    }
+
+    [Fact]
+    public void Worker_SuppliedSkew_IsGatedByTheCurrentDeskewSetting()
+    {
+        // The paired half: the gate is applied where the shear is consumed, not where it was
+        // measured, so turning deskew off reaches a page whose angle was measured earlier.
+        var ocr = new FakeOcrService(_ => ThreeLines(withText: true));
+        using var worker = MakeWorker(ocr, OcrMode.Full);
+        worker.DeskewEnabled = false;
+
+        Assert.True(worker.Submit(Request(SkewedParagraph(), skew: SkewRadians)));
+        var result = PollUntilResult(worker);
+
+        Assert.Equal(0, ocr.Calls);
+        Assert.True(result.Analysis.Blocks[0].Lines.Count < SkewLines,
+            "without the shear the skewed glyphs must not resolve into one band per printed line");
+    }
+
+    [Fact]
+    public void Worker_PublishesTheRawMeasuredSkew_EvenWithDeskewOff()
+    {
+        // What makes the reuse above possible: the result carries the measurement itself rather
+        // than the gated value, so a consumer can cache it and have it re-gated later.
+        var ocr = new FakeOcrService(_ => new OcrPage(ThreeLines(withText: true).Lines, SkewRadians));
+        using var worker = MakeWorker(ocr, OcrMode.Full);
+        worker.DeskewEnabled = false;
+
+        Assert.True(worker.Submit(Request(charBoxes: null)));
+        var result = PollUntilResult(worker);
+
+        Assert.Equal(1, ocr.Calls);
+        Assert.InRange(result.OcrSkew, SkewRadians - 1e-5f, SkewRadians + 1e-5f);
     }
 }

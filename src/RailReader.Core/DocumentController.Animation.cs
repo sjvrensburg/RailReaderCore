@@ -350,8 +350,10 @@ public sealed partial class DocumentController
 
                 // A scanned page's text only exists once OCR has run, and this is where it
                 // arrives — cache it so search, export, and VLM prompts see the page as text.
+                // The measured skew is cached with it: together they are everything a later
+                // request for this page needs to skip recognition (issue #100).
                 if (result.OcrText is { } ocrText)
-                    doc.SetOcrText(result.Page, ocrText);
+                    doc.SetOcrText(result.Page, ocrText, result.OcrSkew);
 
                 // Fan out to every view of this document sitting on the analysed page, waiting for its
                 // rail, AND whose post-processing params match this result (§5.4). Two views on the

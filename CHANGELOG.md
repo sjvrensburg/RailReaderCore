@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased — one OCR'd page no longer stalls analysis for every open document
+
+Fixes [#100](https://github.com/sjvrensburg/RailReaderCore/issues/100).
+
+With `OcrMode.Full` and the PP-OCRv6 Medium pack, opening a two-page scan alongside an unrelated
+paper froze all layout analysis for over two minutes. `AnalysisWorker` ran one loop over one
+queue with OCR inline ahead of inference, so the scanned page occupied the only worker for its
+entire recognition and every other request — including 1 s layout analyses for a different
+document — waited behind it.
+
+The new `tools/ocr-cost-probe` measures where the time goes. On the reporter's own scan (a
+34-line page at 1920 px, 20 cores):
+
+| Model set | detect (`Lines`) | full (`Full`) |
+|---|---|---|
+| PP-OCRv5 Latin (bundled) | 0.9 s | 1.8 s |
+| PP-OCRv6 Small | 2.6 s | 4.4 s |
+| PP-OCRv6 Medium | **16.3 s** | **65.1 s** |
+
+Small → Medium is a ~15× wall-clock jump for a 4.5× download, and `OcrMode.Lines` is no refuge
+at Medium — its detector alone is 16 s. The intra-op thread cap is not the bottleneck: 4 → 16
+threads moves the full pass 71 s → 63 s, and makes detection worse.
+
+Three changes, none of which make recognition itself faster; they stop it blocking, repeating,
+and happening speculatively.
+
+- **OCR and layout inference now run on separate threads.** `AnalysisWorker.Submit` routes each
+  request to the stage it needs: a page that arrives with char boxes goes straight to inference
+  and never queues behind a recognition pass. Page N's OCR overlaps page M's layout analysis, so
+  an unrelated document keeps analysing throughout. Results no longer arrive in submission order
+  — nothing downstream depended on it, since every result carries its own (file, page, params)
+  key. Two limits remain by design: a second scanned page still waits for the first (the OCR
+  stage is one thread), and read-ahead is gated on `AnalysisWorker.IsIdle`, which covers both
+  stages — so the layout stage does not speculatively fill in while a recognition runs.
+- **Recovered OCR text is reused instead of re-recognised.** The submission paths hand back the
+  char boxes an earlier pass produced, so a page is only ever recognised once. The measured skew
+  rides along on the new `AnalysisRequest.OcrSkew` / `AnalysisResult.OcrSkew`, and the
+  `DeskewOcrLines` gate moved to where the shear is *consumed* rather than where it is measured
+  — so toggling deskew now re-runs layout analysis alone (~1 s/page) instead of full recognition.
+  Toggling `OcrMode` still discards the text, because that changes what recognition would produce.
+- **Background read-ahead no longer triggers OCR.** Read-ahead is speculative and recognition is
+  not a speculative-sized cost — the window is `BackgroundAnalysisWindowPages` (12) on either
+  side of the reader, so a scanned document would have committed the engine to two dozen pages of
+  it. Such pages are left to the on-demand path. With OCR off, nothing is skipped and read-ahead
+  behaves exactly as before.
+
+Additive: `AnalysisRequest`/`AnalysisResult` gained optional trailing parameters, and no existing
+signature changed. A consumer that does nothing gets the fix.
+
 ## 0.56.1 — Markdown export no longer leaks PDFium's soft-hyphen marker
 
 Fixes [#101](https://github.com/sjvrensburg/RailReaderCore/issues/101).
