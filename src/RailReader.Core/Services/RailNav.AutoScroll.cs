@@ -50,6 +50,16 @@ public sealed partial class RailNav
     }
 
     /// <summary>
+    /// Inject a controlled pause-elapsed source (milliseconds) for unit tests, so a settling
+    /// pause can be expired on demand rather than slept through.
+    /// Forwarded to the underlying <see cref="AutoScrollStateMachine"/>.
+    /// </summary>
+    internal Func<double>? AutoScrollPauseElapsedMsOverride
+    {
+        set => _autoScrollState.GetPauseElapsedMs = value;
+    }
+
+    /// <summary>
     /// Returns true if auto-scroll has reached the right edge and should advance.
     /// Called from Tick; the caller is responsible for calling NextLine and snapping.
     /// </summary>
