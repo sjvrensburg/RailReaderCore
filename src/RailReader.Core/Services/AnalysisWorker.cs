@@ -15,7 +15,24 @@ public sealed record AnalysisRequest(
     // The document ViewRotation the pixmap was rasterised under. Carried through to the result so
     // the consumer can reject a result whose geometry is in a display frame the document has since
     // rotated away from (the caches were cleared; old-frame blocks must not repopulate them).
-    int ViewRotation = 0);
+    int ViewRotation = 0,
+    // The page's skew in radians, when a previous OCR pass already measured it and the caller is
+    // handing that pass's char boxes back in CharBoxes (see AnalysisResult.OcrSkew).
+    // 0 means "not measured", which is also every request for a page with a real text layer.
+    // Carrying it is what lets a re-analysis keep the deskew correction without re-running
+    // recognition — the expensive half of the OCR path, and the whole of issue #100's cost.
+    float OcrSkew = 0f,
+    // Cancelled when nobody will consume this request's result any more — in practice the
+    // submitting document's own lifetime token, so closing one tab stops that tab's queued
+    // work instead of the worker grinding through minutes of recognition for a document that
+    // is gone. Default None means "never cancelled", which is every existing call site.
+    //
+    // Two limits are inherent rather than incidental. Cancellation is observed at STAGE
+    // boundaries: RapidOcrNet's Detect is one monolithic call, so a request already inside it
+    // runs to completion. And it is deliberately NOT wired to navigation — analysis for a page
+    // the reader has left is still cached and still wanted, so abandoning it would only buy a
+    // repeat later.
+    CancellationToken Cancellation = default);
 
 public sealed record AnalysisResult(
     string FilePath, int Page, AnalysisParams Params, PageAnalysis Analysis,
@@ -23,18 +40,53 @@ public sealed record AnalysisResult(
     // Text recovered by OCR for a page that had no text layer, in page-point space, or null
     // (page had a text layer, OCR is off, or it ran in Lines mode). The consumer caches it as
     // the page's text so search/export/VLM see a scanned page the same way as a digital one.
-    PageText? OcrText = null);
+    PageText? OcrText = null,
+    // The page skew OCR measured, in radians, BEFORE the DeskewOcrLines gate — the raw
+    // measurement, so a consumer that caches it alongside OcrText can hand it back on a later
+    // request and have the shear re-applied (or dropped) under whatever the setting is then.
+    // 0 when OCR did not run or found no confident estimate.
+    float OcrSkew = 0f);
 
+/// <summary>
+/// Runs layout analysis — and, for a page with no text layer, the OCR that has to precede it —
+/// off the UI thread, taking requests on one channel and publishing results on another.
+///
+/// <para>
+/// <b>Two stages, two threads.</b> OCR and layout inference run on separate threads connected by
+/// a channel, because they are independent for different pages: recognising page N does not have
+/// to block inference for page M. A single loop running OCR inline meant one scanned page under a
+/// heavy model set held the only worker for its entire recognition — measured at over two minutes
+/// with PP-OCRv6 Medium — during which layout analysis stopped for every open document
+/// (issue #100). <see cref="Submit"/> routes each request to the stage it actually needs, so a
+/// page that comes with its own char boxes never queues behind one that does not.
+/// </para>
+/// <para>
+/// The stages have no ordering guarantee between them: a layout-only request submitted second can
+/// complete first. Nothing downstream depends on order — every result carries its own
+/// (file, page, params) key, and the in-flight set admits one request per key at a time.
+/// </para>
+/// </summary>
 public sealed class AnalysisWorker : IDisposable
 {
-    private readonly Channel<AnalysisRequest> _requestChannel;
+    /// <summary>
+    /// A request that has cleared the OCR stage, carrying whatever that stage recovered. A
+    /// request needing no OCR is written straight here by <see cref="Submit"/>.
+    /// </summary>
+    private readonly record struct LayoutJob(
+        AnalysisRequest Request, PageText? OcrText, List<BBox>? OcrLines, float OcrSkew);
+
+    private readonly Channel<AnalysisRequest> _ocrChannel;
+    private readonly Channel<LayoutJob> _layoutChannel;
     private readonly Channel<AnalysisResult> _resultChannel;
     // UI-thread-only: accessed exclusively from Submit/Poll/IsInFlight/IsIdle on the UI thread.
     // Keyed by params too (railreader2#180 #3) so the same page can be in flight under two
     // different post-processing variants (e.g. cell-nav on for one view, off for another).
     private readonly HashSet<(string FilePath, int Page, AnalysisParams Params)> _inFlight = [];
     private readonly CancellationTokenSource _cts = new();
-    private readonly Task _workerTask;
+    private readonly Task _layoutTask;
+    // Null when no OCR service was supplied: nothing is ever routed to the OCR stage, so
+    // starting a thread to drain it would be a thread parked forever.
+    private readonly Task? _ocrTask;
     private readonly ILogger _logger;
     private readonly IThreadMarshaller _marshaller;
     private readonly IReadingOrderResolver _readingOrder;
@@ -127,19 +179,144 @@ public sealed class AnalysisWorker : IDisposable
             : new XYCutPlusPlusResolver());
         _logger = logger ?? NullLogger.Instance;
         _marshaller = marshaller;
-        _requestChannel = Channel.CreateUnbounded<AnalysisRequest>();
+        _ocrChannel = Channel.CreateUnbounded<AnalysisRequest>();
+        _layoutChannel = Channel.CreateUnbounded<LayoutJob>();
         _resultChannel = Channel.CreateUnbounded<AnalysisResult>();
 
-        _workerTask = Task.Run(() => WorkerLoop(analyzerFactory, _cts.Token));
-        // Observe the task to prevent UnobservedTaskException
-        _workerTask.ContinueWith(t =>
-        {
-            if (t.IsFaulted)
-                _logger.Error("[Worker] Task faulted", t.Exception?.InnerException);
-        }, TaskContinuationOptions.OnlyOnFaulted);
+        _layoutTask = Observe(Task.Run(() => LayoutLoop(analyzerFactory, _cts.Token)), "layout");
+        if (_ocrServiceFactory is not null)
+            _ocrTask = Observe(Task.Run(() => OcrLoop(_cts.Token)), "OCR");
     }
 
-    private async Task WorkerLoop(Func<ILayoutAnalyzer> analyzerFactory, CancellationToken ct)
+    /// <summary>Observes a stage task so a fault surfaces in the log instead of as an
+    /// UnobservedTaskException at some unrelated later GC.</summary>
+    private Task Observe(Task task, string stage)
+    {
+        task.ContinueWith(t =>
+        {
+            if (t.IsFaulted)
+                _logger.Error($"[Worker] {stage} task faulted", t.Exception?.InnerException);
+        }, TaskContinuationOptions.OnlyOnFaulted);
+        return task;
+    }
+
+    /// <summary>Points-per-pixel for a request's pixmap — the factors that map detections and
+    /// OCR geometry back into page space.</summary>
+    private static (float X, float Y) MapScale(AnalysisRequest request) => (
+        request.PxW > 0 ? (float)(request.PageW / request.PxW) : 1f,
+        request.PxH > 0 ? (float)(request.PageH / request.PxH) : 1f);
+
+    /// <summary>
+    /// Releases a request's in-flight key on the UI thread, its owner. Every path that ends a
+    /// request without publishing a result must call this: <see cref="Poll"/> is what normally
+    /// clears the key, so a dropped request would otherwise leave <see cref="IsInFlight"/> true
+    /// for its page forever (blocking resubmission) and <see cref="IsIdle"/> false (blocking
+    /// lookahead and background analysis document-wide).
+    /// </summary>
+    private void ReleaseInFlight(AnalysisRequest request)
+    {
+        var key = (request.FilePath, request.Page, request.Params);
+        _marshaller.Post(() => _inFlight.Remove(key));
+    }
+
+    /// <summary>
+    /// True when nobody will consume this request any more (see
+    /// <see cref="AnalysisRequest.Cancellation"/>). Releases the key as a side effect, so the
+    /// call sites read as a plain skip.
+    /// </summary>
+    private bool Abandoned(AnalysisRequest request)
+    {
+        if (!request.Cancellation.IsCancellationRequested) return false;
+        _logger.Debug($"[Worker] Dropping abandoned request for {Path.GetFileName(request.FilePath)} page {request.Page}");
+        ReleaseInFlight(request);
+        return true;
+    }
+
+    /// <summary>
+    /// Joins the worker's lifetime token to the request's own, so a stage stops at its next
+    /// checkpoint for either. The two are distinguished at the catch site — the worker's ends
+    /// the loop, the request's drops one request — by testing the worker's token, since
+    /// <see cref="OperationCanceledException"/> alone does not say which fired.
+    /// </summary>
+    private static CancellationTokenSource Link(AnalysisRequest request, CancellationToken workerToken)
+        => CancellationTokenSource.CreateLinkedTokenSource(workerToken, request.Cancellation);
+
+    /// <summary>
+    /// The OCR stage. Recovers what a missing text layer would have given us and hands the
+    /// request on to the layout stage, which is free to be working on a different page
+    /// throughout — the whole point of the split (issue #100).
+    /// </summary>
+    private async Task OcrLoop(CancellationToken ct)
+    {
+        // OCR is optional and secondary: a failure to load it must leave layout analysis working,
+        // so the error is recorded and the stage keeps running as a pass-through. (Requests are
+        // routed here on the presence of a *factory*, which is all Submit can see.)
+        IOcrService? ocr = null;
+        try
+        {
+            ocr = _ocrServiceFactory!();
+            _logger.Debug("[Worker] OCR service ready");
+        }
+        catch (Exception ex)
+        {
+            OcrStartupError = ex.Message;
+            _logger.Error("[Worker] OCR service failed to load; continuing without OCR", ex);
+        }
+
+        using (ocr)
+        {
+            await foreach (var request in _ocrChannel.Reader.ReadAllAsync(ct))
+            {
+                // Cheapest possible win, and the one the queue exists for: a scanned page whose
+                // document closed while it waited costs nothing at all.
+                if (Abandoned(request)) continue;
+
+                LayoutJob job;
+                using var linked = Link(request, ct);
+                try
+                {
+                    var (sx, sy) = MapScale(request);
+                    var (ocrText, ocrLines, ocrSkew) = RunOcr(ocr, request, request.CharBoxes, sx, sy, linked.Token);
+                    // A pass that measured nothing leaves the request's own carried-forward angle
+                    // standing, so this is the effective skew from here on either way.
+                    job = new LayoutJob(request, ocrText, ocrLines,
+                        ocrLines is null ? request.OcrSkew : ocrSkew);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw; // Dispose path — let the loop end
+                }
+                catch (OperationCanceledException)
+                {
+                    // This request alone was abandoned mid-recognition. Release its key and take
+                    // the next one; the worker itself is still healthy.
+                    ReleaseInFlight(request);
+                    continue;
+                }
+                catch (Exception ex)
+                {
+                    // RunOcr swallows engine failures itself, so reaching here means something
+                    // outside it broke. Pass the request through unrecovered rather than dropping
+                    // it: the page still deserves its layout analysis.
+                    _logger.Error($"[Worker] OCR stage failed for page {request.Page}; analysing without it", ex);
+                    job = new LayoutJob(request, null, null, request.OcrSkew);
+                }
+
+                if (!_layoutChannel.Writer.TryWrite(job))
+                {
+                    // The layout stage is gone (fatal analyzer failure, or disposal): release the
+                    // key so IsInFlight/IsIdle don't stay stuck on a request nobody will finish.
+                    ReleaseInFlight(request);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The layout stage: inference, reading order, and block post-processing. Every request
+    /// reaches it, either straight from <see cref="Submit"/> or via the OCR stage.
+    /// </summary>
+    private async Task LayoutLoop(Func<ILayoutAnalyzer> analyzerFactory, CancellationToken ct)
     {
         ILayoutAnalyzer analyzer;
         try
@@ -152,61 +329,53 @@ public sealed class AnalysisWorker : IDisposable
         {
             StartupError = ex.Message;
             _logger.Error("[Worker] FATAL: Failed to create layout analyzer", ex);
+            // Nothing downstream of here can run, so close both intake channels too — otherwise
+            // the OCR stage would go on paying for recognition whose results have no consumer.
+            _ocrChannel.Writer.TryComplete();
+            _layoutChannel.Writer.TryComplete();
             _resultChannel.Writer.TryComplete();
             return;
         }
 
-        // OCR is optional and secondary: a failure to load it must leave layout analysis
-        // working, so it is constructed separately and its error recorded, not thrown.
-        IOcrService? ocr = null;
-        if (_ocrServiceFactory is not null)
-        {
-            try
-            {
-                ocr = _ocrServiceFactory();
-                _logger.Debug("[Worker] OCR service ready");
-            }
-            catch (Exception ex)
-            {
-                OcrStartupError = ex.Message;
-                _logger.Error("[Worker] OCR service failed to load; continuing without OCR", ex);
-            }
-        }
-
         using (analyzer)
-        using (ocr)
         {
-            await foreach (var request in _requestChannel.Reader.ReadAllAsync(ct))
+            await foreach (var job in _layoutChannel.Reader.ReadAllAsync(ct))
             {
+                var request = job.Request;
+
+                // Checked again here, not only at the OCR stage: a document can close during a
+                // long recognition, and this is the first moment after it that costs anything.
+                if (Abandoned(request)) continue;
+
                 // A per-request failure (ORT exception on a bad raster, geometry edge case in the
                 // resolver, …) must not fault the loop: that would silently kill analysis for the
                 // rest of the session AND strand the request's _inFlight key, so IsInFlight stays
                 // true forever (blocking resubmission for its page) and IsIdle stays false
                 // (blocking lookahead/background analysis document-wide). Log, release the key on
                 // the UI thread (its owner), and keep serving requests.
+                using var linked = Link(request, ct);
                 try
                 {
-                    float mapScaleX = request.PxW > 0 ? (float)(request.PageW / request.PxW) : 1f;
-                    float mapScaleY = request.PxH > 0 ? (float)(request.PageH / request.PxH) : 1f;
+                    var (mapScaleX, mapScaleY) = MapScale(request);
 
-                    // A page with no char boxes is a scan (or a text-layer-less export). When OCR
-                    // is available, recover what the text layer would have given us *before* the
-                    // pipeline runs, so the rest of it — layout analysis, reading order, line and
-                    // cell detection — takes the same path a born-digital page takes.
-                    var charBoxes = request.CharBoxes;
-                    var (ocrText, ocrLines, ocrSkew) = RunOcr(ocr, request, charBoxes, mapScaleX, mapScaleY, ct);
-                    if (ocrText is not null) charBoxes = ocrText.DedupedCharBoxes;
+                    // OCR, when it ran, stands in for the missing text layer so the rest of the
+                    // pipeline — layout analysis, reading order, line and cell detection — takes
+                    // the same path a born-digital page takes.
+                    var charBoxes = job.OcrText?.DedupedCharBoxes ?? request.CharBoxes;
 
                     // The shear term line grouping reasons with. Tangent rather than the angle
                     // because every consumer wants exactly that, and because a bare float that
                     // is 0 on all but scanned skewed pages makes the "no angle ⇒ the code that
-                    // ran before this feature existed" invariant visible at each call site.
-                    float skewTan = ocrSkew == 0f ? 0f : MathF.Tan(ocrSkew);
+                    // ran before this feature existed" invariant visible at each call site. The
+                    // DeskewEnabled gate lives here rather than at the measurement, so a page
+                    // whose angle was measured by an earlier pass and handed back on the request
+                    // honours the setting as it is *now*.
+                    float skewTan = !DeskewEnabled || job.OcrSkew == 0f ? 0f : MathF.Tan(job.OcrSkew);
 
                     _logger.Debug($"[Worker] Running analyzer for {Path.GetFileName(request.FilePath)} page {request.Page}...");
                     var analysis = analyzer.RunAnalysis(
                         request.RgbBytes, request.PxW, request.PxH, request.PageW, request.PageH,
-                        charBoxes, ct);
+                        charBoxes, linked.Token);
 
                     // Pipeline: assign reading order → trim overlaps + detect lines.
                     _readingOrder.AssignOrder(analysis.Blocks, analysis.PageWidth, analysis.PageHeight,
@@ -215,20 +384,26 @@ public sealed class AnalysisWorker : IDisposable
                     BlockPostProcessor.PostProcess(
                         analysis.Blocks, request.RgbBytes, request.PxW, request.PxH,
                         mapScaleX, mapScaleY, charBoxes, request.Params.TableRowReading,
-                        request.Params.CellNavigation, ocrLines, request.Rulings, _tuning, skewTan);
+                        request.Params.CellNavigation, job.OcrLines, request.Rulings, _tuning, skewTan);
 
                     _logger.Debug($"[Worker] Page {request.Page}: {analysis.Blocks.Count} blocks detected");
 
                     await _resultChannel.Writer.WriteAsync(
                         new AnalysisResult(request.FilePath, request.Page, request.Params, analysis,
-                            request.ViewRotation, ocrText), ct);
+                            request.ViewRotation, job.OcrText, job.OcrSkew), ct);
                 }
-                catch (OperationCanceledException) { throw; } // Dispose path — let the loop end
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw; // Dispose path — let the loop end
+                }
+                catch (OperationCanceledException)
+                {
+                    ReleaseInFlight(request);   // this request alone was abandoned
+                }
                 catch (Exception ex)
                 {
                     _logger.Error($"[Worker] Analysis failed for {Path.GetFileName(request.FilePath)} page {request.Page}; worker continues", ex);
-                    var key = (request.FilePath, request.Page, request.Params);
-                    _marshaller.Post(() => _inFlight.Remove(key));
+                    ReleaseInFlight(request);
                 }
             }
         }
@@ -244,6 +419,11 @@ public sealed class AnalysisWorker : IDisposable
     /// its layout analysis, so it is caught and logged and the page proceeds down the
     /// no-text-layer path it would have taken anyway. Cancellation is rethrown so the
     /// dispose path still ends the loop.
+    /// </para>
+    /// <para>
+    /// The skew is returned <b>raw</b> — the <see cref="DeskewEnabled"/> gate is applied by the
+    /// layout stage, so the measurement can be published on the result, cached by the consumer,
+    /// and re-gated on a later request without paying for recognition twice.
     /// </para>
     /// </summary>
     private (PageText? Text, List<BBox>? Lines, float Skew) RunOcr(
@@ -265,7 +445,7 @@ public sealed class AnalysisWorker : IDisposable
             _logger.Debug(
                 $"[Worker] Page {request.Page}: OCR ({mode}) found {lines.Count} lines, " +
                 $"{text?.CharBoxes.Count ?? 0} chars, skew {skew * 180f / MathF.PI:F2}°");
-            return (text, lines, DeskewEnabled ? skew : 0f);
+            return (text, lines, skew);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
@@ -275,15 +455,39 @@ public sealed class AnalysisWorker : IDisposable
         }
     }
 
-    /// <summary>Submit an analysis request. Must be called on the UI thread.</summary>
+    /// <summary>
+    /// Submit an analysis request. Must be called on the UI thread.
+    ///
+    /// <para>
+    /// Routes to the stage the request actually needs: only a page that arrives with no char
+    /// boxes, with an OCR engine wired, goes through the OCR stage. Everything else — a page with
+    /// a text layer, a page whose OCR text the caller is handing back — goes straight to layout
+    /// inference and so never waits behind a recognition pass (issue #100).
+    /// </para>
+    /// </summary>
     public bool Submit(AnalysisRequest request)
     {
         _marshaller.AssertUIThread();
+        if (request.Cancellation.IsCancellationRequested) return false;
+
         var key = (request.FilePath, request.Page, request.Params);
         if (!_inFlight.Add(key))
             return false;
 
-        if (!_requestChannel.Writer.TryWrite(request))
+        // Routed on the page alone — whether it arrives with char boxes — never on the current
+        // OcrMode. The mode has always been read where OCR runs, so that a request already queued
+        // when the mode changes picks the new one up (DocumentController.OcrMode's resubmission is
+        // suppressed for exactly those requests by IsInFlight, so nothing else would reach them).
+        // Routing here on the mode would sample it too early and strand them. With the mode Off
+        // the OCR stage is never busy, so the extra hop is free; a page whose OCR text the caller
+        // handed back has char boxes and takes the direct route either way.
+        bool needsOcr = _ocrTask is not null && request.CharBoxes is not { Count: > 0 };
+
+        bool written = needsOcr
+            ? _ocrChannel.Writer.TryWrite(request)
+            : _layoutChannel.Writer.TryWrite(new LayoutJob(request, null, null, request.OcrSkew));
+
+        if (!written)
         {
             _inFlight.Remove(key);
             return false;
@@ -322,7 +526,8 @@ public sealed class AnalysisWorker : IDisposable
 
     public void Dispose()
     {
-        _requestChannel.Writer.TryComplete();
+        _ocrChannel.Writer.TryComplete();
+        _layoutChannel.Writer.TryComplete();
         _cts.Cancel();
         _cts.Dispose();
     }

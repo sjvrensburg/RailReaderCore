@@ -82,6 +82,7 @@ internal sealed class AutoScrollStateMachine
     private Stopwatch? _pauseTimer;
     private double _pauseDurationMs;
     private bool _pauseAdvances; // true = pause triggers line advance on completion
+    private bool _pausing;       // in Paused with a live clock (real or injected)
 
     // Wall-clock scroll positioning: camera position is computed as an absolute
     // function of elapsed time rather than accumulated frame deltas. This means
@@ -100,8 +101,21 @@ internal sealed class AutoScrollStateMachine
     /// </summary>
     internal Func<double>? GetScrollElapsedSeconds;
 
+    /// <summary>
+    /// Inject a controlled pause-elapsed source (milliseconds since the current pause began) for
+    /// unit tests. When set, the real Stopwatch is not used. Drive it together with
+    /// <see cref="GetScrollElapsedSeconds"/>: expiring a pause against a live scroll clock leaves
+    /// the camera displacement equal to whatever time passed between two adjacent statements, and
+    /// an assertion resting on that margin is measuring the scheduler, not the pause.
+    /// </summary>
+    internal Func<double>? GetPauseElapsedMs;
+
     private double ScrollElapsed => GetScrollElapsedSeconds?.Invoke()
         ?? _scrollClock?.Elapsed.TotalSeconds
+        ?? 0.0;
+
+    private double PauseElapsedMs => GetPauseElapsedMs?.Invoke()
+        ?? _pauseTimer?.Elapsed.TotalMilliseconds
         ?? 0.0;
 
     /// <summary>Normalized scroll speed (0-1) for UI display.</summary>
@@ -130,6 +144,7 @@ internal sealed class AutoScrollStateMachine
         _speed = 0;
         _boost = false;
         _pauseTimer = null;
+        _pausing = false;
         _pendingPauseMs = 0;
         _pendingPark = false;
         NormalizedSpeed = 0;
@@ -276,12 +291,13 @@ internal sealed class AutoScrollStateMachine
 
     private bool TickPause()
     {
-        if (_pauseTimer is null) return false;
+        if (!_pausing) return false;
 
-        if (_pauseTimer.Elapsed.TotalMilliseconds >= _pauseDurationMs)
+        if (PauseElapsedMs >= _pauseDurationMs)
         {
             bool advance = _pauseAdvances;
             _pauseTimer = null;
+            _pausing = false;
             CurrentState = AutoScrollState.Scrolling;
             _scrollInitialized = false; // capture new start position from post-pause camera
             return advance;
@@ -328,7 +344,8 @@ internal sealed class AutoScrollStateMachine
 
     private void BeginPause(double durationMs, bool advances)
     {
-        _pauseTimer = Stopwatch.StartNew();
+        _pauseTimer = GetPauseElapsedMs is null ? Stopwatch.StartNew() : null;
+        _pausing = true;
         _pauseDurationMs = durationMs;
         _pauseAdvances = advances;
         NormalizedSpeed = 0;

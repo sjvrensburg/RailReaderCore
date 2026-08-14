@@ -1,5 +1,86 @@
 # Changelog
 
+## 0.57.0 — one OCR'd page no longer stalls analysis for every open document
+
+Fixes [#100](https://github.com/sjvrensburg/RailReaderCore/issues/100).
+
+With `OcrMode.Full` and the PP-OCRv6 Medium pack, opening a two-page scan alongside an unrelated
+paper froze all layout analysis for over two minutes. `AnalysisWorker` ran one loop over one
+queue with OCR inline ahead of inference, so the scanned page occupied the only worker for its
+entire recognition and every other request — including 1 s layout analyses for a different
+document — waited behind it.
+
+The new `tools/ocr-cost-probe` measures where the time goes. On the reporter's own scan (a
+34-line page at 1920 px, best of two passes, 20 cores):
+
+| Model set | detect (`Lines`) | recognise | full (`Full`) |
+|---|---|---|---|
+| PP-OCRv5 Latin (bundled) | 0.8 s | 1.0 s | 1.8 s |
+| PP-OCRv6 Tiny | 1.6 s | 0.7 s | 2.3 s |
+| PP-OCRv6 Small | 2.6 s | 1.9 s | 4.5 s |
+| PP-OCRv6 Medium | **15.3 s** | **52.2 s** | **67.5 s** |
+
+Small → Medium is a ~15× wall-clock jump for a 4.5× download, and `OcrMode.Lines` is no refuge
+at Medium — its detector alone is 15 s. The intra-op thread cap is not the bottleneck: 4 → 16
+threads moves the full pass 71 s → 63 s, and makes detection worse.
+
+Five changes. None makes recognition itself faster; they stop it blocking, repeating, happening
+speculatively, or being invisible in the API.
+
+- **OCR and layout inference now run on separate threads.** `AnalysisWorker.Submit` routes each
+  request to the stage it needs: a page that arrives with char boxes goes straight to inference
+  and never queues behind a recognition pass. Page N's OCR overlaps page M's layout analysis, so
+  an unrelated document keeps analysing throughout. Results no longer arrive in submission order
+  — nothing downstream depended on it, since every result carries its own (file, page, params)
+  key. Two limits remain by design: a second scanned page still waits for the first (the OCR
+  stage is one thread), and read-ahead is gated on `AnalysisWorker.IsIdle`, which covers both
+  stages — so the layout stage does not speculatively fill in while a recognition runs.
+- **Recovered OCR text is reused instead of re-recognised.** The submission paths hand back the
+  char boxes an earlier pass produced, so a page is only ever recognised once. The measured skew
+  rides along on the new `AnalysisRequest.OcrSkew` / `AnalysisResult.OcrSkew`, and the
+  `DeskewOcrLines` gate moved to where the shear is *consumed* rather than where it is measured
+  — so toggling deskew now re-runs layout analysis alone (~1 s/page) instead of full recognition.
+  Toggling `OcrMode` still discards the text, because that changes what recognition would produce.
+- **Background read-ahead no longer triggers OCR.** Read-ahead is speculative and recognition is
+  not a speculative-sized cost — the window is `BackgroundAnalysisWindowPages` (12) on either
+  side of the reader, so a scanned document would have committed the engine to two dozen pages of
+  it. Such pages are left to the on-demand path. With OCR off, nothing is skipped and read-ahead
+  behaves exactly as before.
+- **Requests can be abandoned.** `AnalysisRequest.Cancellation` carries a token — the submitting
+  document's own lifetime token, wired through all three submission paths — so closing one tab
+  stops that tab's queued analysis instead of the worker grinding through minutes of recognition
+  for a document that is gone (its result was discarded on arrival anyway). An abandoned request
+  releases its in-flight key, so it can never strand `IsInFlight`/`IsIdle`. Two limits are
+  inherent: cancellation is observed at **stage boundaries** — RapidOcrNet's `Detect` is one
+  monolithic call, so a request already inside it runs to completion — and it is deliberately
+  **not** wired to navigation, because analysis for a page the reader has left is still cached and
+  still wanted.
+- **Recognition cost is now advertised.** `OcrModelDescriptor` gains `RelativeDetectionCost` and
+  `RelativeRecognitionCost` (PP-OCRv6 Tiny = 1), plus a derived `RelativeFullCost` blending them
+  in the proportion a dense page actually spends in each stage. Download size was the only cost
+  signal a picker had, and it is actively misleading: Medium is 23× Tiny's bytes but ~79× its
+  recognition. The two components are split because they map onto `OcrMode.Lines` vs `Full`.
+
+Alongside them, `OcrModelLocator` now finds downloaded model packs from a binary running out of
+its own output directory. Its search climbed only three levels from the working directory, but a
+build output sits at `bin/<config>/<tfm>` under a project under the source-tree root — five — so
+anything launched from that directory (a test host, an IDE run, `dotnet <dll>`) could not see a
+`models/` directory at the root. The failure was silent: the bundled PP-OCRv5 set resolves beside
+the binary, so nothing looked broken, while every opt-in PP-OCRv6 pack was invisible. Its own
+test had therefore never run. The search now climbs from the app's directory as well as the
+working directory, and a root still only matches when the exact file is present under it.
+`LayoutModelLocator` had the same shallow climb and is fixed to match — no test depended on it,
+so nothing was visibly broken there, but a layout model at a source-tree root was equally
+invisible. Its probe order is unchanged, so an app-local model still wins over a user-directory
+or source-tree copy.
+
+**Breaking:** `OcrModelDescriptor`'s constructor takes the two new cost parameters, with no
+defaults — a plausible-looking default would let a third-party descriptor silently claim to be as
+cheap as the baseline. Consumers that only read `OcrModelRegistry` are unaffected.
+
+Otherwise additive: `AnalysisRequest`/`AnalysisResult` gained optional trailing parameters and no
+existing signature changed, so a consumer that does nothing gets the fix.
+
 ## 0.56.1 — Markdown export no longer leaks PDFium's soft-hyphen marker
 
 Fixes [#101](https://github.com/sjvrensburg/RailReaderCore/issues/101).

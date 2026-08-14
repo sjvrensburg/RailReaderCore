@@ -202,6 +202,102 @@ public class BackgroundAnalysisAndCacheTests
     }
 
     [Fact]
+    public void InvalidateOcrDependentAnalysis_CanKeepTheRecoveredText()
+    {
+        // What the deskew toggle needs: the analysis has to be recomputed, but recognition would
+        // return exactly what it returned before, so the text (and the angle measured with it)
+        // stays and the resubmission costs layout inference only — issue #100.
+        var state = NewDoc(new CoreSettings());
+        state.SetText(1, new PageText("", []));
+        state.SetOcrText(1, FakeText(1), skew: 0.03f);
+        state.SetAnalysis(1, state.DefaultAnalysisParams, new PageAnalysis());
+
+        var affected = state.InvalidateOcrDependentAnalysis(dropRecoveredText: false);
+
+        Assert.Equal([1], affected);
+        Assert.False(state.IsPageAnalysed(1));
+        Assert.Equal("page 1", state.TextCache[1].Text);
+
+        state.Dispose();
+    }
+
+    // --- Read-ahead must not commit the OCR engine speculatively (issue #100) ---
+
+    /// <summary>OCR engine that only counts calls. It must never be reached from the background
+    /// scan, so what it would return does not matter.</summary>
+    private sealed class CountingOcrService : IOcrService
+    {
+        private int _calls;
+        public int Calls => Volatile.Read(ref _calls);
+
+        public OcrPage Recognize(byte[] rgbBytes, int width, int height, OcrMode mode, CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref _calls);
+            return OcrPage.Empty;
+        }
+
+        public void Dispose() { }
+    }
+
+    private static DocumentModel NewTextlessDoc(IThreadMarshaller marshaller)
+    {
+        var factory = TestFixtures.CreatePdfFactory();
+        var pdfPath = TestFixtures.GetTextlessTestPdfPath();
+        return new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
+            factory.CreatePdfTextService(), factory.CreatePdfLinkService(), new CoreSettings(), marshaller);
+    }
+
+    private static AnalysisWorker NewWorker(IThreadMarshaller marshaller, IOcrService ocr, OcrMode mode) =>
+        new(FakeLayoutAnalyzer.DefaultCapabilities, () => new FakeLayoutAnalyzer(), marshaller,
+            ocrServiceFactory: () => ocr, ocrMode: mode);
+
+    [Fact]
+    public void BackgroundAnalysis_SkipsPagesThatWouldNeedOcr()
+    {
+        // Read-ahead is speculative; recognition is not a speculative-sized cost. One scanned page
+        // can hold the OCR stage for tens of seconds, and the window is a dozen pages either side.
+        var marshaller = new SynchronousThreadMarshaller();
+        using var doc = NewTextlessDoc(marshaller);
+        var ocr = new CountingOcrService();
+        using var worker = NewWorker(marshaller, ocr, OcrMode.Full);
+        doc.QueueLookahead(0);   // arms the background queue at the current page
+
+        Assert.False(doc.SubmitBackgroundAnalysis(worker));
+        Assert.Equal(0, ocr.Calls);
+    }
+
+    [Fact]
+    public void BackgroundAnalysis_StillCoversTextlessPagesWhenOcrIsOff()
+    {
+        // The paired half: with no OCR to trigger, a page with no text layer is the cheap
+        // pixel-projection case it always was, and read-ahead behaves exactly as it did before.
+        var marshaller = new SynchronousThreadMarshaller();
+        using var doc = NewTextlessDoc(marshaller);
+        var ocr = new CountingOcrService();
+        using var worker = NewWorker(marshaller, ocr, OcrMode.Off);
+        doc.QueueLookahead(0);
+
+        Assert.True(doc.SubmitBackgroundAnalysis(worker));
+    }
+
+    [Fact]
+    public void BackgroundAnalysis_CoversAScannedPageWhoseTextOcrAlreadyRecovered()
+    {
+        // Nothing is skipped for its own sake: once the text exists, the page is as cheap to
+        // analyse as a digital one, because the request carries the char boxes and OCR is skipped.
+        var marshaller = new SynchronousThreadMarshaller();
+        using var doc = NewTextlessDoc(marshaller);
+        var ocr = new CountingOcrService();
+        using var worker = NewWorker(marshaller, ocr, OcrMode.Full);
+        doc.SetText(0, new PageText("", []));
+        doc.SetOcrText(0, FakeText(0));
+        doc.QueueLookahead(0);
+
+        Assert.True(doc.SubmitBackgroundAnalysis(worker));
+        Assert.Equal(0, ocr.Calls);
+    }
+
+    [Fact]
     public void Caches_NonPositiveRadius_DisablesEviction()
     {
         var state = NewDoc(new CoreSettings { PageCacheRadius = 0 });

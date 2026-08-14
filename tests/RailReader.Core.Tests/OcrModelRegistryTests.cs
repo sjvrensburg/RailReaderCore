@@ -26,6 +26,76 @@ public class OcrModelRegistryTests
         Assert.Equal(d.ModelSet.KeysPath, d.Dict.RelativePath);
     }
 
+    [Fact]
+    public void Locator_ReachesASourceTreeRootFromABuildOutputDirectory()
+    {
+        // Every .NET build output sits at bin/<config>/<tfm> under its project, which sits under
+        // the root of a source tree — five levels. A models/ directory at that root is where
+        // scripts/download-ocr-model.sh puts the opt-in PP-OCRv6 packs, so it has to be reachable
+        // from a binary whose working directory is its own output folder: a test host, an IDE run,
+        // `dotnet bin/<config>/<tfm>/App.dll`. It was not, and the effect was silent — the bundled
+        // v5 set resolved beside the binary, so nothing looked broken, while every downloaded v6
+        // pack was invisible and the tests needing one skipped themselves.
+        var roots = OcrModelLocator.ProbeRoots()
+            .Where(r => !string.IsNullOrEmpty(r))
+            .Select(r => Path.TrimEndingDirectorySeparator(Path.GetFullPath(r!)))
+            .ToHashSet();
+
+        var dir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory));
+        for (int i = 0; i < 5; i++)
+            dir = Path.GetDirectoryName(dir) ?? dir;
+
+        Assert.Contains(dir, roots);
+    }
+
+    // Full-pass milliseconds measured with tools/ocr-cost-probe on the railreader2#209 scan,
+    // page 0 at 1920px, best of two passes on a 20-core box (issue #100). Absolute numbers belong
+    // to that machine; the RATIOS are what the descriptors publish and what these tests pin.
+    private const double TinyFullMs = 2254, SmallFullMs = 4484, MediumFullMs = 67518;
+
+    [Fact]
+    public void Descriptors_PublishedCostsReproduceTheMeasuredFullPassRatios()
+    {
+        // RelativeFullCost is derived from the two published components, so if the components or
+        // the blend drift, the single "how much slower?" figure a picker shows stops being the
+        // number the user actually waits through. 2% covers the rounding in the published values.
+        AssertRatio(TinyFullMs / TinyFullMs, OcrModelRegistry.PPOCRv6Tiny.RelativeFullCost);
+        AssertRatio(SmallFullMs / TinyFullMs, OcrModelRegistry.PPOCRv6Small.RelativeFullCost);
+        AssertRatio(MediumFullMs / TinyFullMs, OcrModelRegistry.PPOCRv6Medium.RelativeFullCost);
+
+        static void AssertRatio(double measured, double published) =>
+            Assert.True(Math.Abs(published - measured) / measured <= 0.02,
+                $"published {published:F2}x vs measured {measured:F2}x — re-measure with tools/ocr-cost-probe");
+    }
+
+    [Fact]
+    public void Descriptors_AnchorAtTinyAndRiseWithTier()
+    {
+        // Tiny is the baseline the other two are quoted against; a set that claimed to be cheaper
+        // than the baseline would mean the anchor moved and every published figure is stale.
+        Assert.Equal(1.0, OcrModelRegistry.PPOCRv6Tiny.RelativeDetectionCost);
+        Assert.Equal(1.0, OcrModelRegistry.PPOCRv6Tiny.RelativeRecognitionCost);
+
+        var tiers = new[]
+        {
+            OcrModelRegistry.PPOCRv6Tiny,
+            OcrModelRegistry.PPOCRv6Small,
+            OcrModelRegistry.PPOCRv6Medium,
+        };
+        for (int i = 1; i < tiers.Length; i++)
+        {
+            Assert.True(tiers[i].RelativeDetectionCost > tiers[i - 1].RelativeDetectionCost);
+            Assert.True(tiers[i].RelativeRecognitionCost > tiers[i - 1].RelativeRecognitionCost);
+            Assert.True(tiers[i].ApproxSizeMb > tiers[i - 1].ApproxSizeMb);
+        }
+
+        // The point of publishing cost at all: it is not predictable from download size. Medium is
+        // ~23x Tiny's bytes but far more than that in recognition, which is the trap in #100.
+        double sizeRatio = (double)OcrModelRegistry.PPOCRv6Medium.ApproxSizeMb
+                           / OcrModelRegistry.PPOCRv6Tiny.ApproxSizeMb;
+        Assert.True(OcrModelRegistry.PPOCRv6Medium.RelativeRecognitionCost > sizeRatio * 2);
+    }
+
     [Theory]
     [MemberData(nameof(AllDescriptors))]
     public void Descriptor_HashesAreWellFormedSha256(OcrModelDescriptor d)

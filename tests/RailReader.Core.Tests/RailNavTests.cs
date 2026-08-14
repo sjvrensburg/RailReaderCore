@@ -556,36 +556,56 @@ public class RailNavTests
     public void PendingPause_ActivatesAfterSnapCompletes()
     {
         ActivateWithAnalysis(2, 1);
-        _nav.StartAutoScroll(100.0);
 
-        // Start snap and deferred pause. The pause is generous (200ms) and the
-        // post-pause sleep is ~3x the pause to leave headroom for CI scheduling
-        // jitter — Thread.Sleep is approximate, especially on shared runners.
+        // Both clocks the state machine consults are driven from here, so the test asserts the
+        // pause behaviour rather than the machine's luck with the scheduler. Sleeping through a
+        // real pause and then checking that the camera moved *at all* looks equivalent, but the
+        // post-pause tick starts the scroll clock and reads it a few statements later, so the
+        // whole margin is the CPU time between those statements — measured at 1e-4 pixels, an
+        // exact float inequality on a quantity that has no reason to be non-zero.
+        // The scroll clock is held at half a second for the whole test, so scrolling — if it ever
+        // runs when it should not — moves the camera by a conspicuous 200px rather than by a
+        // rounding error. That is what makes "the camera did not move" evidence that the pause
+        // was honoured, instead of evidence that no time happened to pass.
+        double pauseElapsedMs = 0;
+        const double scrollElapsedSecs = 0.5;
+        _nav.AutoScrollPauseElapsedMsOverride = () => pauseElapsedMs;
+        _nav.AutoScrollElapsedSecondsOverride = () => scrollElapsedSecs;
+
+        const double speed = 100.0;
+        _nav.StartAutoScroll(speed);
+
         _nav.StartSnapToCurrent(0, 0, Zoom, WindowWidth, WindowHeight);
         const int pauseMs = 200;
         _nav.PauseAutoScroll(pauseMs);
 
-        // Complete the snap
+        // Complete the snap. This sleep is the one that stays: the snap owns a Stopwatch with no
+        // injection seam, SnapDurationMs is 1, and Thread.Sleep only ever overshoots — so 10ms is
+        // a 10x margin that load can widen but not narrow.
         double cx = 0, cy = 0;
         Thread.Sleep(10);
         _nav.Tick(ref cx, ref cy, 1.0, Zoom, WindowWidth); // large dt to finish snap
 
-        // Now tick auto-scroll — pause should be active (not scrolling)
+        // Snap done, pause clock at zero: the deferred pause engages and holds the camera.
         double cxBefore = cx;
         bool reachedEnd = _nav.TickAutoScroll(ref cx, 0.1, Zoom, WindowWidth);
         Assert.False(reachedEnd, "Should be pausing, not advancing");
-        Assert.Equal(cxBefore, cx); // camera X should not move during pause
+        Assert.Equal(cxBefore, cx);
 
-        // After pause expires, first tick clears the timer, second tick scrolls.
-        // Use larger dt (50ms equivalent) so even a slow runner sees observable
-        // camera movement on the scroll tick.
-        Thread.Sleep(pauseMs * 3);
-        _nav.TickAutoScroll(ref cx, 0.05, Zoom, WindowWidth); // clears pause timer
-        reachedEnd = _nav.TickAutoScroll(ref cx, 0.05, Zoom, WindowWidth); // actually scrolls
-        // For a narrow block that already fits on screen, reachedEnd may be
-        // immediately true — the key assertion is that the pause was applied.
-        Assert.True(reachedEnd || cx != cxBefore,
-            "After pause expires, auto-scroll should resume or reach block end");
+        // Still inside the pause: no movement, however many frames are drawn.
+        pauseElapsedMs = pauseMs - 1;
+        Assert.False(_nav.TickAutoScroll(ref cx, 0.05, Zoom, WindowWidth));
+        Assert.Equal(cxBefore, cx);
+
+        // Pause expires. The first tick retires the timer and re-seats the scroll origin without
+        // moving anything; only the second scrolls, and it must cover the stated distance:
+        // speed * zoom * elapsed = 100 * 4 * 0.5 = 200 page-pixels, leftward.
+        pauseElapsedMs = pauseMs;
+        Assert.False(_nav.TickAutoScroll(ref cx, 0.05, Zoom, WindowWidth));
+        Assert.Equal(cxBefore, cx);
+
+        _nav.TickAutoScroll(ref cx, 0.05, Zoom, WindowWidth);
+        Assert.InRange(cxBefore - cx, 199.0, 201.0);
     }
 
     // ===== UpdateZoom (3 tests) =====

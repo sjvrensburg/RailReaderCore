@@ -31,6 +31,19 @@ public static class OcrModelRegistry
 {
     private const string Base = "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2";
 
+    // The relative costs below were measured with tools/ocr-cost-probe on a dense 34-line page at
+    // 1920px (best of two passes, 20 cores), and are quoted against Tiny. They exist because
+    // download size — the only other thing a descriptor advertised — is actively misleading about
+    // running cost: Medium is 23x Tiny's bytes but ~79x its recognition, which is how a two-page
+    // scan came to freeze analysis for over two minutes (issue #100).
+    //
+    // Ratios, not milliseconds, because the absolute numbers belong to whichever machine measured
+    // them; the ratios held across thread counts and are what a picker needs. Re-measure with the
+    // probe if a model set is ever repointed.
+
+    /// <summary>Cost baseline: <see cref="PPOCRv6Tiny"/> is 1 on both scales.</summary>
+    private const double TinyBaseline = 1.0;
+
     /// <summary>
     /// Smallest/fastest multilingual set (~6 MB). Recommended starting point for an opt-in
     /// language pack: cheapest to download and load, at some accuracy cost versus Small/Medium.
@@ -52,7 +65,9 @@ public static class OcrModelRegistry
             RapidOcrModelSet.PPOCRv6Tiny.KeysPath,
             $"{Base}/paddle/PP-OCRv6/rec/PP-OCRv6_rec_tiny/ppocrv6_tiny_dict.txt",
             "c5cbe34ef40c29c4df07ed012bf96569cb69a2d2a01a07027e9f13cb832bd9cd"),
-        ApproxSizeMb: 6);
+        ApproxSizeMb: 6,
+        RelativeDetectionCost: TinyBaseline,
+        RelativeRecognitionCost: TinyBaseline);
 
     /// <summary>Mid-size multilingual set (~31 MB); better accuracy than Tiny.</summary>
     public static OcrModelDescriptor PPOCRv6Small { get; } = new(
@@ -72,7 +87,9 @@ public static class OcrModelRegistry
             RapidOcrModelSet.PPOCRv6Small.KeysPath,
             $"{Base}/paddle/PP-OCRv6/rec/PP-OCRv6_rec_small/ppocrv6_dict.txt",
             "b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d"),
-        ApproxSizeMb: 31);
+        ApproxSizeMb: 31,
+        RelativeDetectionCost: 1.6,
+        RelativeRecognitionCost: 2.9);
 
     /// <summary>Largest/most accurate multilingual set (~138 MB).</summary>
     public static OcrModelDescriptor PPOCRv6Medium { get; } = new(
@@ -94,7 +111,10 @@ public static class OcrModelRegistry
             // Medium shares its dict with Small (both key off ppocrv6_dict.txt); same file,
             // same hash.
             "b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d"),
-        ApproxSizeMb: 138);
+        ApproxSizeMb: 138,
+        // Recognition is ~79x Tiny's: the number the download size hides completely.
+        RelativeDetectionCost: 9.6,
+        RelativeRecognitionCost: 79.0);
 
     /// <summary>Recommended starting point for a caller adding multilingual OCR (smallest/fastest).</summary>
     public static OcrModelDescriptor Default => PPOCRv6Tiny;

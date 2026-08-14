@@ -237,7 +237,10 @@ public sealed partial class DocumentController : IDisposable
     /// Changing it invalidates the same pages <see cref="OcrMode"/> does, and for the same
     /// reason: the flag alone only steers requests the worker has yet to receive, and an
     /// analysed page is never resubmitted, so a scanned document already on screen would keep
-    /// its pre-toggle lines until it was closed and reopened.
+    /// its pre-toggle lines until it was closed and reopened. It does <b>not</b> discard the
+    /// recovered text, though: deskew changes only how OCR output is grouped into lines, never
+    /// what recognition would produce, so the resubmitted pages reuse it and cost layout
+    /// inference rather than a second recognition pass (issue #100).
     /// </para>
     /// </summary>
     public bool DeskewOcrLines
@@ -251,7 +254,7 @@ public sealed partial class DocumentController : IDisposable
             foreach (var doc in Documents)
             {
                 if (doc.IsDisposed) continue;
-                var affected = doc.InvalidateOcrDependentAnalysis();
+                var affected = doc.InvalidateOcrDependentAnalysis(dropRecoveredText: false);
                 if (affected.Count == 0) continue;
                 foreach (var vp in doc.Viewports)
                     if (affected.Contains(vp.CurrentPage))

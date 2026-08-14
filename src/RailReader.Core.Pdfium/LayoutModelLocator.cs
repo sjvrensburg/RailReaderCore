@@ -31,33 +31,75 @@ public static class LayoutModelLocator
     /// </summary>
     public static string? FindModelPath(string filename)
     {
-        var candidates = new List<string?>
-        {
-            Path.Combine(AppContext.BaseDirectory, "models", filename),
-            Environment.GetEnvironmentVariable("APPDIR") is { } appDir
-                ? Path.Combine(appDir, "models", filename) : null,
-            // Same base directory as AppConfig.ConfigDir so the model is found
-            // wherever the app stored it (%APPDATA% on Windows, ~/.config on
-            // Linux, ~/Library/Application Support on macOS).
-            Path.Combine(AppConfig.ConfigDir, "models", filename),
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "railreader2", "models", filename),
-            Path.Combine("models", filename),
-        };
+        if (string.IsNullOrEmpty(filename)) return null;
 
-        // Walk up from CWD
-        for (int i = 1; i <= 3; i++)
+        foreach (var root in ProbeRoots())
         {
-            var walkUp = string.Concat(Enumerable.Repeat("../", i));
-            candidates.Add(Path.Combine(walkUp, "models", filename));
-        }
-
-        foreach (var path in candidates)
-        {
-            if (path is not null && File.Exists(path))
-                return Path.GetFullPath(path);
+            if (string.IsNullOrEmpty(root)) continue;
+            var candidate = Path.Combine(root, "models", filename);
+            if (File.Exists(candidate)) return Path.GetFullPath(candidate);
         }
         return null;
+    }
+
+    /// <summary>
+    /// How far to climb when probing a directory's ancestors. A .NET build output sits three
+    /// levels below its project (<c>bin/&lt;config&gt;/&lt;tfm&gt;</c>) and the project one or two
+    /// below the root of the source tree, so anything less than five cannot see a
+    /// <c>models/</c> directory at that root. Climbing costs one <c>File.Exists</c> per level, once
+    /// per lookup, and can never pick a wrong directory — a root only matches when the file is
+    /// present under it.
+    /// </summary>
+    private const int AncestorProbeDepth = 6;
+
+    /// <summary>A directory and its ancestors, up to <see cref="AncestorProbeDepth"/> levels.</summary>
+    private static IEnumerable<string> Ancestors(string? start, bool includeSelf = true)
+    {
+        var dir = string.IsNullOrEmpty(start) ? null : Path.GetFullPath(start);
+        if (!includeSelf) dir = dir is null ? null : Path.GetDirectoryName(dir);
+
+        for (int i = 0; i <= AncestorProbeDepth && !string.IsNullOrEmpty(dir); i++)
+        {
+            yield return dir;
+            dir = Path.GetDirectoryName(dir);
+        }
+    }
+
+    /// <summary>
+    /// The directories searched for a <c>models/</c> subdirectory, in precedence order. Internal
+    /// so a test can pin the reachability the layout depends on rather than only the lookups that
+    /// happen to work on the machine running it. Kept deliberately parallel to
+    /// <c>OcrModelLocator.ProbeRoots</c>, which solves the same problem for OCR packs; the two
+    /// cannot share code because their packages do not reference each other, and the shared piece
+    /// (pure path arithmetic that probes the filesystem) does not belong in <c>Core</c>.
+    /// </summary>
+    internal static IEnumerable<string?> ProbeRoots()
+    {
+        // Beside the app's binaries.
+        yield return AppContext.BaseDirectory;
+
+        // AppImage mount point.
+        yield return Environment.GetEnvironmentVariable("APPDIR");
+
+        // Same base directory as AppConfig.ConfigDir so the model is found wherever the app
+        // stored it (%APPDATA% on Windows, ~/.config on Linux).
+        yield return AppConfig.ConfigDir;
+
+        yield return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "railreader2");
+
+        // Working directory and its ancestors, for a `dotnet run` from a source tree.
+        foreach (var root in Ancestors(Directory.GetCurrentDirectory()))
+            yield return root;
+
+        // The app's own directory and ITS ancestors. Not the same search as the one above: the
+        // working directory is whatever the launcher chose, and for a binary started from its own
+        // output folder — a test host, an IDE run, `dotnet bin/<config>/<tfm>/App.dll` — both
+        // walks begin deep inside `bin/<config>/<tfm>` and only reach the source tree by
+        // climbing. The OCR locator had exactly this gap, where it silently hid every
+        // user-downloaded model pack from anything launched that way.
+        foreach (var root in Ancestors(AppContext.BaseDirectory, includeSelf: false))
+            yield return root;
     }
 }
