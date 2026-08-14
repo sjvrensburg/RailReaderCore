@@ -69,6 +69,10 @@ anything launched from that directory (a test host, an IDE run, `dotnet <dll>`) 
 the binary, so nothing looked broken, while every opt-in PP-OCRv6 pack was invisible. Its own
 test had therefore never run. The search now climbs from the app's directory as well as the
 working directory, and a root still only matches when the exact file is present under it.
+`LayoutModelLocator` had the same shallow climb and is fixed to match — no test depended on it,
+so nothing was visibly broken there, but a layout model at a source-tree root was equally
+invisible. Its probe order is unchanged, so an app-local model still wins over a user-directory
+or source-tree copy.
 
 **Breaking:** `OcrModelDescriptor`'s constructor takes the two new cost parameters, with no
 defaults — a plausible-looking default would let a third-party descriptor silently claim to be as
