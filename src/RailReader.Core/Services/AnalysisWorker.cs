@@ -389,9 +389,9 @@ public sealed class AnalysisWorker : IDisposable
     ///
     /// <para>
     /// Routes to the stage the request actually needs: only a page that arrives with no char
-    /// boxes, with an OCR engine wired and the mode on, goes through the OCR stage. Everything
-    /// else — a page with a text layer, a page whose OCR text the caller is handing back — goes
-    /// straight to layout inference and so never waits behind a recognition pass (issue #100).
+    /// boxes, with an OCR engine wired, goes through the OCR stage. Everything else — a page with
+    /// a text layer, a page whose OCR text the caller is handing back — goes straight to layout
+    /// inference and so never waits behind a recognition pass (issue #100).
     /// </para>
     /// </summary>
     public bool Submit(AnalysisRequest request)
@@ -401,12 +401,14 @@ public sealed class AnalysisWorker : IDisposable
         if (!_inFlight.Add(key))
             return false;
 
-        // Deliberately keyed on the *factory*, not on whether the engine loaded: the load happens
-        // on the OCR stage's own thread and may not have finished (or may have failed) yet. A
-        // request routed there with no engine is passed straight through, which costs one hop.
-        bool needsOcr = _ocrTask is not null
-            && OcrMode != OcrMode.Off
-            && request.CharBoxes is not { Count: > 0 };
+        // Routed on the page alone — whether it arrives with char boxes — never on the current
+        // OcrMode. The mode has always been read where OCR runs, so that a request already queued
+        // when the mode changes picks the new one up (DocumentController.OcrMode's resubmission is
+        // suppressed for exactly those requests by IsInFlight, so nothing else would reach them).
+        // Routing here on the mode would sample it too early and strand them. With the mode Off
+        // the OCR stage is never busy, so the extra hop is free; a page whose OCR text the caller
+        // handed back has char boxes and takes the direct route either way.
+        bool needsOcr = _ocrTask is not null && request.CharBoxes is not { Count: > 0 };
 
         bool written = needsOcr
             ? _ocrChannel.Writer.TryWrite(request)

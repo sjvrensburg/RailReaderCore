@@ -411,21 +411,27 @@ public class OcrPipelineTests
 
     // --- Recognition must not stall layout inference for other pages (issue #100) ---
 
-    /// <summary>OCR engine that blocks until released, standing in for a heavy model set: one
-    /// page of PP-OCRv6 Medium was measured at over a minute.</summary>
-    private sealed class BlockingOcrService : IOcrService
+    /// <summary>OCR engine that holds its first call until released, standing in for a heavy model
+    /// set: one page of PP-OCRv6 Medium was measured at over a minute.</summary>
+    private sealed class GatedOcrService : IOcrService
     {
         private readonly ManualResetEventSlim _release = new(false);
+        private readonly ManualResetEventSlim _entered = new(false);
+        private int _calls;
 
+        public int Calls => Volatile.Read(ref _calls);
+        public void WaitUntilBusy() => Assert.True(_entered.Wait(5000), "OCR stage never picked the request up");
         public void Release() => _release.Set();
 
         public OcrPage Recognize(byte[] rgbBytes, int width, int height, OcrMode mode, CancellationToken ct = default)
         {
+            Interlocked.Increment(ref _calls);
+            _entered.Set();
             _release.Wait(ct);
             return ThreeLines(withText: true);
         }
 
-        public void Dispose() => _release.Dispose();
+        public void Dispose() { _release.Dispose(); _entered.Dispose(); }
     }
 
     [Fact]
@@ -434,10 +440,11 @@ public class OcrPipelineTests
         // The reported failure in miniature: a scanned page under a heavy model set held the only
         // worker for its whole recognition, and layout analysis stopped everywhere — including
         // for a different document with a perfectly good text layer.
-        var ocr = new BlockingOcrService();          // the worker owns and disposes it
+        var ocr = new GatedOcrService();             // the worker owns and disposes it
         using var worker = MakeWorker(ocr, OcrMode.Full);
 
         Assert.True(worker.Submit(Request(charBoxes: null, page: 0)));            // needs OCR; will block
+        ocr.WaitUntilBusy();
         List<CharBox> existing = [new(0, 10f, 10f, 17f, 20f)];
         Assert.True(worker.Submit(Request(existing, page: 1)));                   // has a text layer
 
@@ -449,6 +456,30 @@ public class OcrPipelineTests
         ocr.Release();
         Assert.Equal(0, PollUntilResult(worker).Page);
         Assert.True(worker.IsIdle);
+    }
+
+    [Fact]
+    public void Worker_OcrMode_IsReadWhenTheRequestRuns_NotWhenItIsSubmitted()
+    {
+        // Routing must key on the page (does it arrive with char boxes?), never on the current
+        // mode: OcrMode's setter resubmits the pages a toggle affects, but that resubmission is
+        // suppressed for anything already in flight, so a queued request is the only thing that
+        // can still act on the new mode. Sampling the mode at submission would strand it.
+        var ocr = new GatedOcrService();
+        using var worker = MakeWorker(ocr, OcrMode.Full);
+
+        Assert.True(worker.Submit(Request(charBoxes: null, page: 0)));   // occupies the OCR stage
+        ocr.WaitUntilBusy();
+
+        worker.OcrMode = OcrMode.Off;
+        Assert.True(worker.Submit(Request(charBoxes: null, page: 1)));   // queued behind page 0
+        worker.OcrMode = OcrMode.Full;                                   // …and toggled back before it runs
+
+        ocr.Release();
+        PollUntilResult(worker);
+        PollUntilResult(worker);
+
+        Assert.Equal(2, ocr.Calls);
     }
 
     // --- Reusing an earlier pass's OCR output instead of re-running it (issue #100) ---
