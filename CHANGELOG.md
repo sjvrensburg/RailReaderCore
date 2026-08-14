@@ -61,6 +61,15 @@ speculatively, or being invisible in the API.
   signal a picker had, and it is actively misleading: Medium is 23× Tiny's bytes but ~79× its
   recognition. The two components are split because they map onto `OcrMode.Lines` vs `Full`.
 
+Alongside them, `OcrModelLocator` now finds downloaded model packs from a binary running out of
+its own output directory. Its search climbed only three levels from the working directory, but a
+build output sits at `bin/<config>/<tfm>` under a project under the source-tree root — five — so
+anything launched from that directory (a test host, an IDE run, `dotnet <dll>`) could not see a
+`models/` directory at the root. The failure was silent: the bundled PP-OCRv5 set resolves beside
+the binary, so nothing looked broken, while every opt-in PP-OCRv6 pack was invisible. Its own
+test had therefore never run. The search now climbs from the app's directory as well as the
+working directory, and a root still only matches when the exact file is present under it.
+
 **Breaking:** `OcrModelDescriptor`'s constructor takes the two new cost parameters, with no
 defaults — a plausible-looking default would let a third-party descriptor silently claim to be as
 cheap as the baseline. Consumers that only read `OcrModelRegistry` are unaffected.

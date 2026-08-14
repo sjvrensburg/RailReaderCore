@@ -70,7 +70,35 @@ public static class OcrModelLocator
         return null;
     }
 
-    private static IEnumerable<string?> ProbeRoots()
+    /// <summary>
+    /// How far to climb when probing a directory's ancestors. A .NET build output sits three
+    /// levels below its project (<c>bin/&lt;config&gt;/&lt;tfm&gt;</c>) and the project one or two
+    /// below the root of the source tree, so anything less than five cannot see a
+    /// <c>models/</c> directory at that root. The climb costs one <c>File.Exists</c> per level per
+    /// model file, once at startup, and can never pick a wrong directory — a root only matches
+    /// when the exact file is present under it.
+    /// </summary>
+    private const int AncestorProbeDepth = 6;
+
+    /// <summary>A directory and its ancestors, up to <see cref="AncestorProbeDepth"/> levels.</summary>
+    private static IEnumerable<string> Ancestors(string? start, bool includeSelf = true)
+    {
+        var dir = string.IsNullOrEmpty(start) ? null : Path.GetFullPath(start);
+        if (!includeSelf) dir = dir is null ? null : Path.GetDirectoryName(dir);
+
+        for (int i = 0; i <= AncestorProbeDepth && !string.IsNullOrEmpty(dir); i++)
+        {
+            yield return dir;
+            dir = Path.GetDirectoryName(dir);
+        }
+    }
+
+    /// <summary>
+    /// The directories <see cref="Resolve"/> searches, in precedence order. Internal so a test can
+    /// pin the reachability the layout depends on rather than only the resolutions that happen to
+    /// work on the machine running it.
+    /// </summary>
+    internal static IEnumerable<string?> ProbeRoots()
     {
         // Beside the app's binaries: where the RapidOcrNet build target puts them.
         yield return AppContext.BaseDirectory;
@@ -93,14 +121,19 @@ public static class OcrModelLocator
             ? Path.Combine(appData, "railreader2")
             : null;
 
-        // Working directory and a few levels up, for a `dotnet run` from a source tree.
-        var cwd = Directory.GetCurrentDirectory();
-        yield return cwd;
-        for (int i = 0; i < 3 && cwd is not null; i++)
-        {
-            cwd = Path.GetDirectoryName(cwd);
-            yield return cwd;
-        }
+        // Working directory and its ancestors, for a `dotnet run` from a source tree.
+        foreach (var root in Ancestors(Directory.GetCurrentDirectory()))
+            yield return root;
+
+        // The app's own directory and ITS ancestors. Not the same search as the one above:
+        // the working directory is whatever the launcher chose, and for a binary started from
+        // its own output folder — a test host, an IDE run, `dotnet bin/…/App.dll` — both walks
+        // start deep inside `bin/<config>/<tfm>` and only reach the source tree by climbing.
+        // Missing this is what hid every opt-in v6 model set from the test suite: the bundled
+        // v5 set resolved beside the binary, the downloaded v6 set sat unreachable at the root
+        // of the same repository, and the tests that needed it silently skipped.
+        foreach (var root in Ancestors(AppContext.BaseDirectory, includeSelf: false))
+            yield return root;
     }
 
     /// <summary>

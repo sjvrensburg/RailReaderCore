@@ -26,6 +26,28 @@ public class OcrModelRegistryTests
         Assert.Equal(d.ModelSet.KeysPath, d.Dict.RelativePath);
     }
 
+    [Fact]
+    public void Locator_ReachesASourceTreeRootFromABuildOutputDirectory()
+    {
+        // Every .NET build output sits at bin/<config>/<tfm> under its project, which sits under
+        // the root of a source tree — five levels. A models/ directory at that root is where
+        // scripts/download-ocr-model.sh puts the opt-in PP-OCRv6 packs, so it has to be reachable
+        // from a binary whose working directory is its own output folder: a test host, an IDE run,
+        // `dotnet bin/<config>/<tfm>/App.dll`. It was not, and the effect was silent — the bundled
+        // v5 set resolved beside the binary, so nothing looked broken, while every downloaded v6
+        // pack was invisible and the tests needing one skipped themselves.
+        var roots = OcrModelLocator.ProbeRoots()
+            .Where(r => !string.IsNullOrEmpty(r))
+            .Select(r => Path.TrimEndingDirectorySeparator(Path.GetFullPath(r!)))
+            .ToHashSet();
+
+        var dir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory));
+        for (int i = 0; i < 5; i++)
+            dir = Path.GetDirectoryName(dir) ?? dir;
+
+        Assert.Contains(dir, roots);
+    }
+
     // Full-pass milliseconds measured with tools/ocr-cost-probe on the railreader2#209 scan,
     // page 0 at 1920px, best of two passes on a 20-core box (issue #100). Absolute numbers belong
     // to that machine; the RATIOS are what the descriptors publish and what these tests pin.
