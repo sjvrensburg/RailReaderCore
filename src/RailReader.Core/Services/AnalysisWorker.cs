@@ -27,11 +27,13 @@ public sealed record AnalysisRequest(
     // work instead of the worker grinding through minutes of recognition for a document that
     // is gone. Default None means "never cancelled", which is every existing call site.
     //
-    // Two limits are inherent rather than incidental. Cancellation is observed at STAGE
-    // boundaries: RapidOcrNet's Detect is one monolithic call, so a request already inside it
-    // runs to completion. And it is deliberately NOT wired to navigation — analysis for a page
-    // the reader has left is still cached and still wanted, so abandoning it would only buy a
-    // repeat later.
+    // Genuinely preemptive on the OCR path as of RapidOcrNet 4.0, which terminates an inference
+    // in flight rather than only between them — so an abandoned scan stops within a kernel or
+    // two instead of running out its remaining minute. Layout inference is still interrupted only
+    // at stage boundaries, which costs at most the ~1s a page takes.
+    //
+    // Deliberately NOT wired to navigation: analysis for a page the reader has left is still
+    // cached and still wanted, so abandoning it would only buy a repeat later.
     CancellationToken Cancellation = default);
 
 public sealed record AnalysisResult(

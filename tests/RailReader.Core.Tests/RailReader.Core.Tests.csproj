@@ -14,7 +14,7 @@
     <!-- Direct reference so RapidOcrNet's own build target copies the PP-OCR models into the
          test output; a ProjectReference to RailReader.Core.Ocr.RapidOcr does not carry it.
          Without this the real-engine OCR tests skip themselves. -->
-    <PackageReference Include="RapidOcrNet" Version="3.0.*" />
+    <PackageReference Include="RapidOcrNet" Version="4.0.*" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.*" />
     <PackageReference Include="xunit" Version="2.9.*" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.*" />

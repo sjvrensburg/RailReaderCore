@@ -12,7 +12,7 @@
          beside the binary. The target lives in the package's build/ folder and only runs for a
          project that references the package directly — a transitive ProjectReference does not
          trigger it, and the probe then reports the bundled tier as "not installed". -->
-    <PackageReference Include="RapidOcrNet" Version="3.0.*" />
+    <PackageReference Include="RapidOcrNet" Version="4.0.*" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/RailReader.Core/RailReader.Core.csproj" />

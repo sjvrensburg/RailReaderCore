@@ -586,9 +586,9 @@ public class OcrPipelineTests
     [Fact]
     public void Worker_RequestCancelledMidRecognition_IsAbandonedAndKeepsTheWorkerHealthy()
     {
-        // Cancellation lands at the engine's next stage boundary — RapidOcrNet's Detect is one
-        // monolithic call, so this is as preemptive as the OCR path can be — and what matters is
-        // that the abandoned request releases its key instead of stranding the whole document.
+        // How promptly a real engine gives up is RapidOcrNet's business (4.0 terminates an
+        // inference in flight); what the worker owes is that an abandoned request releases its
+        // key instead of stranding the whole document, which is what this pins.
         var ocr = new GatedOcrService();
         using var worker = MakeWorker(ocr, OcrMode.Full);
         using var closing = new CancellationTokenSource();
