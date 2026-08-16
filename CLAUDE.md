@@ -173,9 +173,9 @@ from that cost and must be preserved: OCR runs on **its own worker thread** so i
 layout inference for other pages; a page is **recognised at most once**, with the result and its
 measured skew handed back on later requests (`AnalysisRequest.OcrSkew`); **background read-ahead
 never triggers OCR** — a speculative page with no text layer is left to the on-demand path; and a
-request whose document closed is **abandoned** (`AnalysisRequest.Cancellation`, observed at stage
-boundaries only — `Detect` is monolithic — and deliberately not wired to navigation, whose result
-is still wanted). The deskew gate is applied where the shear is consumed, not where it is
+request whose document closed is **abandoned** (`AnalysisRequest.Cancellation`, preemptive *inside*
+an OCR inference since RapidOcrNet 4.0 sets ORT's `Terminate` flag — so even the ~15s detector pass
+stops — and deliberately not wired to navigation, whose result is still wanted). The deskew gate is applied where the shear is consumed, not where it is
 measured, so toggling `DeskewOcrLines` costs layout analysis only. `OcrModelDescriptor` publishes
 the measured cost (`RelativeDetectionCost`/`RelativeRecognitionCost`, Tiny = 1) because download
 size does not predict it — Medium is 23× Tiny's bytes but ~79× its recognition.

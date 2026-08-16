@@ -108,11 +108,14 @@ public sealed class RapidOcrService : IOcrService
         ct.ThrowIfCancellationRequested();
         using var bitmap = ToBitmap(rgbBytes, width, height);
 
-        // The engine has no cancellation hook of its own, so cancellation is observed at the
-        // stage boundary: a request abandoned mid-page still finishes its current stage.
+        // Cancellation reaches inside the inference itself as of RapidOcrNet 4.0: the engine sets
+        // ONNX Runtime's Terminate flag, which the executor reads between kernels, so even the
+        // detector — one big run, ~15s at the PP-OCRv6 Medium tier — stops rather than having to
+        // be waited out. Recognition additionally checks between lines. Nothing here needs to
+        // poll; the token is simply handed over.
         if (mode == OcrMode.Lines)
         {
-            var boxes = _engine.DetectBoxes(bitmap, _lineOptions);
+            var boxes = _engine.DetectBoxes(bitmap, _lineOptions, ct);
             ct.ThrowIfCancellationRequested();
             var lines = new List<OcrLine>(boxes.Count);
             foreach (var box in boxes)
@@ -124,7 +127,7 @@ public sealed class RapidOcrService : IOcrService
             return new OcrPage(lines, SkewEstimator.Estimate(lines));
         }
 
-        var result = _engine.Detect(bitmap, _fullOptions);
+        var result = _engine.Detect(bitmap, _fullOptions, ct);
         ct.ThrowIfCancellationRequested();
 
         var recognised = new List<OcrLine>(result.TextBlocks.Length);

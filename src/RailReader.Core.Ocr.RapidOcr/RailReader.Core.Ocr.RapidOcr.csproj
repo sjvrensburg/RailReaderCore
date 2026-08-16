@@ -25,7 +25,7 @@
          .targets file that copies them beside the consuming app's binaries, so Latin OCR
          works with no extra download. SkiaSharp comes in transitively and is pinned to the
          same 3.119.* the Skia renderer uses so one native binary serves both. -->
-    <PackageReference Include="RapidOcrNet" Version="3.0.*" />
+    <PackageReference Include="RapidOcrNet" Version="4.0.*" />
     <PackageReference Include="SkiaSharp" Version="3.119.*" />
   </ItemGroup>
 

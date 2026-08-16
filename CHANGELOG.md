@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.58.0 — abandoning a scanned page now stops the inference, not just the queue
+
+0.57.0 could abandon an analysis request, but only between stages: RapidOcrNet's `Detect` was one
+monolithic ONNX run, so a page already inside it ran to completion. That limit was documented as
+inherent. It no longer is — the upstream change that removes it
+([BobLd/RapidOcrNet#35](https://github.com/BobLd/RapidOcrNet/pull/35), then #37) has shipped, and
+this release takes it.
+
+RapidOcrNet moves from 3.0 to **4.0.1**, and `RapidOcrService` hands its `CancellationToken`
+straight to `Detect`/`DetectBoxes`. The engine sets ONNX Runtime's `Terminate` flag, which the
+executor reads as it walks between kernels, so an inference already running stops rather than
+having to be waited out. That reaches the detector pass too — ~15 s at the PP-OCRv6 Medium tier —
+which no amount of between-lines checking could have touched.
+
+Measured on the reporter's scan at the Medium tier, on a deliberately busy machine:
+
+| | wall clock |
+|---|---|
+| full pass, uncancelled | 261 s |
+| cancelled 2 s in | **4.9 s** |
+
+Nothing else changed: the upgrade is source-compatible, and no in-tree call site needed an edit
+beyond passing the token. Paired interleaved runs of `tools/ocr-cost-probe` against 3.0 show no
+cost difference — within-branch variance exceeded the between-version difference on both tiers
+measured.
+
+Note the API this rests on is the sync one. Upstream also added `DetectAsync`, but its
+cancellation is built on `Terminate` rather than `InferenceSession.RunAsync` precisely so it keeps
+working on a single-threaded session — which `OcrSessionOptions` can produce, since it clamps
+intra-op threads to the core count. Our synchronous `IOcrService` needs no async surface to get
+full preemption.
+
 ## 0.57.0 — one OCR'd page no longer stalls analysis for every open document
 
 Fixes [#100](https://github.com/sjvrensburg/RailReaderCore/issues/100).
