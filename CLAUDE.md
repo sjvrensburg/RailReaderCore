@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**RailReaderCore** is a set of .NET 10 libraries extracted from [RailReader2](https://github.com/sjvrensburg/railreader2) — a desktop PDF viewer with AI-guided "rail reading" for high-magnification viewing. This repository is the source-of-truth for the portable parts of that codebase, packaged so the same business logic can power desktop, web (planned: RailReader Lite via Avalonia.Browser), and mobile apps.
+**RailReaderCore** is a set of .NET 10 libraries extracted from [RailReader2](https://github.com/sjvrensburg/railreader2) — a desktop PDF viewer with AI-guided "rail reading" for high-magnification viewing. This repository is the source-of-truth for the portable parts of that codebase, packaged so the same business logic can power desktop and (planned) mobile apps. RailReaderLite, a WebAssembly build via Avalonia.Browser, was frozen at v0.8.0 (2026-05-27) — heuristic layout analysis on PDF.js text extraction hit a structural accuracy ceiling with no room for a real model in a WASM bundle. The next non-desktop target is a native .NET MAUI mobile app (Android only — no macOS/iOS planned) reusing `RailReader.Core`'s algorithmic layer against ONNX Runtime + PP-DocLayoutV3/PP-DocLayout-S.
 
 - **License**: MIT
 - **Remote**: `https://github.com/sjvrensburg/RailReaderCore.git`
@@ -31,7 +31,7 @@ for i in {1..10}; do dotnet test tests/RailReader.Core.Tests -c Release --filter
 
 # Download a layout-detection ONNX model (only needed for RailReader.Core.Analysis consumers)
 ./scripts/download-model.sh           # default: PP-DocLayoutV3 (~50 MB)
-./scripts/download-model.sh pps       # PP-DocLayout-S (~4.7 MB, lightweight, Lite/web/mobile target)
+./scripts/download-model.sh pps       # PP-DocLayout-S (~4.7 MB, lightweight, mobile target)
 ./scripts/download-model.sh heron     # Docling Heron (~164 MB)
 ./scripts/download-model.sh all       # all three
 
@@ -48,8 +48,7 @@ for i in {1..10}; do dotnet test tests/RailReader.Core.Tests -c Release --filter
 | Use Case | Layout Model | OCR Model | Why |
 |----------|--------------|-----------|-----|
 | Desktop (RailReader2) | PP-DocLayoutV3 (50 MB) | Small or Medium | Max accuracy, local resources available |
-| Web / Lite (WASM / low-end mobile) | PP-DocLayout-S (4.7 MB) | Tiny | Smallest, WASM-compatible; rasterize at 1920 for best results |
-| Mobile (MAUI) | PP-DocLayout-S (4.7 MB) | Tiny | Same as Lite; validate at device resolution |
+| Mobile (MAUI, planned) | PP-DocLayout-S (4.7 MB) | Tiny | Smallest footprint; rasterize at 1920 for best results; validate at device resolution |
 | Pure text (no layouts) | TextLayoutAnalyzer (built-in) | (not needed) | Fallback when no model; recovers blocks from text layer only |
 | Scanned PDFs | any model | Full recognition needed | Text layer is missing; OCR fills in char boxes & line order |
 
@@ -104,7 +103,7 @@ Core.Ocr.RapidOcr ─→ Core
 Core             ←── (root; no project refs, no non-system NuGet deps)
 ```
 
-The deliberate split: `Core` is the only project a non-desktop consumer (Lite / mobile) needs to take. It has zero non-system NuGet deps. All native binaries (PDFium, ONNX) and provider SDKs (OpenAI) live in sibling projects, behind interfaces — additional VLM providers (Anthropic, Gemini, …) would slot in as further `Core.Vlm.*` packages.
+The deliberate split: `Core` is the only project a non-desktop consumer (mobile) needs to take. It has zero non-system NuGet deps. All native binaries (PDFium, ONNX) and provider SDKs (OpenAI) live in sibling projects, behind interfaces — additional VLM providers (Anthropic, Gemini, …) would slot in as further `Core.Vlm.*` packages.
 
 ### RailReader.Core (the portable layer)
 
@@ -140,7 +139,7 @@ All three take an optional `LayoutDetectionTuning` constructor argument (Core) o
 
 All three share `LayoutAnalyzer.Nms` / `LayoutAnalyzer.SuppressNestedBlocks` (internal static helpers). None touches PDFium. The chosen analyzer is wired in by the consumer; reading order is then assigned downstream by Core's `IReadingOrderResolver` (`ModelOrderResolver` for PP-V3, `XYCutPlusPlusResolver` for PP-S and Heron — picked automatically by `AnalysisWorker` based on `Capabilities.ProvidesReadingOrder`).
 
-PP-DocLayout-S is the intended detector for any future web (WASM/ORT-Web via `Avalonia.Browser`) or mobile build — V3 (~50 MB) and Heron (~164 MB) are too heavy for those targets. The PP-S analyzer's I/O contract is mirrored from the working Python reference at `~/RailDLA/src/raildla/detector.py`.
+PP-DocLayout-S is the intended detector for the planned MAUI mobile build — V3 (~50 MB) and Heron (~164 MB) are too heavy for that target. The PP-S analyzer's I/O contract is mirrored from the working Python reference at `~/RailDLA/src/raildla/detector.py`.
 
 ### RailReader.Core.Vlm.OpenAI (OpenAI-compatible VLM client)
 
@@ -266,7 +265,7 @@ The only project that imports both `Core` and `Core.Pdfium`. `SkiaPdfServiceFact
 
 - Set `RailReaderLogging.Logger` once at startup (or accept the `NullLogger` default).
 - Construct `CoreSettings` from your config layer and pass it into `DocumentController`; on change, build a new `CoreSettings` and call `OnConfigChanged`.
-- Supply `IPdfServiceFactory`, `IAnnotationStore`, `IRecentFilesStore`. Desktop wires `SkiaPdfServiceFactory` + `AppConfig` and either `AnnotationService` (sidecar) or `CompositeAnnotationStore.Default` (native PDF annotations); a Lite/mobile consumer would substitute its own.
+- Supply `IPdfServiceFactory`, `IAnnotationStore`, `IRecentFilesStore`. Desktop wires `SkiaPdfServiceFactory` + `AppConfig` and either `AnnotationService` (sidecar) or `CompositeAnnotationStore.Default` (native PDF annotations); a mobile consumer would substitute its own.
 - Optionally pass `ocrServiceFactory` / `ocrMode` to `InitializeWorker` to handle scanned PDFs (`new RapidOcrService()`). Off by default; `DocumentController.OcrMode` toggles it at runtime. Skew correction rides along with it (`CoreSettings.DeskewOcrLines`, default on) and needs no extra wiring — `InitializeWorker` seeds the worker from the settings snapshot, and `OnConfigChanged` keeps it current.
 
 ## Key Concepts
@@ -351,7 +350,7 @@ Tests in `tests/RailReader.Core.Tests/` are xUnit. `TestFixtures.cs` generates s
 
 **Scanned PDF freezes analysis in every open document**: fixed in the #100 work — OCR runs on its own worker thread, recovered text is reused rather than re-recognised, and background read-ahead no longer triggers OCR. If it recurs, check in this order: (1) is it a *second* scanned page waiting on the first (expected — the OCR stage is one thread); (2) did a change start routing text-layer pages through the OCR stage (`AnalysisWorker.Submit`'s `needsOcr`); (3) is `tools/ocr-cost-probe` simply reporting a tier that costs a minute a page, in which case the answer is Tiny/Small, not the scheduler.
 
-**`DllNotFoundException: libSkiaSharp` on startup**: Missing Skia native binaries. Run in Release mode (`dotnet build -c Release`) and ensure the platform-specific runtime is installed. For Avalonia.Browser (WASM), `WasmBuildNative=true` must be set in the project.
+**`DllNotFoundException: libSkiaSharp` on startup**: Missing Skia native binaries. Run in Release mode (`dotnet build -c Release`) and ensure the platform-specific runtime is installed. (For an Avalonia.Browser/WASM build, `WasmBuildNative=true` must be set in the project — but note RailReaderLite, the WASM build, is frozen; see Project Overview.)
 
 **`PdfiumGate.Lock` segfault on PDFium call**: PDFium P/Invoke was called outside the lock. All PDFium (`FPDFPage_*`, `FPDFText_*`, etc.) calls must be wrapped in `lock (PdfiumGate.Lock)`. Exception: `PdfiumResolver.EnsureLibraryInitialized()` is lock-free and MUST be called before any other PDFium code (issue: early FPDF_* calls outside the render path fail silently if the library isn't initialized).
 
