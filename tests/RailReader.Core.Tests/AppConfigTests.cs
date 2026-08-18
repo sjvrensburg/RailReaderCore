@@ -1,3 +1,4 @@
+using RailReader.Core.Models;
 using RailReader.Core.Services;
 using Xunit;
 
@@ -46,6 +47,42 @@ public class AppConfigTests
         Assert.Equal(5.0, config.RailZoomThreshold);
         Assert.Equal(500.0, config.SnapDurationMs);
         Assert.False(config.PixelSnapping);
+    }
+
+    [Fact]
+    public void ToCoreSettings_DefaultHasNoAnnotationColorOverrides()
+    {
+        var config = new AppConfig();
+        Assert.Empty(config.ToCoreSettings().AnnotationColorIndices);
+    }
+
+    [Fact]
+    public void SetAnnotationColorIndices_RoundTripsThroughToCoreSettings()
+    {
+        var config = new AppConfig();
+        config.SetAnnotationColorIndices(new Dictionary<AnnotationTool, int>
+        {
+            [AnnotationTool.Highlight] = 3,
+            [AnnotationTool.Pen] = 4,
+        });
+
+        var settings = config.ToCoreSettings();
+        Assert.Equal(3, settings.AnnotationColorIndices[AnnotationTool.Highlight]);
+        Assert.Equal(4, settings.AnnotationColorIndices[AnnotationTool.Pen]);
+    }
+
+    [Fact]
+    public void ToCoreSettings_IgnoresUnknownAnnotationToolNames()
+    {
+        // Simulates loading a config written by a future build with a tool this build
+        // doesn't know about — must not throw, must just drop the unrecognised entry.
+        var config = new AppConfig();
+        config.AnnotationColorIndices["NotARealTool"] = 2;
+        config.AnnotationColorIndices[AnnotationTool.Rectangle.ToString()] = 1;
+
+        var settings = config.ToCoreSettings();
+        Assert.Single(settings.AnnotationColorIndices);
+        Assert.Equal(1, settings.AnnotationColorIndices[AnnotationTool.Rectangle]);
     }
 
     [Fact]

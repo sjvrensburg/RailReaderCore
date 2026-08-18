@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using RailReader.Core;
@@ -104,6 +105,28 @@ public sealed class AppConfig : IRecentFilesStore
     public bool VlmStructuredOutput { get; set; } = false;
 
     /// <summary>
+    /// Per-tool selected index into the fixed five-colour annotation palette
+    /// (<see cref="AnnotationInteractionHandler.AnnotationColors"/>), keyed by
+    /// <see cref="AnnotationTool"/> name. A tool absent here (including every tool on a config
+    /// file written before this field existed) keeps <see cref="AnnotationInteractionHandler"/>'s
+    /// own built-in default — see <see cref="CoreSettings.AnnotationColorIndices"/>. Keyed by
+    /// enum name rather than <see cref="AnnotationTool"/> directly so the JSON stays readable and
+    /// stable across enum-value renumbering.
+    /// </summary>
+    public Dictionary<string, int> AnnotationColorIndices { get; set; } = new();
+
+    /// <summary>
+    /// Snapshots the live per-tool colour selection (typically
+    /// <c>controller.Annotations.ColorIndices</c>) into <see cref="AnnotationColorIndices"/> for
+    /// the next <see cref="Save"/>. Core itself never writes to disk — this is the UI shell's hook
+    /// to do so after a colour change.
+    /// </summary>
+    public void SetAnnotationColorIndices(IReadOnlyDictionary<AnnotationTool, int> indices)
+    {
+        AnnotationColorIndices = indices.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value);
+    }
+
+    /// <summary>
     /// Build an immutable <see cref="CoreSettings"/> snapshot of the runtime
     /// tuning values. UI-only fields (font scale, dark mode, minimap dimensions,
     /// recent files) are deliberately excluded from the Core contract.
@@ -145,7 +168,20 @@ public sealed class AppConfig : IRecentFilesStore
         VlmModel = VlmModel,
         VlmApiKey = VlmApiKey,
         VlmStructuredOutput = VlmStructuredOutput,
+        AnnotationColorIndices = ParseAnnotationColorIndices(AnnotationColorIndices),
     };
+
+    /// <summary>Unknown tool names (a config written by a newer build with more tools) and
+    /// malformed entries are dropped rather than throwing — an unrecognised tool just keeps
+    /// its built-in default.</summary>
+    private static Dictionary<AnnotationTool, int> ParseAnnotationColorIndices(Dictionary<string, int> raw)
+    {
+        var result = new Dictionary<AnnotationTool, int>(raw.Count);
+        foreach (var (name, index) in raw)
+            if (Enum.TryParse<AnnotationTool>(name, out var tool))
+                result[tool] = index;
+        return result;
+    }
 
     /// <summary>Creates an independent deep copy via JSON round-trip.</summary>
     public AppConfig Clone() =>

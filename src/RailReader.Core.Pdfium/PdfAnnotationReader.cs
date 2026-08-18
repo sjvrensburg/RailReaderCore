@@ -316,12 +316,17 @@ public sealed class PdfAnnotationReader
         }
     }
 
+    // Mirrors AnnotationInteractionHandler.AnnotationColors / DefaultColorIndices — the fixed
+    // five-colour palette every colour-capable tool authors from — so a PDF-native annotation
+    // with no readable /C falls back to a colour the palette can actually reproduce.
     private static string DefaultColorFor(Annotation a) => a switch
     {
-        HighlightAnnotation => "#FFFF00", // yellow
+        HighlightAnnotation or TextNoteAnnotation => "#FFFF00", // yellow
         UnderlineAnnotation or SquigglyAnnotation => "#00A000", // green
         StrikeOutAnnotation => "#FF0000", // red
-        _ => "#FFD400", // Acrobat sticky-note yellow
+        RectAnnotation => "#0066FF", // blue
+        FreeTextAnnotation => "#000000", // black
+        _ => "#FFFF00", // yellow
     };
 
     private static ReviewState ParseReviewState(string? stateModel, string? state)

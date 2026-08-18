@@ -32,34 +32,60 @@ public sealed class AnnotationInteractionHandler
     public float ActiveAnnotationOpacity { get; set; } = 0.4f;
     public float ActiveStrokeWidth { get; set; } = 2f;
 
-    // Colour palettes for tools with colour options
-    public static readonly (string Color, float Opacity)[] HighlightColors =
+    /// <summary>
+    /// The one fixed five-colour palette shared by every colour-capable tool (Highlight,
+    /// Underline, Squiggly, StrikeOut, Pen, Rectangle, TextNote, FreeText). A tool's opacity is
+    /// a separate per-tool constant (<see cref="DefaultOpacityFor"/>) — translucent fills
+    /// (Highlight) and solid strokes/text (everything else) share hue selection but not alpha.
+    /// </summary>
+    public static readonly string[] AnnotationColors =
     [
-        ("#FFFF00", 0.35f),  // Yellow
-        ("#66CC66", 0.35f),  // Green
-        ("#FF8FA0", 0.35f),  // Pink
-    ];
-
-    public static readonly (string Color, float Opacity)[] PenColors =
-    [
-        ("#FF0000", 0.8f),   // Red
-        ("#0000FF", 0.8f),   // Blue
-        ("#000000", 0.9f),   // Black
-    ];
-
-    public static readonly (string Color, float Opacity)[] RectColors =
-    [
-        ("#0066FF", 0.5f),   // Blue
-        ("#FF0000", 0.5f),   // Red
-        ("#000000", 0.6f),   // Black
+        "#FFFF00", // Yellow
+        "#00A000", // Green
+        "#FF0000", // Red
+        "#0066FF", // Blue
+        "#000000", // Black
     ];
 
     /// <summary>Stroke width presets: thin, normal, thick.</summary>
     public static readonly float[] ThicknessPresets = [1f, 2f, 4f];
 
-    private int _highlightColorIndex;
-    private int _penColorIndex;
-    private int _rectColorIndex;
+    /// <summary>Each tool's historical default index into <see cref="AnnotationColors"/> — the
+    /// seed for a fresh handler and the fallback for any tool a persisted settings snapshot
+    /// doesn't mention. Also defines the full set of colour-capable tools (see
+    /// <see cref="ColorCapableTools"/>).</summary>
+    private static readonly Dictionary<AnnotationTool, int> DefaultColorIndices =
+        new()
+        {
+            [AnnotationTool.Highlight] = 0,  // Yellow
+            [AnnotationTool.Underline] = 1,  // Green
+            [AnnotationTool.Squiggly] = 1,   // Green
+            [AnnotationTool.StrikeOut] = 2,  // Red
+            [AnnotationTool.Pen] = 2,        // Red
+            [AnnotationTool.Rectangle] = 3,  // Blue
+            [AnnotationTool.TextNote] = 0,   // Yellow
+            [AnnotationTool.FreeText] = 4,   // Black
+        };
+
+    /// <summary>The tools that support selecting from <see cref="AnnotationColors"/>.</summary>
+    public static IReadOnlyCollection<AnnotationTool> ColorCapableTools => DefaultColorIndices.Keys;
+
+    /// <summary>Per-tool current index into <see cref="AnnotationColors"/>, seeded with each
+    /// tool's historical default hue so switching tools doesn't change the remembered look.
+    /// Overridden at construction / config load by <see cref="ApplyColorIndices"/>.</summary>
+    private readonly Dictionary<AnnotationTool, int> _colorIndices = new(DefaultColorIndices);
+
+    private static float DefaultOpacityFor(AnnotationTool tool) => tool switch
+    {
+        AnnotationTool.Highlight => 0.35f,
+        AnnotationTool.Pen => 0.8f,
+        AnnotationTool.Rectangle => 0.5f,
+        AnnotationTool.TextNote => 0.9f,
+        // Underline/StrikeOut/Squiggly are line markups (not translucent fills), and FreeText
+        // is typewriter text — both read as solid colour at full opacity.
+        _ => 1.0f,
+    };
+
     private int _penThicknessIndex = 1;  // default: normal (2f)
     private int _rectThicknessIndex = 1;
 
@@ -118,40 +144,23 @@ public sealed class AnnotationInteractionHandler
         switch (tool)
         {
             case AnnotationTool.Highlight:
-                var hc = HighlightColors[_highlightColorIndex];
-                ActiveAnnotationColor = hc.Color;
-                ActiveAnnotationOpacity = hc.Opacity;
-                break;
-            // Underline/StrikeOut/Squiggly are line markups (not translucent fills), so
-            // they default to a solid colour at full opacity rather than a highlight wash.
             case AnnotationTool.Underline:
             case AnnotationTool.Squiggly:
-                ActiveAnnotationColor = "#00A000"; // green
-                ActiveAnnotationOpacity = 1.0f;
-                break;
             case AnnotationTool.StrikeOut:
-                ActiveAnnotationColor = "#FF0000"; // red
-                ActiveAnnotationOpacity = 1.0f;
+            case AnnotationTool.TextNote:
+            case AnnotationTool.FreeText:
+                ActiveAnnotationColor = AnnotationColors[_colorIndices[tool]];
+                ActiveAnnotationOpacity = DefaultOpacityFor(tool);
                 break;
             case AnnotationTool.Pen:
-                var pc = PenColors[_penColorIndex];
-                ActiveAnnotationColor = pc.Color;
-                ActiveAnnotationOpacity = pc.Opacity;
+                ActiveAnnotationColor = AnnotationColors[_colorIndices[tool]];
+                ActiveAnnotationOpacity = DefaultOpacityFor(tool);
                 ActiveStrokeWidth = ThicknessPresets[_penThicknessIndex];
                 break;
             case AnnotationTool.Rectangle:
-                var rc = RectColors[_rectColorIndex];
-                ActiveAnnotationColor = rc.Color;
-                ActiveAnnotationOpacity = rc.Opacity;
+                ActiveAnnotationColor = AnnotationColors[_colorIndices[tool]];
+                ActiveAnnotationOpacity = DefaultOpacityFor(tool);
                 ActiveStrokeWidth = ThicknessPresets[_rectThicknessIndex];
-                break;
-            case AnnotationTool.TextNote:
-                ActiveAnnotationColor = "#FFCC00";
-                ActiveAnnotationOpacity = 0.9f;
-                break;
-            case AnnotationTool.FreeText:
-                ActiveAnnotationColor = "#000000"; // black typewriter text
-                ActiveAnnotationOpacity = 1.0f;
                 break;
             case AnnotationTool.Eraser:
             case AnnotationTool.None:
@@ -159,29 +168,57 @@ public sealed class AnnotationInteractionHandler
         }
     }
 
-    public void SetAnnotationColorIndex(AnnotationTool tool, int index)
+    /// <summary>
+    /// Re-applies the active tool's colour/opacity from its current palette index, without
+    /// resetting selection/drag/pending-FreeText state (unlike <see cref="SetAnnotationTool"/>,
+    /// which is a full tool switch). Used after <see cref="ApplyColorIndices"/> so an in-progress
+    /// annotation session picks up a colour changed elsewhere immediately. No-op for a tool that
+    /// doesn't support colour selection (Eraser/None/TextSelect).
+    /// </summary>
+    public void RefreshActiveColor()
     {
-        switch (tool)
-        {
-            case AnnotationTool.Highlight:
-                _highlightColorIndex = Math.Clamp(index, 0, HighlightColors.Length - 1);
-                break;
-            case AnnotationTool.Pen:
-                _penColorIndex = Math.Clamp(index, 0, PenColors.Length - 1);
-                break;
-            case AnnotationTool.Rectangle:
-                _rectColorIndex = Math.Clamp(index, 0, RectColors.Length - 1);
-                break;
-        }
+        if (!_colorIndices.TryGetValue(ActiveTool, out var index)) return;
+        ActiveAnnotationColor = AnnotationColors[index];
+        ActiveAnnotationOpacity = DefaultOpacityFor(ActiveTool);
     }
 
-    public int GetAnnotationColorIndex(AnnotationTool tool) => tool switch
+    /// <summary>Selects one of the five <see cref="AnnotationColors"/> entries for
+    /// <paramref name="tool"/>. No-op for a tool that doesn't support colour selection
+    /// (Eraser/None/TextSelect).</summary>
+    public void SetAnnotationColorIndex(AnnotationTool tool, int index)
     {
-        AnnotationTool.Highlight => _highlightColorIndex,
-        AnnotationTool.Pen => _penColorIndex,
-        AnnotationTool.Rectangle => _rectColorIndex,
-        _ => 0,
-    };
+        if (!_colorIndices.ContainsKey(tool)) return;
+        _colorIndices[tool] = Math.Clamp(index, 0, AnnotationColors.Length - 1);
+    }
+
+    public int GetAnnotationColorIndex(AnnotationTool tool) =>
+        _colorIndices.TryGetValue(tool, out var index) ? index : 0;
+
+    /// <summary>
+    /// Snapshot of every colour-capable tool's current palette index, for the UI shell to persist
+    /// (e.g. into <c>CoreSettings.AnnotationColorIndices</c> / its own config file). Core never
+    /// writes anything to disk itself — this is only the read side of that round-trip.
+    /// </summary>
+    public IReadOnlyDictionary<AnnotationTool, int> ColorIndices => _colorIndices;
+
+    /// <summary>
+    /// Restores per-tool palette indices from a persisted settings snapshot (e.g. at
+    /// <see cref="DocumentController"/> construction, or on <see cref="DocumentController.OnConfigChanged"/>).
+    /// Unknown tools and out-of-range indices are ignored rather than throwing, so a settings file
+    /// from a future build with more tools/colours than this one still loads. A tool the snapshot
+    /// doesn't mention keeps its current (default-seeded) index. Does not itself touch
+    /// <see cref="ActiveAnnotationColor"/> — call <see cref="SetAnnotationTool"/> (or re-select the
+    /// active tool) afterwards if the active tool's colour needs to reflect the restored index.
+    /// </summary>
+    public void ApplyColorIndices(IReadOnlyDictionary<AnnotationTool, int>? indices)
+    {
+        if (indices is null) return;
+        foreach (var (tool, index) in indices)
+        {
+            if (_colorIndices.ContainsKey(tool) && index >= 0 && index < AnnotationColors.Length)
+                _colorIndices[tool] = index;
+        }
+    }
 
     public void SetThicknessIndex(AnnotationTool tool, int index)
     {

@@ -151,6 +151,7 @@ public sealed partial class DocumentController : IDisposable
         _annotationManager = new AnnotationFileManager(annotationStore, marshaller);
         _annotationManager.OnSaveFailure = msg => StatusMessage?.Invoke(msg);
         Annotations = new AnnotationInteractionHandler();
+        Annotations.ApplyColorIndices(config.AnnotationColorIndices);
         Search = new SearchService(
             () => FocusedViewport,
             GoToPage);
@@ -868,6 +869,13 @@ public sealed partial class DocumentController : IDisposable
         // Set through the property, not the worker field: a change has to invalidate the
         // scanned pages already analysed under the old value, which its setter handles.
         DeskewOcrLines = newConfig.DeskewOcrLines;
+        Annotations.ApplyColorIndices(newConfig.AnnotationColorIndices);
+        // ApplyColorIndices only updates the stored index (see its doc comment) — refresh the
+        // active tool's live colour too, so a colour changed elsewhere (e.g. a second viewport's
+        // settings dialog) is reflected immediately rather than on next tool switch. Uses the
+        // lightweight refresh, not SetAnnotationTool, so an in-progress drag/selection/pending
+        // FreeText box survives an unrelated settings change.
+        Annotations.RefreshActiveColor();
         foreach (var doc in Documents)
         {
             // Flip the doc-level analysis params (and caches/queue) FIRST, once per document, so the
