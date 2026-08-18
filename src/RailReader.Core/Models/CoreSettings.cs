@@ -132,4 +132,16 @@ public sealed record CoreSettings
     public string? VlmModel { get; init; }
     public string? VlmApiKey { get; init; }
     public bool VlmStructuredOutput { get; init; }
+
+    /// <summary>
+    /// Per-tool selected index into <see cref="AnnotationInteractionHandler.AnnotationColors"/>
+    /// (the fixed five-colour palette), for tools the user has switched off their built-in
+    /// default. Empty by default — a tool absent here keeps
+    /// <see cref="AnnotationInteractionHandler"/>'s own historical default, so an existing
+    /// config file with no annotation-colour section round-trips unchanged. The UI shell reads
+    /// the live selection back via <see cref="AnnotationInteractionHandler.ColorIndices"/> to
+    /// persist it (Core itself never writes to disk).
+    /// </summary>
+    public IReadOnlyDictionary<AnnotationTool, int> AnnotationColorIndices { get; init; } =
+        new Dictionary<AnnotationTool, int>();
 }

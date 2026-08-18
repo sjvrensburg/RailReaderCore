@@ -14,6 +14,7 @@ namespace RailReader.Core.Services;
 [JsonSerializable(typeof(AppConfig))]
 [JsonSerializable(typeof(RecentFileEntry))]
 [JsonSerializable(typeof(List<RecentFileEntry>))]
+[JsonSerializable(typeof(Dictionary<string, int>))]
 [JsonSerializable(typeof(AnnotationFile))]
 [JsonSerializable(typeof(Annotation))]
 [JsonSerializable(typeof(HighlightAnnotation))]

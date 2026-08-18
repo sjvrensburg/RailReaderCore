@@ -50,19 +50,30 @@ public sealed class AnnotationInteractionHandler
     /// <summary>Stroke width presets: thin, normal, thick.</summary>
     public static readonly float[] ThicknessPresets = [1f, 2f, 4f];
 
+    /// <summary>Each tool's historical default index into <see cref="AnnotationColors"/> — the
+    /// seed for a fresh handler and the fallback for any tool a persisted settings snapshot
+    /// doesn't mention. Also defines the full set of colour-capable tools (see
+    /// <see cref="ColorCapableTools"/>).</summary>
+    private static readonly Dictionary<AnnotationTool, int> DefaultColorIndices =
+        new()
+        {
+            [AnnotationTool.Highlight] = 0,  // Yellow
+            [AnnotationTool.Underline] = 1,  // Green
+            [AnnotationTool.Squiggly] = 1,   // Green
+            [AnnotationTool.StrikeOut] = 2,  // Red
+            [AnnotationTool.Pen] = 2,        // Red
+            [AnnotationTool.Rectangle] = 3,  // Blue
+            [AnnotationTool.TextNote] = 0,   // Yellow
+            [AnnotationTool.FreeText] = 4,   // Black
+        };
+
+    /// <summary>The tools that support selecting from <see cref="AnnotationColors"/>.</summary>
+    public static IReadOnlyCollection<AnnotationTool> ColorCapableTools => DefaultColorIndices.Keys;
+
     /// <summary>Per-tool current index into <see cref="AnnotationColors"/>, seeded with each
-    /// tool's historical default hue so switching tools doesn't change the remembered look.</summary>
-    private readonly Dictionary<AnnotationTool, int> _colorIndices = new()
-    {
-        [AnnotationTool.Highlight] = 0,  // Yellow
-        [AnnotationTool.Underline] = 1,  // Green
-        [AnnotationTool.Squiggly] = 1,   // Green
-        [AnnotationTool.StrikeOut] = 2,  // Red
-        [AnnotationTool.Pen] = 2,        // Red
-        [AnnotationTool.Rectangle] = 3,  // Blue
-        [AnnotationTool.TextNote] = 0,   // Yellow
-        [AnnotationTool.FreeText] = 4,   // Black
-    };
+    /// tool's historical default hue so switching tools doesn't change the remembered look.
+    /// Overridden at construction / config load by <see cref="ApplyColorIndices"/>.</summary>
+    private readonly Dictionary<AnnotationTool, int> _colorIndices = new(DefaultColorIndices);
 
     private static float DefaultOpacityFor(AnnotationTool tool) => tool switch
     {
@@ -157,6 +168,20 @@ public sealed class AnnotationInteractionHandler
         }
     }
 
+    /// <summary>
+    /// Re-applies the active tool's colour/opacity from its current palette index, without
+    /// resetting selection/drag/pending-FreeText state (unlike <see cref="SetAnnotationTool"/>,
+    /// which is a full tool switch). Used after <see cref="ApplyColorIndices"/> so an in-progress
+    /// annotation session picks up a colour changed elsewhere immediately. No-op for a tool that
+    /// doesn't support colour selection (Eraser/None/TextSelect).
+    /// </summary>
+    public void RefreshActiveColor()
+    {
+        if (!_colorIndices.TryGetValue(ActiveTool, out var index)) return;
+        ActiveAnnotationColor = AnnotationColors[index];
+        ActiveAnnotationOpacity = DefaultOpacityFor(ActiveTool);
+    }
+
     /// <summary>Selects one of the five <see cref="AnnotationColors"/> entries for
     /// <paramref name="tool"/>. No-op for a tool that doesn't support colour selection
     /// (Eraser/None/TextSelect).</summary>
@@ -168,6 +193,32 @@ public sealed class AnnotationInteractionHandler
 
     public int GetAnnotationColorIndex(AnnotationTool tool) =>
         _colorIndices.TryGetValue(tool, out var index) ? index : 0;
+
+    /// <summary>
+    /// Snapshot of every colour-capable tool's current palette index, for the UI shell to persist
+    /// (e.g. into <c>CoreSettings.AnnotationColorIndices</c> / its own config file). Core never
+    /// writes anything to disk itself — this is only the read side of that round-trip.
+    /// </summary>
+    public IReadOnlyDictionary<AnnotationTool, int> ColorIndices => _colorIndices;
+
+    /// <summary>
+    /// Restores per-tool palette indices from a persisted settings snapshot (e.g. at
+    /// <see cref="DocumentController"/> construction, or on <see cref="DocumentController.OnConfigChanged"/>).
+    /// Unknown tools and out-of-range indices are ignored rather than throwing, so a settings file
+    /// from a future build with more tools/colours than this one still loads. A tool the snapshot
+    /// doesn't mention keeps its current (default-seeded) index. Does not itself touch
+    /// <see cref="ActiveAnnotationColor"/> — call <see cref="SetAnnotationTool"/> (or re-select the
+    /// active tool) afterwards if the active tool's colour needs to reflect the restored index.
+    /// </summary>
+    public void ApplyColorIndices(IReadOnlyDictionary<AnnotationTool, int>? indices)
+    {
+        if (indices is null) return;
+        foreach (var (tool, index) in indices)
+        {
+            if (_colorIndices.ContainsKey(tool) && index >= 0 && index < AnnotationColors.Length)
+                _colorIndices[tool] = index;
+        }
+    }
 
     public void SetThicknessIndex(AnnotationTool tool, int index)
     {

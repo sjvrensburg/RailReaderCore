@@ -115,6 +115,61 @@ public class AnnotationInteractionHandlerMoreTests : IDisposable
         Assert.InRange(got, 0, AnnotationInteractionHandler.AnnotationColors.Length - 1);
     }
 
+    [Fact]
+    public void ApplyColorIndices_RestoresPersistedSelection()
+    {
+        _handler.ApplyColorIndices(new Dictionary<AnnotationTool, int>
+        {
+            [AnnotationTool.Highlight] = 3,
+        });
+
+        Assert.Equal(3, _handler.GetAnnotationColorIndex(AnnotationTool.Highlight));
+        Assert.Equal(3, _handler.ColorIndices[AnnotationTool.Highlight]);
+    }
+
+    [Fact]
+    public void ApplyColorIndices_IgnoresOutOfRangeAndUnknownTools()
+    {
+        int before = _handler.GetAnnotationColorIndex(AnnotationTool.Pen);
+
+        _handler.ApplyColorIndices(new Dictionary<AnnotationTool, int>
+        {
+            [AnnotationTool.Pen] = 999,       // out of range — ignored
+            [AnnotationTool.TextSelect] = 0,  // not colour-capable — ignored
+        });
+
+        Assert.Equal(before, _handler.GetAnnotationColorIndex(AnnotationTool.Pen));
+    }
+
+    [Fact]
+    public void ApplyColorIndices_NullIsNoOp()
+    {
+        int before = _handler.GetAnnotationColorIndex(AnnotationTool.Highlight);
+        _handler.ApplyColorIndices(null);
+        Assert.Equal(before, _handler.GetAnnotationColorIndex(AnnotationTool.Highlight));
+    }
+
+    [Fact]
+    public void RefreshActiveColor_PicksUpIndexChangedWithoutToolSwitch()
+    {
+        _handler.SetAnnotationTool(AnnotationTool.Highlight);
+        _handler.SetAnnotationColorIndex(AnnotationTool.Highlight, 3);
+
+        // Colour index changed but ActiveAnnotationColor wasn't re-applied yet.
+        Assert.NotEqual(AnnotationInteractionHandler.AnnotationColors[3], _handler.ActiveAnnotationColor);
+
+        _handler.RefreshActiveColor();
+
+        Assert.Equal(AnnotationInteractionHandler.AnnotationColors[3], _handler.ActiveAnnotationColor);
+    }
+
+    [Fact]
+    public void ColorIndices_CoversEveryColourCapableTool()
+    {
+        foreach (var tool in AnnotationInteractionHandler.ColorCapableTools)
+            Assert.True(_handler.ColorIndices.ContainsKey(tool));
+    }
+
     // --- Browse-mode drag ---
 
     [Fact]

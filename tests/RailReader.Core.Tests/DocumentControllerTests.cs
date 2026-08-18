@@ -1502,4 +1502,36 @@ public class DocumentControllerTests : IDisposable
         Assert.True(vp.Rail.CurrentLineCount > 1);
         Assert.Equal(vp.Rail.CurrentLineCount - 1, vp.Rail.CurrentLine);
     }
+
+    [Fact]
+    public void Constructor_SeedsAnnotationColorIndicesFromConfig()
+    {
+        var config = new AppConfig();
+        config.SetAnnotationColorIndices(new Dictionary<AnnotationTool, int>
+        {
+            [AnnotationTool.Rectangle] = 3,
+        });
+        using var controller = new DocumentController(config.ToCoreSettings(), config,
+            AnnotationService.Default, new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+
+        Assert.Equal(3, controller.Annotations.GetAnnotationColorIndex(AnnotationTool.Rectangle));
+    }
+
+    [Fact]
+    public void OnConfigChanged_AppliesAnnotationColorIndicesAndRefreshesActiveColor()
+    {
+        _controller.Annotations.SetAnnotationTool(AnnotationTool.Highlight);
+        var settings = _controller.Config with
+        {
+            AnnotationColorIndices = new Dictionary<AnnotationTool, int>
+            {
+                [AnnotationTool.Highlight] = 2,
+            },
+        };
+
+        _controller.OnConfigChanged(settings);
+
+        Assert.Equal(2, _controller.Annotations.GetAnnotationColorIndex(AnnotationTool.Highlight));
+        Assert.Equal(AnnotationInteractionHandler.AnnotationColors[2], _controller.Annotations.ActiveAnnotationColor);
+    }
 }
