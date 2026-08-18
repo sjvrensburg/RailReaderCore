@@ -316,7 +316,7 @@ public sealed class PdfAnnotationReader
         }
     }
 
-    // Mirrors AnnotationInteractionHandler.AnnotationColors / DefaultColorIndexFor — the fixed
+    // Mirrors AnnotationInteractionHandler.AnnotationColors / DefaultColorIndices — the fixed
     // five-colour palette every colour-capable tool authors from — so a PDF-native annotation
     // with no readable /C falls back to a colour the palette can actually reproduce.
     private static string DefaultColorFor(Annotation a) => a switch
