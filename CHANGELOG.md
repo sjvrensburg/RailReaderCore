@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.59.0 — Fixed five-colour annotation palette, persisted per tool
+
+Annotation colour selection previously had three separate 3-entry preset arrays
+(`HighlightColors`/`PenColors`/`RectColors`) covering only 3 of the 8 colour-capable
+tools — `SetAnnotationColorIndex`/`GetAnnotationColorIndex` silently no-op'd for
+Underline/StrikeOut/Squiggly/TextNote/FreeText. This release unifies colour selection
+into one shared five-colour palette across every colour-capable tool, and makes the
+selection persist through the platform's normal settings round-trip.
+
+**For the GUI team — what changed and how to use it:**
+
+- `AnnotationInteractionHandler.AnnotationColors` (Core, `RailReader.Core`) is now the
+  *only* palette: `["#FFFF00" Yellow, "#00A000" Green, "#FF0000" Red, "#0066FF" Blue,
+  "#000000" Black]`. The old `HighlightColors`/`PenColors`/`RectColors` static arrays are
+  **removed** — a swatch picker referencing them by name won't compile; point it at
+  `AnnotationColors` instead. It's the same 5-entry array for every tool, so one swatch
+  UI component now serves all of them.
+- `AnnotationInteractionHandler.ColorCapableTools` lists every tool that supports colour
+  selection (Highlight, Underline, Squiggly, StrikeOut, Pen, Rectangle, TextNote,
+  FreeText) — iterate this instead of hardcoding which tools get a swatch row.
+  `SetAnnotationColorIndex`/`GetAnnotationColorIndex` now work for all eight (previously
+  3); calling them for a non-colour tool (Eraser/None/TextSelect) is still a safe no-op.
+- **Persistence is new and is opt-in wiring, not automatic** — Core never writes to disk,
+  so the GUI must still do the save step:
+  - After the user changes a colour (`SetAnnotationColorIndex`), snapshot the live
+    selection into `AppConfig` and save it:
+    `appConfig.SetAnnotationColorIndices(controller.Annotations.ColorIndices); appConfig.Save();`
+    — the same shape as every other setting.
+  - `AppConfig.ToCoreSettings()` now carries the saved selection through automatically
+    (`CoreSettings.AnnotationColorIndices`); nothing else to wire for *loading* it back,
+    since `DocumentController`'s constructor and `OnConfigChanged` already apply it to
+    `Annotations` for you.
+  - A config file with no saved selection (including every config written before this
+    release) round-trips unchanged — each tool keeps its historical default hue
+    (Highlight/TextNote → Yellow, Underline/Squiggly → Green, StrikeOut/Pen → Red,
+    Rectangle → Blue, FreeText → Black), so no user-visible colour change on upgrade.
+- `PdfAnnotationReader`'s fallback colours (used only when a PDF-native annotation has no
+  readable `/C`) were reconciled to the same five values, so a re-displayed annotation
+  without stored colour now matches something the palette can actually reproduce.
+- Fully additive to the public API surface: new members only, no signature changes to
+  anything that survived. The removed 3-wide arrays are the one breaking edit — grep for
+  `HighlightColors`/`PenColors`/`RectColors` in the desktop app before upgrading.
+
 ## 0.58.0 — abandoning a scanned page now stops the inference, not just the queue
 
 0.57.0 could abandon an analysis request, but only between stages: RapidOcrNet's `Detect` was one
