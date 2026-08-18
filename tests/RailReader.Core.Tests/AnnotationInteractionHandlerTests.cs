@@ -194,7 +194,7 @@ public class AnnotationInteractionHandlerTests : IDisposable
         _handler.SetAnnotationTool(AnnotationTool.Highlight);
         string secondColor = _handler.ActiveAnnotationColor;
 
-        // Change to index 2 (pink) and re-apply
+        // Change to index 2 (red) and re-apply
         _handler.SetAnnotationColorIndex(AnnotationTool.Highlight, 2);
         _handler.SetAnnotationTool(AnnotationTool.Highlight);
         string thirdColor = _handler.ActiveAnnotationColor;
@@ -202,8 +202,8 @@ public class AnnotationInteractionHandlerTests : IDisposable
         Assert.NotEqual(firstColor, secondColor);
         Assert.NotEqual(secondColor, thirdColor);
         Assert.Equal("#FFFF00", firstColor);
-        Assert.Equal("#66CC66", secondColor);
-        Assert.Equal("#FF8FA0", thirdColor);
+        Assert.Equal("#00A000", secondColor);
+        Assert.Equal("#FF0000", thirdColor);
     }
 
     [Fact]

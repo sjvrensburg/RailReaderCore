@@ -112,7 +112,7 @@ public class AnnotationInteractionHandlerMoreTests : IDisposable
     {
         _handler.SetAnnotationColorIndex(AnnotationTool.Highlight, 999);
         int got = _handler.GetAnnotationColorIndex(AnnotationTool.Highlight);
-        Assert.InRange(got, 0, AnnotationInteractionHandler.HighlightColors.Length - 1);
+        Assert.InRange(got, 0, AnnotationInteractionHandler.AnnotationColors.Length - 1);
     }
 
     // --- Browse-mode drag ---
