@@ -19,12 +19,14 @@ public record MarkdownExportOptions
 
     /// <summary>
     /// Which layout-model export to load — see <see cref="LayoutModelRegistry.Resolve"/>.
-    /// Defaults to <see cref="AcceleratorPreference.Cpu"/> (unchanged behaviour). GPU
-    /// inference additionally requires the caller's app to reference
-    /// <c>RailReader.Core.Analysis.WebGpu</c> — <c>MarkdownExportService</c> enables
-    /// it opportunistically when this is <see cref="AcceleratorPreference.Gpu"/> and
-    /// falls back to CPU if no GPU device is available or the model fails to load on
-    /// it.
+    /// Defaults to <see cref="AcceleratorPreference.Cpu"/> (unchanged behaviour).
+    /// <c>MarkdownExportService</c> (<c>RailReader.Export</c>) already references
+    /// <c>RailReader.Core.Analysis.WebGpu</c>, so no extra reference is needed to use
+    /// <see cref="AcceleratorPreference.Gpu"/> here — it enables GPU opportunistically
+    /// and falls back to CPU if no GPU device is available or the model fails to load
+    /// on it. A different <c>IMarkdownExportService</c> implementation is free to wire
+    /// GPU differently (or not at all) — this option only names the *preference*, not
+    /// how it's honoured.
     /// </summary>
     public AcceleratorPreference Accelerator { get; init; } = AcceleratorPreference.Cpu;
 }

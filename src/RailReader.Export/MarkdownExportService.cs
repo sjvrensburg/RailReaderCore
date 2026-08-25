@@ -30,46 +30,60 @@ public sealed class MarkdownExportService : IMarkdownExportService
     /// one, falls back to the CPU descriptor rather than failing the export — GPU is
     /// always additive here, never required. Returns null only if neither the GPU nor
     /// the CPU model file can be found on disk.
+    ///
+    /// <para>
+    /// The analyzer classes' <c>ConfigureSession</c> hooks are process-wide static
+    /// state (see <c>WebGpuAccelerator</c>'s "Thread safety" doc), so the *entire*
+    /// construction sequence — including the plain CPU-only path, which depends on
+    /// the hook being null — runs under <see cref="WebGpuAccelerator.ConstructionLock"/>.
+    /// Without that, a concurrent <see cref="ExportAsync"/> call on another thread
+    /// could set or clear the hook mid-construction here, e.g. loading the CPU model
+    /// onto the WebGPU EP or silently downgrading a concurrent GPU export to CPU.
+    /// </para>
     /// </summary>
     private ILayoutAnalyzer? BuildAnalyzer(AcceleratorPreference accelerator)
     {
-        var architecture = LayoutModelArchitecture.PPDocLayoutV3;
-
-        // Only actually attempt GPU once a device is confirmed present — a request
-        // with no available device (no Vulkan loader, no supported GPU, etc.) drops
-        // straight to the CPU path below rather than resolving the GPU descriptor
-        // and then discovering the mismatch later.
-        bool gpuEnabled = accelerator == AcceleratorPreference.Gpu && WebGpuAccelerator.TryEnable(architecture);
-        if (gpuEnabled)
+        lock (WebGpuAccelerator.ConstructionLock)
         {
-            try
-            {
-                var gpuPath = LayoutModelLocator.FindModelPath(LayoutModelRegistry.Resolve(architecture, AcceleratorPreference.Gpu));
-                if (gpuPath is null)
-                {
-                    _logger.Warn("GPU model not found on disk; falling back to CPU.");
-                }
-                else
-                {
-                    try
-                    {
-                        return LayoutAnalyzerFactory.Create(LayoutModelRegistry.Resolve(architecture, AcceleratorPreference.Gpu), gpuPath);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Warn($"GPU analyzer construction failed, falling back to CPU: {ex.Message}");
-                    }
-                }
-            }
-            finally
-            {
-                WebGpuAccelerator.Disable(architecture); // don't leak the hook past construction
-            }
-        }
+            var architecture = LayoutModelArchitecture.PPDocLayoutV3;
 
-        var cpuDescriptor = LayoutModelRegistry.Resolve(architecture, AcceleratorPreference.Cpu);
-        var cpuPath = LayoutModelLocator.FindModelPath(cpuDescriptor);
-        return cpuPath != null ? LayoutAnalyzerFactory.Create(cpuDescriptor, cpuPath) : null;
+            // Only actually attempt GPU once a device is confirmed present — a request
+            // with no available device (no Vulkan loader, no supported GPU, etc.) drops
+            // straight to the CPU path below rather than resolving the GPU descriptor
+            // and then discovering the mismatch later.
+            bool gpuEnabled = accelerator == AcceleratorPreference.Gpu && WebGpuAccelerator.TryEnable(architecture);
+            if (gpuEnabled)
+            {
+                try
+                {
+                    var gpuDescriptor = LayoutModelRegistry.Resolve(architecture, AcceleratorPreference.Gpu);
+                    var gpuPath = LayoutModelLocator.FindModelPath(gpuDescriptor);
+                    if (gpuPath is null)
+                    {
+                        _logger.Warn("GPU model not found on disk; falling back to CPU.");
+                    }
+                    else
+                    {
+                        try
+                        {
+                            return LayoutAnalyzerFactory.Create(gpuDescriptor, gpuPath);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Warn($"GPU analyzer construction failed, falling back to CPU: {ex.Message}");
+                        }
+                    }
+                }
+                finally
+                {
+                    WebGpuAccelerator.Disable(architecture); // don't leak the hook past construction
+                }
+            }
+
+            var cpuDescriptor = LayoutModelRegistry.Resolve(architecture, AcceleratorPreference.Cpu);
+            var cpuPath = LayoutModelLocator.FindModelPath(cpuDescriptor);
+            return cpuPath != null ? LayoutAnalyzerFactory.Create(cpuDescriptor, cpuPath) : null;
+        }
     }
 
     public async Task ExportAsync(

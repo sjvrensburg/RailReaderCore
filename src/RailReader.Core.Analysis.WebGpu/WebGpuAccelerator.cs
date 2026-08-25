@@ -36,9 +36,30 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// current analyzer/worker and rebuild it — the same shape as swapping layout models or
 /// toggling OCR mode elsewhere in this codebase.
 /// </para>
+///
+/// <para>
+/// <b>Thread safety.</b> <c>ConfigureSession</c> on each concrete analyzer class is
+/// process-wide static state with no synchronization of its own (see
+/// <c>AnalyzerSessionOptions</c>) — <see cref="TryEnable"/>/<see cref="Disable"/> only
+/// serialize against each other and the device probe via <see cref="ConstructionLock"/>,
+/// they cannot make a *plain* analyzer construction elsewhere safe by themselves. A
+/// caller that constructs analyzers from more than one thread — including a CPU-only
+/// construction, since it depends on the hook being null — must hold
+/// <see cref="ConstructionLock"/> for the entire "set hook (if any) → construct →
+/// reset hook" sequence, not just the calls into this class. <see cref="ConstructionLock"/>
+/// is reentrant-safe (a plain <c>lock</c>), so nesting is fine.
+/// </para>
 /// </summary>
 public static class WebGpuAccelerator
 {
+    /// <summary>
+    /// Guards the device probe and every read/write of a <c>ConfigureSession</c> hook
+    /// via this class. See the type doc's "Thread safety" section — a caller
+    /// constructing analyzers from multiple threads must hold this for its whole
+    /// construction sequence, not just calls into <see cref="TryEnable"/>/<see cref="Disable"/>.
+    /// </summary>
+    public static readonly object ConstructionLock = new();
+
     private static bool _probed;
     private static OrtEpDevice? _device;
 
@@ -49,15 +70,16 @@ public static class WebGpuAccelerator
     /// </summary>
     public static bool IsAvailable
     {
-        get { Probe(); return _device is not null; }
+        get { lock (ConstructionLock) { Probe(); return _device is not null; } }
     }
 
     /// <summary>Human-readable device identity, once probed; null if unavailable.</summary>
     public static string? DeviceDescription
     {
-        get { Probe(); return _device is null ? null : $"{_device.EpName} / {_device.EpVendor}"; }
+        get { lock (ConstructionLock) { Probe(); return _device is null ? null : $"{_device.EpName} / {_device.EpVendor}"; } }
     }
 
+    /// <summary>Caller must hold <see cref="ConstructionLock"/>.</summary>
     private static void Probe()
     {
         if (_probed) return;
@@ -85,16 +107,24 @@ public static class WebGpuAccelerator
     /// </summary>
     public static bool TryEnable(LayoutModelArchitecture architecture)
     {
-        if (!IsAvailable) return false;
-        var device = _device!;
-        SetHook(architecture, opts =>
-            opts.AppendExecutionProvider(OrtEnv.Instance(), new[] { device }, new Dictionary<string, string>()));
-        return true;
+        lock (ConstructionLock)
+        {
+            Probe();
+            if (_device is null) return false;
+            var device = _device;
+            SetHook(architecture, opts =>
+                opts.AppendExecutionProvider(OrtEnv.Instance(), new[] { device }, new Dictionary<string, string>()));
+            return true;
+        }
     }
 
     /// <summary>Reverts <paramref name="architecture"/>'s analyzer to CPU-only for the next construction.</summary>
-    public static void Disable(LayoutModelArchitecture architecture) => SetHook(architecture, null);
+    public static void Disable(LayoutModelArchitecture architecture)
+    {
+        lock (ConstructionLock) { SetHook(architecture, null); }
+    }
 
+    /// <summary>Caller must hold <see cref="ConstructionLock"/>.</summary>
     private static void SetHook(LayoutModelArchitecture architecture, Action<SessionOptions>? hook)
     {
         switch (architecture)
@@ -102,6 +132,7 @@ public static class WebGpuAccelerator
             case LayoutModelArchitecture.Heron: HeronLayoutAnalyzer.ConfigureSession = hook; break;
             case LayoutModelArchitecture.PPDocLayoutS: PPDocLayoutSLayoutAnalyzer.ConfigureSession = hook; break;
             case LayoutModelArchitecture.PPDocLayoutV3: LayoutAnalyzer.ConfigureSession = hook; break;
+            default: throw new ArgumentOutOfRangeException(nameof(architecture), architecture, "Unknown layout-model architecture");
         }
     }
 }
