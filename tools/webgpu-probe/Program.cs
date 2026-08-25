@@ -1,7 +1,6 @@
-using Microsoft.ML.OnnxRuntime;
-using Microsoft.ML.OnnxRuntime.EP.WebGpu;
 using RailReader.Core;
 using RailReader.Core.Analysis;
+using RailReader.Core.Analysis.WebGpu;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
 using RailReader.Renderer.Skia;
@@ -15,16 +14,20 @@ using RailReader.Renderer.Skia;
 // (reference-perf-measurement-caveats) rather than running two separate blocks.
 //
 // Usage:
-//   WebGpuProbe <pdf> <modelPath> <heron|v3|pps> [page=0] [iterations=20]
+//   WebGpuProbe <pdf> <heron|v3|pps> <cpuModelPath> [gpuModelPath] [page=0] [iterations=20]
+// gpuModelPath defaults to cpuModelPath (same-model CPU vs GPU comparison); pass a
+// separate FP16 export as gpuModelPath to compare a CPU-FP32 baseline against a
+// GPU-FP16 candidate in one run.
 if (args.Length < 3)
 {
-    Console.Error.WriteLine("usage: WebGpuProbe <pdf> <modelPath> <heron|v3|pps> [page] [iterations]");
+    Console.Error.WriteLine("usage: WebGpuProbe <pdf> <heron|v3|pps> <cpuModelPath> [gpuModelPath] [page] [iterations]");
     return 1;
 }
 
-string pdfPath = args[0], modelPath = args[1], archArg = args[2].ToLowerInvariant();
-int page = args.Length > 3 && int.TryParse(args[3], out var pg) ? pg : 0;
-int iterations = args.Length > 4 && int.TryParse(args[4], out var it) ? it : 20;
+string pdfPath = args[0], archArg = args[1].ToLowerInvariant(), cpuModelPath = args[2];
+string gpuModelPath = args.Length > 3 ? args[3] : cpuModelPath;
+int page = args.Length > 4 && int.TryParse(args[4], out var pg) ? pg : 0;
+int iterations = args.Length > 5 && int.TryParse(args[5], out var it) ? it : 20;
 
 var arch = archArg switch
 {
@@ -35,45 +38,14 @@ var arch = archArg switch
 };
 var caps = LayoutAnalyzerFactory.CapabilitiesFor(arch);
 
-// Each concrete analyzer class carries its own static ConfigureSession hook
-// (see AnalyzerSessionOptions) — set the one matching `arch` before construction.
-void SetHook(LayoutModelArchitecture a, Action<SessionOptions>? hook)
-{
-    switch (a)
-    {
-        case LayoutModelArchitecture.Heron: HeronLayoutAnalyzer.ConfigureSession = hook; break;
-        case LayoutModelArchitecture.PPDocLayoutS: PPDocLayoutSLayoutAnalyzer.ConfigureSession = hook; break;
-        case LayoutModelArchitecture.PPDocLayoutV3: LayoutAnalyzer.ConfigureSession = hook; break;
-    }
-}
-
 RailReaderLogging.Logger = NullLogger.Instance;
 
-// ---- register the WebGPU plugin EP and find a device ----
-var env = OrtEnv.Instance();
-OrtEpDevice? webGpuDevice = null;
-try
-{
-    env.RegisterExecutionProviderLibrary("webgpu_ep_registration", WebGpuEp.GetLibraryPath());
-    foreach (var d in env.GetEpDevices())
-    {
-        if (d.EpName == WebGpuEp.GetEpName()) { webGpuDevice = d; break; }
-    }
-}
-catch (Exception ex)
-{
-    Console.Error.WriteLine($"WebGPU EP registration failed: {ex.Message}");
-}
-
-if (webGpuDevice is null)
+if (!WebGpuAccelerator.IsAvailable)
 {
     Console.Error.WriteLine("No WebGPU device found (missing Vulkan loader / no supported GPU?). Aborting.");
     return 1;
 }
-Console.Error.WriteLine($"WebGPU device: {webGpuDevice.EpName} / {webGpuDevice.EpVendor}");
-
-void AppendWebGpu(SessionOptions opts) =>
-    opts.AppendExecutionProvider(env, new[] { webGpuDevice }, new Dictionary<string, string>());
+Console.Error.WriteLine($"WebGPU device: {WebGpuAccelerator.DeviceDescription}");
 
 // ---- rasterise the page once; both analyzers see identical input ----
 var factory = new SkiaPdfServiceFactory();
@@ -87,11 +59,11 @@ PageAnalysis Run(ILayoutAnalyzer analyzer) =>
     analyzer.RunAnalysis(rgb, pxW, pxH, pw, ph, pageText.CharBoxes, default);
 
 // ---- construct both analyzer instances up front (session build cost excluded from timing) ----
-SetHook(arch, null);
-using var cpuAnalyzer = LayoutAnalyzerFactory.Create(arch, modelPath);
-SetHook(arch, AppendWebGpu);
-using var gpuAnalyzer = LayoutAnalyzerFactory.Create(arch, modelPath);
-SetHook(arch, null); // don't leak the hook past construction
+WebGpuAccelerator.Disable(arch);
+using var cpuAnalyzer = LayoutAnalyzerFactory.Create(arch, cpuModelPath);
+WebGpuAccelerator.TryEnable(arch);
+using var gpuAnalyzer = LayoutAnalyzerFactory.Create(arch, gpuModelPath);
+WebGpuAccelerator.Disable(arch); // don't leak the hook past construction
 
 // warm up (first call on each backend pays one-time JIT/kernel-compile cost)
 var cpuWarm = Run(cpuAnalyzer);
@@ -122,6 +94,7 @@ double Median(List<double> xs)
 }
 
 Console.WriteLine($"arch={arch} page={page} pxSize={pxW}x{pxH} iterations={iterations}");
+Console.WriteLine($"cpuModel={Path.GetFileName(cpuModelPath)} gpuModel={Path.GetFileName(gpuModelPath)}");
 Console.WriteLine($"cpu:  median={Median(cpuMs):F1}ms  mean={cpuMs.Average():F1}ms  min={cpuMs.Min():F1}ms  max={cpuMs.Max():F1}ms");
 Console.WriteLine($"gpu:  median={Median(gpuMs):F1}ms  mean={gpuMs.Average():F1}ms  min={gpuMs.Min():F1}ms  max={gpuMs.Max():F1}ms");
 Console.WriteLine($"speedup (median cpu/gpu): {Median(cpuMs) / Median(gpuMs):F2}x");
