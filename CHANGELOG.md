@@ -1,5 +1,89 @@
 # Changelog
 
+## 0.60.0 — Native WebGPU GPU acceleration for layout models
+
+Adds optional GPU inference for the layout-detection models via ONNX Runtime's native
+WebGPU execution provider (Dawn → D3D12/Vulkan on Windows, Vulkan on Linux, Metal on
+macOS — no vendor SDK required, shipped 2026-08-24). Everything here is additive: no
+existing consumer's behaviour changes unless it opts in.
+
+**New package — `RailReader.Core.Analysis.WebGpu`.** `WebGpuAccelerator.IsAvailable`/
+`DeviceDescription` probe and cache the device once; `TryEnable(architecture)`/
+`Disable(architecture)` point that architecture's analyzer at the GPU device for its
+next construction, via the existing `ConfigureSession` hook — no other call site
+changes. Desktop-only RIDs (win-x64, win-arm64, linux-x64, osx-arm64 — no Android), so
+it's a separate package, not folded into `Core.Analysis`: a mobile consumer never sees
+it or its native binary.
+
+**Two new FP16 models.** Re-exported fresh from the PyTorch/HF Transformers source
+checkpoints — not converted from the existing FP32 ONNX, which doesn't work for these
+architectures (their detection-head postprocessing hits real bugs in post-hoc ONNX
+FP16 conversion tooling; see `tools/onnx-fp16-export/README.md` for the full story).
+Both are drop-in replacements for their FP32 counterparts, same tensor I/O contract:
+[`stefanj0/docling-layout-heron-fp16-onnx`](https://huggingface.co/stefanj0/docling-layout-heron-fp16-onnx)
+and
+[`stefanj0/PP-DocLayoutV3-FP16-ONNX`](https://huggingface.co/stefanj0/PP-DocLayoutV3-FP16-ONNX).
+Measured ~9.5× (Heron) / ~7.3× (PP-DocLayoutV3) speedup on a laptop-class GPU,
+validated against the real analysis pipeline including reading order, not just box
+positions. `PP-DocLayout-S` has no FP16 export — no PyTorch/HF source checkpoint
+exists to re-export from.
+
+**Accelerator-aware routing.** `LayoutModelRegistry.Resolve(architecture,
+AcceleratorPreference)` / `.DefaultFor(accelerator)` route to the right descriptor —
+CPU gets INT8/FP32, GPU gets FP16 where one exists, falling back to the CPU descriptor
+for PP-DocLayout-S rather than failing. `download-model.sh` gets `heron-fp16`/
+`ppdoc-fp16` targets, folded into `all`.
+
+**Reference consumer — `MarkdownExportService`.** `MarkdownExportOptions.Accelerator`
+(default `Cpu`, unchanged behaviour) is the working example of the fallback shape
+below.
+
+**For the railreader2 team — what changed and how to use it:**
+
+If you just want GPU speed with no new UI, there's nothing to do — this ships
+CPU-default everywhere.
+
+To expose it as an app setting:
+
+1. Reference `RailReader.Core.Analysis.WebGpu` from wherever you build the
+   `Func<ILayoutAnalyzer> analyzerFactory` passed into `DocumentController`
+   (`RailReader.Export` already references it unconditionally as the concrete in-repo
+   example — see `MarkdownExportService.BuildAnalyzer`).
+2. Add an `AcceleratorPreference Accelerator` to `AppConfig`, persisted like any other
+   setting.
+3. When building the analyzer:
+   `var descriptor = LayoutModelRegistry.Resolve(architecture, appConfig.Accelerator);`
+   then, if `Accelerator == Gpu`, call `WebGpuAccelerator.TryEnable(architecture)`
+   *before* resolving the GPU descriptor's path — not after, since a request with no
+   device present should never try to load the FP16 file. Fall back to
+   `Resolve(architecture, AcceleratorPreference.Cpu)` if `TryEnable` returns `false`,
+   the GPU model file isn't downloaded, or construction still throws. See
+   `MarkdownExportService.BuildAnalyzer` for the exact shape.
+4. **The execution provider is fixed at `InferenceSession` construction — no live
+   hot-swap.** A settings-panel toggle means disposing and rebuilding the current
+   analyzer/`AnalysisWorker` (same shape as swapping layout models or toggling OCR
+   mode already does).
+5. **Thread safety:** if your app can construct more than one analyzer at once (e.g.
+   multiple documents open in parallel, each with its own `AnalysisWorker`), hold
+   `WebGpuAccelerator.ConstructionLock` for the *entire* construction sequence on every
+   thread that builds an analyzer — including CPU-only construction, since it depends
+   on the shared static `ConfigureSession` hook being null too. See the type doc on
+   `WebGpuAccelerator` for the exact pattern; a high-effort code review of this
+   feature caught this race before release (a concurrent CPU export could load onto
+   the WebGPU EP, or silently downgrade a concurrent GPU export to CPU).
+6. Download the new models: `./scripts/download-model.sh heron-fp16` /
+   `./scripts/download-model.sh ppdoc-fp16` (or `all`).
+
+**Caveats to carry forward:**
+- `Microsoft.ML.OnnxRuntime.EP.WebGpu` is a brand-new (0.3.x) package — treat as
+  early/experimental, not battle-tested, before shipping broadly.
+- Benchmarks are from one dev box; GPU adapter selection wasn't independently
+  confirmed. Don't treat the speedup numbers as guaranteed across hardware.
+
+Fully additive to the public API surface: new package, new enum, new descriptors, one
+new optional field with a defaulted value. Nothing existing changed signature or
+behaviour.
+
 ## 0.59.0 — Fixed five-colour annotation palette, persisted per tool
 
 Annotation colour selection previously had three separate 3-entry preset arrays
