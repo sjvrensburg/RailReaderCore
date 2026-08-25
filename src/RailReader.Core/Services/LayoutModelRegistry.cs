@@ -41,6 +41,26 @@ public static class LayoutModelRegistry
         ProvidesReadingOrder: false,
         ApproxSizeMb: 164);
 
+    /// <summary>
+    /// Docling Heron FP16 (RT-DETRv2, 17-class) — re-exported from the PyTorch/HF
+    /// Transformers checkpoint (not converted from the FP32 ONNX; see
+    /// <c>tools/onnx-fp16-export/</c>) for GPU inference via the native WebGPU
+    /// execution provider (<c>RailReader.Core.Analysis.WebGpu</c>). Same I/O
+    /// contract as <see cref="Heron"/> — drop-in on the analyzer side. Runs on
+    /// CPU too (ORT upconverts), but is not the CPU-optimal choice —
+    /// <see cref="HeronInt8"/> is faster there.
+    /// </summary>
+    public static LayoutModelDescriptor HeronFp16 { get; } = new(
+        Id: "heron-fp16",
+        DisplayName: "Docling Heron — FP16 (GPU)",
+        Architecture: LayoutModelArchitecture.Heron,
+        FileName: "docling-layout-heron-fp16.onnx",
+        DownloadUrl: "https://huggingface.co/stefanj0/docling-layout-heron-fp16-onnx/resolve/main/docling-layout-heron-fp16.onnx",
+        RasterInputSize: 640,
+        ProvidesReadingOrder: false,
+        ApproxSizeMb: 86,
+        Sha256: "2289730c3b83d1b6ba19b1b59d035da3c3867f6bafcdc19cb982bcd940445ed8");
+
     /// <summary>PP-DocLayoutV3 FP32 (25-class, model-supplied reading order).</summary>
     public static LayoutModelDescriptor PPDocLayoutV3 { get; } = new(
         Id: "ppdoclayoutv3",
@@ -54,6 +74,25 @@ public static class LayoutModelRegistry
         ProvidesReadingOrder: true,
         ApproxSizeMb: 125,
         Sha256: "d24809294b2f9f1a9a2767043a64df2714b66e5be056887be2233d1117d784f6");
+
+    /// <summary>
+    /// PP-DocLayoutV3 FP16 — re-exported from the <c>PaddlePaddle/PP-DocLayoutV3_safetensors</c>
+    /// PyTorch/HF Transformers port (not converted from the FP32 ONNX; see
+    /// <c>tools/onnx-fp16-export/</c>) for GPU inference via the native WebGPU
+    /// execution provider (<c>RailReader.Core.Analysis.WebGpu</c>). Same
+    /// <c>[N,7]</c> detection-tensor contract (including model-supplied reading
+    /// order) as <see cref="PPDocLayoutV3"/> — drop-in on the analyzer side.
+    /// </summary>
+    public static LayoutModelDescriptor PPDocLayoutV3Fp16 { get; } = new(
+        Id: "ppdoclayoutv3-fp16",
+        DisplayName: "PP-DocLayoutV3 — FP16 (GPU)",
+        Architecture: LayoutModelArchitecture.PPDocLayoutV3,
+        FileName: "PP-DocLayoutV3-fp16.onnx",
+        DownloadUrl: "https://huggingface.co/stefanj0/PP-DocLayoutV3-FP16-ONNX/resolve/main/PP-DocLayoutV3-fp16.onnx",
+        RasterInputSize: 800,
+        ProvidesReadingOrder: true,
+        ApproxSizeMb: 68,
+        Sha256: "8bb693ed3b5dcc1cf926b15d89dfe6abf62bc11cdd0afd33c8ffe039db6f8209");
 
     /// <summary>PP-DocLayout-S (PicoDet/GFL, ~4.7 MB; intended for web/mobile).</summary>
     public static LayoutModelDescriptor PPDocLayoutS { get; } = new(
@@ -72,7 +111,7 @@ public static class LayoutModelRegistry
 
     /// <summary>All known models, default first.</summary>
     public static IReadOnlyList<LayoutModelDescriptor> All { get; } =
-        [HeronInt8, Heron, PPDocLayoutV3, PPDocLayoutS];
+        [HeronInt8, Heron, HeronFp16, PPDocLayoutV3, PPDocLayoutV3Fp16, PPDocLayoutS];
 
     /// <summary>Looks up a descriptor by its <see cref="LayoutModelDescriptor.Id"/>; null if unknown.</summary>
     public static LayoutModelDescriptor? ById(string id)
@@ -82,4 +121,41 @@ public static class LayoutModelRegistry
                 return d;
         return null;
     }
+
+    /// <summary>
+    /// Routes an architecture + <see cref="AcceleratorPreference"/> to the descriptor
+    /// that backend wants — CPU gets the CPU-optimal export (INT8 for Heron, plain
+    /// FP32 otherwise), GPU gets the FP16 export where one exists. Falls back to the
+    /// CPU descriptor for a GPU request when no FP16 export exists yet (PP-DocLayout-S)
+    /// — the caller still gets a working model, just not GPU-optimized; this is
+    /// deliberately never a hard failure so a caller can always ask for GPU and get
+    /// something back. This only picks the model <em>file</em>; it does not enable a
+    /// GPU execution provider — pair a <see cref="AcceleratorPreference.Gpu"/> result
+    /// with <c>WebGpuAccelerator.TryEnable</c> (<c>RailReader.Core.Analysis.WebGpu</c>)
+    /// before constructing the analyzer, and fall back to
+    /// <c>Resolve(architecture, AcceleratorPreference.Cpu)</c> if that returns false or
+    /// analyzer construction still throws (device presence doesn't guarantee every
+    /// model loads on it).
+    /// </summary>
+    public static LayoutModelDescriptor Resolve(LayoutModelArchitecture architecture, AcceleratorPreference accelerator) =>
+        (architecture, accelerator) switch
+        {
+            (LayoutModelArchitecture.Heron, AcceleratorPreference.Gpu) => HeronFp16,
+            (LayoutModelArchitecture.Heron, _) => HeronInt8,
+            (LayoutModelArchitecture.PPDocLayoutV3, AcceleratorPreference.Gpu) => PPDocLayoutV3Fp16,
+            (LayoutModelArchitecture.PPDocLayoutV3, _) => PPDocLayoutV3,
+            (LayoutModelArchitecture.PPDocLayoutS, _) => PPDocLayoutS,
+            _ => throw new System.ArgumentOutOfRangeException(
+                nameof(architecture), architecture, "Unknown layout-model architecture"),
+        };
+
+    /// <summary>
+    /// The recommended model for <paramref name="accelerator"/>, independent of any
+    /// particular architecture choice — <see cref="Default"/>'s GPU-aware counterpart.
+    /// Currently routes through Heron (<see cref="HeronInt8"/>/<see cref="HeronFp16"/>)
+    /// for both preferences, so switching accelerators doesn't also switch the model's
+    /// class taxonomy underneath the caller.
+    /// </summary>
+    public static LayoutModelDescriptor DefaultFor(AcceleratorPreference accelerator) =>
+        Resolve(LayoutModelArchitecture.Heron, accelerator);
 }

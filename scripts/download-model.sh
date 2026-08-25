@@ -5,7 +5,9 @@
 #   ./download-model.sh             # download default model (Heron INT8, recommended)
 #   ./download-model.sh heron-int8  # Docling Heron, backbone-only INT8 (~69 MB) — default
 #   ./download-model.sh heron       # Docling Heron FP32 (~164 MB)
+#   ./download-model.sh heron-fp16  # Docling Heron FP16, for GPU/WebGPU (~86 MB)
 #   ./download-model.sh ppdoc       # PP-DocLayoutV3 FP32 (~125 MB)
+#   ./download-model.sh ppdoc-fp16  # PP-DocLayoutV3 FP16, for GPU/WebGPU (~68 MB)
 #   ./download-model.sh pps         # PP-DocLayout-S only (lightweight, ~4.7 MB)
 #   ./download-model.sh all         # all of the above
 set -e
@@ -79,6 +81,41 @@ download_heron() {
     echo "Downloaded to $path ($(du -h "$path" | cut -f1))"
 }
 
+download_heron_fp16() {
+    # Docling Heron FP16 (RT-DETRv2, 17-class, 640x640) — re-exported from the
+    # PyTorch/HF Transformers checkpoint (not converted from the FP32 ONNX;
+    # see tools/onnx-fp16-export/) for GPU inference via the native WebGPU
+    # execution provider (RailReader.Core.Analysis.WebGpu). Same I/O contract
+    # as download_heron's FP32 export.
+    local path="$MODEL_DIR/docling-layout-heron-fp16.onnx"
+    if [ -f "$path" ]; then
+        echo "Docling Heron FP16 already exists at $path"
+        return
+    fi
+    local url="${HERON_FP16_ONNX_URL:-https://huggingface.co/stefanj0/docling-layout-heron-fp16-onnx/resolve/main/docling-layout-heron-fp16.onnx}"
+    echo "Downloading docling-layout-heron-fp16.onnx (~86 MB)..."
+    curl -L -o "$path" "$url"
+    echo "Downloaded to $path ($(du -h "$path" | cut -f1))"
+}
+
+download_ppdoc_fp16() {
+    # PP-DocLayoutV3 FP16 — re-exported from the PaddlePaddle/PP-DocLayoutV3_safetensors
+    # PyTorch/HF Transformers port (not converted from the FP32 ONNX; see
+    # tools/onnx-fp16-export/) for GPU inference via the native WebGPU
+    # execution provider (RailReader.Core.Analysis.WebGpu). Same [N,7]
+    # detection-tensor contract (including model-supplied reading order) as
+    # download_ppdoc's FP32 export.
+    local path="$MODEL_DIR/PP-DocLayoutV3-fp16.onnx"
+    if [ -f "$path" ]; then
+        echo "PP-DocLayoutV3 FP16 already exists at $path"
+        return
+    fi
+    local url="${PPDOC_FP16_ONNX_URL:-https://huggingface.co/stefanj0/PP-DocLayoutV3-FP16-ONNX/resolve/main/PP-DocLayoutV3-fp16.onnx}"
+    echo "Downloading PP-DocLayoutV3-fp16.onnx (~68 MB)..."
+    curl -L -o "$path" "$url"
+    echo "Downloaded to $path ($(du -h "$path" | cut -f1))"
+}
+
 case "$WHICH" in
     heron-int8|heronint8|int8|default)
         download_heron_int8
@@ -86,17 +123,25 @@ case "$WHICH" in
     ppdoc|pp|ppdoclayoutv3)
         download_ppdoc
         ;;
+    ppdoc-fp16|ppdoclayoutv3-fp16)
+        download_ppdoc_fp16
+        ;;
     pps|pp-s|ppdocs|ppdoclayouts)
         download_pps
         ;;
     heron|docling)
         download_heron
         ;;
+    heron-fp16|heronfp16)
+        download_heron_fp16
+        ;;
     all)
         download_heron_int8
         download_ppdoc
+        download_ppdoc_fp16
         download_pps
         download_heron
+        download_heron_fp16
         ;;
     both)
         download_ppdoc
@@ -104,7 +149,7 @@ case "$WHICH" in
         ;;
     *)
         echo "Unknown model: $WHICH" >&2
-        echo "Usage: $0 [heron-int8|heron|ppdoc|pps|all]" >&2
+        echo "Usage: $0 [heron-int8|heron|heron-fp16|ppdoc|ppdoc-fp16|pps|all]" >&2
         exit 1
         ;;
 esac

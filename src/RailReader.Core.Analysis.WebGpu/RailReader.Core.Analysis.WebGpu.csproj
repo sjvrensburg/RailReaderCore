@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsPackable>true</IsPackable>
+    <PackageId>RailReader.Core.Analysis.WebGpu</PackageId>
+    <Description>Opt-in GPU acceleration for RailReader.Core.Analysis's layout analyzers via ONNX Runtime's native WebGPU plugin execution provider (Dawn -&gt; D3D12/Vulkan/Metal).</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../RailReader.Core/RailReader.Core.csproj" />
+    <ProjectReference Include="../RailReader.Core.Analysis/RailReader.Core.Analysis.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Separate package (not a Core.Analysis dependency) because its published RIDs
+         are desktop-only (win-x64, win-arm64, linux-x64, osx-arm64) — no Android. A
+         mobile consumer references Core.Analysis alone and never sees this package or
+         its native binary. Plugin EP, not a mutually-exclusive native swap: the app
+         keeps referencing plain Microsoft.ML.OnnxRuntime (CPU) and this package adds a
+         separate shared library registered at runtime only when GPU mode is selected —
+         see WebGpuAccelerator. Requires core ORT >=1.24.4 (Core.Analysis's "1.24.*"
+         floating pin already resolves to 1.24.4+). -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.EP.WebGpu" Version="0.3.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
