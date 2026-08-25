@@ -1,0 +1,5 @@
+transformers>=5
+onnx
+onnxruntime
+onnxsim
+accelerate
