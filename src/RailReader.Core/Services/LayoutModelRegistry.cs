@@ -121,4 +121,41 @@ public static class LayoutModelRegistry
                 return d;
         return null;
     }
+
+    /// <summary>
+    /// Routes an architecture + <see cref="AcceleratorPreference"/> to the descriptor
+    /// that backend wants — CPU gets the CPU-optimal export (INT8 for Heron, plain
+    /// FP32 otherwise), GPU gets the FP16 export where one exists. Falls back to the
+    /// CPU descriptor for a GPU request when no FP16 export exists yet (PP-DocLayout-S)
+    /// — the caller still gets a working model, just not GPU-optimized; this is
+    /// deliberately never a hard failure so a caller can always ask for GPU and get
+    /// something back. This only picks the model <em>file</em>; it does not enable a
+    /// GPU execution provider — pair a <see cref="AcceleratorPreference.Gpu"/> result
+    /// with <c>WebGpuAccelerator.TryEnable</c> (<c>RailReader.Core.Analysis.WebGpu</c>)
+    /// before constructing the analyzer, and fall back to
+    /// <c>Resolve(architecture, AcceleratorPreference.Cpu)</c> if that returns false or
+    /// analyzer construction still throws (device presence doesn't guarantee every
+    /// model loads on it).
+    /// </summary>
+    public static LayoutModelDescriptor Resolve(LayoutModelArchitecture architecture, AcceleratorPreference accelerator) =>
+        (architecture, accelerator) switch
+        {
+            (LayoutModelArchitecture.Heron, AcceleratorPreference.Gpu) => HeronFp16,
+            (LayoutModelArchitecture.Heron, _) => HeronInt8,
+            (LayoutModelArchitecture.PPDocLayoutV3, AcceleratorPreference.Gpu) => PPDocLayoutV3Fp16,
+            (LayoutModelArchitecture.PPDocLayoutV3, _) => PPDocLayoutV3,
+            (LayoutModelArchitecture.PPDocLayoutS, _) => PPDocLayoutS,
+            _ => throw new System.ArgumentOutOfRangeException(
+                nameof(architecture), architecture, "Unknown layout-model architecture"),
+        };
+
+    /// <summary>
+    /// The recommended model for <paramref name="accelerator"/>, independent of any
+    /// particular architecture choice — <see cref="Default"/>'s GPU-aware counterpart.
+    /// Currently routes through Heron (<see cref="HeronInt8"/>/<see cref="HeronFp16"/>)
+    /// for both preferences, so switching accelerators doesn't also switch the model's
+    /// class taxonomy underneath the caller.
+    /// </summary>
+    public static LayoutModelDescriptor DefaultFor(AcceleratorPreference accelerator) =>
+        Resolve(LayoutModelArchitecture.Heron, accelerator);
 }

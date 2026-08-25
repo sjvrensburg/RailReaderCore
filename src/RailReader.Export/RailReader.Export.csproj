@@ -20,6 +20,7 @@
     <ProjectReference Include="../RailReader.Core/RailReader.Core.csproj" />
     <ProjectReference Include="../RailReader.Core.Pdfium/RailReader.Core.Pdfium.csproj" />
     <ProjectReference Include="../RailReader.Core.Analysis/RailReader.Core.Analysis.csproj" />
+    <ProjectReference Include="../RailReader.Core.Analysis.WebGpu/RailReader.Core.Analysis.WebGpu.csproj" />
     <ProjectReference Include="../RailReader.Renderer.Skia/RailReader.Renderer.Skia.csproj" />
     <ProjectReference Include="../RailReader.Core.Vlm.OpenAI/RailReader.Core.Vlm.OpenAI.csproj" />
   </ItemGroup>

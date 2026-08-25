@@ -1,6 +1,7 @@
 using System.Text;
 using RailReader.Core;
 using RailReader.Core.Analysis;
+using RailReader.Core.Analysis.WebGpu;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
 using RailReader.Core.Vlm.OpenAI;
@@ -23,6 +24,54 @@ public sealed class MarkdownExportService : IMarkdownExportService
         _logger = logger ?? NullLogger.Instance;
     }
 
+    /// <summary>
+    /// Resolves and constructs the layout analyzer for <paramref name="accelerator"/>.
+    /// A GPU request that has no available device, or whose model fails to load on
+    /// one, falls back to the CPU descriptor rather than failing the export — GPU is
+    /// always additive here, never required. Returns null only if neither the GPU nor
+    /// the CPU model file can be found on disk.
+    /// </summary>
+    private ILayoutAnalyzer? BuildAnalyzer(AcceleratorPreference accelerator)
+    {
+        var architecture = LayoutModelArchitecture.PPDocLayoutV3;
+
+        // Only actually attempt GPU once a device is confirmed present — a request
+        // with no available device (no Vulkan loader, no supported GPU, etc.) drops
+        // straight to the CPU path below rather than resolving the GPU descriptor
+        // and then discovering the mismatch later.
+        bool gpuEnabled = accelerator == AcceleratorPreference.Gpu && WebGpuAccelerator.TryEnable(architecture);
+        if (gpuEnabled)
+        {
+            try
+            {
+                var gpuPath = LayoutModelLocator.FindModelPath(LayoutModelRegistry.Resolve(architecture, AcceleratorPreference.Gpu));
+                if (gpuPath is null)
+                {
+                    _logger.Warn("GPU model not found on disk; falling back to CPU.");
+                }
+                else
+                {
+                    try
+                    {
+                        return LayoutAnalyzerFactory.Create(LayoutModelRegistry.Resolve(architecture, AcceleratorPreference.Gpu), gpuPath);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warn($"GPU analyzer construction failed, falling back to CPU: {ex.Message}");
+                    }
+                }
+            }
+            finally
+            {
+                WebGpuAccelerator.Disable(architecture); // don't leak the hook past construction
+            }
+        }
+
+        var cpuDescriptor = LayoutModelRegistry.Resolve(architecture, AcceleratorPreference.Cpu);
+        var cpuPath = LayoutModelLocator.FindModelPath(cpuDescriptor);
+        return cpuPath != null ? LayoutAnalyzerFactory.Create(cpuDescriptor, cpuPath) : null;
+    }
+
     public async Task ExportAsync(
         string pdfPath,
         TextWriter output,
@@ -36,10 +85,7 @@ public sealed class MarkdownExportService : IMarkdownExportService
         if (err != null)
             throw new ArgumentException(err);
 
-        var modelPath = LayoutModelLocator.FindModelPath(LayoutModelRegistry.PPDocLayoutV3);
-        using var analyzer = modelPath != null
-            ? LayoutAnalyzerFactory.Create(LayoutModelRegistry.PPDocLayoutV3, modelPath)
-            : null;
+        using var analyzer = BuildAnalyzer(options.Accelerator);
 
         AnnotationFile? annotationFile = null;
         if (options.IncludeAnnotations)
