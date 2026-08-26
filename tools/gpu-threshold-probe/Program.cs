@@ -22,19 +22,33 @@ using RailReader.Renderer.Skia;
 // why this tool doesn't need the FP16 GPU EP re-run per threshold value.
 //
 // Usage:
-//   GpuThresholdProbe <pdfDir> <heron|v3> <cpuModelPath> <gpuModelPath> [pagesPerPdf=2] [minThr=0.10] [maxThr=0.60] [step=0.05]
-if (args.Length < 4)
+//   GpuThresholdProbe <pdfDir> <heron|v3> <cpuModelPath> <gpuModelPath> [pagesPerPdf=2] [minThr=0.10] [maxThr=0.60] [step=0.05] [--diagnose[=thr]]
+//
+// --diagnose[=thr] switches to a per-page box-level breakdown at a fixed
+// threshold (default: production LayoutConstants.ConfidenceThreshold),
+// classifying every unmatched box instead of just an aggregate recall
+// number — see issue #109: the aggregate sweep alone couldn't distinguish
+// "GPU box moved/shrank" from "GPU box never detected" from "GPU produced a
+// duplicate that ate the match slot".
+bool diagnose = args.Any(a => a.StartsWith("--diagnose", StringComparison.Ordinal));
+float diagnoseThr = LayoutConstants.ConfidenceThreshold;
 {
-    Console.Error.WriteLine("usage: GpuThresholdProbe <pdfDir> <heron|v3> <cpuModelPath> <gpuModelPath> [pagesPerPdf] [minThr] [maxThr] [step]");
+    var diagArg = args.FirstOrDefault(a => a.StartsWith("--diagnose=", StringComparison.Ordinal));
+    if (diagArg is not null) diagnoseThr = float.Parse(diagArg["--diagnose=".Length..]);
+}
+var positional = args.Where(a => !a.StartsWith("--", StringComparison.Ordinal)).ToArray();
+if (positional.Length < 4)
+{
+    Console.Error.WriteLine("usage: GpuThresholdProbe <pdfDir> <heron|v3> <cpuModelPath> <gpuModelPath> [pagesPerPdf] [minThr] [maxThr] [step] [--diagnose[=thr]]");
     return 1;
 }
 
-string pdfDir = args[0], archArg = args[1].ToLowerInvariant();
-string cpuModelPath = args[2], gpuModelPath = args[3];
-int pagesPerPdf = args.Length > 4 ? int.Parse(args[4]) : 2;
-float minThr = args.Length > 5 ? float.Parse(args[5]) : 0.10f;
-float maxThr = args.Length > 6 ? float.Parse(args[6]) : 0.60f;
-float step = args.Length > 7 ? float.Parse(args[7]) : 0.05f;
+string pdfDir = positional[0], archArg = positional[1].ToLowerInvariant();
+string cpuModelPath = positional[2], gpuModelPath = positional[3];
+int pagesPerPdf = positional.Length > 4 ? int.Parse(positional[4]) : 2;
+float minThr = positional.Length > 5 ? float.Parse(positional[5]) : 0.10f;
+float maxThr = positional.Length > 6 ? float.Parse(positional[6]) : 0.60f;
+float step = positional.Length > 7 ? float.Parse(positional[7]) : 0.05f;
 const float LowThreshold = 0.01f;
 
 var arch = archArg switch
@@ -79,7 +93,7 @@ var factory = new SkiaPdfServiceFactory();
 var pdfs = Directory.GetFiles(pdfDir, "*.pdf").OrderBy(p => p).ToArray();
 Console.Error.WriteLine($"Corpus: {pdfs.Length} PDFs from {pdfDir}, <= {pagesPerPdf} pages each");
 
-var pages = new List<(List<LayoutBlock> cpu, List<LayoutBlock> gpuLow)>();
+var pages = new List<(string pdf, int page, List<LayoutBlock> cpu, List<LayoutBlock> gpuLow)>();
 foreach (var pdf in pdfs)
 {
     IPdfService svc;
@@ -95,7 +109,7 @@ foreach (var pdf in pdfs)
             var (rgb, pxW, pxH) = svc.RenderPagePixmap(p, caps.InputSize);
             var cpuResult = cpuAnalyzer.RunAnalysis(rgb, pxW, pxH, pw, ph, null, default);
             var gpuResult = gpuAnalyzer.RunAnalysis(rgb, pxW, pxH, pw, ph, null, default);
-            pages.Add((cpuResult.Blocks, gpuResult.Blocks));
+            pages.Add((Path.GetFileName(pdf), p, cpuResult.Blocks, gpuResult.Blocks));
         }
         catch (Exception e)
         {
@@ -119,53 +133,107 @@ static float Iou(BBox a, BBox b)
 // Greedy IoU match, class-agnostic (mirrors compare_accuracy.py's primary
 // metric): each GPU (hypothesis) box claims its best still-unused CPU
 // (reference) box above the IoU floor, highest-confidence hypothesis first.
-static (int matched, double sumIou) Match(List<LayoutBlock> refBlocks, List<LayoutBlock> hypBlocks, float iouFloor = 0.5f)
+// refUsed/hypUsed are returned so the diagnostic pass can classify leftovers.
+static (int matched, double sumIou, bool[] refUsed, bool[] hypUsed) Match(
+    List<LayoutBlock> refBlocks, List<LayoutBlock> hypBlocksOrdered, float iouFloor = 0.5f)
 {
-    var used = new bool[refBlocks.Count];
+    var refUsed = new bool[refBlocks.Count];
+    var hypUsed = new bool[hypBlocksOrdered.Count];
     int matched = 0;
     double sumIou = 0;
-    foreach (var h in hypBlocks.OrderByDescending(b => b.Confidence))
+    for (int hi = 0; hi < hypBlocksOrdered.Count; hi++)
     {
+        var h = hypBlocksOrdered[hi];
         int bestJ = -1;
         float best = 0f;
         for (int j = 0; j < refBlocks.Count; j++)
         {
-            if (used[j]) continue;
+            if (refUsed[j]) continue;
             float v = Iou(h.BBox, refBlocks[j].BBox);
             if (v > best) { best = v; bestJ = j; }
         }
         if (bestJ >= 0 && best >= iouFloor)
         {
-            used[bestJ] = true;
+            refUsed[bestJ] = true;
+            hypUsed[hi] = true;
             matched++;
             sumIou += best;
         }
     }
-    return (matched, sumIou);
+    return (matched, sumIou, refUsed, hypUsed);
 }
 
-Console.WriteLine($"arch={arch} cpuModel={Path.GetFileName(cpuModelPath)} gpuModel={Path.GetFileName(gpuModelPath)} pages={pages.Count}");
-Console.WriteLine($"{"thr",6} {"recall",8} {"prec",8} {"meanIoU",8} {"cpuBlk",8} {"gpuBlk",8}");
-
-for (float t = minThr; t <= maxThr + 1e-6f; t += step)
+if (diagnose)
 {
-    int refTotal = 0, hypTotal = 0, matchedTotal = 0;
-    double sumIou = 0;
-    foreach (var (cpu, gpuLow) in pages)
+    Console.WriteLine($"\n=== Diagnose @ threshold={diagnoseThr:F2} ===");
+    int totalMiss = 0, totalExtra = 0, missPartial = 0, missFull = 0, extraDuplicate = 0, extraSpurious = 0;
+    var worstPages = new List<(string pdf, int page, int miss, int extra)>();
+
+    foreach (var (pdf, page, cpu, gpuLow) in pages)
     {
-        var gpuAtT = gpuLow.Where(b => b.Confidence >= t).ToList();
-        var (matched, iouSum) = Match(cpu, gpuAtT);
-        refTotal += cpu.Count;
-        hypTotal += gpuAtT.Count;
-        matchedTotal += matched;
-        sumIou += iouSum;
+        var gpuAtT = gpuLow.Where(b => b.Confidence >= diagnoseThr)
+            .OrderByDescending(b => b.Confidence).ToList();
+        var (_, _, refUsed, hypUsed) = Match(cpu, gpuAtT);
+
+        var misses = Enumerable.Range(0, cpu.Count).Where(j => !refUsed[j]).Select(j => cpu[j]).ToList();
+        var extras = Enumerable.Range(0, gpuAtT.Count).Where(i => !hypUsed[i]).Select(i => gpuAtT[i]).ToList();
+        var matchedGpuBoxes = Enumerable.Range(0, gpuAtT.Count).Where(i => hypUsed[i]).Select(i => gpuAtT[i]).ToList();
+
+        foreach (var miss in misses)
+        {
+            // Was it detected at all (any GPU box, even below threshold, with
+            // meaningful overlap) but just didn't survive as a clean match —
+            // or did the GPU model never propose anything there?
+            bool anyOverlap = gpuLow.Any(g => Iou(g.BBox, miss.BBox) >= 0.1f);
+            if (anyOverlap) missPartial++; else missFull++;
+        }
+        foreach (var extra in extras)
+        {
+            // Does this leftover GPU box sit on top of ANOTHER GPU box that
+            // already has (or could have) a match — i.e. a near-duplicate the
+            // model's own NMS should have suppressed?
+            bool duplicate = gpuAtT.Any(g => !ReferenceEquals(g, extra) && Iou(g.BBox, extra.BBox) >= 0.3f);
+            if (duplicate) extraDuplicate++; else extraSpurious++;
+        }
+
+        totalMiss += misses.Count;
+        totalExtra += extras.Count;
+        worstPages.Add((pdf, page, misses.Count, extras.Count));
     }
-    double recall = refTotal > 0 ? (double)matchedTotal / refTotal : 0;
-    double precision = hypTotal > 0 ? (double)matchedTotal / hypTotal : 0;
-    double meanIou = matchedTotal > 0 ? sumIou / matchedTotal : 0;
-    double avgCpuBlk = pages.Count > 0 ? (double)refTotal / pages.Count : 0;
-    double avgGpuBlk = pages.Count > 0 ? (double)hypTotal / pages.Count : 0;
-    Console.WriteLine($"{t,6:F2} {recall,8:F3} {precision,8:F3} {meanIou,8:F3} {avgCpuBlk,8:F2} {avgGpuBlk,8:F2}");
+
+    Console.WriteLine($"pages={pages.Count}  total CPU-only misses={totalMiss}  total GPU-only extras={totalExtra}");
+    Console.WriteLine($"  misses: fully-undetected(no GPU box within IoU>=0.1)={missFull}  partially-detected-but-unmatched={missPartial}");
+    Console.WriteLine($"  extras: near-duplicate-of-another-GPU-box(IoU>=0.3)={extraDuplicate}  spurious(no overlap)={extraSpurious}");
+
+    Console.WriteLine("\nWorst 10 pages by (miss+extra):");
+    foreach (var wp in worstPages.OrderByDescending(w => w.miss + w.extra).Take(10))
+        Console.WriteLine($"  {wp.pdf} p{wp.page}: miss={wp.miss} extra={wp.extra}");
+}
+else
+{
+    Console.WriteLine($"arch={arch} cpuModel={Path.GetFileName(cpuModelPath)} gpuModel={Path.GetFileName(gpuModelPath)} pages={pages.Count}");
+    Console.WriteLine($"{"thr",6} {"recall",8} {"prec",8} {"meanIoU",8} {"cpuBlk",8} {"gpuBlk",8}");
+
+    for (float t = minThr; t <= maxThr + 1e-6f; t += step)
+    {
+        int refTotal = 0, hypTotal = 0, matchedTotal = 0;
+        double sumIou = 0;
+        foreach (var (_, _, cpu, gpuLow) in pages)
+        {
+            var gpuAtT = gpuLow.Where(b => b.Confidence >= t).OrderByDescending(b => b.Confidence).ToList();
+            var (matched, iouSum, _, _) = Match(cpu, gpuAtT);
+            refTotal += cpu.Count;
+            hypTotal += gpuAtT.Count;
+            matchedTotal += matched;
+            sumIou += iouSum;
+        }
+        double recall = refTotal > 0 ? (double)matchedTotal / refTotal : 0;
+        double precision = hypTotal > 0 ? (double)matchedTotal / hypTotal : 0;
+        double meanIou = matchedTotal > 0 ? sumIou / matchedTotal : 0;
+        double avgCpuBlk = pages.Count > 0 ? (double)refTotal / pages.Count : 0;
+        double avgGpuBlk = pages.Count > 0 ? (double)hypTotal / pages.Count : 0;
+        Console.WriteLine($"{t,6:F2} {recall,8:F3} {precision,8:F3} {meanIou,8:F3} {avgCpuBlk,8:F2} {avgGpuBlk,8:F2}");
+    }
 }
 
 (cpuAnalyzer as IDisposable)?.Dispose();
