@@ -100,6 +100,20 @@ public static class WebGpuAccelerator
     }
 
     /// <summary>
+    /// ONNX Runtime's WebGPU EP registers int64 kernels (Add, Sub, Equal, …) only when
+    /// this provider option is set — off by default (see upstream
+    /// microsoft/onnxruntime#29392, #29844). Without it, a graph with an int64 node on
+    /// the EP's covered ops (e.g. Heron/RT-DETR's <c>orig_target_sizes</c>-driven
+    /// post-processing) fails kernel lookup at <c>Run()</c> time with "GetElementType is
+    /// not implemented" — a plugin-EP kernel-registration gap, not a construction
+    /// failure, so it isn't caught by the caller-side construction fallback described
+    /// above. WebGPU int64 arithmetic is backed by i32 (low 32 bits only); safe here
+    /// since every int64 tensor these models pass is page pixel dimensions, far inside
+    /// int32 range. See issue #108.
+    /// </summary>
+    private const string EnableInt64Option = "ep.webgpuexecutionprovider.enableInt64";
+
+    /// <summary>
     /// Points <paramref name="architecture"/>'s analyzer at the WebGPU device for the
     /// next construction. Returns <c>false</c> (and leaves the hook untouched) if no
     /// device was found — the analyzer then builds on CPU exactly as if this were never
@@ -113,7 +127,8 @@ public static class WebGpuAccelerator
             if (_device is null) return false;
             var device = _device;
             SetHook(architecture, opts =>
-                opts.AppendExecutionProvider(OrtEnv.Instance(), new[] { device }, new Dictionary<string, string>()));
+                opts.AppendExecutionProvider(OrtEnv.Instance(), new[] { device },
+                    new Dictionary<string, string> { [EnableInt64Option] = "1" }));
             return true;
         }
     }
