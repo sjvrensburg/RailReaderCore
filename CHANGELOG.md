@@ -1,5 +1,23 @@
 # Changelog
 
+## ⚠ GPU layout detection currently not recommended (2026-08-26)
+
+Investigating #109 traced the root cause to a correctness bug in ONNX Runtime's WebGPU EP
+`GridSample` kernel (deformable-attention sampling, used by both Heron and PP-DocLayoutV3's
+RT-DETR-family decoders): everything upstream of the first `GridSample` node matches the CPU EP
+at cosine similarity 0.9999–1.0, then collapses to ~0.52 and stays broken through the rest of the
+decoder — not a threshold-calibration or FP16-precision issue, a genuine kernel bug. Filed
+upstream: [microsoft/onnxruntime#32275](https://github.com/microsoft/onnxruntime/issues/32275).
+
+**Until that's fixed upstream, GPU acceleration (`RailReader.Core.Analysis.WebGpu`,
+`AcceleratorPreference.Gpu`) should not be recommended or defaulted on for either layout model.**
+It substantially under-detects relative to CPU — this is not subtle: recall on a real-page corpus
+drops to ~0.48 at the production confidence threshold and doesn't recover even near an
+unfiltered floor. The 0.60.0 entry below undersold this as "early/experimental, not
+battle-tested" — it is confirmed broken for dense/tabular content, not just unvalidated. The
+feature stays additive/opt-in as shipped (nothing changes for a consumer that never calls
+`WebGpuAccelerator.TryEnable`); this note is a recommendation change, not a code change.
+
 ## 0.60.1 — Fix WebGPU EP crash on int64 ops (Heron FP16)
 
 `WebGpuAccelerator.TryEnable` passed an empty options dictionary to

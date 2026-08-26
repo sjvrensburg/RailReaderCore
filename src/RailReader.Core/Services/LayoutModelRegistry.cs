@@ -49,6 +49,11 @@ public static class LayoutModelRegistry
     /// contract as <see cref="Heron"/> — drop-in on the analyzer side. Runs on
     /// CPU too (ORT upconverts), but is not the CPU-optimal choice —
     /// <see cref="HeronInt8"/> is faster there.
+    /// <b>⚠ GPU inference via WebGPU is not currently recommended</b> — a confirmed
+    /// ONNX Runtime WebGPU EP bug in the <c>GridSample</c> kernel (this model's
+    /// decoder uses deformable attention) causes substantial under-detection vs
+    /// CPU. See <c>WebGpuAccelerator</c>'s doc comment and memory
+    /// project-webgpu-gridsample-bug.
     /// </summary>
     public static LayoutModelDescriptor HeronFp16 { get; } = new(
         Id: "heron-fp16",
@@ -82,6 +87,10 @@ public static class LayoutModelRegistry
     /// execution provider (<c>RailReader.Core.Analysis.WebGpu</c>). Same
     /// <c>[N,7]</c> detection-tensor contract (including model-supplied reading
     /// order) as <see cref="PPDocLayoutV3"/> — drop-in on the analyzer side.
+    /// <b>⚠ GPU inference via WebGPU is not currently recommended</b> — same
+    /// <c>GridSample</c>/WebGPU EP bug as <see cref="HeronFp16"/> (this model's
+    /// decoder is also RT-DETR-family deformable attention). See
+    /// <c>WebGpuAccelerator</c>'s doc comment and memory project-webgpu-gridsample-bug.
     /// </summary>
     public static LayoutModelDescriptor PPDocLayoutV3Fp16 { get; } = new(
         Id: "ppdoclayoutv3-fp16",

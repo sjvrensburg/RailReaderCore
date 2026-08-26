@@ -1,5 +1,16 @@
 # onnx-fp16-export
 
+> ⚠ **GPU inference via the WebGPU EP is not currently recommended for either export
+> produced here.** ONNX Runtime's WebGPU EP has a confirmed correctness bug in its
+> `GridSample` kernel — both Heron and PP-DocLayoutV3 are RT-DETR-family and depend on
+> `GridSample` for deformable attention, so both substantially under-detect on GPU vs
+> CPU. Root-caused and filed upstream:
+> https://github.com/microsoft/onnxruntime/issues/32275. See
+> `tools/gpu-threshold-probe` and `tools/webgpu-diag` for the diagnostic data, and
+> project memory `project-webgpu-gridsample-bug`. The exports themselves are fine
+> (validated against the CPU/FP32 reference) — the bug is in ORT's execution of
+> `GridSample` on the WebGPU EP, not in these FP16 conversions.
+
 Produces FP16 ONNX exports of the two layout-detection models that have real
 PyTorch/HF Transformers source checkpoints (Heron, PP-DocLayoutV3), for use
 with the native WebGPU execution provider (`RailReader.Core.Analysis.WebGpu`,

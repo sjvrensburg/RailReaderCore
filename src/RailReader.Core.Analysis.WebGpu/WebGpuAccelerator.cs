@@ -11,6 +11,22 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// D3D12/Vulkan on Windows, Vulkan on Linux, Metal on macOS — no vendor SDK required).
 ///
 /// <para>
+/// <b>⚠ Not currently recommended for either GPU-capable layout model (2026-08-26).</b>
+/// Both Heron and PP-DocLayoutV3 are RT-DETR-family and depend on <c>GridSample</c> for
+/// deformable attention in their decoders; ONNX Runtime's WebGPU EP has a confirmed
+/// correctness bug in that kernel (activations match the CPU EP at cosine similarity
+/// 0.9999–1.0 through the entire backbone, then collapse to ~0.52 at the first
+/// <c>GridSample</c> node and stay broken through the rest of the decoder — not a
+/// threshold/calibration issue, not FP16 precision loss, a genuine kernel bug). This
+/// substantially under-detects relative to CPU on real pages — not subtle, not an edge
+/// case. Filed upstream: <see href="https://github.com/microsoft/onnxruntime/issues/32275"/>.
+/// See memory: project-webgpu-gridsample-bug. Diagnostic tooling: <c>tools/gpu-threshold-probe</c>
+/// (corpus-level recall/precision), <c>tools/webgpu-diag</c> (per-layer CPU-vs-GPU activation
+/// diff). Do not re-enable GPU acceleration by default until this is re-validated against a
+/// fixed ONNX Runtime release.
+/// </para>
+///
+/// <para>
 /// <b>Usage.</b> Call <see cref="TryEnable"/> for the architecture you're about to
 /// construct an analyzer for, then build the analyzer via <c>LayoutAnalyzerFactory</c>
 /// (or the concrete constructor) as normal — GPU is applied through the analyzer's
