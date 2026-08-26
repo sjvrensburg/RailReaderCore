@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.60.1 — Fix WebGPU EP crash on int64 ops (Heron FP16)
+
+`WebGpuAccelerator.TryEnable` passed an empty options dictionary to
+`AppendExecutionProvider`, so ONNX Runtime's WebGPU EP never got the
+`ep.webgpuexecutionprovider.enableInt64` provider option it requires (off by
+default; see upstream `microsoft/onnxruntime` #29392, #29844) to register
+int64 kernels such as `Add`. On models whose graph carries an int64 node
+through that op — Heron's RT-DETR postprocessing, driven by the int64
+`orig_target_sizes` input — this failed kernel lookup at `Run()` time with
+`GetElementType is not implemented`, silently producing zero detected
+blocks for the affected page (the analysis worker's per-request catch kept
+the worker alive, so it wasn't a crash, just a page with no layout).
+
+Fix: pass `enableInt64=1` when appending the WebGPU execution provider.
+WebGPU int64 arithmetic is backed by i32 (low 32 bits only) — safe here
+since every int64 tensor these models pass is a page pixel dimension, far
+inside int32 range. Verified no output regression: a full-page scan of the
+reporting PDF against the Heron FP16 model produced identical block counts
+per page with the option on vs off. Fixes #108.
+
 ## 0.60.0 — Native WebGPU GPU acceleration for layout models
 
 Adds optional GPU inference for the layout-detection models via ONNX Runtime's native
