@@ -49,13 +49,19 @@ public static class LayoutModelRegistry
     /// contract as <see cref="Heron"/> — drop-in on the analyzer side. Runs on
     /// CPU too (ORT upconverts), but is not the CPU-optimal choice —
     /// <see cref="HeronInt8"/> is faster there.
-    /// <b>⚠ Correctness under active re-evaluation</b> — the "severe under-detection"
-    /// previously attributed to this model was mostly a bug in the measurement tool
-    /// (<c>tools/gpu-threshold-probe</c>), now fixed; see <c>WebGpuAccelerator</c>'s
-    /// doc comment for the full story. With the tool fixed, Heron still shows a small
-    /// residual real divergence not yet root-caused (unlike PP-DocLayoutV3, which shows
-    /// none on the same corpus) — re-validate on a larger corpus before recommending
-    /// GPU by default. See memory project-webgpu-gridsample-bug.
+    /// <b>⚠ GPU inference via WebGPU is NOT recommended for this model (confirmed at
+    /// scale, 2026-08-28).</b> An earlier "severe under-detection" report was mostly a
+    /// bug in the measurement tool (<c>tools/gpu-threshold-probe</c>'s low-threshold
+    /// trick), now fixed — but on a 42-page corpus spanning both academic PDFs and
+    /// plain single-column documents (forms, invoices), the *fixed* tool still shows
+    /// severe, real GPU-vs-CPU divergence for this model: 50 missed detections + 13
+    /// spurious extras, hitting plain/simple documents hardest (e.g. 7 misses on one
+    /// page of a short form). This reproduces field reports from RailReader2 of
+    /// frequent, visible rail-reading misses. <see cref="PPDocLayoutV3Fp16"/> shows no
+    /// such divergence on the same corpus, so this is Heron-specific, not a generic
+    /// WebGPU EP problem. Not root-caused — an <c>enc_score_head</c> fp32-promotion
+    /// graph-surgery experiment did not fix it. See <c>WebGpuAccelerator</c>'s doc
+    /// comment and memory project-webgpu-gridsample-bug.
     /// </summary>
     public static LayoutModelDescriptor HeronFp16 { get; } = new(
         Id: "heron-fp16",

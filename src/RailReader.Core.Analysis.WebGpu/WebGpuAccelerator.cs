@@ -11,24 +11,28 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// D3D12/Vulkan on Windows, Vulkan on Linux, Metal on macOS — no vendor SDK required).
 ///
 /// <para>
-/// <b>⚠ Correctness status under active re-evaluation (2026-08-28) — the two prior
-/// diagnoses below (GridSample kernel bug, then TopK/mask-threshold fp16 rounding)
-/// were both measured through <c>tools/gpu-threshold-probe</c>, which turned out to
-/// have its own measurement bug (see the next paragraph). With that bug fixed,
-/// PP-DocLayoutV3 shows <b>zero</b> CPU-vs-GPU detection misses on the project's real-PDF
-/// corpus check — the severe under-detection previously attributed to a model/export
-/// precision issue was, on that corpus, overwhelmingly a tooling artifact, not a real
-/// GPU correctness bug. Heron still shows a small residual divergence (5 misses across
-/// 8 corpus pages, all pages where the corrected tool actually re-ran GPU inference at
-/// the real production threshold) that is NOT explained by the TopK/mask-threshold
-/// theory below — promoting <c>enc_score_head</c> to fp32 made no difference to it.
-/// Treat both prior diagnoses as unconfirmed pending a broader corpus check on both
-/// architectures; don't re-cite the specific numbers below ("cosine similarity 0.52",
-/// "295/300 indices") as validated findings.</b>
+/// <b>⚠ Heron: NOT recommended for GPU inference (confirmed at scale, 2026-08-28).
+/// PP-DocLayoutV3: no confirmed problem, but validate further before defaulting to it.</b>
+/// This is the fourth revision of this diagnosis — see memory: project-webgpu-gridsample-bug
+/// for the full history, including two retracted theories (a WebGPU EP <c>GridSample</c>
+/// kernel bug; fp16 <c>TopK</c>/mask-threshold rounding sensitivity) and one measurement-tool
+/// bug in <c>tools/gpu-threshold-probe</c> itself (below) that inflated early corpus numbers.
+/// After fixing the tool AND widening the test corpus past a handful of academic PDFs to
+/// include plain single-column documents (forms, invoices — the kind of "simple document"
+/// real-world field reports named): <b>PP-DocLayoutV3 FP16 still shows zero misses</b>
+/// across 28 pages, 11 documents; <b>Heron FP16 shows 50 missed detections + 13-16 spurious
+/// extras across 42 pages</b>, hitting plain documents hardest (e.g. 7 misses on one page of
+/// a short form) — this reproduces field reports of frequent, visible rail-reading misses in
+/// RailReader2 with Heron GPU active. An <c>enc_score_head</c> fp32-promotion graph-surgery
+/// mitigation (targeting the retracted TopK-rounding theory) was tried twice — once on the
+/// original small corpus, once on the wider one — and made no measurable difference to
+/// Heron's miss count either time. Root cause is still unknown; the small-corpus testing
+/// that drove the third diagnosis was itself a measurement failure (sampling bias, not a
+/// methodology bug like the tool fix below), so treat this as an open problem, not a fixed one.
 /// </para>
 ///
 /// <para>
-/// <b>The tooling bug.</b> <c>tools/gpu-threshold-probe</c> used to run GPU inference
+/// <b>The tooling bug (fixed).</b> <c>tools/gpu-threshold-probe</c> used to run GPU inference
 /// once at a low confidence floor (0.01) and re-filter the resulting block list by
 /// score for each threshold being evaluated, on the assumption that NMS only ever lets
 /// a higher-scoring box suppress a lower one — true of <c>LayoutAnalyzer.Nms</c> itself,
@@ -37,20 +41,20 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// low-confidence candidates reliably produced large, low-confidence, page-spanning
 /// noise boxes that geometrically contained real detections, and <c>SuppressNestedBlocks</c>
 /// deleted the real (smaller, correct, higher-confidence) blocks outright — a deletion no
-/// later score-based re-filter can undo. That single bug inflated this project's corpus
-/// "CPU-only misses" from 0 to 15 for the *unmodified* PP-DocLayoutV3 FP16 export. Fixed
-/// by re-running GPU inference directly at each threshold actually needed instead of the
-/// low-threshold-then-refilter trick. See memory: project-webgpu-gridsample-bug for the
-/// full history (now on its third diagnosis).
+/// later score-based re-filter can undo. Fixed by re-running GPU inference directly at each
+/// threshold actually needed instead of the low-threshold-then-refilter trick. This bug was
+/// real and did inflate early numbers, but fixing it alone was NOT sufficient to see Heron's
+/// real problem — the original 4-PDF/8-page academic corpus was too small and too narrow
+/// (sampling bias) to surface it even with the tool fixed; only widening the corpus did.
 /// </para>
 ///
 /// <para>
 /// Diagnostic tooling: <c>tools/gpu-threshold-probe</c> (corpus-level recall/precision,
-/// now fixed), <c>tools/webgpu-diag</c> (per-layer CPU-vs-GPU activation diff — its
-/// GridSample-collapse finding predates the tooling-bug discovery and has not been
-/// re-examined). Before changing the default GPU-acceleration recommendation either way,
-/// re-run <c>tools/gpu-threshold-probe --diagnose</c> on a larger, more representative
-/// corpus for both Heron and PP-DocLayoutV3, and root-cause Heron's residual divergence.
+/// tool bug fixed 2026-08-28), <c>tools/webgpu-diag</c> (per-layer CPU-vs-GPU activation
+/// diff — its GridSample-collapse finding predates the tooling-bug discovery and has not
+/// been re-examined; may be worth re-running specifically on Heron to root-cause the
+/// confirmed-real divergence above). Do not route production traffic to Heron GPU until
+/// this is root-caused and fixed.
 /// </para>
 ///
 /// <para>
