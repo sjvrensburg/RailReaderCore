@@ -11,24 +11,39 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// D3D12/Vulkan on Windows, Vulkan on Linux, Metal on macOS — no vendor SDK required).
 ///
 /// <para>
-/// <b>⚠ Heron: NOT recommended for GPU inference (confirmed at scale, 2026-08-28).
-/// PP-DocLayoutV3: no confirmed problem, but validate further before defaulting to it.</b>
-/// This is the fourth revision of this diagnosis — see memory: project-webgpu-gridsample-bug
-/// for the full history, including two retracted theories (a WebGPU EP <c>GridSample</c>
-/// kernel bug; fp16 <c>TopK</c>/mask-threshold rounding sensitivity) and one measurement-tool
-/// bug in <c>tools/gpu-threshold-probe</c> itself (below) that inflated early corpus numbers.
-/// After fixing the tool AND widening the test corpus past a handful of academic PDFs to
-/// include plain single-column documents (forms, invoices — the kind of "simple document"
-/// real-world field reports named): <b>PP-DocLayoutV3 FP16 still shows zero misses</b>
-/// across 28 pages, 11 documents; <b>Heron FP16 shows 50 missed detections + 13-16 spurious
-/// extras across 42 pages</b>, hitting plain documents hardest (e.g. 7 misses on one page of
-/// a short form) — this reproduces field reports of frequent, visible rail-reading misses in
-/// RailReader2 with Heron GPU active. An <c>enc_score_head</c> fp32-promotion graph-surgery
-/// mitigation (targeting the retracted TopK-rounding theory) was tried twice — once on the
-/// original small corpus, once on the wider one — and made no measurable difference to
-/// Heron's miss count either time. Root cause is still unknown; the small-corpus testing
-/// that drove the third diagnosis was itself a measurement failure (sampling bias, not a
-/// methodology bug like the tool fix below), so treat this as an open problem, not a fixed one.
+/// <b>⚠ Heron: NOT recommended for GPU inference (confirmed broken at scale, 2026-08-28).
+/// PP-DocLayoutV3: no confirmed <em>detection-level</em> problem, but its GridSample kernel
+/// activations diverge just as badly as Heron's at the tensor level — see the fifth
+/// diagnosis below before trusting it on inputs outside the tested corpus.</b> This is the
+/// fifth revision of this diagnosis — see memory: project-webgpu-gridsample-bug for the full
+/// history. Two theories were tried and retracted (a WebGPU EP <c>GridSample</c> kernel bug,
+/// dismissed after an isolated/synthetic shader check looked clean; fp16 <c>TopK</c>/mask-
+/// threshold rounding sensitivity), one real measurement-tool bug was found and fixed (below),
+/// and one small-corpus sampling-bias mistake was corrected after a user field report. Then a
+/// <b>fifth pass re-ran the original GridSample-kernel theory with <c>tools/webgpu-diag</c>
+/// against real page content from both models</b> and found it was right all along: decoder
+/// GridSample cosine similarity collapses to 0.39-0.75 (from &gt;0.9999 everywhere upstream)
+/// on every document type tried, in <b>both</b> Heron and PP-DocLayoutV3 — the earlier
+/// "verified correct in isolation" check simply didn't exercise the value distribution real
+/// decoder activations produce.
+/// </para>
+///
+/// <para>
+/// <b>Raw divergence does not predict detection failure.</b> On a 42-page/11-document corpus
+/// spanning academic PDFs and plain single-column documents (forms, invoices — the "simple
+/// documents" field reports named): <b>Heron FP16 shows 50 missed detections + 13-16 spurious
+/// extras</b>, hitting plain documents hardest (e.g. 7 misses on one page of a short form) —
+/// reproducing RailReader2 field reports of frequent, visible rail-reading misses. <b>PP-
+/// DocLayoutV3 FP16 shows zero misses</b> on the same corpus, despite its GridSample tensors
+/// diverging comparably or worse than Heron's on the very same pages (e.g. JSM_2025 p0: V3
+/// cosSim 0.39-0.43, worse than Heron's 0.45-0.51 on that page). So V3's downstream box-decode/
+/// confidence/NMS pipeline is, for reasons not yet understood, far more robust to this kernel
+/// noise than Heron's — this is NOT evidence V3's GPU path is numerically clean, only that it
+/// hasn't (yet) produced visible misses on the corpus tested. An <c>enc_score_head</c> fp32-
+/// promotion graph-surgery mitigation (targeting the retracted TopK-rounding theory) was tried
+/// twice against Heron — small corpus and wide corpus — and made no measurable difference
+/// either time; the fifth diagnosis shows why: the divergence is already severe at the very
+/// first decoder GridSample call, upstream of that node entirely.
 /// </para>
 ///
 /// <para>
@@ -51,10 +66,11 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// <para>
 /// Diagnostic tooling: <c>tools/gpu-threshold-probe</c> (corpus-level recall/precision,
 /// tool bug fixed 2026-08-28), <c>tools/webgpu-diag</c> (per-layer CPU-vs-GPU activation
-/// diff — its GridSample-collapse finding predates the tooling-bug discovery and has not
-/// been re-examined; may be worth re-running specifically on Heron to root-cause the
-/// confirmed-real divergence above). Do not route production traffic to Heron GPU until
-/// this is root-caused and fixed.
+/// diff, now supports both <c>heron</c> and <c>v3</c> architectures — <c>WebGpuDiag &lt;pdf&gt;
+/// &lt;heron|v3&gt; &lt;debugModelPath&gt; [page]</c>, debug model built via
+/// <c>tools/webgpu-diag/make_debug_model.py</c>). Do not route production traffic to Heron GPU
+/// until this is root-caused and fixed; do not assume PP-DocLayoutV3 GPU is safe on inputs
+/// unlike the tested corpus, since its underlying kernel divergence is just as severe.
 /// </para>
 ///
 /// <para>

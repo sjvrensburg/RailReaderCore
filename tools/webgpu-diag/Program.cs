@@ -14,15 +14,19 @@ using RailReader.Renderer.Skia;
 // runs consume byte-identical preprocessed input, so any divergence is
 // attributable purely to the execution provider's kernel implementations.
 //
-// Usage: WebGpuDiag <pdf> <debugModelPath> [page=0]
-if (args.Length < 2)
+// Usage: WebGpuDiag <pdf> <heron|v3> <debugModelPath> [page=0]
+if (args.Length < 3)
 {
-    Console.Error.WriteLine("usage: WebGpuDiag <pdf> <debugModelPath> [page]");
+    Console.Error.WriteLine("usage: WebGpuDiag <pdf> <heron|v3> <debugModelPath> [page]");
     return 1;
 }
-string pdfPath = args[0], modelPath = args[1];
-int page = args.Length > 2 ? int.Parse(args[2]) : 0;
-const int ModelInputSize = 640;
+string pdfPath = args[0];
+string arch = args[1].ToLowerInvariant();
+string modelPath = args[2];
+int page = args.Length > 3 ? int.Parse(args[3]) : 0;
+bool isV3 = arch == "v3";
+int ModelInputSize = isV3 ? 800 : 640;
+var architecture = isV3 ? LayoutModelArchitecture.PPDocLayoutV3 : LayoutModelArchitecture.Heron;
 
 RailReaderLogging.Logger = NullLogger.Instance;
 
@@ -37,25 +41,47 @@ var factory = new SkiaPdfServiceFactory();
 var svc = factory.CreatePdfService(pdfPath);
 var (rgb, pxW, pxH) = svc.RenderPagePixmap(page, ModelInputSize);
 
-// Simple bilinear resize to 640x640 CHW uint8 — doesn't need to be
-// byte-identical to production's BilinearResampler; both EPs consume this
-// exact same tensor, so only relative CPU-vs-GPU divergence matters here.
-byte[] chw = ResizeToChw(rgb, pxW, pxH, ModelInputSize);
-var images = new DenseTensor<byte>(chw, new[] { 1, 3, ModelInputSize, ModelInputSize });
-var origSizes = new DenseTensor<long>(new long[] { pxW, pxH }, new[] { 1, 2 });
-var inputs = new List<NamedOnnxValue>
+List<NamedOnnxValue> inputs;
+if (isV3)
 {
-    NamedOnnxValue.CreateFromTensor("images", images),
-    NamedOnnxValue.CreateFromTensor("orig_target_sizes", origSizes),
-};
+    // PP-DocLayoutV3 letterboxes (no resize) into an 800x800 canvas, float
+    // CHW, mean=0/std=1 (no ImageNet normalization) — mirrors LayoutAnalyzer's
+    // own PreprocessImage exactly so the two EPs see identical input.
+    if (pxW > ModelInputSize || pxH > ModelInputSize)
+        throw new ArgumentException($"Pixmap {pxW}x{pxH} exceeds letterbox canvas {ModelInputSize}");
+    var chwF = LetterboxToChwFloat(rgb, pxW, pxH, ModelInputSize);
+    var image = new DenseTensor<float>(chwF, new[] { 1, 3, ModelInputSize, ModelInputSize });
+    var imShape = new DenseTensor<float>(new float[] { ModelInputSize, ModelInputSize }, new[] { 1, 2 });
+    var scaleFactor = new DenseTensor<float>(new float[] { 1.0f, 1.0f }, new[] { 1, 2 });
+    inputs =
+    [
+        NamedOnnxValue.CreateFromTensor("im_shape", imShape),
+        NamedOnnxValue.CreateFromTensor("image", image),
+        NamedOnnxValue.CreateFromTensor("scale_factor", scaleFactor),
+    ];
+}
+else
+{
+    // Simple bilinear resize to 640x640 CHW uint8 — doesn't need to be
+    // byte-identical to production's BilinearResampler; both EPs consume this
+    // exact same tensor, so only relative CPU-vs-GPU divergence matters here.
+    byte[] chw = ResizeToChw(rgb, pxW, pxH, ModelInputSize);
+    var images = new DenseTensor<byte>(chw, new[] { 1, 3, ModelInputSize, ModelInputSize });
+    var origSizes = new DenseTensor<long>(new long[] { pxW, pxH }, new[] { 1, 2 });
+    inputs =
+    [
+        NamedOnnxValue.CreateFromTensor("images", images),
+        NamedOnnxValue.CreateFromTensor("orig_target_sizes", origSizes),
+    ];
+}
 
 using var cpuSession = new InferenceSession(modelPath);
 Console.Error.WriteLine("CPU session loaded.");
 
-WebGpuAccelerator.TryEnable(LayoutModelArchitecture.Heron);
+WebGpuAccelerator.TryEnable(architecture);
 var gpuOpts = new SessionOptions();
-HeronLayoutAnalyzer.ConfigureSession?.Invoke(gpuOpts);
-WebGpuAccelerator.Disable(LayoutModelArchitecture.Heron);
+(isV3 ? LayoutAnalyzer.ConfigureSession : HeronLayoutAnalyzer.ConfigureSession)?.Invoke(gpuOpts);
+WebGpuAccelerator.Disable(architecture);
 using var gpuSession = new InferenceSession(modelPath, gpuOpts);
 Console.Error.WriteLine("GPU session loaded.");
 
@@ -93,6 +119,24 @@ foreach (var name in cpuByName.Keys)
 }
 
 return 0;
+
+static float[] LetterboxToChwFloat(byte[] rgbHwc, int srcW, int srcH, int target)
+{
+    var buf = new float[3 * target * target]; // zero-padded (black) canvas
+    int plane = target * target;
+    for (int y = 0; y < srcH; y++)
+    {
+        for (int x = 0; x < srcW; x++)
+        {
+            int dst = y * target + x;
+            int src = (y * srcW + x) * 3;
+            buf[0 * plane + dst] = rgbHwc[src];
+            buf[1 * plane + dst] = rgbHwc[src + 1];
+            buf[2 * plane + dst] = rgbHwc[src + 2];
+        }
+    }
+    return buf;
+}
 
 static byte[] ResizeToChw(byte[] rgbHwc, int srcW, int srcH, int target)
 {

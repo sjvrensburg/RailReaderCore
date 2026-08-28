@@ -57,11 +57,17 @@ public static class LayoutModelRegistry
     /// severe, real GPU-vs-CPU divergence for this model: 50 missed detections + 13
     /// spurious extras, hitting plain/simple documents hardest (e.g. 7 misses on one
     /// page of a short form). This reproduces field reports from RailReader2 of
-    /// frequent, visible rail-reading misses. <see cref="PPDocLayoutV3Fp16"/> shows no
-    /// such divergence on the same corpus, so this is Heron-specific, not a generic
-    /// WebGPU EP problem. Not root-caused — an <c>enc_score_head</c> fp32-promotion
-    /// graph-surgery experiment did not fix it. See <c>WebGpuAccelerator</c>'s doc
-    /// comment and memory project-webgpu-gridsample-bug.
+    /// frequent, visible rail-reading misses. A layer-by-layer activation diff
+    /// (2026-08-28, fifth diagnosis) confirms the mechanism: decoder <c>GridSample</c>
+    /// (deformable attention) diverges severely between the WebGPU and CPU execution
+    /// providers on real content (cosSim 0.39-0.51 vs &gt;0.9999 upstream) — but
+    /// <see cref="PPDocLayoutV3Fp16"/> shows the <em>same</em> raw divergence on the
+    /// same pages without turning it into visible misses, so this isn't a
+    /// generic-WebGPU-EP-is-broken story so much as Heron's downstream decode being
+    /// unusually sensitive to it. Not root-caused — an <c>enc_score_head</c> fp32-promotion
+    /// graph-surgery experiment did not fix it (the divergence is already severe upstream
+    /// of that node). See <c>WebGpuAccelerator</c>'s doc comment and memory
+    /// project-webgpu-gridsample-bug.
     /// </summary>
     public static LayoutModelDescriptor HeronFp16 { get; } = new(
         Id: "heron-fp16",
@@ -95,16 +101,21 @@ public static class LayoutModelRegistry
     /// execution provider (<c>RailReader.Core.Analysis.WebGpu</c>). Same
     /// <c>[N,7]</c> detection-tensor contract (including model-supplied reading
     /// order) as <see cref="PPDocLayoutV3"/> — drop-in on the analyzer side.
-    /// <b>Correctness re-validated 2026-08-28</b> — the "severe under-detection"
-    /// previously attributed to this model was a bug in the measurement tool
-    /// (<c>tools/gpu-threshold-probe</c>'s low-threshold-then-refilter trick, broken by
-    /// <c>SuppressNestedBlocks</c>'s non-confidence-aware suppression), now fixed. With
-    /// the tool fixed, this model shows <b>zero</b> CPU-vs-GPU detection misses on the
-    /// project's real-PDF corpus check — unlike <see cref="HeronFp16"/>, which still
-    /// shows a small residual divergence. Re-validate on a larger corpus before fully
-    /// trusting this for production default, but there is currently no evidence of a
-    /// real correctness problem for this model. See <c>WebGpuAccelerator</c>'s doc
-    /// comment and memory project-webgpu-gridsample-bug.
+    /// <b>Correctness re-validated 2026-08-28, with a caveat.</b> The "severe
+    /// under-detection" first attributed to this model was mostly a bug in the
+    /// measurement tool (<c>tools/gpu-threshold-probe</c>'s low-threshold-then-refilter
+    /// trick, broken by <c>SuppressNestedBlocks</c>'s non-confidence-aware suppression),
+    /// now fixed. With the tool fixed and the test corpus widened to 28+ pages across
+    /// academic and plain documents, this model shows <b>zero</b> CPU-vs-GPU detection
+    /// misses — unlike <see cref="HeronFp16"/>, which shows severe real misses (50/42
+    /// pages). <b>But a layer-by-layer activation diff (2026-08-28, fifth diagnosis) found
+    /// this model's decoder <c>GridSample</c> kernel diverges from CPU just as badly as
+    /// Heron's (cosSim 0.39-0.75) on the very same pages</b> — it simply hasn't turned
+    /// that divergence into visible misses on the corpus tested, for reasons not
+    /// understood. Treat "zero misses so far" as real but not as proof this model's GPU
+    /// path is numerically clean; re-validate on a larger/different corpus before fully
+    /// trusting it for a production default. See <c>WebGpuAccelerator</c>'s doc comment
+    /// and memory project-webgpu-gridsample-bug.
     /// </summary>
     public static LayoutModelDescriptor PPDocLayoutV3Fp16 { get; } = new(
         Id: "ppdoclayoutv3-fp16",
