@@ -1,22 +1,45 @@
 # Changelog
 
-## ⚠ GPU layout detection currently not recommended (2026-08-26)
+## 0.60.2 — GPU layout detection fixed: route to FP32 models, not FP16 (2026-08-28)
 
-Investigating #109 traced the root cause to a correctness bug in ONNX Runtime's WebGPU EP
-`GridSample` kernel (deformable-attention sampling, used by both Heron and PP-DocLayoutV3's
-RT-DETR-family decoders): everything upstream of the first `GridSample` node matches the CPU EP
-at cosine similarity 0.9999–1.0, then collapses to ~0.52 and stays broken through the rest of the
-decoder — not a threshold-calibration or FP16-precision issue, a genuine kernel bug. Filed
-upstream: [microsoft/onnxruntime#32275](https://github.com/microsoft/onnxruntime/issues/32275).
+Resolves #109. The 0.60.1 entry below (2026-08-26) attributed the under-detection to a WebGPU EP
+`GridSample` kernel bug — that diagnosis was wrong. Further layer-by-layer bisection (using a
+local ONNX Runtime source checkout to compare the WGSL shader against the CPU kernel line by
+line) found the WGSL math is identical to the CPU reference. The real cause: both Heron and
+PP-DocLayoutV3's decoders select their initial ~300 queries via `TopK` over ~8400 candidate
+scores, and on real pages many scores cluster within a single FP16 ULP of the cutoff. CPU's and
+WebGPU's independently-implemented FP16 kernels accumulate ordinary rounding drift through the
+backbone/encoder (~0.014 mean absolute disagreement) that exceeds the ~0.002 gap between
+adjacent-ranked candidates at the cutoff — enough to select a genuinely different ~10% of the
+query set between the two execution providers. This is architectural to running query selection
+this close to a threshold in FP16, not a bug in either EP's kernel; two targeted FP32-promotion
+graph-surgery mitigations were tried and both measured to make zero difference (see
+`tools/onnx-fp16-export/README.md`).
 
-**Until that's fixed upstream, GPU acceleration (`RailReader.Core.Analysis.WebGpu`,
-`AcceleratorPreference.Gpu`) should not be recommended or defaulted on for either layout model.**
-It substantially under-detects relative to CPU — this is not subtle: recall on a real-page corpus
-drops to ~0.48 at the production confidence threshold and doesn't recover even near an
-unfiltered floor. The 0.60.0 entry below undersold this as "early/experimental, not
-battle-tested" — it is confirmed broken for dense/tabular content, not just unvalidated. The
-feature stays additive/opt-in as shipped (nothing changes for a consumer that never calls
-`WebGpuAccelerator.TryEnable`); this note is a recommendation change, not a code change.
+**Fix:** `LayoutModelRegistry.Resolve` now routes GPU requests to the plain FP32 models (already
+published, no re-export needed) instead of the FP16 exports. Validated on the same 42-page/11-doc
+corpus that found 50 Heron misses: 0 misses / 0 extras for both models, cosine similarity
+1.00000 at every checkpoint. Critically, **no speed cost**: FP32-on-GPU measured 9.85x (Heron) /
+7.98x (PP-DocLayoutV3) faster than FP32-on-CPU, matching or exceeding what the FP16 exports
+themselves claimed (~9.5x / ~7.3x) — GPU parallelism, not FP16's halved memory bandwidth, was
+already the dominant speedup factor on the hardware tested. **GPU acceleration is recommended
+again** for both layout models; the FP16 exports (`HeronFp16`/`PPDocLayoutV3Fp16`) remain
+available for direct/manual use but are no longer the GPU default.
+
+## ⚠ GPU layout detection under-detects; not recommended pending investigation (2026-08-26, superseded above)
+
+Investigating #109 initially (and incorrectly) attributed the under-detection to a correctness
+bug in ONNX Runtime's WebGPU EP `GridSample` kernel: everything upstream of the first
+`GridSample` node matched the CPU EP at cosine similarity 0.9999–1.0, then collapsed to ~0.52 and
+stayed broken through the rest of the decoder. Filed upstream:
+[microsoft/onnxruntime#32275](https://github.com/microsoft/onnxruntime/issues/32275) (the real
+root cause, found afterward, is documented in the 0.60.2 entry above — that upstream issue does
+not describe an actual ORT bug).
+
+GPU acceleration substantially under-detected relative to CPU at the time — recall on a real-page
+corpus dropped to ~0.48 at the production confidence threshold. The feature stayed
+additive/opt-in throughout (nothing changed for a consumer that never called
+`WebGpuAccelerator.TryEnable`).
 
 ## 0.60.1 — Fix WebGPU EP crash on int64 ops (Heron FP16)
 
