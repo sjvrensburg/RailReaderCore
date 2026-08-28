@@ -11,36 +11,46 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// D3D12/Vulkan on Windows, Vulkan on Linux, Metal on macOS — no vendor SDK required).
 ///
 /// <para>
-/// <b>⚠ Not currently recommended for either GPU-capable layout model (2026-08-26,
-/// re-diagnosed same day).</b> Both Heron and PP-DocLayoutV3 are RT-DETR-family models
-/// that select decoder queries via a <c>TopK</c> over encoder objectness scores and
-/// derive each box from mask logits via a <c>Greater</c>-than-zero threshold plus
-/// <c>ReduceMin</c>/<c>ReduceMax</c>. This was originally filed as a WebGPU EP
-/// <c>GridSample</c> kernel bug (activations match the CPU EP at cosine similarity
-/// 0.9999–1.0 through the entire backbone, then collapse to ~0.52 at the first
-/// <c>GridSample</c> node) — <see href="https://github.com/microsoft/onnxruntime/issues/32275"/>,
-/// filed then retracted/closed after further bisection. The real cause: the WGSL
-/// <c>GridSample</c> kernel itself is correct (verified by extracting the generated
-/// shader and running it directly against a NumPy reference on real Vulkan hardware —
-/// exact match in both fp32 and fp16). What actually diverges is upstream of
-/// <c>GridSample</c>: the <c>TopK</c> node's *scores* match CPU vs GPU almost exactly
-/// (cosine similarity 1.00000, fp16-rounding-level differences), but that's enough to
-/// flip tie-broken ordering right at the top-300 selection cutoff (295/300 indices
-/// matched; the mismatches were adjacent-rank swaps of near-tied scores), and to flip
-/// the <c>Greater</c> mask threshold near object boundaries. Because every downstream
-/// per-query computation (mask head, box decode, then <c>GridSample</c> in deformable
-/// attention) is keyed to query position, that small amount of ordinary cross-backend
-/// floating-point noise cascades into substantial under-detection on GPU vs CPU —
-/// <c>GridSample</c> just happened to be the first instrumented checkpoint downstream
-/// of the cascade. This is not an ONNX Runtime bug and not fixable in this codebase;
-/// a fix would need to happen in the model/export (e.g. keeping the score/mask heads
-/// in fp32 even in an otherwise-fp16 export) or by accepting CPU-only inference for
-/// these architectures. See memory: project-webgpu-gridsample-bug (superseded
-/// diagnosis, kept for history — read the update). Diagnostic tooling:
-/// <c>tools/gpu-threshold-probe</c> (corpus-level recall/precision),
-/// <c>tools/webgpu-diag</c> (per-layer CPU-vs-GPU activation diff). Do not re-enable
-/// GPU acceleration by default unless/until the score/mask heads are moved to fp32 in
-/// the export and re-validated, since the fix is not an upstream ORT release to wait for.
+/// <b>⚠ Correctness status under active re-evaluation (2026-08-28) — the two prior
+/// diagnoses below (GridSample kernel bug, then TopK/mask-threshold fp16 rounding)
+/// were both measured through <c>tools/gpu-threshold-probe</c>, which turned out to
+/// have its own measurement bug (see the next paragraph). With that bug fixed,
+/// PP-DocLayoutV3 shows <b>zero</b> CPU-vs-GPU detection misses on the project's real-PDF
+/// corpus check — the severe under-detection previously attributed to a model/export
+/// precision issue was, on that corpus, overwhelmingly a tooling artifact, not a real
+/// GPU correctness bug. Heron still shows a small residual divergence (5 misses across
+/// 8 corpus pages, all pages where the corrected tool actually re-ran GPU inference at
+/// the real production threshold) that is NOT explained by the TopK/mask-threshold
+/// theory below — promoting <c>enc_score_head</c> to fp32 made no difference to it.
+/// Treat both prior diagnoses as unconfirmed pending a broader corpus check on both
+/// architectures; don't re-cite the specific numbers below ("cosine similarity 0.52",
+/// "295/300 indices") as validated findings.</b>
+/// </para>
+///
+/// <para>
+/// <b>The tooling bug.</b> <c>tools/gpu-threshold-probe</c> used to run GPU inference
+/// once at a low confidence floor (0.01) and re-filter the resulting block list by
+/// score for each threshold being evaluated, on the assumption that NMS only ever lets
+/// a higher-scoring box suppress a lower one — true of <c>LayoutAnalyzer.Nms</c> itself,
+/// but not of <c>SuppressNestedBlocks</c> (runs after NMS, purely geometric: the smaller
+/// of any two overlapping boxes loses regardless of confidence). Admitting a sea of
+/// low-confidence candidates reliably produced large, low-confidence, page-spanning
+/// noise boxes that geometrically contained real detections, and <c>SuppressNestedBlocks</c>
+/// deleted the real (smaller, correct, higher-confidence) blocks outright — a deletion no
+/// later score-based re-filter can undo. That single bug inflated this project's corpus
+/// "CPU-only misses" from 0 to 15 for the *unmodified* PP-DocLayoutV3 FP16 export. Fixed
+/// by re-running GPU inference directly at each threshold actually needed instead of the
+/// low-threshold-then-refilter trick. See memory: project-webgpu-gridsample-bug for the
+/// full history (now on its third diagnosis).
+/// </para>
+///
+/// <para>
+/// Diagnostic tooling: <c>tools/gpu-threshold-probe</c> (corpus-level recall/precision,
+/// now fixed), <c>tools/webgpu-diag</c> (per-layer CPU-vs-GPU activation diff — its
+/// GridSample-collapse finding predates the tooling-bug discovery and has not been
+/// re-examined). Before changing the default GPU-acceleration recommendation either way,
+/// re-run <c>tools/gpu-threshold-probe --diagnose</c> on a larger, more representative
+/// corpus for both Heron and PP-DocLayoutV3, and root-cause Heron's residual divergence.
 /// </para>
 ///
 /// <para>

@@ -1,25 +1,25 @@
 # onnx-fp16-export
 
-> ⚠ **GPU inference via the WebGPU EP is not currently recommended for either export
-> produced here.** This is *not* an ONNX Runtime kernel bug (a `GridSample`-kernel
-> theory was filed upstream and then retracted — see
-> https://github.com/microsoft/onnxruntime/issues/32275, closed). The real cause:
-> both Heron and PP-DocLayoutV3 select their decoder queries via a `TopK` over encoder
-> objectness scores, then derive each box from mask logits via a `Greater`-than-zero
-> threshold + `ReduceMin`/`ReduceMax`. Ordinary fp16 cross-backend rounding noise
-> (CPU EP vs WebGPU EP; scores match to cosine similarity 1.00000, differences at the
-> fp16-rounding level) is enough to flip tie-broken `TopK` ordering right at the
-> top-300 cutoff and to flip the `Greater` threshold near mask boundaries — and
-> because every downstream computation (mask head, box decode, `GridSample` in
-> deformable attention) is keyed to query position, that small amount of boundary
-> noise cascades into substantial under-detection on GPU vs CPU. This isn't fixable
-> in ONNX Runtime; it would need a model/export-side mitigation (e.g. keeping the
-> score/mask heads in fp32 even in an otherwise-fp16 export). See
-> `tools/gpu-threshold-probe` and `tools/webgpu-diag` for the diagnostic data, and
-> project memory `project-webgpu-gridsample-bug` (superseded diagnosis, kept for
-> history). The exports themselves are fine (validated against the CPU/FP32
-> reference) — the sensitivity is in how the model architecture reacts to ordinary
-> cross-backend floating-point differences, not in these FP16 conversions.
+> ⚠ **GPU-correctness status is under active re-evaluation (2026-08-28).** Two prior
+> diagnoses here (a WebGPU EP `GridSample` kernel bug, then fp16 `TopK`/mask-threshold
+> rounding sensitivity) were both measured via `tools/gpu-threshold-probe`, which had
+> its own bug: it ran GPU inference once at a low confidence floor and re-filtered the
+> resulting blocks by score, assuming NMS-only suppression — but `LayoutAnalyzer`'s
+> `SuppressNestedBlocks` (runs after NMS) is purely geometric and not confidence-aware,
+> so admitting a sea of low-confidence candidates produced large noise boxes that
+> deleted real, correct, higher-confidence detections outright. That inflated this
+> project's corpus "CPU-only misses" from 0 to 15 for the *unmodified* PP-DocLayoutV3
+> FP16 export below. With the tool fixed (re-run GPU inference directly at each
+> threshold instead of low-then-refilter), **PP-DocLayoutV3 shows zero CPU-vs-GPU
+> detection misses** on the project's real-PDF corpus check. **Heron still shows a
+> small residual divergence** (5 misses across 8 corpus pages) that is real, not a
+> tooling artifact, but is NOT explained by the TopK/mask-threshold theory — an
+> `enc_score_head` fp32 promotion made no difference to it. Both exports are otherwise
+> fine (validated against the CPU/FP32 reference). See `tools/gpu-threshold-probe`
+> (now fixed) and project memory `project-webgpu-gridsample-bug` (now on its third
+> diagnosis) before trusting any of this file's or `WebGpuAccelerator`'s older
+> correctness claims — re-validate on a larger corpus, and root-cause Heron's residual
+> divergence, before changing the default GPU-acceleration recommendation.
 
 Produces FP16 ONNX exports of the two layout-detection models that have real
 PyTorch/HF Transformers source checkpoints (Heron, PP-DocLayoutV3), for use

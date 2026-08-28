@@ -49,13 +49,13 @@ public static class LayoutModelRegistry
     /// contract as <see cref="Heron"/> — drop-in on the analyzer side. Runs on
     /// CPU too (ORT upconverts), but is not the CPU-optimal choice —
     /// <see cref="HeronInt8"/> is faster there.
-    /// <b>⚠ GPU inference via WebGPU is not currently recommended</b> — not an ORT bug
-    /// (a <c>GridSample</c>-kernel theory was filed upstream and retracted; see
-    /// https://github.com/microsoft/onnxruntime/issues/32275, closed), but inherent
-    /// fp16 cross-backend rounding noise amplified by this model's <c>TopK</c>
-    /// query-selection and mask-threshold decode steps, causing substantial
-    /// under-detection vs CPU. See <c>WebGpuAccelerator</c>'s doc comment and memory
-    /// project-webgpu-gridsample-bug.
+    /// <b>⚠ Correctness under active re-evaluation</b> — the "severe under-detection"
+    /// previously attributed to this model was mostly a bug in the measurement tool
+    /// (<c>tools/gpu-threshold-probe</c>), now fixed; see <c>WebGpuAccelerator</c>'s
+    /// doc comment for the full story. With the tool fixed, Heron still shows a small
+    /// residual real divergence not yet root-caused (unlike PP-DocLayoutV3, which shows
+    /// none on the same corpus) — re-validate on a larger corpus before recommending
+    /// GPU by default. See memory project-webgpu-gridsample-bug.
     /// </summary>
     public static LayoutModelDescriptor HeronFp16 { get; } = new(
         Id: "heron-fp16",
@@ -89,10 +89,16 @@ public static class LayoutModelRegistry
     /// execution provider (<c>RailReader.Core.Analysis.WebGpu</c>). Same
     /// <c>[N,7]</c> detection-tensor contract (including model-supplied reading
     /// order) as <see cref="PPDocLayoutV3"/> — drop-in on the analyzer side.
-    /// <b>⚠ GPU inference via WebGPU is not currently recommended</b> — same
-    /// TopK/mask-threshold fp16 sensitivity as <see cref="HeronFp16"/> (not an ORT
-    /// bug; this model's decoder is also RT-DETR-family). See
-    /// <c>WebGpuAccelerator</c>'s doc comment and memory project-webgpu-gridsample-bug.
+    /// <b>Correctness re-validated 2026-08-28</b> — the "severe under-detection"
+    /// previously attributed to this model was a bug in the measurement tool
+    /// (<c>tools/gpu-threshold-probe</c>'s low-threshold-then-refilter trick, broken by
+    /// <c>SuppressNestedBlocks</c>'s non-confidence-aware suppression), now fixed. With
+    /// the tool fixed, this model shows <b>zero</b> CPU-vs-GPU detection misses on the
+    /// project's real-PDF corpus check — unlike <see cref="HeronFp16"/>, which still
+    /// shows a small residual divergence. Re-validate on a larger corpus before fully
+    /// trusting this for production default, but there is currently no evidence of a
+    /// real correctness problem for this model. See <c>WebGpuAccelerator</c>'s doc
+    /// comment and memory project-webgpu-gridsample-bug.
     /// </summary>
     public static LayoutModelDescriptor PPDocLayoutV3Fp16 { get; } = new(
         Id: "ppdoclayoutv3-fp16",

@@ -13,13 +13,27 @@ using RailReader.Renderer.Skia;
 // there's no Python round-trip and no risk of a preprocessing mismatch
 // between the calibration harness and production.
 //
-// Inference runs ONCE per page per backend, at a low confidence floor
-// (LowThreshold below) — NOT once per swept threshold. This is valid because
-// NMS only ever lets a HIGHER-scoring box suppress a lower one, so admitting
-// extra low-score candidates into the NMS pass cannot change whether any box
-// scoring >= a later, higher threshold survives. Sweeping is then just a
-// Confidence-based re-filter of the one low-threshold detection set, which is
-// why this tool doesn't need the FP16 GPU EP re-run per threshold value.
+// GPU inference runs ONCE PER THRESHOLD VALUE actually needed (one for
+// --diagnose, one per swept threshold otherwise) — each at that threshold's
+// real production tuning, exactly like a real CPU-backed AnalysisWorker would
+// produce. An earlier version of this tool ran inference once at a low
+// confidence floor and re-filtered the block list by score afterward, on the
+// assumption that "NMS only ever lets a higher-scoring box suppress a lower
+// one, so admitting extra low-score candidates can't change what survives at
+// a later, higher threshold." That's true of Nms itself, but LayoutAnalyzer's
+// SuppressNestedBlocks (which runs after Nms) is NOT confidence-aware — it
+// suppresses the geometrically SMALLER of any two overlapping boxes regardless
+// of which one has higher confidence. Admitting a sea of low-confidence noise
+// boxes at threshold 0.01 reliably produced one or more large, low-confidence,
+// page-spanning boxes that geometrically contained every real detection, and
+// SuppressNestedBlocks then deleted the real (smaller, higher-confidence)
+// blocks outright — a deletion no later score-based re-filter could undo. On
+// this tool's own corpus, that inflated "CPU-only misses" from 0 to 15 for
+// the *unmodified* FP16 model: the severe under-detection this tool has been
+// reporting for issue #109 was overwhelmingly a measurement artifact of that
+// trick, not genuine CPU-vs-GPU precision divergence. See project memory
+// project-webgpu-gridsample-bug for the full story (multiple superseded
+// diagnoses) and re-run this tool's numbers before trusting any older ones.
 //
 // Usage:
 //   GpuThresholdProbe <pdfDir> <heron|v3> <cpuModelPath> <gpuModelPath> [pagesPerPdf=2] [minThr=0.10] [maxThr=0.60] [step=0.05] [--diagnose[=thr]]
@@ -49,7 +63,6 @@ int pagesPerPdf = positional.Length > 4 ? int.Parse(positional[4]) : 2;
 float minThr = positional.Length > 5 ? float.Parse(positional[5]) : 0.10f;
 float maxThr = positional.Length > 6 ? float.Parse(positional[6]) : 0.60f;
 float step = positional.Length > 7 ? float.Parse(positional[7]) : 0.05f;
-const float LowThreshold = 0.01f;
 
 var arch = archArg switch
 {
@@ -77,23 +90,30 @@ ILayoutAnalyzer cpuAnalyzer = arch switch
     _ => throw new ArgumentOutOfRangeException(),
 };
 
-// GPU candidate set: same NMS/min-size, but a low confidence floor so the
-// sweep below can re-filter without re-running inference (see header note).
-var lowTuning = LayoutDetectionTuning.Default with { ConfidenceThreshold = LowThreshold };
-WebGpuAccelerator.TryEnable(arch);
-ILayoutAnalyzer gpuAnalyzer = arch switch
+ILayoutAnalyzer MakeGpuAnalyzer(float confidenceThreshold)
 {
-    LayoutModelArchitecture.Heron => new HeronLayoutAnalyzer(gpuModelPath, tuning: lowTuning),
-    LayoutModelArchitecture.PPDocLayoutV3 => new LayoutAnalyzer(gpuModelPath, tuning: lowTuning),
-    _ => throw new ArgumentOutOfRangeException(),
-};
-WebGpuAccelerator.Disable(arch); // don't leak the hook past construction
+    var tuning = LayoutDetectionTuning.Default with { ConfidenceThreshold = confidenceThreshold };
+    WebGpuAccelerator.TryEnable(arch);
+    ILayoutAnalyzer a = arch switch
+    {
+        LayoutModelArchitecture.Heron => new HeronLayoutAnalyzer(gpuModelPath, tuning: tuning),
+        LayoutModelArchitecture.PPDocLayoutV3 => new LayoutAnalyzer(gpuModelPath, tuning: tuning),
+        _ => throw new ArgumentOutOfRangeException(),
+    };
+    WebGpuAccelerator.Disable(arch); // don't leak the hook past construction
+    return a;
+}
 
 var factory = new SkiaPdfServiceFactory();
 var pdfs = Directory.GetFiles(pdfDir, "*.pdf").OrderBy(p => p).ToArray();
 Console.Error.WriteLine($"Corpus: {pdfs.Length} PDFs from {pdfDir}, <= {pagesPerPdf} pages each");
 
-var pages = new List<(string pdf, int page, List<LayoutBlock> cpu, List<LayoutBlock> gpuLow)>();
+// Cache the rendered pixmap (the expensive-to-reproduce, PDFium/Skia-derived
+// input) and the CPU reference per page. GPU inference is re-run per
+// threshold actually needed directly against this cache — correct, and the
+// only part that costs anything extra is the GPU forward pass itself, not
+// PDF rendering or the CPU reference.
+var pages = new List<(string pdf, int page, byte[] rgb, int pxW, int pxH, double pw, double ph, List<LayoutBlock> cpu)>();
 foreach (var pdf in pdfs)
 {
     IPdfService svc;
@@ -108,8 +128,7 @@ foreach (var pdf in pdfs)
             var (pw, ph) = svc.GetPageSize(p);
             var (rgb, pxW, pxH) = svc.RenderPagePixmap(p, caps.InputSize);
             var cpuResult = cpuAnalyzer.RunAnalysis(rgb, pxW, pxH, pw, ph, null, default);
-            var gpuResult = gpuAnalyzer.RunAnalysis(rgb, pxW, pxH, pw, ph, null, default);
-            pages.Add((Path.GetFileName(pdf), p, cpuResult.Blocks, gpuResult.Blocks));
+            pages.Add((Path.GetFileName(pdf), p, rgb, pxW, pxH, pw, ph, cpuResult.Blocks));
         }
         catch (Exception e)
         {
@@ -166,25 +185,25 @@ static (int matched, double sumIou, bool[] refUsed, bool[] hypUsed) Match(
 if (diagnose)
 {
     Console.WriteLine($"\n=== Diagnose @ threshold={diagnoseThr:F2} ===");
+    using var gpuAnalyzer = MakeGpuAnalyzer(diagnoseThr);
     int totalMiss = 0, totalExtra = 0, missPartial = 0, missFull = 0, extraDuplicate = 0, extraSpurious = 0;
     var worstPages = new List<(string pdf, int page, int miss, int extra)>();
 
-    foreach (var (pdf, page, cpu, gpuLow) in pages)
+    foreach (var (pdf, page, rgb, pxW, pxH, pw, ph, cpu) in pages)
     {
-        var gpuAtT = gpuLow.Where(b => b.Confidence >= diagnoseThr)
+        var gpuAtT = gpuAnalyzer.RunAnalysis(rgb, pxW, pxH, pw, ph, null, default).Blocks
             .OrderByDescending(b => b.Confidence).ToList();
         var (_, _, refUsed, hypUsed) = Match(cpu, gpuAtT);
 
         var misses = Enumerable.Range(0, cpu.Count).Where(j => !refUsed[j]).Select(j => cpu[j]).ToList();
         var extras = Enumerable.Range(0, gpuAtT.Count).Where(i => !hypUsed[i]).Select(i => gpuAtT[i]).ToList();
-        var matchedGpuBoxes = Enumerable.Range(0, gpuAtT.Count).Where(i => hypUsed[i]).Select(i => gpuAtT[i]).ToList();
 
         foreach (var miss in misses)
         {
-            // Was it detected at all (any GPU box, even below threshold, with
+            // Was it detected at all (any GPU box, even a leftover extra, with
             // meaningful overlap) but just didn't survive as a clean match —
             // or did the GPU model never propose anything there?
-            bool anyOverlap = gpuLow.Any(g => Iou(g.BBox, miss.BBox) >= 0.1f);
+            bool anyOverlap = gpuAtT.Any(g => Iou(g.BBox, miss.BBox) >= 0.1f);
             if (anyOverlap) missPartial++; else missFull++;
         }
         foreach (var extra in extras)
@@ -216,11 +235,13 @@ else
 
     for (float t = minThr; t <= maxThr + 1e-6f; t += step)
     {
+        using var gpuAnalyzer = MakeGpuAnalyzer(t);
         int refTotal = 0, hypTotal = 0, matchedTotal = 0;
         double sumIou = 0;
-        foreach (var (_, _, cpu, gpuLow) in pages)
+        foreach (var (_, _, rgb, pxW, pxH, pw, ph, cpu) in pages)
         {
-            var gpuAtT = gpuLow.Where(b => b.Confidence >= t).OrderByDescending(b => b.Confidence).ToList();
+            var gpuAtT = gpuAnalyzer.RunAnalysis(rgb, pxW, pxH, pw, ph, null, default).Blocks
+                .OrderByDescending(b => b.Confidence).ToList();
             var (matched, iouSum, _, _) = Match(cpu, gpuAtT);
             refTotal += cpu.Count;
             hypTotal += gpuAtT.Count;
@@ -236,6 +257,4 @@ else
     }
 }
 
-(cpuAnalyzer as IDisposable)?.Dispose();
-(gpuAnalyzer as IDisposable)?.Dispose();
 return 0;
