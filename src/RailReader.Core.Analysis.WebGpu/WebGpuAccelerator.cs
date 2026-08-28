@@ -12,38 +12,45 @@ namespace RailReader.Core.Analysis.WebGpu;
 ///
 /// <para>
 /// <b>⚠ Heron: NOT recommended for GPU inference (confirmed broken at scale, 2026-08-28).
-/// PP-DocLayoutV3: no confirmed <em>detection-level</em> problem, but its GridSample kernel
-/// activations diverge just as badly as Heron's at the tensor level — see the fifth
-/// diagnosis below before trusting it on inputs outside the tested corpus.</b> This is the
-/// fifth revision of this diagnosis — see memory: project-webgpu-gridsample-bug for the full
-/// history. Two theories were tried and retracted (a WebGPU EP <c>GridSample</c> kernel bug,
-/// dismissed after an isolated/synthetic shader check looked clean; fp16 <c>TopK</c>/mask-
-/// threshold rounding sensitivity), one real measurement-tool bug was found and fixed (below),
-/// and one small-corpus sampling-bias mistake was corrected after a user field report. Then a
-/// <b>fifth pass re-ran the original GridSample-kernel theory with <c>tools/webgpu-diag</c>
-/// against real page content from both models</b> and found it was right all along: decoder
-/// GridSample cosine similarity collapses to 0.39-0.75 (from &gt;0.9999 everywhere upstream)
-/// on every document type tried, in <b>both</b> Heron and PP-DocLayoutV3 — the earlier
-/// "verified correct in isolation" check simply didn't exercise the value distribution real
-/// decoder activations produce.
+/// PP-DocLayoutV3: no confirmed detection-level problem, and now — unlike earlier revisions
+/// of this note — a root-caused reason to believe it: it hits the same failure mode ~13x
+/// less often than Heron.</b> This is the sixth and (for now) final revision of this
+/// diagnosis — see memory: project-webgpu-gridsample-bug for the full history, including two
+/// retracted theories. <b>Root cause (sixth diagnosis): NOT a WebGPU EP kernel bug.</b> Read
+/// the WGSL GridSample shader and the CPU GridSample kernel side by side (ONNX Runtime source
+/// at <c>~/onnxruntime</c>) — their math is identical, and the WGSL shader promotes every
+/// value to f32 before computing, so GridSample's own arithmetic is equally precise on both
+/// EPs. Node-by-node bisection of the real FP16 graph (<c>tools/webgpu-diag</c>, checkpointing
+/// GridSample's two inputs separately) found the divergence is already present in the
+/// <c>grid</c> input <em>before</em> GridSample runs: both Heron and PP-DocLayoutV3 compute
+/// their deformable-attention sampling grid via <c>Mul(loc, k) − 1.0</c> — the standard
+/// <c>2·loc − 1</c> renormalization into GridSample's [-1,1] convention — entirely in FP16.
+/// Whenever a query's normalized location sits near 0.5 (so the <c>Mul</c> result ≈ 1.0),
+/// this subtraction hits <b>catastrophic cancellation</b>: ordinary, otherwise-harmless FP16
+/// rounding noise between CPU's and WebGPU's independently-implemented kernels (two different
+/// FP16 math libraries never round identically bit-for-bit — true of every op in this graph,
+/// invisible everywhere else) becomes a 10-20%+ <em>relative</em> error in the subtraction's
+/// result, which GridSample's floor()-based bilinear neighbor selection then turns into a
+/// large <em>absolute</em> output error (a coordinate off by a fraction of a pixel near an
+/// integer boundary samples a different neighbor entirely).
 /// </para>
 ///
 /// <para>
-/// <b>Raw divergence does not predict detection failure.</b> On a 42-page/11-document corpus
-/// spanning academic PDFs and plain single-column documents (forms, invoices — the "simple
-/// documents" field reports named): <b>Heron FP16 shows 50 missed detections + 13-16 spurious
-/// extras</b>, hitting plain documents hardest (e.g. 7 misses on one page of a short form) —
-/// reproducing RailReader2 field reports of frequent, visible rail-reading misses. <b>PP-
-/// DocLayoutV3 FP16 shows zero misses</b> on the same corpus, despite its GridSample tensors
-/// diverging comparably or worse than Heron's on the very same pages (e.g. JSM_2025 p0: V3
-/// cosSim 0.39-0.43, worse than Heron's 0.45-0.51 on that page). So V3's downstream box-decode/
-/// confidence/NMS pipeline is, for reasons not yet understood, far more robust to this kernel
-/// noise than Heron's — this is NOT evidence V3's GPU path is numerically clean, only that it
-/// hasn't (yet) produced visible misses on the corpus tested. An <c>enc_score_head</c> fp32-
-/// promotion graph-surgery mitigation (targeting the retracted TopK-rounding theory) was tried
-/// twice against Heron — small corpus and wide corpus — and made no measurable difference
-/// either time; the fifth diagnosis shows why: the divergence is already severe at the very
-/// first decoder GridSample call, upstream of that node entirely.
+/// <b>This explains the Heron/V3 asymmetry quantitatively.</b> Measured how often each
+/// model's <c>Mul</c> output actually lands near the 1.0 cancellation point on the same real
+/// page: <b>Heron ~10.2%</b> of all sampling-coordinate computations vs <b>PP-DocLayoutV3
+/// ~0.77%</b> — a ~13x lower exposure, tracking the measured detection-level miss counts
+/// (Heron 50 misses/42 pages vs V3 ~0) almost exactly. Both models have the identical
+/// vulnerable graph pattern; they just land their learned reference-point distributions at
+/// different distances from the cancellation point. <b>This means PP-DocLayoutV3's GPU path
+/// is not numerically immune</b> — it is exposed to the same failure mode, just rarely enough
+/// on the corpus tested (42 pages) not to have produced a visible miss yet. An
+/// <c>enc_score_head</c> fp32-promotion graph-surgery mitigation (targeting the retracted
+/// TopK-rounding theory, a different node entirely) was tried twice against Heron and made no
+/// difference — expected, now that the actual collapse point (<c>Mul → Sub(-1.0)</c>) is
+/// known to be elsewhere in the graph. A narrower fp32 promotion of just that step is the
+/// next actionable, mechanistically-justified lead — not implemented or validated as of
+/// 2026-08-28.
 /// </para>
 ///
 /// <para>
