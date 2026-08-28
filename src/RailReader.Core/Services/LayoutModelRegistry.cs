@@ -44,11 +44,33 @@ public static class LayoutModelRegistry
     /// <summary>
     /// Docling Heron FP16 (RT-DETRv2, 17-class) — re-exported from the PyTorch/HF
     /// Transformers checkpoint (not converted from the FP32 ONNX; see
-    /// <c>tools/onnx-fp16-export/</c>) for GPU inference via the native WebGPU
-    /// execution provider (<c>RailReader.Core.Analysis.WebGpu</c>). Same I/O
-    /// contract as <see cref="Heron"/> — drop-in on the analyzer side. Runs on
-    /// CPU too (ORT upconverts), but is not the CPU-optimal choice —
-    /// <see cref="HeronInt8"/> is faster there.
+    /// <c>tools/onnx-fp16-export/</c>). Same I/O contract as <see cref="Heron"/> —
+    /// drop-in on the analyzer side. Runs on CPU too (ORT upconverts), but is not the
+    /// CPU-optimal choice — <see cref="HeronInt8"/> is faster there.
+    /// <b>⚠ NOT the GPU default (changed 2026-08-28) — kept only for direct/manual use
+    /// and historical reference.</b> <see cref="Resolve"/> now routes GPU requests for
+    /// this architecture to the plain <see cref="Heron"/> FP32 model instead. Root
+    /// cause (project-webgpu-gridsample-bug, seventh/final diagnosis): this model's
+    /// deformable-attention decoder selects its initial queries via
+    /// <c>TopK(ReduceMax(enc_score_head(...)))</c>, and on real pages many of the
+    /// ~8400 candidate scores cluster within a single FP16 ULP of the k=300 cutoff
+    /// (several are bit-identical ties). CPU's and WebGPU's independently-implemented
+    /// FP16 kernels accumulate enough ordinary rounding drift through the backbone and
+    /// encoder (ReduceMax cosSim 0.99999, meanAbs 0.014 — larger than the ~0.002 gap
+    /// between adjacent-ranked candidates at the cutoff) that they select a genuinely
+    /// different ~10% of the top-300 query set, which then samples completely
+    /// different spatial locations downstream — this reproduced as 50 missed
+    /// detections + 13 spurious extras on a 42-page/11-document corpus (field reports
+    /// from RailReader2 confirmed). Two targeted FP32-promotion graph-surgery fixes
+    /// were tried and both measured to make <em>zero</em> difference (a `Mul→Sub(-1.0)`
+    /// grid-cancellation step; a TopK tie-break jitter) — the disagreement is too large
+    /// (accumulated across the whole encoder) for a local patch to close. What
+    /// actually works, measured on the same 42-page corpus: running the plain FP32
+    /// model on WebGPU gives cosSim 1.00000 at every checkpoint and 0 misses/0 extras,
+    /// for 9.85x CPU→GPU speedup (vs this FP16 export's own untested claim of ~9.5x on
+    /// a single page) — FP16 bought essentially no speed here, so there's no reason to
+    /// prefer it for GPU use. See <c>WebGpuAccelerator</c>'s doc comment and memory
+    /// project-webgpu-gridsample-bug for the full history.
     /// </summary>
     public static LayoutModelDescriptor HeronFp16 { get; } = new(
         Id: "heron-fp16",
@@ -78,10 +100,24 @@ public static class LayoutModelRegistry
     /// <summary>
     /// PP-DocLayoutV3 FP16 — re-exported from the <c>PaddlePaddle/PP-DocLayoutV3_safetensors</c>
     /// PyTorch/HF Transformers port (not converted from the FP32 ONNX; see
-    /// <c>tools/onnx-fp16-export/</c>) for GPU inference via the native WebGPU
-    /// execution provider (<c>RailReader.Core.Analysis.WebGpu</c>). Same
-    /// <c>[N,7]</c> detection-tensor contract (including model-supplied reading
-    /// order) as <see cref="PPDocLayoutV3"/> — drop-in on the analyzer side.
+    /// <c>tools/onnx-fp16-export/</c>). Same <c>[N,7]</c> detection-tensor contract
+    /// (including model-supplied reading order) as <see cref="PPDocLayoutV3"/> —
+    /// drop-in on the analyzer side.
+    /// <b>⚠ NOT the GPU default (changed 2026-08-28) — kept only for direct/manual use
+    /// and historical reference.</b> <see cref="Resolve"/> now routes GPU requests for
+    /// this architecture to the plain <see cref="PPDocLayoutV3"/> FP32 model instead
+    /// (which doubles as the CPU default too — one file for both accelerators). This
+    /// model showed zero detection-level misses on the 42-page corpus that broke
+    /// <see cref="HeronFp16"/>, but a layer-by-layer activation diff found its decoder
+    /// <c>GridSample</c> tensors diverge from CPU just as severely as Heron's on the
+    /// same pages (cosSim as low as 0.39) — it was simply exposed to the underlying
+    /// FP16 query-selection instability (see <see cref="HeronFp16"/>'s doc comment for
+    /// the full mechanism) about 13x less often per page (~0.77% vs Heron's ~10.2%),
+    /// not immune to it. Since the plain FP32 model was measured to cost no meaningful
+    /// speed either (7.98x CPU→GPU speedup vs this export's own claimed ~7.3x), there's
+    /// no reason to keep using the FP16 path here even though it hadn't yet shown a
+    /// visible failure. See <c>WebGpuAccelerator</c>'s doc comment and memory
+    /// project-webgpu-gridsample-bug.
     /// </summary>
     public static LayoutModelDescriptor PPDocLayoutV3Fp16 { get; } = new(
         Id: "ppdoclayoutv3-fp16",
@@ -125,13 +161,29 @@ public static class LayoutModelRegistry
     /// <summary>
     /// Routes an architecture + <see cref="AcceleratorPreference"/> to the descriptor
     /// that backend wants — CPU gets the CPU-optimal export (INT8 for Heron, plain
-    /// FP32 otherwise), GPU gets the FP16 export where one exists. Falls back to the
-    /// CPU descriptor for a GPU request when no FP16 export exists yet (PP-DocLayout-S)
-    /// — the caller still gets a working model, just not GPU-optimized; this is
-    /// deliberately never a hard failure so a caller can always ask for GPU and get
-    /// something back. This only picks the model <em>file</em>; it does not enable a
-    /// GPU execution provider — pair a <see cref="AcceleratorPreference.Gpu"/> result
-    /// with <c>WebGpuAccelerator.TryEnable</c> (<c>RailReader.Core.Analysis.WebGpu</c>)
+    /// FP32 otherwise). <b>GPU also gets the plain FP32 model, not an FP16 export
+    /// (changed 2026-08-28 — see issue #109 / memory project-webgpu-gridsample-bug).</b>
+    /// The FP16 GPU exports (<see cref="HeronFp16"/>, <see cref="PPDocLayoutV3Fp16"/>)
+    /// were root-caused to a real, severe correctness problem: deformable-attention
+    /// decoders in FP16 hit query-selection instability at the TopK cutoff (CPU and
+    /// WebGPU's independently-implemented FP16 kernels never round identically, and
+    /// real score gaps near the cutoff are as narrow as a single FP16 ULP — for Heron,
+    /// 50 missed detections across a 42-page/11-document corpus). Running the plain
+    /// FP32 model on the WebGPU EP instead was measured to eliminate the problem
+    /// entirely (0 misses/0 extras on the same 42-page corpus, cosSim 1.00000 at every
+    /// checkpoint including GridSample) while costing essentially no speed: 9.85x
+    /// (Heron) and 7.98x (V3) CPU→GPU speedup, matching what the FP16 exports claimed —
+    /// the GPU parallelism, not the halved memory bandwidth from FP16, was already the
+    /// dominant speedup factor for these models on the hardware tested. The FP16
+    /// descriptors are kept in the registry for direct/manual use and historical
+    /// reference but are no longer the default GPU choice; see their doc comments.
+    /// Falls back to the CPU descriptor for a GPU request when no dedicated export
+    /// makes sense (PP-DocLayout-S has no PyTorch/HF source to build one from) — the
+    /// caller still gets a working model, just not GPU-optimized; this is deliberately
+    /// never a hard failure so a caller can always ask for GPU and get something back.
+    /// This only picks the model <em>file</em>; it does not enable a GPU execution
+    /// provider — pair a <see cref="AcceleratorPreference.Gpu"/> result with
+    /// <c>WebGpuAccelerator.TryEnable</c> (<c>RailReader.Core.Analysis.WebGpu</c>)
     /// before constructing the analyzer, and fall back to
     /// <c>Resolve(architecture, AcceleratorPreference.Cpu)</c> if that returns false or
     /// analyzer construction still throws (device presence doesn't guarantee every
@@ -140,9 +192,8 @@ public static class LayoutModelRegistry
     public static LayoutModelDescriptor Resolve(LayoutModelArchitecture architecture, AcceleratorPreference accelerator) =>
         (architecture, accelerator) switch
         {
-            (LayoutModelArchitecture.Heron, AcceleratorPreference.Gpu) => HeronFp16,
+            (LayoutModelArchitecture.Heron, AcceleratorPreference.Gpu) => Heron,
             (LayoutModelArchitecture.Heron, _) => HeronInt8,
-            (LayoutModelArchitecture.PPDocLayoutV3, AcceleratorPreference.Gpu) => PPDocLayoutV3Fp16,
             (LayoutModelArchitecture.PPDocLayoutV3, _) => PPDocLayoutV3,
             (LayoutModelArchitecture.PPDocLayoutS, _) => PPDocLayoutS,
             _ => throw new System.ArgumentOutOfRangeException(

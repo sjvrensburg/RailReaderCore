@@ -1,5 +1,34 @@
 # onnx-fp16-export
 
+> ⚠ **These FP16 exports are no longer used for GPU inference (fixed 2026-08-28) —
+> `LayoutModelRegistry.Resolve` now routes GPU requests to the plain FP32 models
+> instead.** Root cause, after a long diagnosis (full history in memory
+> `project-webgpu-gridsample-bug`): both Heron and PP-DocLayoutV3's decoders select
+> their initial queries via `TopK` over ~8400 candidate scores, and on real pages many
+> scores cluster within a single FP16 ULP of the k=300 cutoff. CPU's and WebGPU's
+> independently-implemented FP16 kernels accumulate just enough ordinary rounding drift
+> through the backbone/encoder (measured: ~0.014 absolute disagreement, *larger* than
+> the ~0.002 gap between adjacent-ranked candidates at the cutoff) to select a
+> genuinely different ~10% of the query set between the two EPs — not a WebGPU kernel
+> bug (`GridSample`'s own math was verified identical to the CPU reference), a discrete
+> selection instability inherent to running query selection this close to a threshold in
+> FP16. This reproduced as 50 missed detections on Heron across a 42-page corpus
+> (matching real RailReader2 field reports) and, less often (~13x lower exposure, not
+> zero), the same underlying issue in PP-DocLayoutV3. Two targeted FP32-promotion
+> graph-surgery mitigations were tried and both measured to make zero difference — the
+> accumulated disagreement is too large for a local patch downstream of it to close.
+>
+> **What actually works:** run the plain FP32 ONNX model (already published, no
+> re-export needed) on the WebGPU EP instead of an FP16 export. Measured on the same
+> 42-page corpus: cosSim 1.00000 at every checkpoint, 0 misses / 0 extras for both
+> models, and — critically — **no meaningful speed cost**: 9.85x (Heron) / 7.98x
+> (PP-DocLayoutV3) CPU→GPU speedup, matching what the FP16 exports themselves claimed
+> (~9.5x / ~7.3x). GPU parallelism, not FP16's halved memory bandwidth, was already the
+> dominant speedup factor for these models on the hardware tested — so there's no
+> reason left to prefer FP16 for GPU use. These scripts and their exports remain useful
+> for direct/manual experimentation, but are not the recommended path for GPU
+> acceleration going forward.
+
 Produces FP16 ONNX exports of the two layout-detection models that have real
 PyTorch/HF Transformers source checkpoints (Heron, PP-DocLayoutV3), for use
 with the native WebGPU execution provider (`RailReader.Core.Analysis.WebGpu`,

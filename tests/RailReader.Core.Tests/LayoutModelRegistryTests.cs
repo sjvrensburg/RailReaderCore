@@ -13,9 +13,9 @@ public class LayoutModelRegistryTests
 {
     [Theory]
     [InlineData(LayoutModelArchitecture.Heron, AcceleratorPreference.Cpu, "heron-int8")]
-    [InlineData(LayoutModelArchitecture.Heron, AcceleratorPreference.Gpu, "heron-fp16")]
+    [InlineData(LayoutModelArchitecture.Heron, AcceleratorPreference.Gpu, "heron")]
     [InlineData(LayoutModelArchitecture.PPDocLayoutV3, AcceleratorPreference.Cpu, "ppdoclayoutv3")]
-    [InlineData(LayoutModelArchitecture.PPDocLayoutV3, AcceleratorPreference.Gpu, "ppdoclayoutv3-fp16")]
+    [InlineData(LayoutModelArchitecture.PPDocLayoutV3, AcceleratorPreference.Gpu, "ppdoclayoutv3")]
     public void Resolve_PicksTheExpectedDescriptor(
         LayoutModelArchitecture architecture, AcceleratorPreference accelerator, string expectedId)
     {
@@ -41,7 +41,7 @@ public class LayoutModelRegistryTests
         Assert.Equal(LayoutModelArchitecture.Heron, LayoutModelRegistry.DefaultFor(AcceleratorPreference.Cpu).Architecture);
         Assert.Equal(LayoutModelArchitecture.Heron, LayoutModelRegistry.DefaultFor(AcceleratorPreference.Gpu).Architecture);
         Assert.Equal(LayoutModelRegistry.HeronInt8.Id, LayoutModelRegistry.DefaultFor(AcceleratorPreference.Cpu).Id);
-        Assert.Equal(LayoutModelRegistry.HeronFp16.Id, LayoutModelRegistry.DefaultFor(AcceleratorPreference.Gpu).Id);
+        Assert.Equal(LayoutModelRegistry.Heron.Id, LayoutModelRegistry.DefaultFor(AcceleratorPreference.Gpu).Id);
     }
 
     [Fact]
