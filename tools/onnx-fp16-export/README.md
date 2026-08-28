@@ -1,40 +1,33 @@
 # onnx-fp16-export
 
-> ⚠ **Heron FP16 GPU inference is confirmed NOT SAFE to use (2026-08-28) — this
-> reproduces real field reports of frequent rail-reading misses.** PP-DocLayoutV3 FP16
-> shows zero *detection-level* misses on the tested corpus, but its GPU kernel activations
-> diverge from CPU just as badly as Heron's — see below before trusting it as "clean."
-> Full history in memory `project-webgpu-gridsample-bug` (fifth diagnosis): a WebGPU EP
-> `GridSample` (deformable-attention) kernel bug was flagged, then retracted after an
-> isolated/synthetic shader check looked correct, then a real bug in
-> `tools/gpu-threshold-probe` itself was found and fixed (it ran GPU inference once at a
-> low confidence floor and re-filtered by score, assuming NMS-only suppression — but
-> `LayoutAnalyzer.SuppressNestedBlocks`, which runs after NMS, is purely geometric and
-> not confidence-aware, so a sea of low-confidence candidates produced noise boxes that
-> deleted real detections outright), then a small 4-PDF/8-page academic-only corpus was
-> found too narrow to catch Heron's real problem even with the tool fixed. Widening the
-> corpus to 42 pages across 11 documents, including plain single-column forms/invoices,
-> surfaced it clearly: **Heron FP16 shows 50 missed detections + 13-16 spurious extras**,
-> worst on plain documents (7 misses on one page of a short form), while **PP-DocLayoutV3
-> FP16 shows zero misses** on the same widened corpus. An `enc_score_head` fp32-promotion
-> graph-surgery mitigation (targeting a retracted TopK-rounding theory) was tried twice
-> against Heron and made no measurable difference either time.
+> ⚠ **These FP16 exports are no longer used for GPU inference (fixed 2026-08-28) —
+> `LayoutModelRegistry.Resolve` now routes GPU requests to the plain FP32 models
+> instead.** Root cause, after a long diagnosis (full history in memory
+> `project-webgpu-gridsample-bug`): both Heron and PP-DocLayoutV3's decoders select
+> their initial queries via `TopK` over ~8400 candidate scores, and on real pages many
+> scores cluster within a single FP16 ULP of the k=300 cutoff. CPU's and WebGPU's
+> independently-implemented FP16 kernels accumulate just enough ordinary rounding drift
+> through the backbone/encoder (measured: ~0.014 absolute disagreement, *larger* than
+> the ~0.002 gap between adjacent-ranked candidates at the cutoff) to select a
+> genuinely different ~10% of the query set between the two EPs — not a WebGPU kernel
+> bug (`GridSample`'s own math was verified identical to the CPU reference), a discrete
+> selection instability inherent to running query selection this close to a threshold in
+> FP16. This reproduced as 50 missed detections on Heron across a 42-page corpus
+> (matching real RailReader2 field reports) and, less often (~13x lower exposure, not
+> zero), the same underlying issue in PP-DocLayoutV3. Two targeted FP32-promotion
+> graph-surgery mitigations were tried and both measured to make zero difference — the
+> accumulated disagreement is too large for a local patch downstream of it to close.
 >
-> **A layer-by-layer CPU-vs-GPU activation diff (`tools/webgpu-diag`) then re-examined the
-> original GridSample theory against real page content on both models and found it was
-> right all along**: decoder `GridSample` cosine similarity collapses to 0.39-0.75 (from
-> >0.9999 everywhere upstream) on every document type tried, in **both** Heron and
-> PP-DocLayoutV3 — the earlier "verified correct in isolation" check simply didn't
-> exercise the value distribution real decoder activations produce. Critically,
-> **PP-DocLayoutV3's raw divergence is comparable to or worse than Heron's on the same
-> pages**, yet it doesn't turn into visible misses — its downstream box-decode/NMS
-> pipeline is for unknown reasons far more robust to this kernel noise. So: Heron GPU is
-> confirmed broken end-to-end; PP-DocLayoutV3 GPU has a confirmed *upstream* kernel
-> problem too, just not (yet) a confirmed *detection-level* one — don't assume it's safe
-> on documents unlike the 28-page tested subset. Root cause of the kernel-level
-> divergence itself, and of PP-DocLayoutV3's robustness to it, are both still unknown.
-> Both exports are otherwise fine (validated against the CPU/FP32 reference on CPU) —
-> this is an execution-provider correctness issue, not a flaw in either FP16 conversion.
+> **What actually works:** run the plain FP32 ONNX model (already published, no
+> re-export needed) on the WebGPU EP instead of an FP16 export. Measured on the same
+> 42-page corpus: cosSim 1.00000 at every checkpoint, 0 misses / 0 extras for both
+> models, and — critically — **no meaningful speed cost**: 9.85x (Heron) / 7.98x
+> (PP-DocLayoutV3) CPU→GPU speedup, matching what the FP16 exports themselves claimed
+> (~9.5x / ~7.3x). GPU parallelism, not FP16's halved memory bandwidth, was already the
+> dominant speedup factor for these models on the hardware tested — so there's no
+> reason left to prefer FP16 for GPU use. These scripts and their exports remain useful
+> for direct/manual experimentation, but are not the recommended path for GPU
+> acceleration going forward.
 
 Produces FP16 ONNX exports of the two layout-detection models that have real
 PyTorch/HF Transformers source checkpoints (Heron, PP-DocLayoutV3), for use

@@ -11,46 +11,57 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// D3D12/Vulkan on Windows, Vulkan on Linux, Metal on macOS — no vendor SDK required).
 ///
 /// <para>
-/// <b>⚠ Heron: NOT recommended for GPU inference (confirmed broken at scale, 2026-08-28).
-/// PP-DocLayoutV3: no confirmed detection-level problem, and now — unlike earlier revisions
-/// of this note — a root-caused reason to believe it: it hits the same failure mode ~13x
-/// less often than Heron.</b> This is the sixth and (for now) final revision of this
-/// diagnosis — see memory: project-webgpu-gridsample-bug for the full history, including two
-/// retracted theories. <b>Root cause (sixth diagnosis): NOT a WebGPU EP kernel bug.</b> Read
-/// the WGSL GridSample shader and the CPU GridSample kernel side by side (ONNX Runtime source
-/// at <c>~/onnxruntime</c>) — their math is identical, and the WGSL shader promotes every
-/// value to f32 before computing, so GridSample's own arithmetic is equally precise on both
-/// EPs. Node-by-node bisection of the real FP16 graph (<c>tools/webgpu-diag</c>, checkpointing
-/// GridSample's two inputs separately) found the divergence is already present in the
-/// <c>grid</c> input <em>before</em> GridSample runs: both Heron and PP-DocLayoutV3 compute
-/// their deformable-attention sampling grid via <c>Mul(loc, k) − 1.0</c> — the standard
-/// <c>2·loc − 1</c> renormalization into GridSample's [-1,1] convention — entirely in FP16.
-/// Whenever a query's normalized location sits near 0.5 (so the <c>Mul</c> result ≈ 1.0),
-/// this subtraction hits <b>catastrophic cancellation</b>: ordinary, otherwise-harmless FP16
-/// rounding noise between CPU's and WebGPU's independently-implemented kernels (two different
-/// FP16 math libraries never round identically bit-for-bit — true of every op in this graph,
-/// invisible everywhere else) becomes a 10-20%+ <em>relative</em> error in the subtraction's
-/// result, which GridSample's floor()-based bilinear neighbor selection then turns into a
-/// large <em>absolute</em> output error (a coordinate off by a fraction of a pixel near an
-/// integer boundary samples a different neighbor entirely).
+/// <b>✅ FIXED (2026-08-28) — GPU inference now uses the plain FP32 models, not FP16
+/// exports, for both Heron and PP-DocLayoutV3.</b> <c>LayoutModelRegistry.Resolve</c> no
+/// longer routes <see cref="AcceleratorPreference.Gpu"/> requests to
+/// <c>HeronFp16</c>/<c>PPDocLayoutV3Fp16</c> — both are kept in the registry for manual
+/// use but are no longer the GPU default. See memory: project-webgpu-gridsample-bug for
+/// the full multi-pass diagnosis history; summary below.
 /// </para>
 ///
 /// <para>
-/// <b>This explains the Heron/V3 asymmetry quantitatively.</b> Measured how often each
-/// model's <c>Mul</c> output actually lands near the 1.0 cancellation point on the same real
-/// page: <b>Heron ~10.2%</b> of all sampling-coordinate computations vs <b>PP-DocLayoutV3
-/// ~0.77%</b> — a ~13x lower exposure, tracking the measured detection-level miss counts
-/// (Heron 50 misses/42 pages vs V3 ~0) almost exactly. Both models have the identical
-/// vulnerable graph pattern; they just land their learned reference-point distributions at
-/// different distances from the cancellation point. <b>This means PP-DocLayoutV3's GPU path
-/// is not numerically immune</b> — it is exposed to the same failure mode, just rarely enough
-/// on the corpus tested (42 pages) not to have produced a visible miss yet. An
-/// <c>enc_score_head</c> fp32-promotion graph-surgery mitigation (targeting the retracted
-/// TopK-rounding theory, a different node entirely) was tried twice against Heron and made no
-/// difference — expected, now that the actual collapse point (<c>Mul → Sub(-1.0)</c>) is
-/// known to be elsewhere in the graph. A narrower fp32 promotion of just that step is the
-/// next actionable, mechanistically-justified lead — not implemented or validated as of
-/// 2026-08-28.
+/// <b>Root cause (final diagnosis):</b> not a WebGPU EP kernel bug — the WGSL
+/// <c>GridSample</c> shader and ORT's CPU kernel (read side by side, ONNX Runtime source
+/// at <c>~/onnxruntime</c>) implement identical math, both computing in f32 internally.
+/// Both Heron and PP-DocLayoutV3's deformable-attention decoders select their initial
+/// queries via <c>TopK(ReduceMax(enc_score_head(...)))</c> over ~8400 candidate tokens.
+/// On real pages, many candidate scores cluster within a single FP16 ULP of the k=300
+/// cutoff (several are bit-identical ties) — and CPU's and WebGPU's independently-
+/// implemented FP16 kernels accumulate enough ordinary rounding drift through the
+/// backbone/encoder (measured: <c>ReduceMax</c> cosSim 0.99999, but mean absolute
+/// difference ~0.014 — <em>larger</em> than the ~0.002 gap between adjacent-ranked
+/// candidates at the cutoff) to select a genuinely different ~10% of the top-300 query
+/// set between the two EPs. Those different queries then sample completely different
+/// spatial locations via <c>GridSample</c>, which is why its output collapses (cosSim as
+/// low as 0.39) even though <c>GridSample</c>'s own arithmetic is correct on both sides —
+/// it's faithfully reflecting queries selected from different tokens. Heron hits this
+/// ~10.2% of the time per page vs PP-DocLayoutV3's ~0.77% (a ~13x lower exposure, from
+/// each model's own learned score/reference-point distribution) — explaining why Heron
+/// showed 50 missed detections on a 42-page/11-document corpus while V3 showed none,
+/// despite both having the identical vulnerable architecture pattern.
+/// </para>
+///
+/// <para>
+/// <b>Two targeted FP32-promotion graph-surgery mitigations were tried and both measured
+/// to make zero difference</b> (identical CPU-vs-GPU cosSim before and after, to 5 decimal
+/// places): promoting the grid-renormalization <c>Mul → Sub(-1.0)</c> step to FP32 (a
+/// plausible-looking catastrophic-cancellation site, mathematically real but not the
+/// dominant driver); and adding a deterministic FP32 index-based tiebreak before
+/// <c>TopK</c> (targeting tie-breaking-convention differences). Neither helped because the
+/// actual CPU/GPU score disagreement (~0.014 absolute, accumulated across the whole
+/// backbone+encoder) is an order of magnitude larger than the ~0.002 rank-spacing at the
+/// cutoff — no local patch downstream of that accumulation can close a gap that size.
+/// <b>What actually works, measured on the same 42-page corpus that found the original
+/// misses:</b> running the plain FP32 ONNX model (already published, no re-export needed)
+/// on the WebGPU EP gives cosSim 1.00000 at every checkpoint including <c>GridSample</c>,
+/// and <b>0 misses / 0 extras</b> for both models — because FP32 kernels across different
+/// hardware backends agree far more tightly (~1e-6 relative) than FP16's ~5e-4, so the
+/// same razor-thin TopK margin is never crossed. Speed cost of skipping FP16 turned out to
+/// be negligible: 9.85x (Heron) and 7.98x (PP-DocLayoutV3) CPU→GPU speedup, matching what
+/// the FP16 exports themselves had claimed (~9.5x / ~7.3x on a single-page spike) — GPU
+/// parallelism, not FP16's halved memory bandwidth, was already the dominant speedup
+/// factor for these models on the hardware tested. This makes the FP16 export path
+/// (<c>tools/onnx-fp16-export</c>) effectively unnecessary for GPU use going forward.
 /// </para>
 ///
 /// <para>
@@ -75,9 +86,10 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// tool bug fixed 2026-08-28), <c>tools/webgpu-diag</c> (per-layer CPU-vs-GPU activation
 /// diff, now supports both <c>heron</c> and <c>v3</c> architectures — <c>WebGpuDiag &lt;pdf&gt;
 /// &lt;heron|v3&gt; &lt;debugModelPath&gt; [page]</c>, debug model built via
-/// <c>tools/webgpu-diag/make_debug_model.py</c>). Do not route production traffic to Heron GPU
-/// until this is root-caused and fixed; do not assume PP-DocLayoutV3 GPU is safe on inputs
-/// unlike the tested corpus, since its underlying kernel divergence is just as severe.
+/// <c>tools/webgpu-diag/make_debug_model.py</c>). Both confirmed the fix above at
+/// corpus scale (42 pages, 0 misses/0 extras) — if re-validating on a new model export,
+/// point <c>Resolve</c>'s FP32 descriptor at it and re-run <c>gpu-threshold-probe</c>
+/// before trusting an FP16 GPU export again.
 /// </para>
 ///
 /// <para>
