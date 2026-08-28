@@ -1,15 +1,25 @@
 # onnx-fp16-export
 
 > ⚠ **GPU inference via the WebGPU EP is not currently recommended for either export
-> produced here.** ONNX Runtime's WebGPU EP has a confirmed correctness bug in its
-> `GridSample` kernel — both Heron and PP-DocLayoutV3 are RT-DETR-family and depend on
-> `GridSample` for deformable attention, so both substantially under-detect on GPU vs
-> CPU. Root-caused and filed upstream:
-> https://github.com/microsoft/onnxruntime/issues/32275. See
+> produced here.** This is *not* an ONNX Runtime kernel bug (a `GridSample`-kernel
+> theory was filed upstream and then retracted — see
+> https://github.com/microsoft/onnxruntime/issues/32275, closed). The real cause:
+> both Heron and PP-DocLayoutV3 select their decoder queries via a `TopK` over encoder
+> objectness scores, then derive each box from mask logits via a `Greater`-than-zero
+> threshold + `ReduceMin`/`ReduceMax`. Ordinary fp16 cross-backend rounding noise
+> (CPU EP vs WebGPU EP; scores match to cosine similarity 1.00000, differences at the
+> fp16-rounding level) is enough to flip tie-broken `TopK` ordering right at the
+> top-300 cutoff and to flip the `Greater` threshold near mask boundaries — and
+> because every downstream computation (mask head, box decode, `GridSample` in
+> deformable attention) is keyed to query position, that small amount of boundary
+> noise cascades into substantial under-detection on GPU vs CPU. This isn't fixable
+> in ONNX Runtime; it would need a model/export-side mitigation (e.g. keeping the
+> score/mask heads in fp32 even in an otherwise-fp16 export). See
 > `tools/gpu-threshold-probe` and `tools/webgpu-diag` for the diagnostic data, and
-> project memory `project-webgpu-gridsample-bug`. The exports themselves are fine
-> (validated against the CPU/FP32 reference) — the bug is in ORT's execution of
-> `GridSample` on the WebGPU EP, not in these FP16 conversions.
+> project memory `project-webgpu-gridsample-bug` (superseded diagnosis, kept for
+> history). The exports themselves are fine (validated against the CPU/FP32
+> reference) — the sensitivity is in how the model architecture reacts to ordinary
+> cross-backend floating-point differences, not in these FP16 conversions.
 
 Produces FP16 ONNX exports of the two layout-detection models that have real
 PyTorch/HF Transformers source checkpoints (Heron, PP-DocLayoutV3), for use
