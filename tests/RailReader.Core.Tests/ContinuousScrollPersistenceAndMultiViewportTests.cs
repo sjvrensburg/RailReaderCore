@@ -105,22 +105,59 @@ public class ContinuousScrollPersistenceAndMultiViewportTests : IDisposable
     [Fact]
     public void MultiViewport_EvictDistantPageCaches_HonoursBothViewports()
     {
-        var controller = NewController();
-        var doc = controller.CreateDocument(_pdfPath);
-        doc.LoadPageBitmap();
-        controller.AddDocument(doc);
-        controller.SetViewportSize(800, 600);
+        // Real cache-internals check (code review follow-up): a page must survive eviction if it's
+        // within CoreSettings.PageCacheRadius of EITHER viewport, and must be evicted only when it's
+        // outside BOTH — DocumentModel.AnyViewportNeeds unions every live viewport's CurrentPage, not
+        // just the Primary's. Needs enough pages, and a tight enough radius, that "near vp1-only",
+        // "near vp2-only" and "near neither" are three genuinely disjoint sets.
+        var config = _appConfig.ToCoreSettings() with { ContinuousScroll = true, PageCacheRadius = 1 };
+        var marshaller = new SynchronousThreadMarshaller();
+        var factory = TestFixtures.CreatePdfFactory();
+        var path = Path.Combine(Path.GetTempPath(), $"railreader_test_{Guid.NewGuid():N}.pdf");
+        try
+        {
+            TestFixtures.CreateTestPdf(path, pageCount: 10);
+            _controller?.Dispose();
+            _controller = new DocumentController(config, _appConfig, AnnotationService.Default,
+                marshaller, factory);
+            var controller = _controller;
+            var doc = controller.CreateDocument(path);
+            doc.LoadPageBitmap();
+            controller.AddDocument(doc);
+            controller.SetViewportSize(800, 600);
 
-        var vp1 = doc.Primary;   // page 0
-        var vp2 = doc.AddViewport();
-        vp2.SetSize(800, 600);
-        vp2.CurrentPage = 2;    // far from vp1
-        vp2.LoadPageBitmap();
+            var vp1 = doc.Primary;   // page 0
+            var vp2 = doc.AddViewport();
+            vp2.SetSize(800, 600);
+            vp2.CurrentPage = 5;     // far from vp1, radius 1
+            vp2.LoadPageBitmap();
 
-        // Just confirms the union-of-views eviction path still runs without throwing when the two
-        // viewports sit on different pages in continuous mode (EvictDistantPageCaches is invoked
-        // from the CurrentPage setter on every page change already exercised above).
-        Assert.Equal(0, vp1.CurrentPage);
-        Assert.Equal(2, vp2.CurrentPage);
+            // Populate real text/link cache entries directly (not via analysis) for: near vp1 only (0),
+            // near vp2 only (5), and near neither (2 and 8) — extraction alone never evicts, so all
+            // four are present before the eviction call below.
+            foreach (int page in new[] { 0, 2, 5, 8 })
+            {
+                doc.GetOrExtractText(page);
+                doc.GetOrExtractLinks(page);
+            }
+            Assert.Equal(4, doc.TextCache.Count);
+            Assert.Equal(4, doc.LinkCache.Count);
+
+            doc.EvictDistantPageCaches();
+
+            Assert.True(doc.TextCache.ContainsKey(0), "page 0 is within radius of vp1 and must survive");
+            Assert.True(doc.TextCache.ContainsKey(5), "page 5 is within radius of vp2 and must survive");
+            Assert.False(doc.TextCache.ContainsKey(2), "page 2 is outside BOTH viewports' radius and must be evicted");
+            Assert.False(doc.TextCache.ContainsKey(8), "page 8 is outside BOTH viewports' radius and must be evicted");
+
+            Assert.True(doc.LinkCache.ContainsKey(0));
+            Assert.True(doc.LinkCache.ContainsKey(5));
+            Assert.False(doc.LinkCache.ContainsKey(2));
+            Assert.False(doc.LinkCache.ContainsKey(8));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 }

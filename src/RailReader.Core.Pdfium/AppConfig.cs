@@ -396,6 +396,7 @@ public sealed class AppConfig : IRecentFilesStore
         entry.OffsetX = offsetX;
         entry.OffsetY = offsetY;
         entry.ColourEffect = colourEffect;
+        entry.HasSavedCamera = true;
         Save();
     }
 

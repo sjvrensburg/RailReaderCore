@@ -1534,4 +1534,77 @@ public class DocumentControllerTests : IDisposable
         Assert.Equal(2, _controller.Annotations.GetAnnotationColorIndex(AnnotationTool.Highlight));
         Assert.Equal(AnnotationInteractionHandler.AnnotationColors[2], _controller.Annotations.ActiveAnnotationColor);
     }
+
+    [Fact]
+    public void AddDocument_ReopenAfterClose_RestoresSavedCameraZoomAndOffset()
+    {
+        // Pre-existing bug fix: SaveReadingPosition has always recorded the reader's zoom/offset,
+        // but AddDocument never reapplied them on reopen — CenterPage's fresh fit silently won.
+        // Also proves the restore applies even when the saved page is 0 (CloseDocument's
+        // restoredPage gate only covers which PAGE loads, not the camera).
+        var appConfig = new AppConfig();
+        using (var c1 = new DocumentController(appConfig.ToCoreSettings(), appConfig, AnnotationService.Default,
+            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory()))
+        {
+            var doc1 = c1.CreateDocument(_pdfPath);
+            doc1.LoadPageBitmap();
+            c1.AddDocument(doc1);
+            c1.SetViewportSize(800, 600);
+
+            // Zoom/pan away from CenterPage's fit, staying on page 0, then close (SaveReadingPosition).
+            doc1.Camera.Zoom = 3.0;
+            doc1.Camera.OffsetX = -518.0; // interior of the single-page clamp's valid range at this zoom
+            doc1.Camera.OffsetY = -600.0;
+            c1.CloseDocument(0);
+        }
+
+        using var c2 = new DocumentController(appConfig.ToCoreSettings(), appConfig, AnnotationService.Default,
+            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+        var doc2 = c2.CreateDocument(_pdfPath);
+        doc2.LoadPageBitmap();
+        c2.AddDocument(doc2);
+        c2.SetViewportSize(800, 600);
+
+        Assert.Equal(0, doc2.CurrentPage);
+        Assert.Equal(3.0, doc2.Camera.Zoom, precision: 6);
+        Assert.Equal(-518.0, doc2.Camera.OffsetX, precision: 6);
+        Assert.Equal(-600.0, doc2.Camera.OffsetY, precision: 6);
+    }
+
+    [Fact]
+    public void AddDocument_RecentFileNeverClosedThroughSaveReadingPosition_DoesNotForceCameraToDefaults()
+    {
+        // Guard for the fix above: AddRecentFile alone (e.g. the app crashed before CloseDocument
+        // ever ran) can leave a RecentFileEntry whose Zoom/OffsetX/OffsetY are just the type's field
+        // defaults (1.0/0/0) — HasSavedCamera distinguishes that from a real SaveReadingPosition, so
+        // reopening must NOT stomp CenterPage's fit with an arbitrary top-left/1.0x camera.
+        var appConfig = new AppConfig();
+        using (var c1 = new DocumentController(appConfig.ToCoreSettings(), appConfig, AnnotationService.Default,
+            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory()))
+        {
+            var doc1 = c1.CreateDocument(_pdfPath);
+            doc1.LoadPageBitmap();
+            c1.AddDocument(doc1); // AddRecentFile only — never closed, so SaveReadingPosition never ran
+        }
+
+        using var c2 = new DocumentController(appConfig.ToCoreSettings(), appConfig, AnnotationService.Default,
+            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+        var doc2 = c2.CreateDocument(_pdfPath);
+        doc2.LoadPageBitmap();
+        c2.AddDocument(doc2);
+
+        // Baseline: the SAME AddDocument call sequence (CenterPage runs against the Viewport's
+        // default 1200x900 before any SetViewportSize — matching doc2's own AddDocument above) but
+        // through a controller whose recent-files store never saw this path at all. Same basis, no
+        // polluted recents entry — isolates whether AddRecentFile's placeholder forced anything.
+        using var c3 = new DocumentController(new AppConfig().ToCoreSettings(), new AppConfig(),
+            AnnotationService.Default, new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+        var fitOnly = c3.CreateDocument(_pdfPath);
+        fitOnly.LoadPageBitmap();
+        c3.AddDocument(fitOnly);
+
+        Assert.Equal(fitOnly.Camera.Zoom, doc2.Camera.Zoom, precision: 6);
+        Assert.Equal(fitOnly.Camera.OffsetX, doc2.Camera.OffsetX, precision: 6);
+        Assert.Equal(fitOnly.Camera.OffsetY, doc2.Camera.OffsetY, precision: 6);
+    }
 }

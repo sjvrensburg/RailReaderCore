@@ -5,9 +5,14 @@
 > this document found during implementation: §1.2's re-anchor formula has the sign backwards —
 > it must be `ox' = ox + (Left[b]-Left[a])·z` (**new minus old**), not `(Left[a]-Left[b])·z` as
 > written below; verified independently against this section's own `off_p`-invariance proof.
-> Deferred to a follow-up: the render window renders synchronously rather than via the
-> `Task.Run`-based `ScheduleWindow` queue this document describes (§5 Phase 1) — correct and safe,
-> but not overlapped with the frame; revisit if scroll feels janky on slow devices.
+> **Follow-up (same day, still v0.61.0, unreleased):** the render window now renders
+> asynchronously — each missing/stale neighbour page is rasterised on a background `Task.Run` and
+> marshalled back (mirrors `PrefetchPage`/`UpdateRenderDpiIfNeeded`), closing the gap noted above.
+> A page still in flight shows up in `VisiblePages` with `Bitmap: null` rather than being omitted.
+> Also landed: `ScreenshotCompositor.RenderPageContinuous`'s non-anchor line-focus-blur treatment
+> is a real Gaussian blur (§7 below), not the flat dim overlay originally shipped as a v1
+> placeholder; and a pre-existing (non-continuous-scroll) bug where `AddDocument` never reapplied
+> `SaveReadingPosition`'s saved zoom/offset on reopen is fixed (`RecentFileEntry.HasSavedCamera`).
 > **Driver:** the RailReader2 GUI team wants pages treated as one continuous entity, inside and
 > outside rail mode. **Scope:** `RailReader.Core` (+ a small `Renderer.Skia` follow-up). The host
 > (railreader2) has its own checklist in §7.
@@ -394,7 +399,9 @@ small because overlays are already camera-relative.
   needs a per-page variant.
 - **Overlays per visible page:** annotations (`Annotations.Pages[e.Page]`), search
   (`MatchesForPage(e.Page)`), debug (`AnalysisCache[e.Page]`) — all already page-keyed. Rail
-  overlay and line highlight: anchor page only. Line-focus blur must dim the other visible pages.
+  overlay and line highlight: anchor page only. Line-focus blur must blur the other visible pages
+  in full (no seated line to keep sharp on them) — `RenderPageContinuous` does this with the same
+  `SKImageFilter.CreateBlur` pass the anchor uses on its own non-active-line area, not a flat dim.
 - **Input:** `ViewportPanel.ScreenToPage` → `controller.ResolvePoint`; before calling any
   `AnnotationInteractionHandler` method or `HitTestLink` for a resolved page ≠ `vp.CurrentPage`,
   call `controller.AnchorToPage(page)`. A drag that crosses a page boundary stays on its start page.

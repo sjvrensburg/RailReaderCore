@@ -180,4 +180,138 @@ public class ContinuousScrollBrowseModeTests : IDisposable
         Assert.Equal(1, page);
         Assert.Equal(150.0 / z, py, precision: 3);
     }
+
+    [Fact]
+    public void ClampCamera_HorizontalOverscroll_ClampsAgainstDocumentMaxWidth()
+    {
+        // §6: "horizontal clamp against MaxW" — mirrors ClampCamera_AtDocumentTop_OffsetYIsZero /
+        // _AtDocumentEnd_MatchesFormula (Y axis) for X. All pages in the synthetic PDF share one
+        // width, so MaxWidth == PageWidth here, but the clamp must go through the DOCUMENT-extent
+        // branch (ContinuousScrollDocumentOffsetX), not the single-page one.
+        var doc = SetupDoc();
+        var vp = doc.Primary;
+        var layout = doc.PageLayout!;
+
+        vp.Camera.Zoom = 3.0; // wide enough that the page no longer fits the 800px viewport
+        vp.Camera.OffsetX = 1_000_000; // push far past the left edge
+        vp.ClampCamera(vp.Width, vp.Height);
+        Assert.Equal(0.0, vp.DocumentOffsetX, precision: 6);
+
+        vp.Camera.OffsetX = -1_000_000; // push far past the right edge
+        vp.ClampCamera(vp.Width, vp.Height);
+        double expected = vp.Width - layout.MaxWidth * vp.Camera.Zoom;
+        Assert.Equal(expected, vp.DocumentOffsetX, precision: 3);
+    }
+
+    [Fact]
+    public void Zoom_AboutFocusOnNeighbourPage_PreservesDocumentPointUnderFocus_ThenSurvivesReanchor()
+    {
+        // §6 "Zoom invariance": zoom about a focus over page 1 while anchored on page 0; the
+        // document point under the focus must be fixed once the animation completes, and must stay
+        // fixed after a SUBSEQUENT re-anchor onto that neighbour (PreserveScreen) — proving
+        // PageOffset/ResolvePoint stay self-consistent across both a zoom and an anchor change.
+        var doc = SetupDoc();
+        var vp = doc.Primary;
+        var layout = doc.PageLayout!;
+        Assert.True(layout.Count >= 2);
+
+        double z = vp.Camera.Zoom;
+        vp.Camera.OffsetY = -layout.Height(0) * z + 300; // page 0/1 boundary at screen Y = 300
+        vp.ClampCamera(vp.Width, vp.Height);
+
+        const double focusX = 400, focusY = 350; // below the boundary → on page 1
+        var before = vp.ResolvePoint(focusX, focusY);
+        Assert.Equal(1, before.Page); // precondition
+
+        vp.Zoom.Start(vp, z * 1.5, focusX, focusY, vp.Width);
+        Thread.Sleep(250); // past the (short) zoom animation duration
+        bool cameraChanged = false, animating = false;
+        vp.Zoom.Tick(vp, vp.Width, vp.Height, ref cameraChanged, ref animating);
+        Assert.False(animating);
+        Assert.False(vp.Zoom.IsAnimating);
+
+        var afterZoom = vp.ResolvePoint(focusX, focusY);
+        Assert.Equal(before.Page, afterZoom.Page);
+        Assert.Equal(before.PageX, afterZoom.PageX, precision: 3);
+        Assert.Equal(before.PageY, afterZoom.PageY, precision: 3);
+
+        _controller.FocusedViewport = vp;
+        _controller.AnchorToPage(1); // PreserveScreen re-anchor onto the very page the focus sat on
+        Assert.Equal(1, vp.CurrentPage);
+
+        var afterReanchor = vp.ResolvePoint(focusX, focusY);
+        Assert.Equal(afterZoom.Page, afterReanchor.Page);
+        Assert.Equal(afterZoom.PageX, afterReanchor.PageX, precision: 3);
+        Assert.Equal(afterZoom.PageY, afterReanchor.PageY, precision: 3);
+    }
+
+    [Fact]
+    public void HandleClick_OnNeighbourPageLink_AnchorsFirstThenResolvesTheLink()
+    {
+        // §6 "Hit-test on a neighbour page": HandleClick on a page-1 link, while still anchored on
+        // page 0, must re-anchor to page 1 before hit-testing (links are page-local) — proven here
+        // by `handled` being true at all: the link is registered ONLY on page 1, so a hit-test still
+        // running against the old anchor (page 0) would find nothing. HandleClick then follows the
+        // resolved link (a PageDestination) via GoToPage, same as the single-page-mode path, so the
+        // final CurrentPage is the link's TARGET (2), not the page clicked on (1).
+        var doc = SetupDoc();
+        var vp = doc.Primary;
+        var layout = doc.PageLayout!;
+        double z = vp.Camera.Zoom;
+        vp.Camera.OffsetY = -layout.Height(0) * z + 300;
+        vp.ClampCamera(vp.Width, vp.Height);
+
+        doc.SetLinks(1,
+        [
+            new PdfLink
+            {
+                Rect = new RectF(50, 50, 200, 200),
+                Destination = new PageDestination { PageIndex = 2 },
+            }
+        ]);
+
+        var (offX, offY) = vp.PageOffset(1);
+        double canvasX = 100 * z + offX, canvasY = 100 * z + offY; // page-1-local (100,100)
+
+        _controller.FocusedViewport = vp;
+        var (handled, dest) = _controller.HandleClick(canvasX, canvasY);
+
+        Assert.True(handled, "the link must be found — proves hit-testing ran against page 1, not the stale anchor (page 0)");
+        var pageDest = Assert.IsType<PageDestination>(dest);
+        Assert.Equal(2, pageDest.PageIndex);
+        Assert.Equal(2, vp.CurrentPage); // HandleClick followed the resolved link to its target page
+    }
+
+    [Fact]
+    public void ActivateRailAt_OnNeighbourPage_AnchorsFirstThenSeatsTheRailThere()
+    {
+        // §6 "Hit-test on a neighbour page": ActivateRailAt on page 1 must anchor there first —
+        // rail is page-local and always seats on vp.CurrentPage.
+        var doc = SetupDoc();
+        var vp = doc.Primary;
+        var layout = doc.PageLayout!;
+        double z = vp.Camera.Zoom;
+        vp.Camera.OffsetY = -layout.Height(0) * z + 300;
+        vp.ClampCamera(vp.Width, vp.Height);
+
+        var block = new LayoutBlock
+        {
+            Role = BlockRole.Text, BBox = new BBox(72, 72, 468, 40), Confidence = 0.9f, Order = 0,
+        };
+        block.Lines.Add(new LineInfo(72, 16, 72, 468));
+        var analysis = new PageAnalysis();
+        analysis.Blocks.Add(block);
+        doc.SetAnalysis(1, doc.DefaultAnalysisParams, analysis);
+
+        var (offX, offY) = vp.PageOffset(1);
+        double canvasX = 100 * z + offX, canvasY = (72 + 8) * z + offY; // inside the page-1 block/line
+
+        _controller.FocusedViewport = vp;
+        bool ok = _controller.ActivateRailAt(canvasX, canvasY);
+
+        Assert.True(ok);
+        Assert.Equal(1, vp.CurrentPage);
+        Assert.True(vp.Rail.Active);
+        Assert.True(vp.Rail.HasAnalysis);
+    }
 }

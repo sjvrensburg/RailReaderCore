@@ -277,19 +277,29 @@ public static class ScreenshotCompositor
                     canvas.Restore(); // clip
                 }
             }
+            // Non-anchor page: no seated line to keep sharp, so the WHOLE page is blurred — the
+            // same treatment the anchor gives everything outside its current line. A flat dim
+            // overlay was the v1 placeholder here (§7 host guidance only asked for "de-emphasise");
+            // a real blur matches the anchor's own non-active-line areas instead of leaving the two
+            // treatments visually inconsistent.
+            else if (!isAnchor && railFocusable && options.LineFocusBlurIntensity > 0)
+            {
+                float sigma = (float)(4.0 * options.LineFocusBlurIntensity);
+                if (sigma >= 0.5f)
+                {
+                    didLineFocusBlur = true;
+                    using var pageBlur = SKImageFilter.CreateBlur(sigma, sigma);
+                    using var pageBlurPaint = new SKPaint { ImageFilter = pageBlur };
+                    canvas.SaveLayer(pageBlurPaint);
+                    canvas.DrawImage(pageImage, pageRect, s_sampling);
+                    canvas.Restore(); // layer
+                }
+            }
 
             if (!didLineFocusBlur)
                 canvas.DrawImage(pageImage, pageRect, s_sampling);
 
             if (effectPaint is not null) canvas.Restore();
-
-            // A non-anchor page has no seated line to keep sharp, so it is dimmed instead of blurred
-            // (§7 host guidance: "line-focus blur must dim the other visible pages").
-            if (!isAnchor && railFocusable)
-            {
-                using var dim = new SKPaint { Color = new SKColor(0, 0, 0, 110) };
-                canvas.DrawRect(pageRect, dim);
-            }
 
             if (options.SearchHighlights)
                 DrawSearchHighlightsForPage(canvas, controller, visible.Page);

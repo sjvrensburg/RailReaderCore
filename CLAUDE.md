@@ -123,7 +123,12 @@ widest page. `Camera` itself is untouched and still describes the *anchor page's
 transform; every other page's transform is *derived* (`Viewport.PageOffset`), and `DocumentOffsetX/Y`
 give the anchor-independent document-space position. `Viewport.VisiblePages` is a per-view render
 window (bounded by `ContinuousRenderWindowPages`) of neighbouring-page bitmaps drawn at their own
-offsets — a host's draw loop iterates it instead of a single page. `ClampCamera` clamps against the
+offsets — a host's draw loop iterates it instead of a single page. `EnsureRenderWindow` schedules
+each missing/stale neighbour's rasterisation on a background `Task.Run` (mirrors
+`PrefetchPage`/`UpdateRenderDpiIfNeeded` — never blocks the UI thread); a page still in flight
+appears in `VisiblePages` with `Bitmap: null` (its geometry needs only `PageLayout`, not a
+completed render), and a stale-DPI entry keeps serving its old bitmap until the fresh one lands.
+`ClampCamera` clamps against the
 whole document extent in continuous mode (degenerating to the ordinary page clamp for a one-page
 document). Page transitions take a `PageTransition`: `Default` (single-page: unchanged; continuous:
 explicit jump, page-top-at-viewport-top) or `PreserveScreen` (re-anchors the camera onto a new page

@@ -303,6 +303,29 @@ public sealed partial class DocumentController : IDisposable
             state.ColourEffect = savedEffect;
 
         state.CenterPage(ww, wh);
+
+        // Reapply the saved camera zoom/pan on top of CenterPage's fresh fit — restoring the PAGE
+        // above only restores which page is shown; SaveReadingPosition also records the reader's
+        // zoom/offset (persisted alongside it), which is otherwise silently dropped on reopen (this
+        // has always been a no-op: `saved.Zoom`/`OffsetX`/`OffsetY` were read from disk and then
+        // never assigned anywhere). Applies even when the saved page was 0, since the reader may
+        // have been zoomed in on the first page too. Gated on HasSavedCamera, not just `saved is
+        // not null` — AddRecentFile alone (no close-through-SaveReadingPosition yet) can leave an
+        // entry whose Zoom/OffsetX/OffsetY are just the type's field defaults, not a real position.
+        // Clamp afterward — the saved values may predate a window resize or a rotation change — and
+        // re-check the render DPI, since GoToPage/CenterPage above left CachedPage rendered at the
+        // PRE-restore zoom.
+        if (saved is { HasSavedCamera: true } && saved.Zoom > 0 && double.IsFinite(saved.Zoom)
+            && double.IsFinite(saved.OffsetX) && double.IsFinite(saved.OffsetY))
+        {
+            var camera = state.Primary.Camera;
+            camera.Zoom = Math.Clamp(saved.Zoom, Camera.ZoomMin, Camera.ZoomMax);
+            camera.OffsetX = saved.OffsetX;
+            camera.OffsetY = saved.OffsetY;
+            state.Primary.ClampCamera(ww, wh);
+            state.Primary.UpdateRenderDpiIfNeeded();
+        }
+
         state.UpdateRailZoom(ww, wh);
 
         Documents.Add(state);

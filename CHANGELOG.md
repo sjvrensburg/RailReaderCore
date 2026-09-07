@@ -12,8 +12,9 @@ for the full design.
   a gap, pages centred in a column as wide as the widest page. `DocumentModel.PageLayout` /
   `EnsurePageLayout()`.
 - **`IPdfService.GetPageSizes(int viewRotation)`**: new default interface method (existing
-  implementations keep compiling); `SkiaPdfService` overrides it to open the document once instead
-  of re-parsing per page.
+  implementations keep compiling); `SkiaPdfService` and `PdfPigSkiaPdfService` both override it —
+  the former opens the document once instead of re-parsing per page, the latter reads it off the
+  document already held open for the service's lifetime.
 - **`Viewport`**: `ContinuousScroll`, `VisiblePages`, `PageOffset`, `DocumentOffsetX/Y`,
   `ComputeAnchorPage`, `ResolvePoint`, a per-view render window covering neighbouring pages
   (`ContinuousRenderWindowPages`-bounded), `OnScrollModeChanged` for a runtime toggle.
@@ -36,6 +37,26 @@ for the full design.
   GUI's per-page draw loop.
 - **`PageChanged` semantics note**: in continuous mode it also fires when scrolling re-anchors (the
   page indicator follows the viewport centre), not only on explicit navigation.
+
+### Follow-up fixes (same unreleased version)
+
+- **Render window is now asynchronous.** `Viewport.EnsureRenderWindow` used to rasterise every
+  missing/stale neighbour page synchronously on the UI thread; it now schedules each one on a
+  background `Task.Run` (mirroring `PrefetchPage`/`UpdateRenderDpiIfNeeded`) and marshals the
+  result back. A page whose render is in flight appears in `VisiblePages` immediately with
+  `Bitmap: null` (geometry doesn't depend on the render completing) so a host can still reserve its
+  slot. A stale-DPI entry keeps serving its old bitmap until the fresh one lands — never blanked
+  mid-re-render.
+- **Real blur on non-anchor pages.** `ScreenshotCompositor.RenderPageContinuous`'s line-focus-blur
+  treatment of a non-anchor page was a flat semi-transparent-black overlay (documented v1
+  shortcut); it is now a genuine Gaussian blur of the whole page, matching the anchor's own
+  treatment of everything outside its current line.
+- **Fixed: saved camera zoom/offset now actually restore on reopen.** `SaveReadingPosition` has
+  always recorded the reader's zoom and pan, but `DocumentController.AddDocument` never reapplied
+  them — `CenterPage`'s fresh fit silently won every time. A new `RecentFileEntry.HasSavedCamera`
+  flag distinguishes a real saved position from an `AddRecentFile`-only placeholder (e.g. the app
+  closed before ever reaching `CloseDocument`), so restoring the camera can't be confused with that
+  placeholder's field defaults.
 
 ## 0.60.2 — GPU layout detection fixed: route to FP32 models, not FP16 (2026-08-28)
 

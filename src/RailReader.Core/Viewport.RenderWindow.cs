@@ -25,6 +25,31 @@ partial class Viewport
     private readonly Dictionary<int, WindowEntry> _renderWindow = new();
 
     /// <summary>
+    /// Pages currently being rasterised on a background thread for the window (scheduled by
+    /// <see cref="EnsureRenderWindow"/>, resolved by the completion continuation below). A page in
+    /// here has no bitmap yet — <see cref="VisiblePages"/> reports it with <c>Bitmap: null</c> so a
+    /// host can still reserve its slot (draw a placeholder / the page gap colour) instead of the
+    /// frame silently omitting it.
+    /// </summary>
+    private readonly HashSet<int> _pendingRenders = new();
+
+    /// <summary>
+    /// Guards <see cref="_renderWindow"/> and <see cref="_pendingRenders"/> ONLY — never held
+    /// across a PDFium call (the render itself runs lock-free in the background task; only the
+    /// bookkeeping around it is synchronised). This is NOT a substitute for the "mutate Viewport
+    /// only on the UI thread" rule: in production the host's <see cref="IThreadMarshaller"/> always
+    /// serialises the completion callback onto the UI thread, so this lock is never contended
+    /// there. It exists because <see cref="SynchronousThreadMarshaller"/> (headless/tests) runs the
+    /// completion inline on whichever background thread finished rendering, which can genuinely
+    /// race a test's own thread reading/writing these two collections — without this, that race is
+    /// a real "Collection was modified" hazard, not just a stale-read.
+    /// </summary>
+    private readonly object _windowLock = new();
+
+    /// <summary>True while at least one neighbour page is still rasterising in the background.</summary>
+    internal bool HasPendingWindowRenders { get { lock (_windowLock) return _pendingRenders.Count > 0; } }
+
+    /// <summary>
     /// True when this view is running in continuous-scroll mode (derived from
     /// <see cref="CoreSettings.ContinuousScroll"/> on the document's current settings snapshot).
     /// A confined (<see cref="Focus"/>ed) view ignores the mode entirely — it stays single-page.
@@ -32,31 +57,43 @@ partial class Viewport
     public bool ContinuousScroll => Owner.Config.ContinuousScroll && CurrentFocusBlockIndex is null;
 
     /// <summary>
-    /// Every page this view currently has a bitmap for, in ascending page order, with each page's
-    /// transform in the anchor camera frame (see <see cref="PageOffset"/>). In single-page mode (or
-    /// while confined) this always has exactly one entry describing the anchor page — a host that
-    /// draws every entry in <see cref="VisiblePages"/> behaves identically to drawing the single
-    /// legacy page fields.
+    /// Every page this view currently has (or is about to have) a bitmap for, in ascending page
+    /// order, with each page's transform in the anchor camera frame (see <see cref="PageOffset"/>).
+    /// A page whose render is still in flight (<see cref="HasPendingWindowRenders"/>) appears here
+    /// too, with <c>Bitmap: null</c> — its geometry comes straight from <see cref="DocumentModel.PageLayout"/>
+    /// and does not depend on the render having completed. In single-page mode (or while confined)
+    /// this always has exactly one entry describing the anchor page — a host that draws every entry
+    /// in <see cref="VisiblePages"/> behaves identically to drawing the single legacy page fields.
     /// </summary>
     public IReadOnlyList<VisiblePage> VisiblePages
     {
         get
         {
-            if (!ContinuousScroll || Owner.PageLayout is not { })
+            if (!ContinuousScroll || Owner.PageLayout is not { } layout)
             {
                 return [new VisiblePage(CurrentPageBacking, Camera.OffsetX, Camera.OffsetY,
                     PageWidthBacking, PageHeightBacking, CachedPage, CachedDpi)];
             }
 
-            var list = new List<VisiblePage>(_renderWindow.Count + 1)
+            List<VisiblePage> list;
+            lock (_windowLock)
             {
-                new VisiblePage(CurrentPageBacking, Camera.OffsetX, Camera.OffsetY,
-                    PageWidthBacking, PageHeightBacking, CachedPage, CachedDpi)
-            };
-            foreach (var (page, entry) in _renderWindow)
-            {
-                var (ox, oy) = PageOffset(page);
-                list.Add(new VisiblePage(page, ox, oy, entry.Width, entry.Height, entry.Bitmap, entry.Dpi));
+                list = new List<VisiblePage>(_renderWindow.Count + _pendingRenders.Count + 1)
+                {
+                    new VisiblePage(CurrentPageBacking, Camera.OffsetX, Camera.OffsetY,
+                        PageWidthBacking, PageHeightBacking, CachedPage, CachedDpi)
+                };
+                foreach (var (page, entry) in _renderWindow)
+                {
+                    var (ox, oy) = PageOffset(page);
+                    list.Add(new VisiblePage(page, ox, oy, entry.Width, entry.Height, entry.Bitmap, entry.Dpi));
+                }
+                foreach (var page in _pendingRenders)
+                {
+                    if (_renderWindow.ContainsKey(page)) continue; // a stale-DPI re-render is in flight; the OLD bitmap above still serves
+                    var (ox, oy) = PageOffset(page);
+                    list.Add(new VisiblePage(page, ox, oy, layout.Width(page), layout.Height(page), null, 0));
+                }
             }
             list.Sort((a, b) => a.Page.CompareTo(b.Page));
             return list;
@@ -119,9 +156,19 @@ partial class Viewport
     /// <summary>
     /// Ensures the render window covers every page currently wanted (pages intersecting the
     /// viewport plus one page of padding on each side, capped at
-    /// <see cref="CoreSettings.ContinuousRenderWindowPages"/>), rendering missing pages synchronously
-    /// and evicting pages no longer wanted. No-op outside continuous mode. The anchor page's own
-    /// bitmap is never held here — it lives in <see cref="CachedPage"/> as always.
+    /// <see cref="CoreSettings.ContinuousRenderWindowPages"/>), scheduling a background render for
+    /// each missing/stale page and evicting pages no longer wanted. No-op outside continuous mode.
+    /// The anchor page's own bitmap is never held here — it lives in <see cref="CachedPage"/> as
+    /// always.
+    /// <para>
+    /// Rendering runs off the UI thread (mirrors <see cref="PrefetchPage"/>/<see cref="UpdateRenderDpiIfNeeded"/>):
+    /// this method only decides WHAT is wanted and hands each missing/stale page to a
+    /// <see cref="Task.Run(Action)"/> that rasterises it and posts the result back via
+    /// <see cref="IThreadMarshaller"/>. A page already in flight is not re-scheduled
+    /// (<see cref="_pendingRenders"/>); a page whose OLD bitmap is merely stale (DPI hysteresis)
+    /// keeps serving that bitmap from <see cref="_renderWindow"/> until the fresh one lands — it is
+    /// never blanked out while re-rendering.
+    /// </para>
     /// </summary>
     internal void EnsureRenderWindow(double windowWidth, double windowHeight)
     {
@@ -171,52 +218,117 @@ partial class Viewport
             wanted = withinBudget;
         }
         var wantedSet = new HashSet<int>(wanted);
+        int viewRotation = Owner.ViewRotation;
+        int generation = RenderGeneration;
+        var pagesToSchedule = new List<(int Page, double Width, double Height, int Dpi)>();
 
-        foreach (var key in _renderWindow.Keys.Where(k => !wantedSet.Contains(k)).ToList())
+        lock (_windowLock)
         {
-            _renderWindow[key].Dispose();
-            _renderWindow.Remove(key);
+            foreach (var key in _renderWindow.Keys.Where(k => !wantedSet.Contains(k)).ToList())
+            {
+                _renderWindow[key].Dispose();
+                _renderWindow.Remove(key);
+            }
+            // Stop tracking a page no longer wanted as "in flight": its eventual completion is
+            // still safely ignored by the generation/CurrentPage/ContinuousScroll checks below, but
+            // it must not block a future re-request for that same page from being scheduled.
+            _pendingRenders.RemoveWhere(p => !wantedSet.Contains(p));
+
+            foreach (var page in wanted)
+            {
+                // Read the size from the already-built layout rather than Owner.Pdf.GetPageSize:
+                // for SkiaPdfService the latter re-parses the whole document from PdfBytes on every
+                // call (see SkiaPdfService.GetPageSize's own doc comment), and this loop runs on
+                // essentially every frame while scrolling — the exact per-call parse cost
+                // GetPageSizes/PageLayout exists to eliminate. layout.Width/Height(page) is the same
+                // value (both are sourced from GetPageSizes(_viewRotation) — see EnsurePageLayout)
+                // for free.
+                double w = layout.Width(page), h = layout.Height(page);
+                int dpi = DocumentModel.CalculateRenderDpi(Camera.Zoom, w, h, RenderDpi);
+
+                if (_renderWindow.TryGetValue(page, out var existing))
+                {
+                    bool stale = existing.Dpi <= 0
+                        || dpi > existing.Dpi * RenderDpi.UpscaleHysteresis
+                        || (dpi < existing.Dpi * RenderDpi.DownscaleHysteresis && existing.Dpi > RenderDpi.MinDpi);
+                    if (!stale) continue;
+                    // Stale, not missing: keep serving `existing` (still in _renderWindow) until the
+                    // fresh render below lands — do NOT remove/dispose it here, or the page would go
+                    // blank for however many frames the background render takes.
+                }
+
+                if (!_pendingRenders.Add(page)) continue; // already have an in-flight render targeting this page
+                pagesToSchedule.Add((page, w, h, dpi));
+            }
         }
 
-        foreach (var page in wanted)
+        foreach (var (page, w, h, dpi) in pagesToSchedule)
         {
-            // Read the size from the already-built layout rather than Owner.Pdf.GetPageSize:
-            // for SkiaPdfService the latter re-parses the whole document from PdfBytes on every
-            // call (see SkiaPdfService.GetPageSize's own doc comment), and this loop runs on
-            // essentially every frame while scrolling — the exact per-call parse cost
-            // GetPageSizes/PageLayout exists to eliminate. layout.Width/Height(page) is the same
-            // value (both are sourced from GetPageSizes(_viewRotation) — see EnsurePageLayout)
-            // for free.
-            double w = layout.Width(page), h = layout.Height(page);
-            int dpi = DocumentModel.CalculateRenderDpi(Camera.Zoom, w, h, RenderDpi);
+            var ct = Cts.Token;
+            Task.Run(() =>
+            {
+                IRenderedPage? bitmap = null;
+                Exception? error = null;
+                try
+                {
+                    ct.ThrowIfCancellationRequested();
+                    bitmap = Owner.Pdf.RenderPage(page, dpi, viewRotation);
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex) { error = ex; }
 
-            if (_renderWindow.TryGetValue(page, out var existing))
-            {
-                bool stale = existing.Dpi <= 0
-                    || dpi > existing.Dpi * RenderDpi.UpscaleHysteresis
-                    || (dpi < existing.Dpi * RenderDpi.DownscaleHysteresis && existing.Dpi > RenderDpi.MinDpi);
-                if (!stale) continue;
-                existing.Dispose();
-                _renderWindow.Remove(page);
-            }
+                Owner.Marshaller.Post(() =>
+                {
+                    try
+                    {
+                        if (error is not null)
+                            Owner.Logger.Error($"Failed to render window page {page + 1}: {error.Message}", error);
 
-            try
-            {
-                var bitmap = Owner.Pdf.RenderPage(page, dpi, Owner.ViewRotation);
-                _renderWindow[page] = new WindowEntry { Bitmap = bitmap, Dpi = dpi, Width = w, Height = h };
-            }
-            catch (Exception ex)
-            {
-                Owner.Logger.Error($"Failed to render window page {page + 1}: {ex.Message}", ex);
-            }
+                        // Bail without installing the bitmap when: the document/view is gone; a
+                        // rotation/quality change moved on to a new render generation (this bitmap
+                        // is in the old, now-wrong, orientation/DPI band); continuous mode was
+                        // turned off while this was in flight; or `page` became the anchor in the
+                        // meantime (its bitmap now belongs in CachedPage, not the window — installing
+                        // it here too would list it twice in VisiblePages until the next eviction
+                        // pass catches up).
+                        if (Owner.IsDisposed || _disposed || RenderGeneration != generation
+                            || !ContinuousScroll || page == CurrentPageBacking || bitmap is null)
+                        {
+                            bitmap?.Dispose();
+                            return;
+                        }
+
+                        lock (_windowLock)
+                        {
+                            if (_renderWindow.TryGetValue(page, out var staleEntry))
+                            {
+                                staleEntry.Dispose();
+                                _renderWindow.Remove(page);
+                            }
+                            _renderWindow[page] = new WindowEntry { Bitmap = bitmap, Dpi = dpi, Width = w, Height = h };
+                        }
+                    }
+                    finally
+                    {
+                        lock (_windowLock) _pendingRenders.Remove(page);
+                    }
+                });
+            }, ct);
         }
     }
 
-    /// <summary>Disposes every render-window entry (not the anchor's <see cref="CachedPage"/>).</summary>
+    /// <summary>Disposes every render-window entry (not the anchor's <see cref="CachedPage"/>) and
+    /// stops tracking in-flight renders (their eventual completion is still safely ignored — see
+    /// the generation/disposal guard in <see cref="EnsureRenderWindow"/> — this just lets a fresh
+    /// request for the same page be scheduled immediately instead of waiting on the old one).</summary>
     private void DisposeRenderWindow()
     {
-        foreach (var entry in _renderWindow.Values) entry.Dispose();
-        _renderWindow.Clear();
+        lock (_windowLock)
+        {
+            foreach (var entry in _renderWindow.Values) entry.Dispose();
+            _renderWindow.Clear();
+            _pendingRenders.Clear();
+        }
     }
 
     /// <summary>
@@ -224,15 +336,20 @@ partial class Viewport
     /// bitmap — the caller takes ownership. Used by <see cref="LoadPageBitmap"/> to promote a
     /// neighbour that a re-anchor just made the new anchor, instead of re-rendering a page that
     /// was rasterised a moment ago as a visible neighbour (docs/continuous-scroll-plan.md §5
-    /// Phase 1: "render if missing" — a page already in the window is not missing).
+    /// Phase 1: "render if missing" — a page already in the window is not missing). Returns false
+    /// (falling through to a fresh render) when the neighbour's background render hasn't completed
+    /// yet — it is still tracked in <see cref="_pendingRenders"/>, not yet in the window.
     /// </summary>
     internal bool TryTakeFromWindow(int page, out IRenderedPage bitmap, out int dpi, out double width, out double height)
     {
-        if (_renderWindow.TryGetValue(page, out var entry))
+        lock (_windowLock)
         {
-            _renderWindow.Remove(page);
-            (bitmap, dpi, width, height) = (entry.Bitmap, entry.Dpi, entry.Width, entry.Height);
-            return true;
+            if (_renderWindow.TryGetValue(page, out var entry))
+            {
+                _renderWindow.Remove(page);
+                (bitmap, dpi, width, height) = (entry.Bitmap, entry.Dpi, entry.Width, entry.Height);
+                return true;
+            }
         }
         (bitmap, dpi, width, height) = (null!, 0, 0, 0);
         return false;

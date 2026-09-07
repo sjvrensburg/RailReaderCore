@@ -91,6 +91,17 @@ public class ContinuousScrollRenderWindowTests : IDisposable
 {
     private readonly DocumentModel _state;
 
+    /// <summary>Window renders run on a background task (mirrors Prefetch/UpdateRenderDpiIfNeeded)
+    /// — a test that needs to observe an actual bitmap having landed (not just the pending
+    /// placeholder <see cref="VisiblePages"/> already reports synchronously) waits for
+    /// <see cref="Viewport.HasPendingWindowRenders"/> to clear instead of asserting immediately.</summary>
+    private static void WaitForPendingRenders(Viewport vp, int timeoutMs = 3000)
+    {
+        long deadline = Environment.TickCount64 + timeoutMs;
+        while (vp.HasPendingWindowRenders && Environment.TickCount64 < deadline)
+            Thread.Sleep(5);
+    }
+
     public ContinuousScrollRenderWindowTests()
     {
         var config = new AppConfig().ToCoreSettings() with { ContinuousScroll = true };
@@ -181,6 +192,7 @@ public class ContinuousScrollRenderWindowTests : IDisposable
         double z = vp.Camera.Zoom;
         vp.Camera.OffsetY = -layout.Height(0) * z + 300;
         vp.EnsureRenderWindow(vp.Width, vp.Height);
+        WaitForPendingRenders(vp);
 
         foreach (var v in vp.VisiblePages)
             Assert.NotNull(v.Bitmap);
@@ -208,6 +220,12 @@ public class ContinuousScrollRenderWindowTests : IDisposable
             vp.Camera.OffsetY = -layout.Height(0) * z + 300;
             vp.EnsureRenderWindow(vp.Width, vp.Height);
             Assert.Contains(vp.VisiblePages, v => v.Page == 1);
+            // Let page 1's background render actually land before moving on — otherwise the
+            // eviction below would just clear a pending placeholder instead of exercising the
+            // WindowEntry.Dispose() path this test is named for, and a late-arriving completion
+            // could re-insert page 1 into _renderWindow after the assertion below (see the
+            // EnsureRenderWindow doc comment on tolerated one-frame staleness).
+            WaitForPendingRenders(vp);
 
             // Re-anchor to the last page and scroll there too — page 1 should no longer be wanted.
             vp.CurrentPage = layout.Count - 1;
@@ -229,6 +247,99 @@ public class ContinuousScrollRenderWindowTests : IDisposable
         Assert.NotNull(vp.CachedPage);
         var anchorEntry = vp.VisiblePages.First(v => v.Page == vp.CurrentPage);
         Assert.Same(vp.CachedPage, anchorEntry.Bitmap);
+    }
+
+    [Fact]
+    public void EnsureRenderWindow_AfterZoomIncrease_ReRendersVisiblePageAtHigherDpi()
+    {
+        // §6 "Render window": "DPI re-render after a zoom applies to every visible page" —
+        // exercised here for a representative neighbour (the same DPI-hysteresis staleness check
+        // EnsureRenderWindow applies to every wanted page).
+        var vp = _state.Primary;
+        var layout = _state.PageLayout!;
+        if (layout.Count < 2) return;
+
+        double z1 = vp.Camera.Zoom;
+        vp.Camera.OffsetY = -layout.Height(0) * z1 + 300;
+        vp.EnsureRenderWindow(vp.Width, vp.Height);
+        WaitForPendingRenders(vp);
+        int dpiBefore = vp.VisiblePages.First(v => v.Page == 1).Dpi;
+        Assert.True(dpiBefore > 0);
+
+        double z2 = z1 * 3.0; // well past any DPI hysteresis band
+        vp.Camera.Zoom = z2;
+        vp.Camera.OffsetY = -layout.Height(0) * z2 + 300; // keep the same boundary on screen
+        vp.EnsureRenderWindow(vp.Width, vp.Height);
+        WaitForPendingRenders(vp);
+
+        var after = vp.VisiblePages.First(v => v.Page == 1);
+        Assert.NotNull(after.Bitmap);
+        Assert.True(after.Dpi > dpiBefore, $"expected a higher DPI after zooming in ({dpiBefore} -> {after.Dpi})");
+    }
+
+    [Fact]
+    public void ViewRotationChange_DropsOldFrameBitmap_AndRendersAFreshOneInTheNewFrame()
+    {
+        // §6 "Render window": "rotation/quality change clears and re-renders". Asserted via bitmap
+        // IDENTITY rather than "the window must be momentarily empty" — OnViewRotationChanged's own
+        // LoadPageBitmap call already re-triggers EnsureRenderWindow internally (using the
+        // not-yet-reclamped camera), so a placeholder/entry for page 1 can legitimately already be
+        // back by the time control returns here. What must hold is that whatever ends up cached for
+        // page 1 afterward is NOT the pre-rotation (old-frame) bitmap.
+        var vp = _state.Primary;
+        var layout = _state.PageLayout!;
+        if (layout.Count < 2) return;
+
+        double z = vp.Camera.Zoom;
+        vp.Camera.OffsetY = -layout.Height(0) * z + 300;
+        vp.EnsureRenderWindow(vp.Width, vp.Height);
+        WaitForPendingRenders(vp);
+        var before = vp.VisiblePages.First(v => v.Page == 1);
+        Assert.NotNull(before.Bitmap);
+
+        _state.ViewRotation = 1;
+        WaitForPendingRenders(vp);
+
+        var newLayout = _state.PageLayout!;
+        Assert.NotSame(layout, newLayout); // I7: one layout per (document, ViewRotation)
+
+        // Re-establish the same boundary-at-300px framing in the (possibly W/H-swapped) new frame.
+        vp.Camera.OffsetY = -newLayout.Height(0) * vp.Camera.Zoom + 300;
+        vp.ClampCamera(vp.Width, vp.Height);
+        vp.EnsureRenderWindow(vp.Width, vp.Height);
+        WaitForPendingRenders(vp);
+
+        var after = vp.VisiblePages.First(v => v.Page == 1);
+        Assert.NotNull(after.Bitmap);
+        Assert.NotSame(before.Bitmap, after.Bitmap);
+    }
+
+    [Fact]
+    public void OnRenderQualityChanged_DropsOldBitmap_AndRendersAFreshOneAtTheNewDpiBand()
+    {
+        // §6 "Render window": "rotation/quality change clears and re-renders" (quality half). Same
+        // identity-based assertion as the rotation test above, for the same reason:
+        // UpdateRenderDpiIfNeeded (called from OnRenderQualityChanged) also re-triggers
+        // EnsureRenderWindow internally before control returns here.
+        var vp = _state.Primary;
+        var layout = _state.PageLayout!;
+        if (layout.Count < 2) return;
+
+        double z = vp.Camera.Zoom;
+        vp.Camera.OffsetY = -layout.Height(0) * z + 300;
+        vp.EnsureRenderWindow(vp.Width, vp.Height);
+        WaitForPendingRenders(vp);
+        var before = vp.VisiblePages.First(v => v.Page == 1);
+        Assert.NotNull(before.Bitmap);
+
+        _state.OnRenderQualityChanged(RenderDpiSettings.ForPreset(RenderQuality.Ultra));
+        WaitForPendingRenders(vp);
+        vp.EnsureRenderWindow(vp.Width, vp.Height);
+        WaitForPendingRenders(vp);
+
+        var after = vp.VisiblePages.First(v => v.Page == 1);
+        Assert.NotNull(after.Bitmap);
+        Assert.NotSame(before.Bitmap, after.Bitmap);
     }
 
     [Fact]
