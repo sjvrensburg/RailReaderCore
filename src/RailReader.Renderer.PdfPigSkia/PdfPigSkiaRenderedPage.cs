@@ -15,7 +15,13 @@ public sealed class PdfPigSkiaRenderedPage : IRenderedPage
     public int Width => Bitmap.Width;
     public int Height => Bitmap.Height;
 
-    public PdfPigSkiaRenderedPage(SKBitmap bitmap) => Bitmap = bitmap;
+    public PdfPigSkiaRenderedPage(SKBitmap bitmap)
+    {
+        // Immutable for the same reason as SkiaRenderedPage: SKImage.FromBitmap shares rather than
+        // copies the pixels, and nothing draws into a rendered page after construction.
+        bitmap.SetImmutable();
+        Bitmap = bitmap;
+    }
 
     public void Dispose() => Bitmap.Dispose();
 }

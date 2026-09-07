@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.61.1 — Immutable rendered-page bitmaps (2026-09-07)
+
+Performance fix, no API change.
+
+- **`SkiaRenderedPage` / `PdfPigSkiaRenderedPage`** now call `SKBitmap.SetImmutable()` on the
+  bitmap they wrap. `SKImage.FromBitmap` copies the pixels of a *mutable* bitmap — for a Letter
+  page that is ~90 ms at 300 DPI, ~209 ms at 450 DPI and ~370 ms at 600 DPI — and the desktop
+  host performs that wrap on the UI thread every time a DPI tier or a continuous-scroll
+  neighbour page lands. With the bitmap immutable the wrap shares the pixels (~0.01 ms).
+  `ScreenshotCompositor` benefits the same way. No consumer draws into a rendered page after
+  construction (viewport wraps, block crops, freeze panes, the CLI render command and the
+  compositor are all read-only), so the semantics are unchanged.
+
 ## 0.61.0 — Continuous scrolling, page-anchored camera (2026-09-07)
 
 Additive, opt-in: single-page behaviour is byte-for-byte unchanged for every consumer that does
