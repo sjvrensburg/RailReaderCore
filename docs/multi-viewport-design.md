@@ -513,3 +513,10 @@ Still open:
    `CellNavigation` ride in `AnalysisRequest` and shape the cached `PageAnalysis`. Two viewports
    can't post-process the same page differently without keying the cache on `(page, params)`. Kept
    **model/config-level**; revisit only if per-viewport cell-nav is ever wanted.
+
+## See also
+
+Continuous scrolling (opt-in, `CoreSettings.ContinuousScroll`) builds on this: it moved camera
+geometry, page position and the render path onto `Viewport`, which is what let the page-anchored
+camera design (deriving every neighbouring page's transform from the anchor's) stay a purely
+per-viewport, additive change. See `docs/continuous-scroll-plan.md`.

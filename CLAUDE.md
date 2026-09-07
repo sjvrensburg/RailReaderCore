@@ -115,6 +115,33 @@ UI-free, rendering-free, IO-free. Holds the orchestration surface (`DocumentCont
 
 Settings flow through `CoreSettings` (an immutable record): the platform builds one from its own mutable config and pushes updates via `controller.OnConfigChanged(newSettings)`. Core never sees a mutable settings type and never writes anything.
 
+**Continuous scroll (`PageLayout`, page-anchored camera).** Opt-in via `CoreSettings.ContinuousScroll`
+(default off — single-page mode is byte-for-byte unchanged when it's off). `PageLayout` (pure
+geometry, `DocumentModel.PageLayout`/`EnsurePageLayout()`) is a document-wide prefix-sum layout —
+page heights stacked with `ContinuousPageGapPts` gaps, pages centred in a column as wide as the
+widest page. `Camera` itself is untouched and still describes the *anchor page's* (`Viewport.CurrentPage`)
+transform; every other page's transform is *derived* (`Viewport.PageOffset`), and `DocumentOffsetX/Y`
+give the anchor-independent document-space position. `Viewport.VisiblePages` is a per-view render
+window (bounded by `ContinuousRenderWindowPages`) of neighbouring-page bitmaps drawn at their own
+offsets — a host's draw loop iterates it instead of a single page. `EnsureRenderWindow` schedules
+each missing/stale neighbour's rasterisation on a background `Task.Run` (mirrors
+`PrefetchPage`/`UpdateRenderDpiIfNeeded` — never blocks the UI thread); a page still in flight
+appears in `VisiblePages` with `Bitmap: null` (its geometry needs only `PageLayout`, not a
+completed render), and a stale-DPI entry keeps serving its old bitmap until the fresh one lands.
+`ClampCamera` clamps against the
+whole document extent in continuous mode (degenerating to the ordinary page clamp for a one-page
+document). Page transitions take a `PageTransition`: `Default` (single-page: unchanged; continuous:
+explicit jump, page-top-at-viewport-top) or `PreserveScreen` (re-anchors the camera onto a new page
+**without moving the screen** — the "page-anchored camera" renaming) — used by
+`DocumentController`'s automatic scroll re-anchor (`ReanchorIfNeeded`, gated on rail being
+inactive/unpaused, not confined, no zoom animation in flight) and by rail's page-advance
+(`SkipToNavigablePage`), so a line advance across a page boundary re-anchors instead of cutting and
+the existing snap then animates across the visible gap. Rail itself stays **page-local** in v1 (no
+cross-page chunks yet — see `docs/continuous-scroll-plan.md` §9 for the deferred v2 scope).
+`HandleClick`/`ActivateRailAt` resolve a screen point to its page via `Viewport.ResolvePoint` and
+call `DocumentController.AnchorToPage` first when it lands on a neighbour. A confined (`FocusBlock`)
+view ignores continuous mode entirely. Full design: `docs/continuous-scroll-plan.md`.
+
 **Optional backend capabilities.** Some interfaces are opt-in extras discovered by *casting* the service Core was handed, rather than by widening `IPdfServiceFactory` (which would force every consumer to change wiring for something one backend supports). `IPdfRulingService` — a page's vector ruling lines, used for exact table column grids and for row recovery — is the current example, implemented by **both** backends: `Core.PdfPig` walks `page.Paths`, `Core.Pdfium` walks the page object list (`FPDFPage_GetObject`/`FPDFPath_GetPathSegment`) and descends into form XObjects with matrices composed. **PDFium reports path points in the object's own space**, so the object matrix must be applied — omit it and rules land wherever identity puts them. A decorator around a service **must forward these interfaces** or it silently hides the capability; `GatedPdfPigTextService` does.
 
 ### RailReader.Core.Pdfium (desktop PDFium + filesystem impls)

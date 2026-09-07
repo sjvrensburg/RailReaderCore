@@ -60,4 +60,18 @@ public interface IPdfService
     /// <summary>Renders the analysis pixmap with an extra view rotation applied.</summary>
     (byte[] RgbBytes, int Width, int Height) RenderPagePixmap(int pageIndex, int targetSize, int viewRotation)
         => RenderPagePixmap(pageIndex, targetSize);
+
+    /// <summary>
+    /// Displayed sizes of every page under an extra view rotation. Default implementation
+    /// calls <see cref="GetPageSize(int, int)"/> once per page; backends that can open the
+    /// document once and read all page sizes in a single pass (PDFium, PdfPig) should
+    /// override this to avoid re-parsing the document PageCount times.
+    /// </summary>
+    IReadOnlyList<(double Width, double Height)> GetPageSizes(int viewRotation)
+    {
+        var list = new List<(double, double)>(PageCount);
+        for (int i = 0; i < PageCount; i++)
+            list.Add(GetPageSize(i, viewRotation));
+        return list;
+    }
 }

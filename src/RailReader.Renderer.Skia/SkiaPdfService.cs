@@ -22,10 +22,15 @@ public sealed class SkiaPdfService : IPdfService
     public int PageCount { get; }
     public List<OutlineEntry> Outline { get; }
 
+    /// <summary>The source file path, kept only for diagnostic messages (e.g. a load failure in
+    /// <see cref="GetPageSizes"/>) — everything else already operates on <see cref="PdfBytes"/>.</summary>
+    private readonly string _filePath;
+
     public SkiaPdfService(string filePath, string? password = null)
     {
         PdfBytes = File.ReadAllBytes(filePath);
         Password = password;
+        _filePath = filePath;
         (PageCount, Outline) = OpenAndRead(PdfBytes, password, filePath);
         if (Outline.Count > 0)
             RailReaderLogging.Logger.Debug($"[PDF] Extracted {Outline.Count} outline entries");
@@ -75,6 +80,47 @@ public sealed class SkiaPdfService : IPdfService
                 ? (size.Width, size.Height)
                 : (size.Height, size.Width);
         }
+    }
+
+    /// <summary>
+    /// Reads every page's displayed size in a single document open, avoiding the per-page
+    /// re-parse that <see cref="GetPageSize(int, int)"/> (via PDFtoImage) does today. Used by
+    /// <see cref="DocumentModel.EnsurePageLayout"/> when building continuous-scroll layout.
+    /// </summary>
+    public IReadOnlyList<(double Width, double Height)> GetPageSizes(int viewRotation)
+    {
+        var sizes = new List<(double, double)>(PageCount);
+        lock (PdfiumGate.Lock)
+        {
+            PdfiumResolver.EnsureLibraryInitialized();
+            var pinned = GCHandle.Alloc(PdfBytes, GCHandleType.Pinned);
+            IntPtr doc = IntPtr.Zero;
+            try
+            {
+                doc = LoadDocumentChecked(pinned.AddrOfPinnedObject(), PdfBytes.Length, Password, _filePath);
+                for (int i = 0; i < PageCount; i++)
+                {
+                    IntPtr page = FPDF_LoadPage(doc, i);
+                    if (page == IntPtr.Zero) { sizes.Add((0, 0)); continue; }
+                    try
+                    {
+                        double w = FPDF_GetPageWidth(page);
+                        double h = FPDF_GetPageHeight(page);
+                        sizes.Add((viewRotation & 1) == 0 ? (w, h) : (h, w));
+                    }
+                    finally
+                    {
+                        FPDF_ClosePage(page);
+                    }
+                }
+            }
+            finally
+            {
+                if (doc != IntPtr.Zero) FPDF_CloseDocument(doc);
+                pinned.Free();
+            }
+        }
+        return sizes;
     }
 
     public IRenderedPage RenderPage(int pageIndex, int dpi = 200) => RenderPage(pageIndex, dpi, 0);

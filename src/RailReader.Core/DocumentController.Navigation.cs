@@ -86,8 +86,12 @@ public sealed partial class DocumentController
                 continue;
             }
 
-            // Either has navigable blocks (land on it) or needs async analysis
-            if (!doc.GoToPage(vp, targetPage, _worker, _config.NavigableRoles, ww, wh))
+            // Either has navigable blocks (land on it) or needs async analysis. In continuous mode,
+            // this rail page-advance re-anchors without moving the screen — the camera waits at the
+            // boundary and the caller's StartSnap below then animates across the gap
+            // (docs/continuous-scroll-plan.md §5 Phase 3).
+            var transition = vp.ContinuousScroll ? PageTransition.PreserveScreen : PageTransition.Default;
+            if (!doc.GoToPage(vp, targetPage, _worker, _config.NavigableRoles, ww, wh, transition))
             {
                 NotifyRenderFailed(targetPage);
                 vp.PendingSkip = null;
@@ -222,6 +226,17 @@ public sealed partial class DocumentController
                     vp.Camera.OffsetY += forward ? -CoreTuning.PanStep : CoreTuning.PanStep;
                     vp.ClampCamera(ww, wh);
                 }
+                return;
+            }
+
+            // Continuous mode: the document has no page edges to hold at — panning just continues
+            // across page boundaries and the viewport re-anchors as it goes (docs/continuous-scroll-plan.md
+            // §5 Phase 2). Skip PageEdgeHold entirely; it exists only for the single-page "page flip" gesture.
+            if (vp.ContinuousScroll)
+            {
+                vp.Camera.OffsetY += forward ? -CoreTuning.PanStep : CoreTuning.PanStep;
+                vp.ClampCamera(ww, wh);
+                ReanchorIfNeeded(vp, ww, wh);
                 return;
             }
 
@@ -367,8 +382,18 @@ public sealed partial class DocumentController
         if (FocusedViewport is not { } vp) return (false, null);
         var doc = vp.Owner;
 
-        double pageX = (canvasX - vp.Camera.OffsetX) / vp.Camera.Zoom;
-        double pageY = (canvasY - vp.Camera.OffsetY) / vp.Camera.Zoom;
+        // Continuous mode: the click may land on a neighbouring page. Resolve it and re-anchor
+        // there FIRST (docs/continuous-scroll-plan.md §5 Phase 2 / §7) — rail and link hit-testing
+        // below are page-local and always act on vp.CurrentPage.
+        var (resolvedPage, pageX, pageY) = vp.ResolvePoint(canvasX, canvasY);
+        if (resolvedPage != vp.CurrentPage)
+        {
+            AnchorToPage(resolvedPage);
+            // AnchorToPage silently no-ops on a render failure (mirrors GoToPage's own contract) —
+            // vp.CurrentPage then stays on the OLD page while pageX/pageY were resolved against the
+            // NEW one. Bail rather than hit-testing/seating the rail at mismatched coordinates.
+            if (vp.CurrentPage != resolvedPage) return (false, null);
+        }
 
         // Check for PDF links first (takes priority over rail-mode snap). Hit-test the FOCUSED view's
         // own page so a detached pane sitting on a different page than the primary clicks its own links.
@@ -420,6 +445,18 @@ public sealed partial class DocumentController
     {
         if (FocusedViewport is not { } vp) return false;
         var doc = vp.Owner;
+
+        // Continuous mode: resolve + re-anchor to the clicked page FIRST — rail is page-local and
+        // always acts on vp.CurrentPage (docs/continuous-scroll-plan.md §5 Phase 2/3).
+        var (resolvedPage, pageX, pageY) = vp.ResolvePoint(canvasX, canvasY);
+        if (resolvedPage != vp.CurrentPage)
+        {
+            AnchorToPage(resolvedPage);
+            // See HandleClick's identical guard: a render failure leaves vp.CurrentPage on the OLD
+            // page while pageX/pageY are resolved against the NEW one — don't seat the rail there.
+            if (vp.CurrentPage != resolvedPage) return false;
+        }
+
         if (!doc.TryGetAnalysis(vp.CurrentPage, vp.AnalysisParams, out var analysis)) return false;
 
         // Sync RailNav to this page's analysis so the navigable index space + line seating
@@ -427,9 +464,6 @@ public sealed partial class DocumentController
         if (!ReferenceEquals(vp.Rail.Analysis, analysis))
             doc.ReapplyNavigableRoles(vp, _config.NavigableRoles);
         if (!vp.Rail.HasAnalysis) return false;
-
-        double pageX = (canvasX - vp.Camera.OffsetX) / vp.Camera.Zoom;
-        double pageY = (canvasY - vp.Camera.OffsetY) / vp.Camera.Zoom;
 
         if (AutoScrollActive) StopAutoScroll();
         vp.Rail.ForceActivateAt(pageX, pageY);

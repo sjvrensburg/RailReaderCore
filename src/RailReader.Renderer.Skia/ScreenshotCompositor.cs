@@ -179,6 +179,175 @@ public static class ScreenshotCompositor
     }
 
     /// <summary>
+    /// Continuous-scroll composite: draws every page in <see cref="Viewport.VisiblePages"/> at its
+    /// own screen offset directly into a viewport-sized surface — the CLI/agent screenshot
+    /// equivalent of a host's per-page draw loop (docs/continuous-scroll-plan.md §5 Phase 4 / §7).
+    /// Rail overlay, line-focus blur and line highlight only ever apply to the anchor page (the one
+    /// rail actually seats); search highlights, annotations, and debug boxes are drawn per visible
+    /// page since they are already page-keyed. Requires <see cref="ScreenshotOptions.SimulateViewport"/>
+    /// (a continuous composite is inherently viewport-shaped — there is no single "full page" to
+    /// return uncropped the way the single-page path can).
+    /// </summary>
+    public static SKBitmap RenderPageContinuous(
+        DocumentModel doc,
+        DocumentController controller,
+        ColourEffectShaders colourEffects,
+        ScreenshotOptions options,
+        Viewport? viewport = null)
+    {
+        var vp = viewport ?? doc.Primary;
+        int vpW = options.ViewportWidth, vpH = options.ViewportHeight;
+        double zoom = vp.Camera.Zoom;
+        // Render each visible page fresh at the requested DPI, like RenderPage does for the anchor
+        // — reusing vp.VisiblePages' live cached bitmaps (rasterised at whatever DPI the viewport's
+        // own render-DPI state machine last picked for on-screen display) would silently ignore
+        // options.Dpi, unlike the single-page path.
+        int dpi = Math.Clamp(options.Dpi, 72, 600);
+
+        var outInfo = new SKImageInfo(vpW, vpH);
+        using var outSurface = SKSurface.Create(outInfo)
+            ?? throw new InvalidOperationException($"Failed to create viewport surface ({vpW}x{vpH})");
+        var canvas = outSurface.Canvas;
+        canvas.Clear(SKColors.Black); // page-gap background
+
+        var activeEffect = controller.ActiveColourEffect;
+        var activeIntensity = controller.ActiveColourIntensity;
+        using var effectPaint = colourEffects.HasActiveEffect(activeEffect)
+            ? colourEffects.CreatePaint(activeEffect, activeIntensity) : null;
+
+        foreach (var visible in vp.VisiblePages)
+        {
+            if (visible.Width <= 0 || visible.Height <= 0) continue;
+            bool isAnchor = visible.Page == vp.CurrentPage;
+
+            using var renderedPage = doc.Pdf.RenderPage(visible.Page, dpi, doc.ViewRotation);
+            if (renderedPage is not SkiaRenderedPage skiaPage) continue;
+
+            canvas.Save();
+            canvas.Translate((float)visible.OffsetX, (float)visible.OffsetY);
+            canvas.Scale((float)zoom, (float)zoom);
+            // From here down, canvas coordinates are THIS page's own page-point space — the same
+            // frame the single-page path scales into after drawing the bitmap.
+
+            using var pageImage = SKImage.FromBitmap(skiaPage.Bitmap);
+            var pageRect = SKRect.Create(0, 0, (float)visible.Width, (float)visible.Height);
+
+            bool railFocusable = options.LineFocusBlur && vp.Rail is { Active: true, NavigableCount: > 0 };
+            bool didLineFocusBlur = false;
+
+            if (effectPaint is not null) canvas.SaveLayer(effectPaint);
+
+            // Anchor page: the real two-pass blur (blur everything but the seated line, then draw
+            // the line sharp on top) — mirrors RenderPage's line-focus-blur layer above so a
+            // continuous-mode screenshot doesn't silently drop the feature on the one page it
+            // matters most for (the anchor is the only page rail ever seats a line on).
+            if (isAnchor && railFocusable && options.LineFocusBlurIntensity > 0)
+            {
+                var line = vp.Rail.CurrentLineInfo;
+                float pad = line.Height * (float)options.LinePadding;
+                float lineTop = line.Y - line.Height / 2f - pad;
+                float lineHeight = line.Height + pad * 2;
+                float xPad = line.Height * (float)options.LinePadding;
+                float lineLeft = line.X - xPad;
+                float lineWidth = line.Width + xPad * 2;
+                var lineRect = SKRect.Create(lineLeft, lineTop, lineWidth, lineHeight);
+
+                // RenderPage's blur runs on a canvas still in bitmap-pixel space and scales sigma by
+                // bitmap-pixels-per-page-point; here the canvas is already scaled by `zoom` (the
+                // Translate+Scale above), so that same factor is already applied by the CTM — using
+                // it again would double-count it. The bare per-intensity sigma (in this canvas's
+                // page-point-times-zoom local units) reproduces the same on-screen blur radius.
+                float sigma = (float)(4.0 * options.LineFocusBlurIntensity);
+                if (sigma >= 0.5f)
+                {
+                    didLineFocusBlur = true;
+
+                    canvas.Save();
+                    canvas.ClipRect(lineRect, SKClipOperation.Difference);
+                    using var focusBlur = SKImageFilter.CreateBlur(sigma, sigma);
+                    using var focusPaint = new SKPaint { ImageFilter = focusBlur };
+                    canvas.SaveLayer(focusPaint);
+                    canvas.DrawImage(pageImage, pageRect, s_sampling);
+                    canvas.Restore(); // layer
+                    canvas.Restore(); // clip
+
+                    canvas.Save();
+                    canvas.ClipRect(lineRect);
+                    canvas.DrawImage(pageImage, pageRect, s_sampling);
+                    canvas.Restore(); // clip
+                }
+            }
+            // Non-anchor page: no seated line to keep sharp, so the WHOLE page is blurred — the
+            // same treatment the anchor gives everything outside its current line. A flat dim
+            // overlay was the v1 placeholder here (§7 host guidance only asked for "de-emphasise");
+            // a real blur matches the anchor's own non-active-line areas instead of leaving the two
+            // treatments visually inconsistent.
+            else if (!isAnchor && railFocusable && options.LineFocusBlurIntensity > 0)
+            {
+                float sigma = (float)(4.0 * options.LineFocusBlurIntensity);
+                if (sigma >= 0.5f)
+                {
+                    didLineFocusBlur = true;
+                    using var pageBlur = SKImageFilter.CreateBlur(sigma, sigma);
+                    using var pageBlurPaint = new SKPaint { ImageFilter = pageBlur };
+                    canvas.SaveLayer(pageBlurPaint);
+                    canvas.DrawImage(pageImage, pageRect, s_sampling);
+                    canvas.Restore(); // layer
+                }
+            }
+
+            if (!didLineFocusBlur)
+                canvas.DrawImage(pageImage, pageRect, s_sampling);
+
+            if (effectPaint is not null) canvas.Restore();
+
+            if (options.SearchHighlights)
+                DrawSearchHighlightsForPage(canvas, controller, visible.Page);
+
+            if (options.Annotations)
+                DrawAnnotationsForPage(canvas, doc, visible.Page, (float)visible.Width, (float)visible.Height);
+
+            // Rail overlay and line highlight: anchor page only — rail is page-local (Phase 3) and
+            // only ever seats on the anchor.
+            if (isAnchor && options.RailOverlay && vp.Rail.Active && vp.Rail.HasAnalysis)
+            {
+                DrawRailOverlay(canvas, vp, activeEffect.GetOverlayPalette(), options.LineFocusBlur,
+                    options.LineHighlightEnabled, options.LinePadding, options.LineHighlightTint, options.LineHighlightOpacity);
+            }
+
+            if (isAnchor && options.DebugOverlay
+                && (doc.TryGetAnalysis(visible.Page, vp.AnalysisParams, out var analysis)
+                    || doc.TryGetAnalysis(visible.Page, out analysis)))
+                DrawDebugOverlay(canvas, analysis);
+
+            canvas.Restore();
+        }
+
+        using var snapshot = outSurface.Snapshot();
+        return SKBitmap.FromImage(snapshot);
+    }
+
+    private static void DrawSearchHighlightsForPage(SKCanvas canvas, DocumentController controller, int page)
+    {
+        var matches = controller.Search.MatchesForPage(page);
+        if (matches is null || matches.Count == 0) return;
+
+        int activeLocalIndex = OverlayRenderer.ComputeActiveLocalIndex(
+            controller.Search.SearchMatches, matches, controller.Search.ActiveMatchIndex, page);
+        OverlayRenderer.DrawSearchHighlights(canvas, matches, activeLocalIndex,
+            OverlayRenderer.GetHighlightPaint(), OverlayRenderer.GetActivePaint());
+    }
+
+    private static void DrawAnnotationsForPage(SKCanvas canvas, DocumentModel doc, int page, float pageWidth, float pageHeight)
+    {
+        if (!doc.Annotations.Pages.TryGetValue(page, out var pageAnnotations) || pageAnnotations.Count == 0) return;
+        canvas.Save();
+        ApplyViewRotation(canvas, doc.ViewRotation, pageWidth, pageHeight);
+        AnnotationRenderer.DrawAnnotations(canvas, AnnotationRenderer.SortByZOrder(pageAnnotations), null);
+        canvas.Restore();
+    }
+
+    /// <summary>
     /// Applies the view-rotation transform so geometry expressed in the
     /// rotation-0 page frame (annotations) lands correctly on a canvas whose
     /// coordinate space is the view-rotated frame. Mirrors

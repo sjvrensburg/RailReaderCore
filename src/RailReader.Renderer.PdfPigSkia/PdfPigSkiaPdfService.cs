@@ -113,6 +113,28 @@ public sealed class PdfPigSkiaPdfService : IPdfService, IDisposable
         }
     }
 
+    /// <summary>
+    /// Reads every page's displayed size under one lock acquisition instead of
+    /// <see cref="IPdfService.GetPageSizes"/>'s default per-page loop (each call of which takes
+    /// <see cref="PdfPigGate.Lock"/> separately). <c>_doc</c> is already open for the lifetime of
+    /// this service, so there is no document-open cost to amortise the way
+    /// <c>SkiaPdfService.GetPageSizes</c> does — this override exists to avoid PageCount separate
+    /// lock acquisitions on <see cref="DocumentModel.EnsurePageLayout"/> for continuous-scroll mode.
+    /// </summary>
+    public IReadOnlyList<(double Width, double Height)> GetPageSizes(int viewRotation)
+    {
+        var sizes = new List<(double, double)>(PageCount);
+        lock (PdfPigGate.Lock)
+        {
+            for (int i = 0; i < PageCount; i++)
+            {
+                var page = _doc.GetPage(i + 1);
+                sizes.Add(ViewRotationMath.RotateSize(page.Width, page.Height, viewRotation));
+            }
+        }
+        return sizes;
+    }
+
     public IRenderedPage RenderPage(int pageIndex, int dpi = 200) => RenderPage(pageIndex, dpi, 0);
 
     public IRenderedPage RenderPage(int pageIndex, int dpi, int viewRotation)

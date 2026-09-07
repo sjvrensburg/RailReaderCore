@@ -303,6 +303,29 @@ public sealed partial class DocumentController : IDisposable
             state.ColourEffect = savedEffect;
 
         state.CenterPage(ww, wh);
+
+        // Reapply the saved camera zoom/pan on top of CenterPage's fresh fit — restoring the PAGE
+        // above only restores which page is shown; SaveReadingPosition also records the reader's
+        // zoom/offset (persisted alongside it), which is otherwise silently dropped on reopen (this
+        // has always been a no-op: `saved.Zoom`/`OffsetX`/`OffsetY` were read from disk and then
+        // never assigned anywhere). Applies even when the saved page was 0, since the reader may
+        // have been zoomed in on the first page too. Gated on HasSavedCamera, not just `saved is
+        // not null` — AddRecentFile alone (no close-through-SaveReadingPosition yet) can leave an
+        // entry whose Zoom/OffsetX/OffsetY are just the type's field defaults, not a real position.
+        // Clamp afterward — the saved values may predate a window resize or a rotation change — and
+        // re-check the render DPI, since GoToPage/CenterPage above left CachedPage rendered at the
+        // PRE-restore zoom.
+        if (saved is { HasSavedCamera: true } && saved.Zoom > 0 && double.IsFinite(saved.Zoom)
+            && double.IsFinite(saved.OffsetX) && double.IsFinite(saved.OffsetY))
+        {
+            var camera = state.Primary.Camera;
+            camera.Zoom = Math.Clamp(saved.Zoom, Camera.ZoomMin, Camera.ZoomMax);
+            camera.OffsetX = saved.OffsetX;
+            camera.OffsetY = saved.OffsetY;
+            state.Primary.ClampCamera(ww, wh);
+            state.Primary.UpdateRenderDpiIfNeeded();
+        }
+
         state.UpdateRailZoom(ww, wh);
 
         Documents.Add(state);
@@ -552,6 +575,59 @@ public sealed partial class DocumentController : IDisposable
         => StatusMessage?.Invoke($"Page {page + 1} could not be rendered (corrupted?)");
 
     /// <summary>
+    /// Re-anchors <paramref name="vp"/> onto the page under the viewport centre if it has drifted
+    /// from <see cref="Viewport.CurrentPage"/> — continuous-scroll browse mode's automatic camera
+    /// re-anchor (docs/continuous-scroll-plan.md §5 Phase 2, invariant I3). No-op outside continuous
+    /// mode, while rail is active/paused, mid zoom-tween, or confined. Scrolling is not navigation:
+    /// no history push.
+    /// </summary>
+    internal void ReanchorIfNeeded(Viewport vp, double windowWidth, double windowHeight)
+    {
+        // vp.ContinuousScroll is false whenever the view is confined (its getter already checks
+        // CurrentFocusBlockIndex), so a separate confinement check here would be unreachable.
+        if (!vp.ContinuousScroll) return;
+        if (vp.Rail.Active || vp.Rail.Paused) return;
+        if (vp.Zoom.IsAnimating) return;
+
+        int b = vp.ComputeAnchorPage(windowWidth, windowHeight);
+        if (b == vp.CurrentPage) return;
+
+        var doc = vp.Owner;
+        if (!doc.GoToPage(vp, b, _worker, _config.NavigableRoles, windowWidth, windowHeight, PageTransition.PreserveScreen))
+            return;
+
+        doc.QueueLookahead(vp, _config.AnalysisLookaheadPages);
+        Search.UpdateCurrentPageMatches();
+        RaisePageChanged(vp);
+    }
+
+    /// <summary>
+    /// Re-anchors the focused viewport onto <paramref name="page"/> without moving the screen
+    /// (<see cref="PageTransition.PreserveScreen"/>). A host calls this before handing page-space
+    /// input for a non-anchor page (resolved via <see cref="ResolvePoint"/>) to the annotation
+    /// handler or <c>HitTestLink</c>, which are page-local and always act on the anchor.
+    /// </summary>
+    public void AnchorToPage(int page)
+    {
+        if (FocusedViewport is not { } vp) return;
+        if (page == vp.CurrentPage) return;
+        if (vp.CurrentFocusBlockIndex is not null) return;
+        var doc = vp.Owner;
+        var (ww, wh) = (vp.Width, vp.Height);
+        if (doc.GoToPage(vp, page, _worker, _config.NavigableRoles, ww, wh, PageTransition.PreserveScreen))
+        {
+            doc.QueueLookahead(vp, _config.AnalysisLookaheadPages);
+            Search.UpdateCurrentPageMatches();
+            RaisePageChanged(vp);
+        }
+    }
+
+    /// <summary>Resolves a screen point on the focused viewport to (page, page-local X, page-local Y).
+    /// See <see cref="Viewport.ResolvePoint"/>.</summary>
+    public (int Page, double PageX, double PageY) ResolvePoint(double canvasX, double canvasY)
+        => FocusedViewport is { } vp ? vp.ResolvePoint(canvasX, canvasY) : (0, canvasX, canvasY);
+
+    /// <summary>
     /// Re-aim the focused (portal) viewport at a block on another page. This performs the only
     /// bitmap/analysis-correct relocation sequence so a host can't get the ordering wrong: it assigns
     /// <see cref="Viewport.Focus"/> for the destination FIRST — which momentarily un-confines the view
@@ -648,6 +724,7 @@ public sealed partial class DocumentController : IDisposable
         vp.ClampCamera(ww, wh);
         if (vp.Rail.Active && !vp.Rail.Paused)
             vp.Rail.CaptureVerticalBias(vp.Camera.OffsetY, vp.Camera.Zoom, wh);
+        ReanchorIfNeeded(vp, ww, wh);
     }
 
     private void StartRailPause(Viewport vp)
@@ -658,6 +735,12 @@ public sealed partial class DocumentController : IDisposable
 
     /// <summary>
     /// End rail pause: restore block/line/bias/zoom from before the free pan and snap back.
+    /// In continuous-scroll mode a Ctrl-drag free pan can scroll the viewport onto a different
+    /// page while <see cref="Viewport.Rail"/> stays paused there — <see cref="ReanchorIfNeeded"/>
+    /// refuses to re-anchor while paused (I3: rail owns the anchor while active, and paused
+    /// implies active), so the anchor never silently drifted during the drag. Release therefore
+    /// snaps back across however many pages the drag crossed, landing back on the seated page —
+    /// expected, not a bug (docs/continuous-scroll-plan.md §5 Phase 3).
     /// </summary>
     public void ResumeRailFromPause()
     {
@@ -889,6 +972,7 @@ public sealed partial class DocumentController : IDisposable
                 vp.AutoScroll.UpdateConfig(newConfig);
                 vp.Rail.UpdateConfig(_config);
                 vp.OnRenderQualityChanged(_config.RenderDpi);
+                vp.OnScrollModeChanged(_config.ContinuousScroll);
 
                 // A config change must never reset the reader's rail position — preserve it across the
                 // reseat(s) below (cleared by genuine navigation).

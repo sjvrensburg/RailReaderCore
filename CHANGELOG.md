@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.61.0 — Continuous scrolling, page-anchored camera (2026-09-07)
+
+Additive, opt-in: single-page behaviour is byte-for-byte unchanged for every consumer that does
+not set `CoreSettings.ContinuousScroll` (default `false`). See `docs/continuous-scroll-plan.md`
+for the full design.
+
+- **`CoreSettings`**: `ContinuousScroll` (bool, default off), `ContinuousPageGapPts` (default 12pt),
+  `ContinuousRenderWindowPages` (default 4).
+- **`Models/PageLayout`** (new): immutable document-wide layout — prefix sums of page heights with
+  a gap, pages centred in a column as wide as the widest page. `DocumentModel.PageLayout` /
+  `EnsurePageLayout()`.
+- **`IPdfService.GetPageSizes(int viewRotation)`**: new default interface method (existing
+  implementations keep compiling); `SkiaPdfService` and `PdfPigSkiaPdfService` both override it —
+  the former opens the document once instead of re-parsing per page, the latter reads it off the
+  document already held open for the service's lifetime.
+- **`Viewport`**: `ContinuousScroll`, `VisiblePages`, `PageOffset`, `DocumentOffsetX/Y`,
+  `ComputeAnchorPage`, `ResolvePoint`, a per-view render window covering neighbouring pages
+  (`ContinuousRenderWindowPages`-bounded), `OnScrollModeChanged` for a runtime toggle.
+- **`Models/PageTransition`** (new enum: `Default`, `PreserveScreen`) and a `DocumentModel.GoToPage`
+  overload taking it — `PreserveScreen` re-anchors the camera onto a new page without moving the
+  screen (the "page-anchored camera" renaming), used by scroll re-anchoring and rail's page-advance
+  transitions.
+- **`DocumentController`**: `AnchorToPage`, `ResolvePoint`, and an internal `ReanchorIfNeeded`
+  auto-re-anchor (gated on rail being inactive/unpaused, no zoom animation, unconfined) wired into
+  `HandlePan`, `TickViewport`, and the non-rail `HandleVerticalNav` branch (which now pans through
+  page boundaries instead of holding at the edge in continuous mode). `HandleClick` and
+  `ActivateRailAt` resolve the clicked point to its page first and re-anchor before acting, so a
+  click on a neighbouring page seats the rail there.
+- **Continuous rail** (still page-local in v1 — see the plan's v2 section for cross-page chunks):
+  `SkipToNavigablePage`'s page transition is `PreserveScreen` in continuous mode, so a rail line
+  advance across a page boundary re-anchors instead of cutting, then the existing snap animates
+  across the visible gap. Auto-scroll still parks on the page boundary.
+- **`ScreenshotCompositor.RenderPageContinuous`** (new): composites every page in
+  `Viewport.VisiblePages` at its own screen offset for the CLI/agent screenshot path, matching the
+  GUI's per-page draw loop.
+- **`PageChanged` semantics note**: in continuous mode it also fires when scrolling re-anchors (the
+  page indicator follows the viewport centre), not only on explicit navigation.
+
+### Follow-up fixes (same unreleased version)
+
+- **Render window is now asynchronous.** `Viewport.EnsureRenderWindow` used to rasterise every
+  missing/stale neighbour page synchronously on the UI thread; it now schedules each one on a
+  background `Task.Run` (mirroring `PrefetchPage`/`UpdateRenderDpiIfNeeded`) and marshals the
+  result back. A page whose render is in flight appears in `VisiblePages` immediately with
+  `Bitmap: null` (geometry doesn't depend on the render completing) so a host can still reserve its
+  slot. A stale-DPI entry keeps serving its old bitmap until the fresh one lands — never blanked
+  mid-re-render.
+- **Real blur on non-anchor pages.** `ScreenshotCompositor.RenderPageContinuous`'s line-focus-blur
+  treatment of a non-anchor page was a flat semi-transparent-black overlay (documented v1
+  shortcut); it is now a genuine Gaussian blur of the whole page, matching the anchor's own
+  treatment of everything outside its current line.
+- **Fixed: saved camera zoom/offset now actually restore on reopen.** `SaveReadingPosition` has
+  always recorded the reader's zoom and pan, but `DocumentController.AddDocument` never reapplied
+  them — `CenterPage`'s fresh fit silently won every time. A new `RecentFileEntry.HasSavedCamera`
+  flag distinguishes a real saved position from an `AddRecentFile`-only placeholder (e.g. the app
+  closed before ever reaching `CloseDocument`), so restoring the camera can't be confused with that
+  placeholder's field defaults.
+
 ## 0.60.2 — GPU layout detection fixed: route to FP32 models, not FP16 (2026-08-28)
 
 Resolves #109. The 0.60.1 entry below (2026-08-26) attributed the under-detection to a WebGPU EP
