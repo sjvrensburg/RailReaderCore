@@ -1,6 +1,13 @@
 # Continuous scrolling — Core implementation plan
 
-> **Status (2026-09-07):** plan only, nothing implemented. Written for an implementing agent.
+> **Status (2026-09-07):** Phases 0-4 implemented on branch `plan/continuous-scroll`, v0.61.0.
+> All invariants (I1-I7) hold; full pre-existing test suite green throughout. One correction to
+> this document found during implementation: §1.2's re-anchor formula has the sign backwards —
+> it must be `ox' = ox + (Left[b]-Left[a])·z` (**new minus old**), not `(Left[a]-Left[b])·z` as
+> written below; verified independently against this section's own `off_p`-invariance proof.
+> Deferred to a follow-up: the render window renders synchronously rather than via the
+> `Task.Run`-based `ScheduleWindow` queue this document describes (§5 Phase 1) — correct and safe,
+> but not overlapped with the frame; revisit if scroll feels janky on slow devices.
 > **Driver:** the RailReader2 GUI team wants pages treated as one continuous entity, inside and
 > outside rail mode. **Scope:** `RailReader.Core` (+ a small `Renderer.Skia` follow-up). The host
 > (railreader2) has its own checklist in §7.

@@ -98,6 +98,19 @@ public sealed class AppConfig : IRecentFilesStore
     // defaults and semantic shifts — none of which this is.
     public bool DeskewOcrLines { get; set; } = true;
 
+    /// <summary>Treat pages as one continuous, scrollable document instead of one page at a
+    /// time — opt-in, off by default so single-page behaviour is unaffected. See
+    /// <see cref="CoreSettings.ContinuousScroll"/> and docs/continuous-scroll-plan.md.</summary>
+    public bool ContinuousScroll { get; set; } = false;
+
+    /// <summary>Gap between pages in continuous-scroll mode, in PDF points. See
+    /// <see cref="CoreSettings.ContinuousPageGapPts"/>.</summary>
+    public double ContinuousPageGapPts { get; set; } = 12.0;
+
+    /// <summary>Maximum number of pages rasterised per view at once in continuous-scroll mode
+    /// (the anchor plus its neighbours). See <see cref="CoreSettings.ContinuousRenderWindowPages"/>.</summary>
+    public int ContinuousRenderWindowPages { get; set; } = 4;
+
     // VLM (Vision Language Model) settings for Copy as LaTeX / Markdown / Description
     public string? VlmEndpoint { get; set; }
     public string? VlmModel { get; set; }
@@ -164,6 +177,9 @@ public sealed class AppConfig : IRecentFilesStore
         TableRowReading = TableRowReading,
         CellNavigation = CellNavigation,
         DeskewOcrLines = DeskewOcrLines,
+        ContinuousScroll = ContinuousScroll,
+        ContinuousPageGapPts = ContinuousPageGapPts,
+        ContinuousRenderWindowPages = ContinuousRenderWindowPages,
         VlmEndpoint = VlmEndpoint,
         VlmModel = VlmModel,
         VlmApiKey = VlmApiKey,

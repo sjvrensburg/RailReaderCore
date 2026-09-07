@@ -589,4 +589,79 @@ public class FocusBlockTests
         Assert.True(doc.Camera.Zoom >= fit - 1e-6);
         doc.Dispose();
     }
+
+    // ---- Continuous scroll: a confined (portal) view ignores the mode entirely ----------------------
+    // docs/continuous-scroll-plan.md §3 invariant I1 / §6: "Confined view: with Focus set, continuous
+    // mode is inert (VisiblePages == [anchor]), no re-anchor, block clamp unchanged".
+
+    private static DocumentModel LoadDocContinuous()
+    {
+        var factory = TestFixtures.CreatePdfFactory();
+        var pdfPath = TestFixtures.GetTestPdfPath();
+        var config = new AppConfig().ToCoreSettings() with { ContinuousScroll = true };
+        var doc = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
+            factory.CreatePdfTextService(), factory.CreatePdfLinkService(),
+            config, new SynchronousThreadMarshaller());
+        doc.LoadPageBitmap();
+        var blocks = new List<LayoutBlock>();
+        for (int i = 0; i < 8; i++)
+            blocks.Add(new LayoutBlock
+            {
+                BBox = new BBox(0, i * 20, 100, 18),
+                Role = BlockRole.Text,
+                Order = i,
+                Lines = [new LineInfo(i * 20, 18, 0, 100)],
+            });
+        doc.SetAnalysis(0, doc.DefaultAnalysisParams, new PageAnalysis { Blocks = blocks, PageWidth = 612, PageHeight = 792 });
+        return doc;
+    }
+
+    [Fact]
+    public void ConfinedView_ContinuousScrollEnabled_VisiblePagesIsAnchorOnly()
+    {
+        var doc = LoadDocContinuous();
+        var bounds = new BBox(100, 120, 200, 80);
+        doc.Primary.Focus = new FocusBlock(0, 0, bounds);
+
+        Assert.False(doc.Primary.ContinuousScroll); // Focus set → confined → mode ignored (I1/§3)
+        var visible = doc.Primary.VisiblePages;
+        Assert.Single(visible);
+        Assert.Equal(doc.Primary.CurrentPage, visible[0].Page);
+        doc.Dispose();
+    }
+
+    [Fact]
+    public void ConfinedView_ContinuousScrollEnabled_ClampMatchesBlockConfinementNotDocumentClamp()
+    {
+        var doc = LoadDocContinuous();
+        double pw = doc.PageWidth, ph = doc.PageHeight;
+        var bounds = new BBox((float)(pw * 0.3), (float)(ph * 0.3), (float)(pw * 0.4), (float)(ph * 0.1));
+        doc.Primary.Focus = new FocusBlock(0, 0, bounds);
+
+        const double vpW = 400, vpH = 400;
+        double expectedFit = doc.Primary.ComputeBlockFitZoom(bounds, vpW, vpH);
+        doc.Camera.Zoom = 0.1; // well below fit
+        doc.ClampCamera(vpW, vpH);
+
+        // The block clamp (not the continuous document clamp) still governs: zoom floors at the
+        // block's fit exactly as it does outside continuous mode.
+        Assert.Equal(expectedFit, doc.Camera.Zoom, precision: 4);
+        doc.Dispose();
+    }
+
+    [Fact]
+    public void ConfinedView_ContinuousScrollEnabled_NoAutoReanchorAcrossPan()
+    {
+        var doc = LoadDocContinuous();
+        var bounds = new BBox(100, 120, 200, 80);
+        doc.Primary.Focus = new FocusBlock(0, 0, bounds);
+        int pageBefore = doc.Primary.CurrentPage;
+
+        // Even a large pan cannot leave the block confinement, let alone cross a page boundary.
+        doc.Camera.OffsetY -= 100000;
+        doc.ClampCamera(400, 400);
+
+        Assert.Equal(pageBefore, doc.Primary.CurrentPage);
+        doc.Dispose();
+    }
 }

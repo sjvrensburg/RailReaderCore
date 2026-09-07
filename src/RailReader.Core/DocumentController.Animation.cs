@@ -70,6 +70,15 @@ public sealed partial class DocumentController
                 cameraChanged = true;
         }
 
+        // Continuous-scroll auto re-anchor (I3): only when settled (no rail/zoom/confinement) —
+        // see ReanchorIfNeeded. A page change here is a scroll re-anchor, not navigation.
+        if (!railPaused)
+        {
+            int beforeAnchor = vp.CurrentPage;
+            ReanchorIfNeeded(vp, ww, wh);
+            if (vp.CurrentPage != beforeAnchor) pageChanged = true;
+        }
+
         // Drain the analysis worker and schedule read-ahead (document-global, once per frame).
         // `quiescent: !animating` preserves the prior gate: read-ahead only when neither
         // the camera nor a just-arrived result is animating. A multi-viewport host pumps

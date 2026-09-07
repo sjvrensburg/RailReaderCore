@@ -17,7 +17,7 @@ namespace RailReader.Core;
 /// the render-DPI state machine, and the page-prefetch buffer. Rail navigation, current
 /// page, history, and display preferences move here in later increments.</para>
 /// </summary>
-public sealed class Viewport : IDisposable
+public sealed partial class Viewport : IDisposable
 {
     internal Viewport(CoreSettings config, DocumentModel owner)
     {
@@ -467,12 +467,26 @@ public sealed class Viewport : IDisposable
                 Prefetched = null; // consumed — don't dispose, we're using the bitmaps
                 oldPage?.Dispose();
                 oldMinimap?.Dispose();
+                if (ContinuousScroll) EnsureRenderWindow(Width, Height);
                 return true;
             }
 
-            var (w, h) = Owner.Pdf.GetPageSize(CurrentPageBacking, Owner.ViewRotation);
-            int dpi = DocumentModel.CalculateRenderDpi(Camera.Zoom, w, h, RenderDpi);
-            var newPage = Owner.Pdf.RenderPage(CurrentPageBacking, dpi, Owner.ViewRotation);
+            // Continuous mode: the new anchor was very likely already sitting in the render
+            // window as a visible neighbour (EnsureRenderWindow keeps one page of padding on
+            // each side of the old anchor) — promote that entry instead of re-rendering a page
+            // that was rasterised a moment ago. Falls through to a fresh render when it isn't
+            // there (e.g. a jump far outside the window, or the DPI band changed underneath it).
+            IRenderedPage newPage; int dpi; double w, h;
+            if (ContinuousScroll && TryTakeFromWindow(CurrentPageBacking, out var takenPage, out var takenDpi, out var takenW, out var takenH))
+            {
+                (newPage, dpi, w, h) = (takenPage, takenDpi, takenW, takenH);
+            }
+            else
+            {
+                (w, h) = Owner.Pdf.GetPageSize(CurrentPageBacking, Owner.ViewRotation);
+                dpi = DocumentModel.CalculateRenderDpi(Camera.Zoom, w, h, RenderDpi);
+                newPage = Owner.Pdf.RenderPage(CurrentPageBacking, dpi, Owner.ViewRotation);
+            }
             var newMinimap = Owner.Pdf.RenderThumbnail(CurrentPageBacking, Owner.ViewRotation);
 
             // Commit: swap fields and dispose old bitmaps only after full success
@@ -482,6 +496,7 @@ public sealed class Viewport : IDisposable
             SetPageSizeFromLoad(w, h);
             oldPage?.Dispose();
             oldMinimap?.Dispose();
+            if (ContinuousScroll) EnsureRenderWindow(Width, Height);
             return true;
         }
         catch (OperationCanceledException) { throw; }
@@ -528,6 +543,7 @@ public sealed class Viewport : IDisposable
         RenderGeneration++;
         Prefetched?.Dispose();
         Prefetched = null;
+        DisposeRenderWindow();
         if (_focus is not null) Focus = null;
         AutoScroll.StopAutoScroll();
         LoadPageBitmap();
@@ -546,6 +562,9 @@ public sealed class Viewport : IDisposable
     /// </summary>
     internal void PrefetchPage(int pageIndex)
     {
+        // In continuous mode the render window already covers the next page (EnsureRenderWindow),
+        // so a speculative single-page prefetch buffer is redundant.
+        if (ContinuousScroll) return;
         // Serialize with DPI re-render to avoid concurrent PDFium access.
         if (PrefetchPending || DpiRenderPending) return;
         if (pageIndex < 0 || pageIndex >= Owner.PageCount || Owner.IsDisposed) return;
@@ -628,6 +647,8 @@ public sealed class Viewport : IDisposable
         // so the change stays dirty and the animation tick retries it the moment
         // scroll velocity drops to zero.
         if (Rail.ScrollSpeed > 0.1 || Rail.AutoScrolling) return false;
+
+        if (ContinuousScroll) EnsureRenderWindow(Width, Height);
 
         int neededDpi = DocumentModel.CalculateRenderDpi(Camera.Zoom, PageWidthBacking, PageHeightBacking, RenderDpi);
         bool trigger = force
@@ -732,6 +753,8 @@ public sealed class Viewport : IDisposable
         // Drop the prefetch buffer — it was rasterised at the previous DPI.
         Prefetched?.Dispose();
         Prefetched = null;
+        // Drop window neighbours too — they'll re-render lazily at the new DPI band next tick.
+        DisposeRenderWindow();
 
         // Force the current page to re-render at the new DPI band; if PDFium is
         // busy or the user is scrolling, mark dirty so the tick retries.
@@ -942,6 +965,23 @@ public sealed class Viewport : IDisposable
             return;
         }
 
+        // Continuous mode: clamp against the DOCUMENT extent (not just this page), then convert back
+        // to the anchor frame — I4 (a single-page document degenerates to the page clamp above, since
+        // TotalHeight == H[0] and MaxWidth == W[0] there).
+        if (ContinuousScroll && Owner.PageLayout is { } layout)
+        {
+            double scaledDocW = layout.MaxWidth * Camera.Zoom;
+            double scaledDocH = layout.TotalHeight * Camera.Zoom;
+
+            double docOx = ContinuousScrollDocumentOffsetX(scaledDocW, windowWidth);
+            double docOy = ContinuousScrollDocumentOffsetY(scaledDocH, windowHeight);
+
+            int a = CurrentPageBacking;
+            Camera.OffsetX = docOx + layout.Left(a) * Camera.Zoom;
+            Camera.OffsetY = docOy + layout.Top(a) * Camera.Zoom;
+            return;
+        }
+
         double scaledW = PageWidthBacking * Camera.Zoom;
         double scaledH = PageHeightBacking * Camera.Zoom;
 
@@ -955,6 +995,16 @@ public sealed class Viewport : IDisposable
         else
             Camera.OffsetY = Math.Clamp(Camera.OffsetY, windowHeight - scaledH, 0);
     }
+
+    private double ContinuousScrollDocumentOffsetX(double scaledDocW, double windowWidth)
+        => scaledDocW <= windowWidth
+            ? (windowWidth - scaledDocW) / 2.0
+            : Math.Clamp(DocumentOffsetX, windowWidth - scaledDocW, 0);
+
+    private double ContinuousScrollDocumentOffsetY(double scaledDocH, double windowHeight)
+        => scaledDocH <= windowHeight
+            ? (windowHeight - scaledDocH) / 2.0
+            : Math.Clamp(DocumentOffsetY, windowHeight - scaledDocH, 0);
 
     /// <summary>
     /// Confinement clamp for a <see cref="Focus"/>ed (portal) view: floors zoom at the block's
@@ -1044,6 +1094,7 @@ public sealed class Viewport : IDisposable
         MinimapPage = null;
         Prefetched?.Dispose();
         Prefetched = null;
+        DisposeRenderWindow();
 
         StateChanged = null;
         PageChanged = null;

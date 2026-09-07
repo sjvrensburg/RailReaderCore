@@ -38,6 +38,12 @@ public sealed record CoreSettings
     /// </summary>
     public IReadOnlySet<BlockRole> AutoScrollStopClasses { get; init; } = Services.DefaultRoleSets.AutoScrollStop;
 
+    // Continuous scroll (opt-in; see docs/continuous-scroll-plan.md). Off by default —
+    // single-page mode is byte-for-byte unchanged when this is false (invariant I1).
+    public bool ContinuousScroll { get; init; } = false;
+    public double ContinuousPageGapPts { get; init; } = 12.0;
+    public int ContinuousRenderWindowPages { get; init; } = 4;
+
     // Analysis
     public int AnalysisLookaheadPages { get; init; } = 2;
 

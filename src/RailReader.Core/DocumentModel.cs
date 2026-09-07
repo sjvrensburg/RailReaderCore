@@ -157,9 +157,40 @@ public sealed class DocumentModel : IDisposable
         _analysisCache.Clear();
         DocumentContentFraction = null;
         BackgroundQueue.Reset(Primary.CurrentPage);
+        // Only rebuild eagerly if a layout already existed (i.e. continuous scroll has actually
+        // been used on this document) — I7 only promises "one layout per (document, ViewRotation)"
+        // *while a layout exists*; a single-page-only consumer must not pay for a document-wide
+        // GetPageSizes() scan on every rotation (I1: rotation is not otherwise a continuous-scroll
+        // code path). A never-built layout stays null and is built lazily on first real use.
+        bool hadLayout = _pageLayout is not null;
+        _pageLayout = null;
+        if (hadLayout) EnsurePageLayout();
         foreach (var vp in _viewports)
             vp.OnViewRotationChanged();
     }
+
+    private PageLayout? _pageLayout;
+
+    /// <summary>
+    /// Document-wide page layout (prefix sums of page heights + gap, pages centred in a
+    /// column as wide as the widest page). Null until <see cref="EnsurePageLayout"/> runs.
+    /// One layout per (document, ViewRotation) — invalidated and rebuilt by
+    /// <see cref="OnViewRotationChanged"/> before per-viewport rotation handlers run (I7).
+    /// </summary>
+    public PageLayout? PageLayout => _pageLayout;
+
+    /// <summary>Builds <see cref="PageLayout"/> if it hasn't been built yet. Idempotent, safe to call eagerly.</summary>
+    public void EnsurePageLayout()
+    {
+        if (_pageLayout is not null) return;
+        var sizes = _pdf.GetPageSizes(_viewRotation);
+        _pageLayout = new PageLayout(sizes, _config.ContinuousPageGapPts);
+    }
+
+    /// <summary>Latest settings snapshot. Read by <see cref="Viewport"/> for continuous-scroll mode
+    /// and tuning (<see cref="CoreSettings.ContinuousScroll"/>, gap, render-window cap) since the
+    /// viewport does not hold its own config copy.</summary>
+    internal CoreSettings Config => _config;
 
     public string FilePath { get; }
     public int PageCount { get; }
@@ -846,6 +877,10 @@ public sealed class DocumentModel : IDisposable
     }
 
     public bool GoToPage(Viewport vp, int page, AnalysisWorker? worker, IReadOnlySet<BlockRole> navigableRoles, double windowWidth, double windowHeight)
+        => GoToPage(vp, page, worker, navigableRoles, windowWidth, windowHeight, PageTransition.Default);
+
+    public bool GoToPage(Viewport vp, int page, AnalysisWorker? worker, IReadOnlySet<BlockRole> navigableRoles,
+        double windowWidth, double windowHeight, PageTransition transition)
     {
         page = Math.Clamp(page, 0, PageCount - 1);
         if (page == vp.CurrentPage) return true;
@@ -865,12 +900,52 @@ public sealed class DocumentModel : IDisposable
         int oldPage = vp.CurrentPage;
         double oldZoom = vp.Camera.Zoom;
 
+        // In continuous mode, PreserveScreen re-anchors without moving the screen: compute the new
+        // offset from the OLD anchor's camera and the shared layout BEFORE anything about the view
+        // changes (docs/continuous-scroll-plan.md §1.2's renaming — see Viewport.PageOffset).
+        bool continuous = vp.ContinuousScroll;
+        bool preserve = continuous && transition == PageTransition.PreserveScreen && PageLayout is not null;
+        double preservedOx = 0, preservedOy = 0;
+        if (preserve)
+        {
+            var layout = PageLayout!;
+            double z = vp.Camera.Zoom;
+            // Re-anchor a→b: ox' = ox + (Left[b]-Left[a])·z (new minus old) — verified against the
+            // plan's own invariance proof (§1.2): off_p must be identical whether computed from the
+            // old anchor's camera or the new one's, which only holds with this sign, not the
+            // (Left[a]-Left[b]) the plan document's line 62 states (a documented deviation: this is
+            // the correct sign, confirmed independently by the DocOff-invariance derivation).
+            preservedOx = vp.Camera.OffsetX + (layout.Left(page) - layout.Left(oldPage)) * z;
+            preservedOy = vp.Camera.OffsetY + (layout.Top(page) - layout.Top(oldPage)) * z;
+        }
+
         // Clear stale state from the previous page — the background task
         // for the old page will check vp.CurrentPage != page and discard its
         // result, so these flags must not linger.
         ClearPendingState(vp);
 
+        double oldOx = vp.Camera.OffsetX, oldOy = vp.Camera.OffsetY;
+
         vp.CurrentPage = page;
+
+        // Assign the new offset BEFORE LoadPageBitmap runs: in continuous mode LoadPageBitmap calls
+        // EnsureRenderWindow, which reads DocumentOffsetY (derived from CurrentPage + Camera.OffsetY
+        // together) to pick which neighbour pages to rasterise. CurrentPage is already the new anchor
+        // at this point, so leaving Camera.OffsetY at its pre-transition value here would make that
+        // one EnsureRenderWindow call compute the window from a page/offset pair that never actually
+        // existed (old offset, new anchor) — picking the wrong neighbours for that call.
+        if (preserve)
+        {
+            vp.Camera.OffsetX = preservedOx;
+            vp.Camera.OffsetY = preservedOy;
+        }
+        else if (continuous)
+        {
+            // Explicit jump in continuous mode: page top lands at the viewport top; keep OffsetX as-is
+            // (horizontal position is not page-relative the way vertical scroll position is).
+            vp.Camera.OffsetY = 0;
+        }
+
         if (!vp.LoadPageBitmap())
         {
             // Roll back through the confinement-bypassing setter: when a Focus targets the failed
@@ -878,6 +953,8 @@ public sealed class DocumentModel : IDisposable
             // became confined the instant CurrentPage committed above, and the public setter's
             // confinement guard would silently refuse this rollback — stranding CurrentPage on a page
             // whose bitmap never loaded while CachedPage/PageWidth/PageHeight still hold the old page.
+            vp.Camera.OffsetX = oldOx;
+            vp.Camera.OffsetY = oldOy;
             vp.ForceCurrentPage(oldPage);
             return false;
         }
@@ -888,7 +965,7 @@ public sealed class DocumentModel : IDisposable
     }
 
     public bool GoToPage(int page, AnalysisWorker? worker, IReadOnlySet<BlockRole> navigableRoles, double windowWidth, double windowHeight)
-        => GoToPage(Primary, page, worker, navigableRoles, windowWidth, windowHeight);
+        => GoToPage(Primary, page, worker, navigableRoles, windowWidth, windowHeight, PageTransition.Default);
 
     /// <summary>
     /// Clears transient state tied to a view's current page. Call before
