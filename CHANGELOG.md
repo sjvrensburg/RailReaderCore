@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.61.2 — Cache SkiaPdfService page sizes (2026-09-08)
+
+Performance fix, no API change.
+
+- **`SkiaPdfService.GetPageSize`/`GetPageSizes`** now read from a page-size array built once on
+  first access instead of re-opening and re-parsing the whole PDF on every call (~7.8 ms/call on
+  a 15-page file, measured under `PdfiumGate.Lock` from `Viewport.LoadPageBitmap`, `PrefetchPage`,
+  and `RenderPagePixmap`'s `FitPageToTarget`). The cache is built under `PdfiumGate.Lock` itself
+  (reentrant, so already-gated callers re-enter it for free) rather than a separate lock, avoiding
+  a lock-order inversion that a dedicated lock would have introduced against callers that acquire
+  the gate first. Fixes #114.
+
 ## 0.61.1 — Immutable rendered-page bitmaps (2026-09-07)
 
 Performance fix, no API change.
