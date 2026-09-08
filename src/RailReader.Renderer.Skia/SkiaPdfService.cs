@@ -29,9 +29,13 @@ public sealed class SkiaPdfService : IPdfService
     /// <summary>Unrotated (page /Rotate applied, view rotation not) page sizes, populated once on
     /// first access and reused for every subsequent <see cref="GetPageSize(int, int)"/> or
     /// <see cref="GetPageSizes"/> call — sizes are immutable for an open document, so there is no
-    /// reason to re-open it (and re-parse the whole file) on every call (issue #114).</summary>
-    private (double Width, double Height)[]? _pageSizesCache;
-    private readonly object _pageSizesCacheLock = new();
+    /// reason to re-open it (and re-parse the whole file) on every call (issue #114).
+    /// Built under <see cref="PdfiumGate.Lock"/> itself (rather than a dedicated lock) so callers
+    /// that already hold the gate — <see cref="RenderThumbnail(int, int)"/>,
+    /// <see cref="RenderPagePixmap(int, int, int)"/> — can re-enter it without a second lock whose
+    /// acquisition order could invert against theirs; <c>volatile</c> guards the unlocked
+    /// fast-path read below against a torn/reordered view of a just-published array.</summary>
+    private volatile (double Width, double Height)[]? _pageSizesCache;
 
     public SkiaPdfService(string filePath, string? password = null)
     {
@@ -109,39 +113,36 @@ public sealed class SkiaPdfService : IPdfService
         if (_pageSizesCache is { } cached)
             return cached;
 
-        lock (_pageSizesCacheLock)
+        lock (PdfiumGate.Lock)
         {
             if (_pageSizesCache is { } cachedInner)
                 return cachedInner;
 
             var sizes = new (double Width, double Height)[PageCount];
-            lock (PdfiumGate.Lock)
+            PdfiumResolver.EnsureLibraryInitialized();
+            var pinned = GCHandle.Alloc(PdfBytes, GCHandleType.Pinned);
+            IntPtr doc = IntPtr.Zero;
+            try
             {
-                PdfiumResolver.EnsureLibraryInitialized();
-                var pinned = GCHandle.Alloc(PdfBytes, GCHandleType.Pinned);
-                IntPtr doc = IntPtr.Zero;
-                try
+                doc = LoadDocumentChecked(pinned.AddrOfPinnedObject(), PdfBytes.Length, Password, _filePath);
+                for (int i = 0; i < PageCount; i++)
                 {
-                    doc = LoadDocumentChecked(pinned.AddrOfPinnedObject(), PdfBytes.Length, Password, _filePath);
-                    for (int i = 0; i < PageCount; i++)
+                    IntPtr page = FPDF_LoadPage(doc, i);
+                    if (page == IntPtr.Zero) { sizes[i] = (0, 0); continue; }
+                    try
                     {
-                        IntPtr page = FPDF_LoadPage(doc, i);
-                        if (page == IntPtr.Zero) { sizes[i] = (0, 0); continue; }
-                        try
-                        {
-                            sizes[i] = (FPDF_GetPageWidth(page), FPDF_GetPageHeight(page));
-                        }
-                        finally
-                        {
-                            FPDF_ClosePage(page);
-                        }
+                        sizes[i] = (FPDF_GetPageWidth(page), FPDF_GetPageHeight(page));
+                    }
+                    finally
+                    {
+                        FPDF_ClosePage(page);
                     }
                 }
-                finally
-                {
-                    if (doc != IntPtr.Zero) FPDF_CloseDocument(doc);
-                    pinned.Free();
-                }
+            }
+            finally
+            {
+                if (doc != IntPtr.Zero) FPDF_CloseDocument(doc);
+                pinned.Free();
             }
 
             _pageSizesCache = sizes;
