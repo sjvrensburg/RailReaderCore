@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.61.3 — Lower-DPI continuous-scroll neighbours (2026-09-08)
+
+Performance fix, no breaking API change (one additive `CoreSettings`/`AppConfig` field).
+
+- **Continuous-scroll render window** (`Viewport.EnsureRenderWindow`) now rasterises neighbour
+  pages one DPI tier below the anchor (`DocumentModel.CalculateNeighbourRenderDpi`) instead of at
+  the anchor's own DPI — a neighbour is, by construction, only partially visible and never the
+  rail page, so the reduction cuts its bitmap's pixel count (and memory) by roughly
+  (lowerDpi/anchorDpi)² without touching what's actually being read. When a neighbour is promoted
+  to anchor (`Viewport.TryTakeFromWindow`), `LoadPageBitmap` now flags a forced re-render so it's
+  brought back up to full anchor quality on the very next tick instead of staying under-quality
+  indefinitely.
+- The render window's aggregate pixel-area budget is now a dedicated, host-configurable setting —
+  **`CoreSettings.ContinuousRenderWindowMaxMegapixels`** / **`AppConfig.ContinuousRenderWindowMaxMegapixels`**
+  (default 128 MP, matching the previous hardcoded `RenderDpi.MaxMegapixels × 2` effective value) —
+  rather than a fixed multiple of the per-page cap, so a memory-constrained target (mobile) can set
+  a much smaller window budget without touching per-page render quality.
+- Fixes #115 (measured at ~1.25 GB RSS on a 15-page Letter document at 300% zoom before this fix).
+
 ## 0.61.2 — Cache SkiaPdfService page sizes (2026-09-08)
 
 Performance fix, no API change.

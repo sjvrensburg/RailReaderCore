@@ -1442,6 +1442,25 @@ public sealed class DocumentModel : IDisposable
         return dpi;
     }
 
+    /// <summary>
+    /// The render DPI a continuous-scroll neighbour page should use — one tier step below the
+    /// anchor DPI a plain <see cref="CalculateRenderDpi"/> call would return for the same zoom/size,
+    /// clamped to <see cref="RenderDpiSettings.MinDpi"/> (issue #115: a neighbour is, by
+    /// construction, only partially visible and never the rail page, so it does not need the same
+    /// sharpness the anchor does — the reduction cuts its bitmap's pixel count, and hence memory, by
+    /// roughly (lowerDpi/anchorDpi)² without touching what actually gets read). When the neighbour
+    /// becomes the anchor (<c>Viewport.TryTakeFromWindow</c>), <c>Viewport.LoadPageBitmap</c> flags a
+    /// forced re-render so the page is promoted back to full anchor quality rather than staying at
+    /// the lower tier indefinitely.
+    /// </summary>
+    public static int CalculateNeighbourRenderDpi(double zoom, double pageWidthPts, double pageHeightPts, in RenderDpiSettings settings)
+    {
+        int anchorDpi = CalculateRenderDpi(zoom, pageWidthPts, pageHeightPts, settings);
+        int minDpi = Math.Max(1, settings.MinDpi);
+        int step = Math.Max(1, settings.TierStep);
+        return Math.Max(minDpi, anchorDpi - step);
+    }
+
     public void Dispose()
     {
         if (IsDisposed) return;

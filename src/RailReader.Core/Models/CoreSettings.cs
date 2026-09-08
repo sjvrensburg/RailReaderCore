@@ -44,6 +44,17 @@ public sealed record CoreSettings
     public double ContinuousPageGapPts { get; init; } = 12.0;
     public int ContinuousRenderWindowPages { get; init; } = 4;
 
+    /// <summary>
+    /// Aggregate pixel-area budget (in megapixels) for the render window's neighbour bitmaps
+    /// combined — independent of <see cref="Models.RenderDpiSettings.MaxMegapixels"/>, which caps a
+    /// single page. Neighbours beyond the budget are dropped (nearest-page-first, so the farthest
+    /// pages go first — see <c>Viewport.EnsureRenderWindow</c>). Host-configurable so a memory-
+    /// constrained target (mobile) can set a much smaller window budget than desktop's default
+    /// without touching per-page render quality. <c>&lt;= 0</c> disables the aggregate cap (each
+    /// neighbour is still individually capped via <see cref="Models.RenderDpiSettings.MaxMegapixels"/>).
+    /// </summary>
+    public double ContinuousRenderWindowMaxMegapixels { get; init; } = 128.0;
+
     // Analysis
     public int AnalysisLookaheadPages { get; init; } = 2;
 

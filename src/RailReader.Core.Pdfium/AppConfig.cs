@@ -111,6 +111,11 @@ public sealed class AppConfig : IRecentFilesStore
     /// (the anchor plus its neighbours). See <see cref="CoreSettings.ContinuousRenderWindowPages"/>.</summary>
     public int ContinuousRenderWindowPages { get; set; } = 4;
 
+    /// <summary>Aggregate pixel-area budget (megapixels) for the render window's neighbour
+    /// bitmaps combined, independent of the per-page cap. See
+    /// <see cref="CoreSettings.ContinuousRenderWindowMaxMegapixels"/>.</summary>
+    public double ContinuousRenderWindowMaxMegapixels { get; set; } = 128.0;
+
     // VLM (Vision Language Model) settings for Copy as LaTeX / Markdown / Description
     public string? VlmEndpoint { get; set; }
     public string? VlmModel { get; set; }
@@ -180,6 +185,7 @@ public sealed class AppConfig : IRecentFilesStore
         ContinuousScroll = ContinuousScroll,
         ContinuousPageGapPts = ContinuousPageGapPts,
         ContinuousRenderWindowPages = ContinuousRenderWindowPages,
+        ContinuousRenderWindowMaxMegapixels = ContinuousRenderWindowMaxMegapixels,
         VlmEndpoint = VlmEndpoint,
         VlmModel = VlmModel,
         VlmApiKey = VlmApiKey,

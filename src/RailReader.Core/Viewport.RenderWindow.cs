@@ -196,20 +196,24 @@ partial class Viewport
         if (wanted.Count > cap)
             wanted = wanted.Take(cap).ToList();
 
-        // Aggregate megapixel budget (plan §5 Phase 1): each entry is already individually capped by
-        // CalculateRenderDpi, but nothing previously bounded the TOTAL — at rail zoom a full window of
-        // ContinuousRenderWindowPages pages could allocate unboundedly. Cap the sum of w·h·dpi²/72²
-        // (pixel count) over window entries at RenderDpi.MaxMegapixels × 2; since `wanted` is already
-        // nearest-first, trimming the tail here is exactly "drop the farthest first".
-        if (RenderDpi.MaxMegapixels > 0 && wanted.Count > 0)
+        // Aggregate pixel-area budget (plan §5 Phase 1, tightened for issue #115): each entry is
+        // already individually capped by CalculateNeighbourRenderDpi's per-page ceiling, but nothing
+        // previously bounded the TOTAL — at rail zoom a full window of ContinuousRenderWindowPages
+        // pages could allocate unboundedly. Cap the sum of w·h·dpi²/72² (pixel count) over window
+        // entries at the host-configurable ContinuousRenderWindowMaxMegapixels; since `wanted` is
+        // already nearest-first, trimming the tail here is exactly "drop the farthest first". Sized
+        // against the NEIGHBOUR dpi (below), not the anchor dpi, since that's what actually gets
+        // rendered.
+        double windowBudgetMp = Owner.Config.ContinuousRenderWindowMaxMegapixels;
+        if (windowBudgetMp > 0 && wanted.Count > 0)
         {
-            double budgetPixels = RenderDpi.MaxMegapixels * 2.0 * 1_000_000.0;
+            double budgetPixels = windowBudgetMp * 1_000_000.0;
             double usedPixels = 0;
             var withinBudget = new List<int>(wanted.Count);
             foreach (var p in wanted)
             {
                 double pw = layout.Width(p), ph = layout.Height(p);
-                int pDpi = DocumentModel.CalculateRenderDpi(Camera.Zoom, pw, ph, RenderDpi);
+                int pDpi = DocumentModel.CalculateNeighbourRenderDpi(Camera.Zoom, pw, ph, RenderDpi);
                 double pixels = pw * ph * pDpi * pDpi / (72.0 * 72.0);
                 if (withinBudget.Count > 0 && usedPixels + pixels > budgetPixels) break;
                 usedPixels += pixels;
@@ -244,7 +248,11 @@ partial class Viewport
                 // value (both are sourced from GetPageSizes(_viewRotation) — see EnsurePageLayout)
                 // for free.
                 double w = layout.Width(page), h = layout.Height(page);
-                int dpi = DocumentModel.CalculateRenderDpi(Camera.Zoom, w, h, RenderDpi);
+                // Neighbours render one DPI tier below the anchor (issue #115) — they are only
+                // partially visible and never the rail page, and LoadPageBitmap forces a full-quality
+                // re-render the moment one of them is promoted to anchor (see
+                // CalculateNeighbourRenderDpi's doc comment).
+                int dpi = DocumentModel.CalculateNeighbourRenderDpi(Camera.Zoom, w, h, RenderDpi);
 
                 if (_renderWindow.TryGetValue(page, out var existing))
                 {

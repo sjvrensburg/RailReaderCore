@@ -383,5 +383,76 @@ public class ContinuousScrollRenderWindowTests : IDisposable
         Assert.NotNull(state.Primary.CachedPage);
     }
 
+    [Fact]
+    public void EnsureRenderWindow_NeighbourDpi_IsOneTierBelowAnchorDpi()
+    {
+        // Issue #115: a neighbour is only partially visible and never the rail page, so it renders
+        // one DPI tier below what the anchor would use at the same zoom/size — cutting its bitmap's
+        // pixel count (and memory) without touching what's actually being read.
+        var vp = _state.Primary;
+        var layout = _state.PageLayout!;
+        if (layout.Count < 2) return;
+
+        // Let the construction-time render settle first (otherwise the zoom-in below can race an
+        // already-in-flight construction render for page 1 and skip scheduling a fresh one — see
+        // WaitForPendingRenders's own doc comment).
+        double z0 = vp.Camera.Zoom;
+        vp.Camera.OffsetY = -layout.Height(0) * z0 + 300;
+        vp.EnsureRenderWindow(vp.Width, vp.Height);
+        WaitForPendingRenders(vp);
+
+        // Zoom in well past the MinDpi floor so the anchor/neighbour tiers actually differ (at the
+        // default zoom both clamp to the same floor DPI, which would trivially "pass").
+        double z = z0 * 3.0;
+        vp.Camera.Zoom = z;
+        vp.Camera.OffsetY = -layout.Height(0) * z + 300;
+        vp.EnsureRenderWindow(vp.Width, vp.Height);
+        WaitForPendingRenders(vp);
+
+        var neighbour = vp.VisiblePages.First(v => v.Page == 1);
+        int anchorDpi = DocumentModel.CalculateRenderDpi(z, layout.Width(1), layout.Height(1), vp.RenderDpi);
+        Assert.True(neighbour.Dpi < anchorDpi,
+            $"expected neighbour DPI ({neighbour.Dpi}) below the full anchor DPI ({anchorDpi})");
+        Assert.Equal(anchorDpi - vp.RenderDpi.TierStep, neighbour.Dpi);
+    }
+
+    [Fact]
+    public void PromotingANeighbourToAnchor_ForcesAFullQualityReRender()
+    {
+        // Issue #115: a promoted neighbour (TryTakeFromWindow) starts life at the lower neighbour
+        // tier — LoadPageBitmap must flag a forced re-render so it's brought back up to full anchor
+        // quality on the very next tick rather than staying under-quality indefinitely.
+        var vp = _state.Primary;
+        var layout = _state.PageLayout!;
+        if (layout.Count < 2) return;
+
+        double z0 = vp.Camera.Zoom;
+        vp.Camera.OffsetY = -layout.Height(0) * z0 + 300;
+        vp.EnsureRenderWindow(vp.Width, vp.Height);
+        WaitForPendingRenders(vp);
+
+        double z = z0 * 3.0;
+        vp.Camera.Zoom = z;
+        vp.Camera.OffsetY = -layout.Height(0) * z + 300;
+        vp.EnsureRenderWindow(vp.Width, vp.Height);
+        WaitForPendingRenders(vp);
+
+        vp.CurrentPage = 1;
+        vp.LoadPageBitmap();
+
+        int anchorDpi = DocumentModel.CalculateRenderDpi(z, layout.Width(1), layout.Height(1), vp.RenderDpi);
+        Assert.True(vp.CachedDpi < anchorDpi, "promoted page should start at the lower neighbour tier");
+        Assert.True(vp.RenderDpiDirty, "promotion at a lower tier must flag a forced re-render");
+
+        Assert.True(vp.UpdateRenderDpiIfNeeded());
+        // UpdateRenderDpiIfNeeded's own DpiRenderPending gate means the forced re-render above may
+        // still be resolving on the background task it scheduled; wait for it to land.
+        long deadline = Environment.TickCount64 + 3000;
+        while (vp.CachedDpi < anchorDpi && Environment.TickCount64 < deadline)
+            Thread.Sleep(5);
+
+        Assert.Equal(anchorDpi, vp.CachedDpi);
+    }
+
     public void Dispose() => _state.Dispose();
 }
