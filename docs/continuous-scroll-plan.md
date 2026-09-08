@@ -253,7 +253,9 @@ duplication that buys I1; unify later once continuous is proven (§9).
   double W, double H, int Generation)`. Minimap only for the anchor.
 - `Wanted(ww, wh)`: pages intersecting the viewport, plus one beyond in each direction, ordered by
   distance from the viewport centre, capped at `ContinuousRenderWindowPages` and a megapixel budget
-  (sum of `w·h·dpi²/72²` over entries ≤ `RenderDpi.MaxMegapixels × 2`; drop the farthest first).
+  (sum of `w·h·dpi²/72²` over entries ≤ `CoreSettings.ContinuousRenderWindowMaxMegapixels`, a
+  dedicated host-configurable setting — not a multiple of the per-page `RenderDpi.MaxMegapixels`
+  cap, see issue #115; drop the farthest first).
 - `LoadPageBitmap` (line 446): continuous → ensure the anchor's entry synchronously (render if
   missing, same DPI rule `CalculateRenderDpi(zoom, W, H, RenderDpi)` per page), set
   `PageWidth/Height` via `SetPageSizeFromLoad`, then `ScheduleWindow()` for the rest.

@@ -480,6 +480,15 @@ public sealed partial class Viewport : IDisposable
             if (ContinuousScroll && TryTakeFromWindow(CurrentPageBacking, out var takenPage, out var takenDpi, out var takenW, out var takenH))
             {
                 (newPage, dpi, w, h) = (takenPage, takenDpi, takenW, takenH);
+
+                // A promoted neighbour was rendered at the lower neighbour tier (issue #115), not
+                // the full anchor DPI its new status as the rail page calls for. Flag a forced
+                // re-render so UpdateRenderDpiIfNeeded upgrades it on the very next tick, bypassing
+                // the hysteresis band (one tier step usually doesn't cross it) — the page is
+                // immediately usable at the taken DPI and gets sharper a frame or two later, instead
+                // of silently staying under-quality until a bigger zoom change happens to trigger it.
+                if (dpi < DocumentModel.CalculateRenderDpi(Camera.Zoom, w, h, RenderDpi))
+                    RenderDpiDirty = true;
             }
             else
             {
