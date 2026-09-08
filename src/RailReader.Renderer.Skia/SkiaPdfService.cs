@@ -26,6 +26,13 @@ public sealed class SkiaPdfService : IPdfService
     /// <see cref="GetPageSizes"/>) — everything else already operates on <see cref="PdfBytes"/>.</summary>
     private readonly string _filePath;
 
+    /// <summary>Unrotated (page /Rotate applied, view rotation not) page sizes, populated once on
+    /// first access and reused for every subsequent <see cref="GetPageSize(int, int)"/> or
+    /// <see cref="GetPageSizes"/> call — sizes are immutable for an open document, so there is no
+    /// reason to re-open it (and re-parse the whole file) on every call (issue #114).</summary>
+    private (double Width, double Height)[]? _pageSizesCache;
+    private readonly object _pageSizesCacheLock = new();
+
     public SkiaPdfService(string filePath, string? password = null)
     {
         PdfBytes = File.ReadAllBytes(filePath);
@@ -71,56 +78,75 @@ public sealed class SkiaPdfService : IPdfService
 
     public (double Width, double Height) GetPageSize(int pageIndex, int viewRotation)
     {
-        lock (PdfiumGate.Lock)
-        {
-            var size = Conversion.GetPageSize(PdfBytes, page: pageIndex, password: Password);
-            // PDFtoImage's size already honours the page /Rotate; an extra view
-            // rotation just swaps the displayed axes on odd quarter-turns.
-            return (viewRotation & 1) == 0
-                ? (size.Width, size.Height)
-                : (size.Height, size.Width);
-        }
+        var size = EnsurePageSizesCache()[pageIndex];
+        // The cache already honours the page /Rotate; an extra view rotation just
+        // swaps the displayed axes on odd quarter-turns.
+        return (viewRotation & 1) == 0 ? size : (size.Height, size.Width);
     }
 
     /// <summary>
-    /// Reads every page's displayed size in a single document open, avoiding the per-page
-    /// re-parse that <see cref="GetPageSize(int, int)"/> (via PDFtoImage) does today. Used by
+    /// Reads every page's displayed size, from the cache built on first access — a single
+    /// document open, all pages, rather than the per-page re-parse the old
+    /// <see cref="GetPageSize(int, int)"/> (via PDFtoImage) did. Used by
     /// <see cref="DocumentModel.EnsurePageLayout"/> when building continuous-scroll layout.
     /// </summary>
     public IReadOnlyList<(double Width, double Height)> GetPageSizes(int viewRotation)
     {
-        var sizes = new List<(double, double)>(PageCount);
-        lock (PdfiumGate.Lock)
+        var cache = EnsurePageSizesCache();
+        var sizes = new List<(double, double)>(cache.Length);
+        foreach (var size in cache)
+            sizes.Add((viewRotation & 1) == 0 ? size : (size.Height, size.Width));
+        return sizes;
+    }
+
+    /// <summary>
+    /// Populates <see cref="_pageSizesCache"/> from a single document open on first access.
+    /// Page sizes are immutable for an already-open document, so every later caller reads the
+    /// same array instead of re-opening (and re-parsing the whole file) each time.
+    /// </summary>
+    private (double Width, double Height)[] EnsurePageSizesCache()
+    {
+        if (_pageSizesCache is { } cached)
+            return cached;
+
+        lock (_pageSizesCacheLock)
         {
-            PdfiumResolver.EnsureLibraryInitialized();
-            var pinned = GCHandle.Alloc(PdfBytes, GCHandleType.Pinned);
-            IntPtr doc = IntPtr.Zero;
-            try
+            if (_pageSizesCache is { } cachedInner)
+                return cachedInner;
+
+            var sizes = new (double Width, double Height)[PageCount];
+            lock (PdfiumGate.Lock)
             {
-                doc = LoadDocumentChecked(pinned.AddrOfPinnedObject(), PdfBytes.Length, Password, _filePath);
-                for (int i = 0; i < PageCount; i++)
+                PdfiumResolver.EnsureLibraryInitialized();
+                var pinned = GCHandle.Alloc(PdfBytes, GCHandleType.Pinned);
+                IntPtr doc = IntPtr.Zero;
+                try
                 {
-                    IntPtr page = FPDF_LoadPage(doc, i);
-                    if (page == IntPtr.Zero) { sizes.Add((0, 0)); continue; }
-                    try
+                    doc = LoadDocumentChecked(pinned.AddrOfPinnedObject(), PdfBytes.Length, Password, _filePath);
+                    for (int i = 0; i < PageCount; i++)
                     {
-                        double w = FPDF_GetPageWidth(page);
-                        double h = FPDF_GetPageHeight(page);
-                        sizes.Add((viewRotation & 1) == 0 ? (w, h) : (h, w));
-                    }
-                    finally
-                    {
-                        FPDF_ClosePage(page);
+                        IntPtr page = FPDF_LoadPage(doc, i);
+                        if (page == IntPtr.Zero) { sizes[i] = (0, 0); continue; }
+                        try
+                        {
+                            sizes[i] = (FPDF_GetPageWidth(page), FPDF_GetPageHeight(page));
+                        }
+                        finally
+                        {
+                            FPDF_ClosePage(page);
+                        }
                     }
                 }
+                finally
+                {
+                    if (doc != IntPtr.Zero) FPDF_CloseDocument(doc);
+                    pinned.Free();
+                }
             }
-            finally
-            {
-                if (doc != IntPtr.Zero) FPDF_CloseDocument(doc);
-                pinned.Free();
-            }
+
+            _pageSizesCache = sizes;
+            return sizes;
         }
-        return sizes;
     }
 
     public IRenderedPage RenderPage(int pageIndex, int dpi = 200) => RenderPage(pageIndex, dpi, 0);
