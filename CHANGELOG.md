@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.61.5 — Build warning cleanup (2026-09-10)
+
+Internal cleanup, no behavioral or public API change.
+
+- **`PdfTextService.DisplayAngle`** now reads `Letter.BoundingBox.Rotation` instead of the
+  obsolete `Letter.GlyphRectangle.Rotation` — verified byte-identical across the rotation fixture
+  corpus (1598 glyphs, 0 mismatches); `BoundingBox` is PdfPig's non-deprecated name for the same
+  rectangle.
+- **`BilinearResampler.BuildFilter`** now allocates its per-tap scratch buffer once and reuses it
+  across the per-output-pixel loop instead of `stackalloc`-ing fresh on every iteration (CA2014),
+  removing a stack-overflow-risk warning on this hot resampling path (used by
+  `PPDocLayoutSLayoutAnalyzer`/`HeronLayoutAnalyzer`).
+
 ## 0.61.4 — AnalysisWorker result-available signal (2026-09-10)
 
 Additive change, no breaking API change.
