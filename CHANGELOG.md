@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.61.4 — AnalysisWorker result-available signal (2026-09-10)
+
+Additive change, no breaking API change.
+
+- **`AnalysisWorker`** now takes an optional `onResultAvailable` callback (constructor parameter),
+  invoked via `IThreadMarshaller.Post` exactly once per result written to the result channel —
+  safe to call after `Dispose()` (no-op, guarded by a `_disposed` flag). **`DocumentController`**
+  exposes this as a new `ResultAvailable` event, wired through `InitializeWorker`, so a host can
+  request an animation frame (or call `PollAnalysisResults()` directly) from the signal instead of
+  running a poll timer purely to notice when a result has arrived.
+- Enables the shell-side fix for railreader2#224 (X11's `~100ms` poll timer, measured at ~19% of a
+  core): the host no longer has to poll `IsIdle`/`Poll()` on an interval — it can react to the
+  signal and stop the timer, or drive background read-ahead submission off result arrival rather
+  than its own timer.
+- Fixes #118.
+
 ## 0.61.3 — Lower-DPI continuous-scroll neighbours (2026-09-08)
 
 Performance fix, no breaking API change (one additive `CoreSettings`/`AppConfig` field).
