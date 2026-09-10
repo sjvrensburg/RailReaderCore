@@ -114,6 +114,10 @@ internal static class BilinearResampler
 
         var bounds = new int[dstSize];
         var weights = new int[dstSize * taps];
+        // taps is fixed per call (independent of x), and each iteration below fully
+        // overwrites raw[0..max-min) before reading it back, so one buffer can be reused
+        // across all dstSize iterations instead of stackalloc'ing fresh each time (CA2014).
+        Span<double> raw = stackalloc double[taps];
         for (int x = 0; x < dstSize; x++)
         {
             double center = (x + 0.5) * scale;
@@ -122,7 +126,6 @@ internal static class BilinearResampler
             bounds[x] = min;
 
             double sum = 0;
-            Span<double> raw = stackalloc double[taps];
             for (int i = min; i < max; i++)
             {
                 double t = Math.Abs((i - center + 0.5) / filterScale);

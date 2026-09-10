@@ -312,7 +312,7 @@ public sealed partial class PdfTextService : IPdfTextService
     /// (tools/rotation-probe-pdfpig): \rotatebox{90} content = Rotate270 (270° CW);
     /// a /Rotate 90 page's upright content = Rotate90 (90° CW) — both matching
     /// PDFium's values exactly. TextOrientation is used rather than
-    /// GlyphRectangle.Rotation because the latter reads 0 for many rotated glyphs
+    /// BoundingBox.Rotation because the latter reads 0 for many rotated glyphs
     /// (only ~30% of the fixture table's glyphs report it); the free-angle Other
     /// case falls back to the glyph rotation, negated (PdfPig rotation is
     /// counter-clockwise-positive).
@@ -326,7 +326,7 @@ public sealed partial class PdfTextService : IPdfTextService
             case TextOrientation.Rotate180: return 180f;
             case TextOrientation.Rotate270: return 270f;
             default:
-                int deg = (int)Math.Round(letter.GlyphRectangle.Rotation / 90.0) * 90;
+                int deg = (int)Math.Round(letter.BoundingBox.Rotation / 90.0) * 90;
                 return ((-deg) % 360 + 360) % 360;
         }
     }
