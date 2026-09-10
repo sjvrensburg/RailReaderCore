@@ -94,6 +94,12 @@ public sealed class AnalysisWorker : IDisposable
     private readonly IReadingOrderResolver _readingOrder;
     private readonly Func<IOcrService>? _ocrServiceFactory;
     private readonly LineDetectionTuning _tuning;
+    private readonly Action? _onResultAvailable;
+    // Guards _onResultAvailable after Dispose: the layout loop can still be mid-write when
+    // Dispose runs (it only cancels/completes, it doesn't wait), so a notification can still be
+    // in flight. Volatile because it's written on the UI thread (Dispose) and read on the
+    // layout stage thread.
+    private volatile bool _disposed;
 
     /// <summary>Static capabilities of the analyzer running in this worker. Available before the analyzer finishes loading.</summary>
     public LayoutModelCapabilities Capabilities { get; }
@@ -162,6 +168,13 @@ public sealed class AnalysisWorker : IDisposable
     /// <see cref="LineDetectionTuning"/>). Detection thresholds are the analyzer's business — set
     /// those on the instance <paramref name="analyzerFactory"/> builds.
     /// </param>
+    /// <param name="onResultAvailable">
+    /// Optional callback invoked once per result written to the result channel, so the host can
+    /// drive <see cref="Poll"/> off arrival instead of polling on a timer (issue #118). Invoked
+    /// via <paramref name="marshaller"/>'s <see cref="IThreadMarshaller.Post"/>, so it always
+    /// runs on the UI thread like the rest of the worker's host-facing surface, and is a no-op
+    /// once <see cref="Dispose"/> has run.
+    /// </param>
     public AnalysisWorker(
         LayoutModelCapabilities capabilities,
         Func<ILayoutAnalyzer> analyzerFactory,
@@ -170,12 +183,14 @@ public sealed class AnalysisWorker : IDisposable
         ILogger? logger = null,
         Func<IOcrService>? ocrServiceFactory = null,
         OcrMode ocrMode = OcrMode.Off,
-        LineDetectionTuning? lineTuning = null)
+        LineDetectionTuning? lineTuning = null,
+        Action? onResultAvailable = null)
     {
         Capabilities = capabilities;
         _tuning = lineTuning ?? LineDetectionTuning.Default;
         _ocrMode = (int)ocrMode;
         _ocrServiceFactory = ocrServiceFactory;
+        _onResultAvailable = onResultAvailable;
         _readingOrder = readingOrderResolver ?? (capabilities.ProvidesReadingOrder
             ? new ModelOrderResolver()
             : new XYCutPlusPlusResolver());
@@ -393,6 +408,7 @@ public sealed class AnalysisWorker : IDisposable
                     await _resultChannel.Writer.WriteAsync(
                         new AnalysisResult(request.FilePath, request.Page, request.Params, analysis,
                             request.ViewRotation, job.OcrText, job.OcrSkew), ct);
+                    NotifyResultAvailable();
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -455,6 +471,20 @@ public sealed class AnalysisWorker : IDisposable
             _logger.Error($"[Worker] OCR failed for page {request.Page}; continuing without it", ex);
             return (null, null, 0f);
         }
+    }
+
+    /// <summary>
+    /// Tells the host a new result is sitting in the channel, on the UI thread. Called from the
+    /// layout stage thread right after a successful write, so it fires exactly once per result
+    /// — never speculatively, never for a result that failed or was abandoned.
+    /// </summary>
+    private void NotifyResultAvailable()
+    {
+        if (_onResultAvailable is null || _disposed) return;
+        _marshaller.Post(() =>
+        {
+            if (!_disposed) _onResultAvailable();
+        });
     }
 
     /// <summary>
@@ -528,6 +558,7 @@ public sealed class AnalysisWorker : IDisposable
 
     public void Dispose()
     {
+        _disposed = true;
         _ocrChannel.Writer.TryComplete();
         _layoutChannel.Writer.TryComplete();
         _cts.Cancel();
