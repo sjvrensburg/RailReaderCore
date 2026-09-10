@@ -138,6 +138,18 @@ public sealed partial class DocumentController : IDisposable
     /// <summary>Fired when analysis completes for a page. Parameter = page index.</summary>
     public Action<int>? AnalysisPageReady;
 
+    /// <summary>
+    /// Fired on the UI thread as soon as the analysis worker has a result sitting in its
+    /// channel — before anything drains it. A host that currently polls (a ~100ms timer just
+    /// to notice when <see cref="PumpAnalysis"/> has something to do) can subscribe instead:
+    /// request an animation frame (or call <see cref="PumpAnalysis"/> directly) from this
+    /// callback and drop the timer entirely (issue #118). Distinct from
+    /// <see cref="AnalysisPageReady"/>, which fires per page only once <see cref="PumpAnalysis"/>
+    /// has actually drained and processed the result. No-op until <see cref="InitializeWorker"/>
+    /// has run; never fires after <see cref="Dispose"/> disposes the worker.
+    /// </summary>
+    public Action? ResultAvailable;
+
     public DocumentController(CoreSettings config, IRecentFilesStore recentFiles,
         IAnnotationStore annotationStore, IThreadMarshaller marshaller,
         IPdfServiceFactory pdfFactory, ILogger? logger = null)
@@ -188,7 +200,7 @@ public sealed partial class DocumentController : IDisposable
         LineDetectionTuning? lineTuning = null)
     {
         _worker = new AnalysisWorker(capabilities, analyzerFactory, _marshaller, readingOrderResolver,
-            _logger, ocrServiceFactory, ocrMode, lineTuning);
+            _logger, ocrServiceFactory, ocrMode, lineTuning, onResultAvailable: () => ResultAvailable?.Invoke());
         // Seed from the settings snapshot the controller was built with, so a host that never
         // touches the property still gets the configured behaviour on its first page.
         _worker.DeskewEnabled = _config.DeskewOcrLines;

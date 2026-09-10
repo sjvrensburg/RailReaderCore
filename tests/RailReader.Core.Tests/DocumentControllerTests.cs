@@ -1239,6 +1239,50 @@ public class DocumentControllerTests : IDisposable
         Assert.Contains(0, received);
     }
 
+    [Fact]
+    public void ResultAvailable_FiresBeforeThePollThatDrainsIt()
+    {
+        // Issue #118: ResultAvailable is the raw "the worker has something" signal a host can
+        // subscribe to instead of a poll timer, ahead of PollAnalysisResults actually draining it.
+        _controller.InitializeWorker(
+            FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer());
+
+        int notifications = 0;
+        var received = new List<int>();
+        _controller.ResultAvailable = () => System.Threading.Interlocked.Increment(ref notifications);
+        _controller.AnalysisPageReady = page => received.Add(page);
+
+        CreateAndAddDocument(); // submits page-0 analysis on a background thread
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (System.Threading.Volatile.Read(ref notifications) == 0 && sw.ElapsedMilliseconds < 5000)
+            System.Threading.Thread.Sleep(5);
+
+        Assert.True(notifications >= 1, "ResultAvailable never fired for the worker's result");
+
+        // Nothing has drained the channel yet — AnalysisPageReady, which only fires from
+        // PollAnalysisResults, must not have run before the host reacted to the signal.
+        Assert.Empty(received);
+
+        _controller.PollAnalysisResults();
+        Assert.Contains(0, received);
+    }
+
+    [Fact]
+    public void ResultAvailable_IsANoOpBeforeInitializeWorker()
+    {
+        // No worker exists yet, so nothing should ever invoke the callback — and subscribing
+        // must not throw.
+        bool fired = false;
+        _controller.ResultAvailable = () => fired = true;
+
+        CreateAndAddDocument();
+        _controller.PollAnalysisResults();
+
+        Assert.False(fired);
+    }
+
     // ---- FocusBlock confinement (xhigh review) -------------------------------------------------------
 
     [Fact]
