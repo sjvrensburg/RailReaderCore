@@ -18,6 +18,7 @@
     <ProjectReference Include="../../src/RailReader.Core/RailReader.Core.csproj" />
     <ProjectReference Include="../../src/RailReader.Core.Pdfium/RailReader.Core.Pdfium.csproj" />
     <ProjectReference Include="../../src/RailReader.Core.Ocr.RapidOcr/RailReader.Core.Ocr.RapidOcr.csproj" />
+    <ProjectReference Include="../../src/RailReader.Core.Analysis.WebGpu/RailReader.Core.Analysis.WebGpu.csproj" />
     <ProjectReference Include="../../src/RailReader.Renderer.Skia/RailReader.Renderer.Skia.csproj" />
   </ItemGroup>
 </Project>

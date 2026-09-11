@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using Microsoft.ML.OnnxRuntime;
 using RailReader.Core;
+using RailReader.Core.Analysis.WebGpu;
 using RailReader.Core.Models;
 using RailReader.Core.Ocr.RapidOcr;
 using RailReader.Core.Services;
@@ -20,6 +22,14 @@ using RapidOcrNet;
 //   OCRCOST_TIERS     comma-separated subset of v5-latin,v6-tiny,v6-small,v6-medium
 //   OCRCOST_THREADS   comma-separated intra-op thread caps to sweep (default: the shipping cap)
 //   OCRCOST_REPEATS   timed passes per (tier, thread cap); the best is reported (default 1)
+//   OCRCOST_BACKENDS  comma-separated subset of cpu,gpu (default: cpu). gpu routes RapidOcrService
+//                     through RailReader.Core.Analysis.WebGpu's WebGpuAccelerator.TryBuildSessionHook()
+//                     (issue #121). If no WebGPU device is found, gpu rows are reported and skipped
+//                     rather than silently falling back to cpu.
+//   OCRCOST_GPU_DEVICE index into WebGpuAccelerator.AvailableDevices to use for gpu rows (default 0
+//                     — whichever device ORT's plugin EP reports first). On a machine with more than
+//                     one WebGPU-capable device (e.g. an integrated + discrete GPU pair) the probe
+//                     prints the full list with indices so you can target a specific one.
 //
 // Reading the output: `det` is one detector pass over the whole page (what OcrMode.Lines pays);
 // `rec` is everything OcrMode.Full adds on top, which is per-line and therefore scales with how
@@ -59,6 +69,27 @@ int?[] threadCaps = Environment.GetEnvironmentVariable("OCRCOST_THREADS") is { L
         .Select(s => (int?)int.Parse(s)).ToArray()
     : [null];
 
+string[] backends = Environment.GetEnvironmentVariable("OCRCOST_BACKENDS") is { Length: > 0 } b
+    ? b.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+    : ["cpu"];
+
+Action<SessionOptions>? gpuHook = null;
+if (backends.Contains("gpu", StringComparer.OrdinalIgnoreCase))
+{
+    var devices = WebGpuAccelerator.AvailableDevices;
+    if (devices.Count > 1)
+    {
+        Console.WriteLine($"note: {devices.Count} WebGPU devices found:");
+        foreach (var d in devices) Console.WriteLine($"  [{d.Index}] {d.Description}");
+    }
+
+    int deviceIndex = int.TryParse(Environment.GetEnvironmentVariable("OCRCOST_GPU_DEVICE"), out var idx) ? idx : 0;
+    gpuHook = WebGpuAccelerator.TryBuildSessionHook(deviceIndex);
+    Console.WriteLine(gpuHook is null
+        ? $"note: OCRCOST_BACKENDS includes gpu but no WebGPU device at index {deviceIndex} — gpu rows will be skipped"
+        : $"note: using WebGPU device [{deviceIndex}] {devices[deviceIndex].Description}");
+}
+
 var factory = new SkiaPdfServiceFactory();
 var svc = factory.CreatePdfService(pdf);
 var textSvc = factory.CreatePdfTextService();
@@ -86,7 +117,7 @@ for (int page = firstPage; page <= lastPage; page++)
 }
 
 Console.WriteLine();
-Console.WriteLine($"{"tier",-10} {"threads",7} {"page",4} {"lines",5} {"chars",6} " +
+Console.WriteLine($"{"tier",-10} {"backend",7} {"threads",7} {"page",4} {"lines",5} {"chars",6} " +
                   $"{"det ms",8} {"rec ms",9} {"full ms",9}  {"ms/line",8}");
 
 foreach (var (name, set) in tiers)
@@ -97,60 +128,73 @@ foreach (var (name, set) in tiers)
         continue;
     }
 
-    foreach (int? threads in threadCaps)
+    foreach (string backend in backends)
     {
-        RapidOcrService ocr;
-        try
+        bool gpu = backend.Equals("gpu", StringComparison.OrdinalIgnoreCase);
+        if (gpu && gpuHook is null)
         {
-            ocr = new RapidOcrService(set,
-                configureSession: threads is { } n ? o => o.IntraOpNumThreads = n : null);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"{name,-10} load failed: {ex.Message}");
-            break;
+            Console.WriteLine($"{name,-10} {"gpu",7} skipped — no WebGPU device");
+            continue;
         }
 
-        using (ocr)
+        foreach (int? threads in threadCaps)
         {
-            string threadLabel = threads?.ToString() ?? "default";
-            double tierDet = 0, tierRec = 0;
-
-            foreach (var page in pages)
+            RapidOcrService ocr;
+            try
             {
-                double det = double.MaxValue, full = double.MaxValue;
-                OcrPage detPage = OcrPage.Empty, fullPage = OcrPage.Empty;
-
-                // Best-of-N rather than a mean: the interesting quantity is the cost with no
-                // competing work, and a shared machine only ever adds time.
-                for (int i = 0; i < repeats; i++)
+                ocr = new RapidOcrService(set, configureSession: o =>
                 {
-                    var sw = Stopwatch.StartNew();
-                    var d = ocr.Recognize(page.Rgb, page.PxW, page.PxH, OcrMode.Lines);
-                    sw.Stop();
-                    if (sw.Elapsed.TotalMilliseconds < det) { det = sw.Elapsed.TotalMilliseconds; detPage = d; }
-
-                    sw.Restart();
-                    var f = ocr.Recognize(page.Rgb, page.PxW, page.PxH, OcrMode.Full);
-                    sw.Stop();
-                    if (sw.Elapsed.TotalMilliseconds < full) { full = sw.Elapsed.TotalMilliseconds; fullPage = f; }
-                }
-
-                // Recognition is not timed on its own: OcrMode.Full re-runs detection, so the
-                // per-line cost is what Full adds over Lines on the same page.
-                double rec = Math.Max(0, full - det);
-                int chars = fullPage.Lines.Sum(l => l.Text?.Length ?? 0);
-                double perLine = fullPage.Lines.Count > 0 ? rec / fullPage.Lines.Count : 0;
-                tierDet += det;
-                tierRec += rec;
-
-                Console.WriteLine($"{name,-10} {threadLabel,7} {page.Index,4} {detPage.Lines.Count,5} {chars,6} " +
-                                  $"{det,8:F0} {rec,9:F0} {full,9:F0}  {perLine,8:F0}");
+                    if (threads is { } n) o.IntraOpNumThreads = n;
+                    if (gpu) gpuHook!(o);
+                });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"{name,-10} {backend,7} load failed: {ex.Message}");
+                break;
             }
 
-            if (pages.Count > 1)
-                Console.WriteLine($"{name,-10} {threadLabel,7} {"all",4} {"",5} {"",6} " +
-                                  $"{tierDet,8:F0} {tierRec,9:F0} {tierDet + tierRec,9:F0}");
+            using (ocr)
+            {
+                string threadLabel = threads?.ToString() ?? "default";
+                double tierDet = 0, tierRec = 0;
+
+                foreach (var page in pages)
+                {
+                    double det = double.MaxValue, full = double.MaxValue;
+                    OcrPage detPage = OcrPage.Empty, fullPage = OcrPage.Empty;
+
+                    // Best-of-N rather than a mean: the interesting quantity is the cost with no
+                    // competing work, and a shared machine only ever adds time.
+                    for (int i = 0; i < repeats; i++)
+                    {
+                        var sw = Stopwatch.StartNew();
+                        var d = ocr.Recognize(page.Rgb, page.PxW, page.PxH, OcrMode.Lines);
+                        sw.Stop();
+                        if (sw.Elapsed.TotalMilliseconds < det) { det = sw.Elapsed.TotalMilliseconds; detPage = d; }
+
+                        sw.Restart();
+                        var f = ocr.Recognize(page.Rgb, page.PxW, page.PxH, OcrMode.Full);
+                        sw.Stop();
+                        if (sw.Elapsed.TotalMilliseconds < full) { full = sw.Elapsed.TotalMilliseconds; fullPage = f; }
+                    }
+
+                    // Recognition is not timed on its own: OcrMode.Full re-runs detection, so the
+                    // per-line cost is what Full adds over Lines on the same page.
+                    double rec = Math.Max(0, full - det);
+                    int chars = fullPage.Lines.Sum(l => l.Text?.Length ?? 0);
+                    double perLine = fullPage.Lines.Count > 0 ? rec / fullPage.Lines.Count : 0;
+                    tierDet += det;
+                    tierRec += rec;
+
+                    Console.WriteLine($"{name,-10} {backend,7} {threadLabel,7} {page.Index,4} {detPage.Lines.Count,5} {chars,6} " +
+                                      $"{det,8:F0} {rec,9:F0} {full,9:F0}  {perLine,8:F0}");
+                }
+
+                if (pages.Count > 1)
+                    Console.WriteLine($"{name,-10} {backend,7} {threadLabel,7} {"all",4} {"",5} {"",6} " +
+                                      $"{tierDet,8:F0} {tierRec,9:F0} {tierDet + tierRec,9:F0}");
+            }
         }
     }
 }
