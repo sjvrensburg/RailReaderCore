@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.62.0 — Generic WebGPU session hook + multi-GPU device selection (2026-09-11)
+
+Additive change, no breaking API change.
+
+- **`WebGpuAccelerator.TryBuildSessionHook()`** (`RailReader.Core.Analysis.WebGpu`) exposes an
+  architecture-independent `Action<SessionOptions>` configurator so any ONNX consumer outside the
+  layout-analyzer pipeline can opt into the WebGPU execution provider — starting with
+  `RailReader.Core.Ocr.RapidOcr`'s `RapidOcrService`, whose existing `configureSession`
+  constructor parameter needed no changes: `new RapidOcrService(modelSet, configureSession:
+  WebGpuAccelerator.TryBuildSessionHook())`. Fixes #121.
+- **`WebGpuAccelerator.AvailableDevices`** lists every WebGPU-capable device ORT's plugin EP
+  reports (vendor, PCI device ID, a ready-to-display description); `TryEnable` and
+  `TryBuildSessionHook` both take an optional `deviceIndex` (default `0`, the previous behaviour)
+  so a multi-GPU host can route different models to different GPUs — e.g. layout analysis on a
+  discrete card, OCR on an integrated one.
+- Measured on a scanned page (Intel Iris Xe iGPU): PP-OCRv6 Medium drops from ~274 s/page (CPU)
+  to ~21 s/page (GPU, ~13×) with byte-for-byte identical recognized text versus CPU; Small is a
+  ~1.4× win, Tiny/v5-latin roughly a wash. `tools/ocr-cost-probe` gained `OCRCOST_BACKENDS=cpu,gpu`
+  and `OCRCOST_GPU_DEVICE=<n>` to reproduce this.
+- **⚠ Known limitation, not fixed in this release:** calling `Session.Run()` on two WebGPU-backed
+  sessions from two threads *at the same time* segfaults the process — reproduced for both a
+  cross-device pair and two sessions on the same device. Do not route both OCR and layout
+  inference through WebGPU simultaneously inside `AnalysisWorker`'s two-thread pipeline until this
+  is fixed (either upstream in ORT's WebGPU EP, or via a process-wide serializing lock touching all
+  three layout analyzers plus `RapidOcrService`). Single-GPU-only use (layout OR OCR on GPU, never
+  both at once) is unaffected. See `WebGpuAccelerator.cs`'s doc comments for detail.
+
 ## 0.61.5 — Build warning cleanup (2026-09-10)
 
 Internal cleanup, no behavioral or public API change.
