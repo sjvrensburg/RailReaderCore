@@ -137,7 +137,15 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// <c>PPDocLayoutSLayoutAnalyzer</c>, <c>HeronLayoutAnalyzer</c>, and
 /// <c>RapidOcrService</c>, none of which currently know whether their session is
 /// GPU-backed). Single-GPU-only use (layout OR OCR on GPU, never both at once) is
-/// unaffected — that's the one configuration this crash cannot reach.
+/// unaffected — that's the one configuration this crash cannot reach. Filed upstream as
+/// <see href="https://github.com/microsoft/onnxruntime/issues/32561">microsoft/onnxruntime#32561</see>,
+/// with a minimal self-contained repro and a gdb backtrace pointing at a race inside
+/// <c>libonnxruntime_providers_webgpu.so</c>'s <c>Run()</c> dispatch (a mutex lock through
+/// what looks like a corrupted pointer) — likely the same root cause as the still-open
+/// <see href="https://github.com/microsoft/onnxruntime/issues/31627">#31627</see>
+/// ("WebGPU EP crashes on macOS when running concurrent multi threaded inference," last
+/// confirmed on ORT 1.28), which this repro extends to Linux/Vulkan and to two separate
+/// physical GPUs. Re-check #32561/#31627 before revisiting this limitation.
 /// </para>
 ///
 /// <para>
