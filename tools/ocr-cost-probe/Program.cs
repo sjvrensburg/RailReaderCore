@@ -24,9 +24,12 @@ using RapidOcrNet;
 //   OCRCOST_REPEATS   timed passes per (tier, thread cap); the best is reported (default 1)
 //   OCRCOST_BACKENDS  comma-separated subset of cpu,gpu (default: cpu). gpu routes RapidOcrService
 //                     through RailReader.Core.Analysis.WebGpu's WebGpuAccelerator.TryBuildSessionHook()
-//                     (issue #121) — unvalidated: nobody has measured PP-OCRv6's detector/recognizer
-//                     against the WebGPU EP before. If no WebGPU device is found, gpu rows are
-//                     reported and skipped rather than silently falling back to cpu.
+//                     (issue #121). If no WebGPU device is found, gpu rows are reported and skipped
+//                     rather than silently falling back to cpu.
+//   OCRCOST_GPU_DEVICE index into WebGpuAccelerator.AvailableDevices to use for gpu rows (default 0
+//                     — whichever device ORT's plugin EP reports first). On a machine with more than
+//                     one WebGPU-capable device (e.g. an integrated + discrete GPU pair) the probe
+//                     prints the full list with indices so you can target a specific one.
 //
 // Reading the output: `det` is one detector pass over the whole page (what OcrMode.Lines pays);
 // `rec` is everything OcrMode.Full adds on top, which is per-line and therefore scales with how
@@ -73,10 +76,18 @@ string[] backends = Environment.GetEnvironmentVariable("OCRCOST_BACKENDS") is { 
 Action<SessionOptions>? gpuHook = null;
 if (backends.Contains("gpu", StringComparer.OrdinalIgnoreCase))
 {
-    gpuHook = WebGpuAccelerator.TryBuildSessionHook();
+    var devices = WebGpuAccelerator.AvailableDevices;
+    if (devices.Count > 1)
+    {
+        Console.WriteLine($"note: {devices.Count} WebGPU devices found:");
+        foreach (var d in devices) Console.WriteLine($"  [{d.Index}] {d.Description}");
+    }
+
+    int deviceIndex = int.TryParse(Environment.GetEnvironmentVariable("OCRCOST_GPU_DEVICE"), out var idx) ? idx : 0;
+    gpuHook = WebGpuAccelerator.TryBuildSessionHook(deviceIndex);
     Console.WriteLine(gpuHook is null
-        ? "note: OCRCOST_BACKENDS includes gpu but no WebGPU-capable device was found — gpu rows will be skipped"
-        : $"note: WebGPU device: {WebGpuAccelerator.DeviceDescription}");
+        ? $"note: OCRCOST_BACKENDS includes gpu but no WebGPU device at index {deviceIndex} — gpu rows will be skipped"
+        : $"note: using WebGPU device [{deviceIndex}] {devices[deviceIndex].Description}");
 }
 
 var factory = new SkiaPdfServiceFactory();

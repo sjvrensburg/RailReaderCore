@@ -23,12 +23,18 @@ dotnet run --project tools/ocr-cost-probe -c Release -- <pdf> [page|first-last] 
 | `OCRCOST_THREADS` | comma-separated intra-op thread caps to sweep (default: the shipping cap) |
 | `OCRCOST_REPEATS` | timed passes per (tier, thread cap); the best is reported (default 1) |
 | `OCRCOST_BACKENDS` | comma-separated subset of `cpu,gpu` (default: `cpu`) |
+| `OCRCOST_GPU_DEVICE` | index into `WebGpuAccelerator.AvailableDevices` to use for `gpu` rows (default `0`) |
 
 `OCRCOST_BACKENDS=cpu,gpu` adds a WebGPU row per tier/thread-cap via `RailReader.Core.Analysis.WebGpu`'s
 `WebGpuAccelerator.TryBuildSessionHook()` (issue #121). If no WebGPU-capable device is found the
 `gpu` rows are reported and skipped, never silently downgraded to CPU. This probe measures speed
 only — see `WebGpuAccelerator.cs`'s "OCR spot-check" doc comment for a one-page CPU-vs-GPU text
 correctness diff (byte-for-byte identical across v5-latin/Small/Medium on an Intel Iris Xe iGPU).
+
+On a machine with more than one WebGPU-capable device — this dev box has both an NVIDIA GPU and
+an Intel iGPU visible over Vulkan — the probe lists them with indices (vendor, device ID) and
+`OCRCOST_GPU_DEVICE=<n>` picks which one the `gpu` rows use; with no device found at that index the
+row is reported and skipped, same as no device at all.
 
 ### GPU results (issue #121, Intel Iris Xe iGPU, one scanned page, 28-30 lines)
 
