@@ -22,6 +22,33 @@ dotnet run --project tools/ocr-cost-probe -c Release -- <pdf> [page|first-last] 
 | `OCRCOST_TIERS` | comma-separated subset of `v5-latin,v6-tiny,v6-small,v6-medium` |
 | `OCRCOST_THREADS` | comma-separated intra-op thread caps to sweep (default: the shipping cap) |
 | `OCRCOST_REPEATS` | timed passes per (tier, thread cap); the best is reported (default 1) |
+| `OCRCOST_BACKENDS` | comma-separated subset of `cpu,gpu` (default: `cpu`) |
+
+`OCRCOST_BACKENDS=cpu,gpu` adds a WebGPU row per tier/thread-cap via `RailReader.Core.Analysis.WebGpu`'s
+`WebGpuAccelerator.TryBuildSessionHook()` (issue #121). If no WebGPU-capable device is found the
+`gpu` rows are reported and skipped, never silently downgraded to CPU. This probe measures speed
+only — see `WebGpuAccelerator.cs`'s "OCR spot-check" doc comment for a one-page CPU-vs-GPU text
+correctness diff (byte-for-byte identical across v5-latin/Small/Medium on an Intel Iris Xe iGPU).
+
+### GPU results (issue #121, Intel Iris Xe iGPU, one scanned page, 28-30 lines)
+
+```
+tier       backend threads page lines  chars   det ms    rec ms   full ms   ms/line
+v5-latin       cpu default    0    28    677     7915      2929     10845       105
+v5-latin       gpu default    0    28    677     6560      2367      8927        85
+v6-tiny        cpu default    0    30    680    15708      1828     17537        65
+v6-tiny        gpu default    0    30    680    15006      3600     18606       129
+v6-small       cpu default    0    28    679    24403      4881     29284       174
+v6-small       gpu default    0    28    679    15767      4505     20272       161
+v6-medium      cpu default    0    30    682   138283    135770    274054      4526
+v6-medium      gpu default    0    30    682    17649      3847     21496       128
+```
+
+The tier gap that makes Medium impractical on CPU (~274 s/page) collapses on GPU (~21 s/page,
+~13x) — a wash for Small (~1.4x) and Tiny (no clear win; small models don't have enough work to
+amortise dispatch overhead). GPU is where the *expensive* multilingual tiers become usable, not
+where the cheap default gets meaningfully faster. Single machine, single page — re-run before
+trusting the multiplier on different hardware or content.
 
 The bundled PP-OCRv5 Latin models ship with the RapidOcrNet package and need no download. The
 PP-OCRv6 tiers are opt-in — `scripts/download-ocr-model.sh {tiny,small,medium}` puts them where

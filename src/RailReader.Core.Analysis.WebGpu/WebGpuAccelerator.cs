@@ -99,7 +99,29 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// existing static <c>ConfigureSession</c> hook, so no other call site changes. If
 /// <see cref="TryEnable"/> returns <c>false</c> (no WebGPU-capable device — missing
 /// Vulkan loader, no supported GPU, etc.) the hook is left untouched and construction
-/// proceeds on CPU exactly as before: GPU is additive, never required.
+/// proceeds on CPU exactly as before: GPU is additive, never required. For any other ONNX
+/// consumer that isn't a layout analyzer — e.g. <c>Core.Ocr.RapidOcr</c>'s
+/// <c>RapidOcrService</c>, which takes its own <c>configureSession</c> delegate — use
+/// <see cref="TryBuildSessionHook"/> instead: <c>new RapidOcrService(modelSet,
+/// configureSession: WebGpuAccelerator.TryBuildSessionHook())</c>.
+/// </para>
+///
+/// <para>
+/// <b>OCR spot-check (issue #121, 2026-09-11).</b> Unlike the layout analyzers above,
+/// PP-OCR's detector (DBNet) and recognizer (CRNN) are plain CNN/RNN graphs with no
+/// deformable-attention TopK step, so they were never expected to hit the FP16 tie-break
+/// bug documented above — and a one-page spot-check on an Intel Iris Xe iGPU
+/// (<c>tools/ocr-cost-probe</c> + a throwaway CPU-vs-GPU text diff) bears that out:
+/// v5-latin, PP-OCRv6 Small and PP-OCRv6 Medium all produced byte-for-byte identical
+/// recognized text, line count, and line order on GPU vs CPU. Speed scales with model
+/// size the opposite way it does on CPU — GPU is where the expensive tiers pay off: on
+/// that page, PP-OCRv6 Medium went from ~274&#160;s/page CPU to ~21&#160;s/page GPU
+/// (~13x), Small ~29&#160;s→~20&#160;s (~1.4x), v5-latin/Tiny roughly a wash (small
+/// models don't have enough work to hide dispatch overhead). This is a single-page,
+/// single-device spot-check, not the 42-page corpus validation the layout analyzers
+/// got — treat it as "promising, wire it behind an opt-in" rather than "proven safe",
+/// and widen the corpus (different scripts, skewed/noisy scans, other GPU vendors)
+/// before defaulting anyone into it.
 /// </para>
 ///
 /// <para>
@@ -205,14 +227,36 @@ public static class WebGpuAccelerator
     {
         lock (ConstructionLock)
         {
-            Probe();
-            if (_device is null) return false;
-            var device = _device;
-            SetHook(architecture, opts =>
-                opts.AppendExecutionProvider(OrtEnv.Instance(), new[] { device },
-                    new Dictionary<string, string> { [EnableInt64Option] = "1" }));
+            var hook = TryBuildSessionHookLocked();
+            if (hook is null) return false;
+            SetHook(architecture, hook);
             return true;
         }
+    }
+
+    /// <summary>
+    /// Architecture-independent form of <see cref="TryEnable"/>: probes for a WebGPU device
+    /// (cached after the first call, same probe as <see cref="IsAvailable"/>) and returns a
+    /// <c>SessionOptions</c> configurator for it, or <c>null</c> if no compatible device was
+    /// found. Unlike <see cref="TryEnable"/> this does not touch any analyzer's
+    /// <c>ConfigureSession</c> hook — it hands the delegate to the caller, so any ONNX
+    /// consumer (OCR's <c>RapidOcrService(configureSession: ...)</c>, or a future one) can
+    /// opt in without this assembly knowing about it.
+    /// </summary>
+    public static Action<SessionOptions>? TryBuildSessionHook()
+    {
+        lock (ConstructionLock) { return TryBuildSessionHookLocked(); }
+    }
+
+    /// <summary>Caller must hold <see cref="ConstructionLock"/>.</summary>
+    private static Action<SessionOptions>? TryBuildSessionHookLocked()
+    {
+        Probe();
+        if (_device is null) return null;
+        var device = _device;
+        return opts =>
+            opts.AppendExecutionProvider(OrtEnv.Instance(), new[] { device },
+                new Dictionary<string, string> { [EnableInt64Option] = "1" });
     }
 
     /// <summary>Reverts <paramref name="architecture"/>'s analyzer to CPU-only for the next construction.</summary>
