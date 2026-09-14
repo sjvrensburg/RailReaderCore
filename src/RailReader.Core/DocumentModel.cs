@@ -1111,7 +1111,11 @@ public sealed class DocumentModel : IDisposable
 
     public void UpdateAnnotationText(int page, TextNoteAnnotation note, string newText)
     {
+        // EffectiveContents prefers Contents over the legacy Text field (native PDF
+        // notes carry their body in Contents), so both must be kept in sync or an
+        // edit to a native note silently loses to the stale Contents value.
         note.Text = newText;
+        note.Contents = newText;
         MarkAnnotationsDirty();
     }
 

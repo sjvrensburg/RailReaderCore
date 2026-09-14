@@ -245,6 +245,21 @@ public class AnnotationInteractionHandlerMoreTests : IDisposable
         Assert.Equal("revised", note.Text);
     }
 
+    [Fact]
+    public void CompleteTextNoteEdit_SyncsContents_ForNativePdfNoteWhoseBodyLivesInContents()
+    {
+        // A note read from a PDF's /Contents (Source = InPdf) carries its body in
+        // Contents, leaving the legacy Text field empty. EffectiveContents prefers
+        // Contents, so an edit that only updates Text would silently lose to the
+        // stale Contents value.
+        var note = new TextNoteAnnotation { X = 100, Y = 100, Contents = "reviewer comment", Color = "#000000" };
+        _doc.AddAnnotation(0, note);
+
+        _handler.CompleteTextNoteEdit(_doc.Primary, note, "revised");
+
+        Assert.Equal("revised", note.EffectiveContents);
+    }
+
     // --- Undo/redo round trip ---
 
     [Fact]
