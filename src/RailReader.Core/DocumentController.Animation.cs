@@ -7,6 +7,9 @@ public sealed partial class DocumentController
 {
     // --- Tick (animation frame logic) ---
 
+    /// <summary>Largest frame interval auto-scroll will advance by in one tick (seconds).</summary>
+    internal const double MaxAutoScrollDt = 0.25;
+
     /// <summary>
     /// Advance one animation frame for a specific <paramref name="vp"/>: its camera/rail/zoom/
     /// auto-scroll animation and DPI bitmap swap, plus the global analysis pump. Operates on the
@@ -26,6 +29,11 @@ public sealed partial class DocumentController
     /// </summary>
     public TickResult TickViewport(Viewport vp, double dt, bool pumpAnalysis)
     {
+        // Auto-scroll gets its own, much looser cap. Its position is the accumulated frame time
+        // (AutoScrollStateMachine), so the 33 ms cap below would make a host held under 30 fps
+        // scroll proportionally slower than the configured speed, never catching up. The loose
+        // cap still bounds the jump after a genuine stall (window backgrounded, system resume).
+        double autoScrollDt = Math.Clamp(dt, 0.0, MaxAutoScrollDt);
         dt = Math.Min(dt, 1.0 / 30.0);
 
         // Per-view geometry: animate/clamp THIS view against its OWN size. Every viewport (primary or
@@ -59,7 +67,7 @@ public sealed partial class DocumentController
         }
 
         if (!railPaused)
-            TickAutoScroll(vp, dt, ww, wh, ref cameraChanged, ref pageChanged, ref overlayChanged, ref animating);
+            TickAutoScroll(vp, autoScrollDt, ww, wh, ref cameraChanged, ref pageChanged, ref overlayChanged, ref animating);
 
         // Decay zoom blur speed
         if (vp.Camera.ZoomSpeed > 0)

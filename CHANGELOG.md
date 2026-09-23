@@ -1,5 +1,89 @@
 # Changelog
 
+## 0.62.2 — Auto-scroll frame-clock timing (2026-09-23)
+
+Bug fix, no public API change. **The fix is complete in Core, but hosts need a small change to get
+all of it** (see *Host changes* below).
+
+### What was wrong
+
+Rail-mode auto-scroll stuttered, and the stutter got worse with zoom, whatever the performance or
+rendering settings. `AutoScrollStateMachine` placed the camera using a `Stopwatch` it read inside
+`Tick`, and it ignored the `dt` passed to `TickViewport`. Frames are shown at a steady rate, but
+the UI-thread callback that runs the tick starts at a slightly different point in each frame
+(dispatcher latency, earlier work in the frame, GC). So each frame was stamped with the time the
+tick ran rather than the time it was shown, and each displayed step was off by
+`speed × zoom × jitter`. At the default speed (28 pt/s) and 8× zoom, 4 ms of jitter is about
+±0.9 px on a 3.7 px step. The error grows with zoom, so the stutter is easier to see at higher
+magnification.
+
+### What changed in Core
+
+- **Auto-scroll position now comes from the `dt` the host passes in.** It adds up the `dt` values
+  given to `TickViewport` and no longer reads a timer. If the host derives `dt` from frame
+  timestamps, the motion follows the frames actually shown. A dropped frame still lands in the
+  right place in one jump, because it arrives as a longer `dt`.
+- **Auto-scroll has its own `dt` cap of 250 ms** (the internal `DocumentController.MaxAutoScrollDt`).
+  `TickViewport`'s 33 ms cap still applies to the snap, zoom and zoom-blur animations, but not to
+  auto-scroll. Otherwise a host that stays below 30 fps would scroll slower than the configured
+  speed (about two thirds of it at 20 fps). A real stall still moves the camera by at most a
+  quarter-second of scrolling.
+- **The first frame after scrolling starts or resumes moves by at most 1/30 s.** Before, that
+  frame held the camera still, so there was a one-frame hitch at the start of every line. That
+  covers starting auto-scroll, resuming after a line snap or the per-line pause, boost on or off,
+  a speed change, and resuming from a park. The limit stops the idle time before a resume from
+  being replayed as a jump.
+- **Free pan pauses the auto-scroll clock.** While the rail is paused for free pan (Ctrl+drag),
+  auto-scroll isn't ticked, so no time builds up. Before, the `Stopwatch` kept running, and the
+  camera could jump forward when Ctrl was released.
+- **Not changed:** the line-advance snap and the zoom animation still run on wall-clock timers.
+  They have the same kind of tick-time jitter, but they're short and eased, so it's less visible.
+  A small wobble during the jump to the next line would come from there.
+
+### Host changes (RailReader2 / any GUI)
+
+1. **Pass `dt` from frame timestamps, never from a timer read inside the frame callback.** In
+   Avalonia that means the difference between successive `TimeSpan`s passed to the
+   `RequestAnimationFrame` callback, which RailReader2 already does
+   (`MainWindowViewModel.RunAnimationFrame`, `_lastFrameTime`). Computing `dt` from a `Stopwatch`
+   inside the callback brings the stutter back, because auto-scroll now trusts `dt` exactly.
+2. **Stop capping `dt` in the host.** `RunAnimationFrame` currently does
+   `Math.Min((frameTime - last).TotalSeconds, 1.0 / 30.0)`. Pass the raw interval,
+   `(frameTime - last).TotalSeconds`, instead. Core applies the right cap for each animation
+   (33 ms for snap/zoom, 250 ms for auto-scroll, 1/30 s for the restart frame), so the host cap
+   is redundant for everything except auto-scroll, where it causes the slow-scroll problem above
+   at under 30 fps. Hosts that always run at 30 fps or more see no difference, so this matters
+   mainly for software rendering, remote desktop and heavily loaded machines. Keep the existing
+   `1.0 / 60.0` fallback for the first frame when there is no previous timestamp.
+3. **Pass every viewport the same `dt` in a given frame.** Tick each view once per frame with
+   that frame's `dt`. RailReader2's multi-surface loop already does this. Each viewport adds up
+   its own time, so ticking a view twice in one frame would double its scroll speed for that
+   frame.
+4. **Pass a `dt` of zero or more.** A negative value is treated as zero (no motion).
+5. **Update the comment in `RunAnimationFrame`** that says *"Autoscroll is wall-clock based and
+   ignores this value"*. It is no longer true.
+
+No host change is needed to get the stutter fix itself: points 1 and 3 already hold in
+RailReader2. Point 2 fixes auto-scroll speed below 30 fps.
+
+**How to check it:** at 6–8× zoom, run auto-scroll on a long line. Horizontal motion should be
+even, with no periodic stepping, and each new line should start moving on the first frame after
+the snap. To measure it, log `frameTime` and `vp.Camera.OffsetX` each frame: with a steady frame
+interval, `ΔOffsetX` should be the same every frame (about `speed × zoom × interval`, allowing for
+the pixel-snap grid of 1/max(4, zoom) px).
+
+## 0.62.1 — Native sticky-note edits (2026-09-14)
+
+Bug fix, no API change. No host change needed.
+
+- **Editing a native PDF sticky note now takes effect.** `DocumentModel.UpdateAnnotationText`
+  (reached from `AnnotationInteractionHandler.CompleteTextNoteEdit`) only wrote the legacy
+  `TextNoteAnnotation.Text` field. A note read from a PDF's own `/Annots` (`Source = InPdf`) keeps
+  its body in `Contents`, and `EffectiveContents` prefers `Contents`, so the edit was silently lost:
+  the old text kept showing on the page, in the Comments pane and in PDF export. Both fields are now
+  written. A host that worked around this by setting `Contents` itself can drop the workaround.
+  (This release shipped without a changelog entry; this section was added in 0.62.2.)
+
 ## 0.62.0 — Generic WebGPU session hook + multi-GPU device selection (2026-09-11)
 
 Additive change, no breaking API change.

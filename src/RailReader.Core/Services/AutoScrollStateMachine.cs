@@ -84,20 +84,31 @@ internal sealed class AutoScrollStateMachine
     private bool _pauseAdvances; // true = pause triggers line advance on completion
     private bool _pausing;       // in Paused with a live clock (real or injected)
 
-    // Wall-clock scroll positioning: camera position is computed as an absolute
-    // function of elapsed time rather than accumulated frame deltas. This means
-    // each frame shows exactly where the content should be at that moment.
-    // A dropped frame (33ms instead of 16ms) produces a clean 2-frame jump
-    // instead of a sustained lag-then-catchup, which is perceived as jitter.
+    // Frame-clock scroll positioning: camera position is computed as an absolute
+    // function of accumulated FRAME time (the host's dt) rather than by integrating
+    // per-frame velocity steps. A dropped frame arrives as a longer dt and produces a
+    // clean 2-frame jump instead of a sustained lag-then-catchup.
+    //
+    // Deliberately NOT a Stopwatch read inside Tick: frames are presented on a fixed
+    // vsync cadence, but the UI-thread callback that ticks us runs at a varying point
+    // within each frame (dispatcher latency, earlier work, GC). Sampling a wall clock
+    // there stamps each frame with *tick* time instead of *presentation* time, so the
+    // displayed step wobbles by speed × zoom × jitter — a visible stutter that grows
+    // with magnification. The host's dt comes from the compositor's frame timestamps,
+    // so accumulating it keeps motion locked to what is actually shown.
+    //
     // _scrollInitialized = false signals that the next TickScrolling call must
     // capture the current cameraX as the reference start position.
     private bool _scrollInitialized;
-    private Stopwatch? _scrollClock;
+    private double _scrollElapsed;
     private double _scrollStartX;
+
+    /// <summary>Largest frame interval the (re)start frame may advance by (one 30 fps frame).</summary>
+    private const double MaxRestartStepSecs = 1.0 / 30.0;
 
     /// <summary>
     /// Inject a controlled elapsed-seconds source for unit tests.
-    /// When set, the real Stopwatch is not used.
+    /// When set, the accumulated frame time (dt) is not used.
     /// </summary>
     internal Func<double>? GetScrollElapsedSeconds;
 
@@ -110,9 +121,7 @@ internal sealed class AutoScrollStateMachine
     /// </summary>
     internal Func<double>? GetPauseElapsedMs;
 
-    private double ScrollElapsed => GetScrollElapsedSeconds?.Invoke()
-        ?? _scrollClock?.Elapsed.TotalSeconds
-        ?? 0.0;
+    private double ScrollElapsed => GetScrollElapsedSeconds?.Invoke() ?? _scrollElapsed;
 
     private double PauseElapsedMs => GetPauseElapsedMs?.Invoke()
         ?? _pauseTimer?.Elapsed.TotalMilliseconds
@@ -149,7 +158,7 @@ internal sealed class AutoScrollStateMachine
         _pendingPark = false;
         NormalizedSpeed = 0;
         _scrollInitialized = false;
-        _scrollClock = null;
+        _scrollElapsed = 0;
         _scrollStartX = 0;
         _teardownRequested = false;
     }
@@ -307,16 +316,27 @@ internal sealed class AutoScrollStateMachine
 
     private bool TickScrolling(ref double cameraX, double dtSecs, in AutoScrollContext ctx)
     {
-        // Wall-clock positioning: compute cameraX as an absolute function of elapsed
-        // time since scrolling started. This means every frame shows exactly where
-        // the content should be at that moment — dropped frames produce a clean jump
-        // to the correct position rather than sustained lag followed by catchup jitter.
+        // Frame-clock positioning: compute cameraX as an absolute function of the frame
+        // time accumulated since scrolling (re)started — see the field comment for why
+        // this is the host's dt and not a Stopwatch. The (re)start frame itself advances
+        // by its dt: the captured cameraX is where the PREVIOUS frame left the camera, so
+        // this frame's interval has already elapsed. Starting from 0 instead would hold
+        // the camera still for a frame on every resume / speed change.
+        //
+        // That restart step is capped at one nominal frame, though: a restart often follows a
+        // stretch with no frames at all (a park or a fresh Start leaves the host's render loop
+        // idle), and a host that measures dt from its last frame timestamp then hands us the
+        // whole idle gap (bounded only by the controller's stall cap) — which would jump the
+        // camera by up to a quarter-second of scrolling the instant flow resumes.
+        double step = Math.Max(dtSecs, 0.0);
         if (!_scrollInitialized)
         {
             _scrollStartX = cameraX;
-            _scrollClock = GetScrollElapsedSeconds is null ? Stopwatch.StartNew() : null;
+            _scrollElapsed = 0;
             _scrollInitialized = true;
+            step = Math.Min(step, MaxRestartStepSecs);
         }
+        _scrollElapsed += step;
 
         double speed = _boost ? _speed * 2.0 : _speed;
         cameraX = _scrollStartX - speed * ctx.Zoom * ScrollElapsed;
