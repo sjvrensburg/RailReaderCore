@@ -91,6 +91,65 @@ public class AutoScrollStateMachineTests
         Assert.True(cameraX < 0, "Camera should move left (negative direction)");
     }
 
+    // ===== Frame-clock positioning (motion follows the host's dt, not tick wall time) =====
+
+    [Fact]
+    public void TickScrolling_PositionFollowsAccumulatedDt_NotWallClock()
+    {
+        // The host's dt comes from compositor frame timestamps; the moment the tick runs
+        // within a frame jitters. Position must be a function of the former only, or the
+        // displayed step wobbles by speed × zoom × jitter (zoom-dependent stutter).
+        var sm = new AutoScrollStateMachine(new NoOpClamp());
+        sm.Start(10.0);
+        double cameraX = 0;
+        var ctx = MakeContext(lineRight: 1e9, zoom: 4.0);
+
+        sm.Tick(ref cameraX, 0.016, in ctx);
+        Thread.Sleep(50); // a late tick: wall time advances, frame time does not
+        sm.Tick(ref cameraX, 0.016, in ctx);
+
+        Assert.Equal(-10.0 * 4.0 * 0.032, cameraX, 9);
+    }
+
+    [Fact]
+    public void TickScrolling_EqualDt_GivesEqualSteps()
+    {
+        var sm = new AutoScrollStateMachine(new NoOpClamp());
+        sm.Start(28.0);
+        double cameraX = 0;
+        var ctx = MakeContext(lineRight: 1e9, zoom: 8.0);
+
+        var positions = new List<double>();
+        for (int i = 0; i < 20; i++)
+        {
+            sm.Tick(ref cameraX, 1.0 / 60.0, in ctx);
+            positions.Add(cameraX);
+            if (i % 3 == 0) Thread.Sleep(3); // uneven tick timing
+        }
+
+        double expectedStep = 28.0 * 8.0 / 60.0;
+        for (int i = 1; i < positions.Count; i++)
+            Assert.Equal(-expectedStep, positions[i] - positions[i - 1], 9);
+    }
+
+    [Fact]
+    public void TickScrolling_RestartFrame_AdvancesByItsDt()
+    {
+        // A resume / speed change recaptures the start position; that frame must still move
+        // (by its own dt) rather than hold the camera still for one frame.
+        var sm = new AutoScrollStateMachine(new NoOpClamp());
+        sm.Start(10.0);
+        double cameraX = 0;
+        var ctx = MakeContext(lineRight: 1e9);
+
+        sm.Tick(ref cameraX, 0.02, in ctx);
+        sm.UpdateSpeed(20.0);
+        double before = cameraX;
+        sm.Tick(ref cameraX, 0.02, in ctx);
+
+        Assert.Equal(-20.0 * 0.02, cameraX - before, 9);
+    }
+
     // ===== Intra-flow per-line beat (held on EVERY line end, width-independent) =====
 
     [Fact]
