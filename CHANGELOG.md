@@ -9,11 +9,15 @@
   off by `speed × zoom × jitter`, which showed up as a stutter in rail-mode auto-scroll that got
   worse with zoom. The camera position is now a function of the accumulated `dt` passed to
   `TickViewport`, which hosts derive from compositor frame timestamps. A dropped frame still lands
-  in the right place in one jump, because it arrives as a longer `dt`. One behaviour change: a
-  stall longer than `TickViewport`'s 33 ms `dt` cap now falls behind briefly instead of catching up
-  in one jump. The frame that restarts scrolling (after a snap, a pause, a boost or a speed change)
-  now moves by its own `dt` instead of staying still for a frame. No API change. The line snap and
-  zoom animations still use wall-clock timers.
+  in the right place in one jump, because it arrives as a longer `dt`. Auto-scroll does not use
+  `TickViewport`'s 33 ms animation cap on `dt`, which would have made a host running below 30 fps
+  scroll slower than the configured speed (about two thirds of it at 20 fps). It uses its own
+  250 ms cap (the internal `DocumentController.MaxAutoScrollDt`) instead, so a real stall (a backgrounded window, a system resume)
+  still advances by at most a quarter-second of scrolling. **Hosts that limit `dt` themselves
+  before calling `TickViewport` must stop doing so to benefit;** RailReader2's `RunAnimationFrame`
+  currently limits it to 33 ms. The frame that restarts scrolling (after a snap, a pause, a boost
+  or a speed change) now moves by its own `dt` instead of staying still for a frame. No API
+  change. The line snap and zoom animations still use wall-clock timers.
 
 ## 0.62.0 — Generic WebGPU session hook + multi-GPU device selection (2026-09-11)
 

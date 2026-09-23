@@ -230,6 +230,52 @@ public class DocumentControllerTests : IDisposable
     }
 
     [Fact]
+    public void AutoScroll_BelowThirtyFps_KeepsConfiguredSpeed()
+    {
+        // Auto-scroll position is accumulated frame time. TickViewport's 33 ms animation cap
+        // must not apply to it, or a host held at 20 fps scrolls at ~2/3 of the set speed.
+        var state = CreateAndAddDocument();
+        SetupRailMode(state);
+        var vp = _controller.FocusedViewport!;
+        // Seat the camera on the rail's own line-start frame (inside its scroll range) and drop
+        // any seating snap, so the ticks below measure auto-scroll motion alone.
+        vp.Camera.OffsetX = vp.Rail.ComputeSnapTarget(vp.Camera.Zoom, vp.Width, vp.Height).X;
+        vp.Rail.CancelSnap();
+
+        _controller.ToggleAutoScroll();
+        Assert.True(_controller.AutoScrollActive);
+
+        const double dt = 0.05; // 20 fps
+        _controller.TickViewport(vp, dt);
+        double before = vp.Camera.OffsetX;
+        _controller.TickViewport(vp, dt);
+        double step = before - vp.Camera.OffsetX;
+
+        double expected = _controller.Config.DefaultAutoScrollSpeed * vp.Camera.Zoom * dt;
+        Assert.Equal(expected, step, 0.5); // pixel-snap grid tolerance
+    }
+
+    [Fact]
+    public void AutoScroll_LongStall_AdvancesAtMostTheStallCap()
+    {
+        var state = CreateAndAddDocument();
+        SetupRailMode(state);
+        var vp = _controller.FocusedViewport!;
+        vp.Camera.OffsetX = vp.Rail.ComputeSnapTarget(vp.Camera.Zoom, vp.Width, vp.Height).X;
+        vp.Rail.CancelSnap();
+
+        _controller.ToggleAutoScroll();
+        _controller.TickViewport(vp, 0.016);
+        double before = vp.Camera.OffsetX;
+        _controller.TickViewport(vp, 5.0); // window backgrounded / system resume
+        double step = before - vp.Camera.OffsetX;
+
+        double cap = _controller.Config.DefaultAutoScrollSpeed * vp.Camera.Zoom
+            * DocumentController.MaxAutoScrollDt;
+        Assert.Equal(cap, step, 0.5); // moved by the stall cap: bounded, but not stuck at 33 ms
+    }
+
+    [Fact]
     public void IsAnimating_FalseWhenAutoScrollParked()
     {
         var state = CreateAndAddDocument();
