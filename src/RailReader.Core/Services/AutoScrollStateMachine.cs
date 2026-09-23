@@ -103,6 +103,9 @@ internal sealed class AutoScrollStateMachine
     private double _scrollElapsed;
     private double _scrollStartX;
 
+    /// <summary>Largest frame interval the (re)start frame may advance by (one 30 fps frame).</summary>
+    private const double MaxRestartStepSecs = 1.0 / 30.0;
+
     /// <summary>
     /// Inject a controlled elapsed-seconds source for unit tests.
     /// When set, the accumulated frame time (dt) is not used.
@@ -319,13 +322,21 @@ internal sealed class AutoScrollStateMachine
         // by its dt: the captured cameraX is where the PREVIOUS frame left the camera, so
         // this frame's interval has already elapsed. Starting from 0 instead would hold
         // the camera still for a frame on every resume / speed change.
+        //
+        // That restart step is capped at one nominal frame, though: a restart often follows a
+        // stretch with no frames at all (a park or a fresh Start leaves the host's render loop
+        // idle), and a host that measures dt from its last frame timestamp then hands us the
+        // whole idle gap (bounded only by the controller's stall cap) — which would jump the
+        // camera by up to a quarter-second of scrolling the instant flow resumes.
+        double step = Math.Max(dtSecs, 0.0);
         if (!_scrollInitialized)
         {
             _scrollStartX = cameraX;
             _scrollElapsed = 0;
             _scrollInitialized = true;
+            step = Math.Min(step, MaxRestartStepSecs);
         }
-        _scrollElapsed += Math.Max(dtSecs, 0.0);
+        _scrollElapsed += step;
 
         double speed = _boost ? _speed * 2.0 : _speed;
         cameraX = _scrollStartX - speed * ctx.Zoom * ScrollElapsed;

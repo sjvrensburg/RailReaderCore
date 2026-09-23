@@ -16,7 +16,8 @@
   still advances by at most a quarter-second of scrolling. **Hosts that limit `dt` themselves
   before calling `TickViewport` must stop doing so to benefit;** RailReader2's `RunAnimationFrame`
   currently limits it to 33 ms. The frame that restarts scrolling (after a snap, a pause, a boost
-  or a speed change) now moves by its own `dt` instead of staying still for a frame. No API
+  or a speed change) now moves by its own `dt` (capped at one 30 fps frame, so the idle gap before
+  a resume from park is not replayed as a jump) instead of staying still for a frame. No API
   change. The line snap and zoom animations still use wall-clock timers.
 
 ## 0.62.0 — Generic WebGPU session hook + multi-GPU device selection (2026-09-11)

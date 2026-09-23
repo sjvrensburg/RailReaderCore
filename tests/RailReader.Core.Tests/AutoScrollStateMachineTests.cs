@@ -150,6 +150,21 @@ public class AutoScrollStateMachineTests
         Assert.Equal(-20.0 * 0.02, cameraX - before, 9);
     }
 
+    [Fact]
+    public void TickScrolling_RestartFrame_AfterIdleGap_AdvancesAtMostOneFrame()
+    {
+        // A park / fresh start leaves the host's render loop idle, so the first dt after it can
+        // be the whole idle gap. The restart frame must not jump by it.
+        var sm = new AutoScrollStateMachine(new NoOpClamp());
+        sm.Start(10.0);
+        double cameraX = 0;
+        var ctx = MakeContext(lineRight: 1e9);
+
+        sm.Tick(ref cameraX, 0.25, in ctx);
+
+        Assert.Equal(-10.0 / 30.0, cameraX, 9);
+    }
+
     // ===== Intra-flow per-line beat (held on EVERY line end, width-independent) =====
 
     [Fact]
