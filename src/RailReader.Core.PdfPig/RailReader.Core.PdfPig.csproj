@@ -20,7 +20,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="PdfPig" Version="0.1.*" />
+    <!-- Pinned to one minor, in lockstep with PdfPig.Rendering.Skia in RailReader.Renderer.PdfPigSkia:
+         with a floating 0.1.* the renderer threw TypeLoadException
+         (PatternAwareColorSpaceContext.SetStrokingColor) on the first render, most likely because PdfPig
+         resolved ahead of the version the renderer was built against. Bump both together. -->
+    <PackageReference Include="PdfPig" Version="[0.1.16,0.1.17)" />
   </ItemGroup>
 
   <ItemGroup>
