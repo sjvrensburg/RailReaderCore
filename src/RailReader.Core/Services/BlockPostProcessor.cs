@@ -84,6 +84,7 @@ public static class BlockPostProcessor
                 blocks[j] = new LayoutBlock
                 {
                     BBox = new BBox(b.BBox.X, newY, b.BBox.W, newH),
+                    Quad = b.Quad,
                     Role = b.Role,
                     ClassId = b.ClassId,
                     Confidence = b.Confidence,

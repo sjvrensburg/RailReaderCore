@@ -3,6 +3,19 @@ namespace RailReader.Core.Models;
 public sealed class LayoutBlock
 {
     public BBox BBox { get; set; }
+
+    /// <summary>
+    /// The block's outline as the detector segmented it — a minimum-area
+    /// rectangle that may be rotated, for pages photographed or scanned at an
+    /// angle. Null when the analyzer has no segmentation output (only
+    /// PP-DocLayoutV3 provides one; PP-DocLayout-S, Heron and
+    /// <see cref="Services.TextLayoutAnalyzer"/> leave it unset). When the
+    /// segmentation is axis-aligned to within its own resolution the quad is
+    /// exactly <see cref="BBox"/>'s corners. Rail navigation and line
+    /// detection use <see cref="BBox"/> only; post-processing may trim
+    /// <see cref="BBox"/> (overlap resolution) but leaves the quad as detected.
+    /// </summary>
+    public BlockQuad? Quad { get; set; }
     public BlockRole Role { get; set; } = BlockRole.Unknown;
     public int ClassId { get; set; }
     public float Confidence { get; set; }

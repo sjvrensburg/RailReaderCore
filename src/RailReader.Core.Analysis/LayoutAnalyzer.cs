@@ -116,8 +116,16 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
         // Copy tensor data immediately since the results collection owns the memory.
         float[]? detectionData = null;
         int detRows = 0, detCols = 0;
+        DenseTensor<int>? masks = null;
         foreach (var r in results)
         {
+            // Per-detection instance masks ([N, H/4, W/4] int32, binary). Read
+            // in place below — the tensor is ~48 MB at N=300, never copy it.
+            if (r.Value is DenseTensor<int> { Dimensions.Length: 3 } m)
+            {
+                masks = m;
+                continue;
+            }
             if (r.Value is not Tensor<float> t) continue;
 
             bool isDetection = detectionData is null && t.Dimensions.Length == 2 && t.Dimensions[1] >= 6;
@@ -150,6 +158,17 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
         bool hasReadingOrder = detCols >= 7;
         var classTable = Capabilities.Classes;
 
+        int maskH = 0, maskW = 0;
+        float canvasPerMask = 0;
+        ReadOnlySpan<int> maskData = default;
+        if (masks is not null && masks.Dimensions[0] == detRows && masks.Dimensions[2] > 0)
+        {
+            maskH = masks.Dimensions[1];
+            maskW = masks.Dimensions[2];
+            canvasPerMask = (float)Capabilities.InputSize / maskW;
+            maskData = masks.Buffer.Span;
+        }
+
         var rawBlocks = new List<LayoutBlock>();
         for (int i = 0; i < detRows; i++)
         {
@@ -162,9 +181,22 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
             float ymax = detectionData[off + 5];
             int modelOrder = hasReadingOrder ? (int)detectionData[off + 6] : 0;
 
-            if (TryBuildBlock(classId, confidence, xmin, ymin, xmax, ymax,
+            if (!TryBuildBlock(classId, confidence, xmin, ymin, xmax, ymax,
                     pxW, pxH, mapScaleX, mapScaleY, classTable, modelOrder, _tuning, out var block))
-                rawBlocks.Add(block);
+                continue;
+
+            // The canvas holds the pixmap 1:1 at the origin, so canvas pixels
+            // are pixmap pixels and mapScale takes them to page space.
+            if (canvasPerMask > 0 && MaskQuadExtractor.TryExtract(
+                    maskData.Slice(i * maskH * maskW, maskH * maskW), maskW, maskH,
+                    Math.Max(xmin, 0), Math.Max(ymin, 0), Math.Min(xmax, pxW), Math.Min(ymax, pxH),
+                    canvasPerMask, out var quad, out bool axisAligned))
+            {
+                block.Quad = axisAligned
+                    ? BlockQuad.FromBBox(block.BBox)
+                    : MaskQuadExtractor.Scale(quad, mapScaleX, mapScaleY);
+            }
+            rawBlocks.Add(block);
         }
 
         return rawBlocks;

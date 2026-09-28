@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — Rotated block outlines from PP-DocLayoutV3 masks (#125)
+
+Additive, no breaking change. New dependency: `RailReader.Core.Analysis` now references
+**NetTopologySuite** (BSD-3, pure managed, no native binaries).
+
+- **`LayoutBlock.Quad`** (`BlockQuad?`, new in Core): the block's outline as four page-space
+  corners, clockwise from the top-left, plus `AngleDegrees` (residual tilt in (-45°, 45°],
+  clockwise-positive on screen). On a photographed or skewed page it follows the block
+  instead of bounding it with a larger upright `BBox`.
+- **Only PP-DocLayoutV3 fills it.** The V3 export already emits a per-detection instance mask
+  (`[N, 200, 200]` int32, quarter of the 800-px input) that `LayoutAnalyzer` previously ignored;
+  each surviving detection's mask is now fitted with a minimum-area rectangle (NTS
+  `ConvexHull` → `MinimumAreaRectangle`). PP-DocLayout-S, Heron and `TextLayoutAnalyzer` have no
+  mask output and leave `Quad` null.
+- When the fitted tilt is below the mask's resolution (the long edge drifts less than one mask
+  pixel), `Quad` is exactly `BBox`'s corners, so upright pages report angle 0 rather than
+  quantisation noise.
+- Rotated rectangles only — a keystoned (perspective) block gets the minimum-area rectangle
+  around its trapezoid, not the trapezoid's own corners.
+- `BBox` is unchanged and remains what rail navigation, line detection, NMS and nested-block
+  suppression use. Overlap resolution may trim a block's `BBox` but carries its `Quad` through
+  as detected.
+- Cost: the mask tensor is read in place (never copied); fitting is ~0.4 ms for a large block.
+
 ## 0.62.2 — Auto-scroll frame-clock timing (2026-09-23)
 
 Bug fix, no public API change. **The fix is complete in Core, but hosts need a small change to get
