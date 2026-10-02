@@ -99,6 +99,7 @@ public sealed class LayoutAnalyzer : ILayoutAnalyzer
 
         Nms(rawBlocks, _tuning.NmsIouThreshold);
         SuppressNestedBlocks(rawBlocks);
+        MaskQuadExtractor.SnapUncorroboratedTilts(rawBlocks);
 
         return new PageAnalysis
         {

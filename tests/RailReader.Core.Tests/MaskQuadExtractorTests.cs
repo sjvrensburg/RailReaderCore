@@ -134,6 +134,70 @@ public class MaskQuadExtractorTests
         Assert.Equal([new PointF(0, 5), new PointF(6, 0), new PointF(20, 15), new PointF(14, 20)], ordered);
     }
 
+    /// <summary>A block whose quad is its bbox rotated about the bbox centre.</summary>
+    private static LayoutBlock TiltedBlock(float x, float y, float degrees)
+    {
+        var bbox = new BBox(x, y, 200, 40);
+        float cx = x + 100, cy = y + 20, rad = degrees * MathF.PI / 180f, cos = MathF.Cos(rad), sin = MathF.Sin(rad);
+        PointF Rot(PointF p) => new(cx + (p.X - cx) * cos - (p.Y - cy) * sin, cy + (p.X - cx) * sin + (p.Y - cy) * cos);
+        var q = BlockQuad.FromBBox(bbox);
+        return new LayoutBlock { BBox = bbox, Quad = new BlockQuad(Rot(q.TopLeft), Rot(q.TopRight), Rot(q.BottomRight), Rot(q.BottomLeft)) };
+    }
+
+    [Fact]
+    public void LoneTilt_OnUprightPage_IsSnappedToBBox()
+    {
+        var blocks = new List<LayoutBlock>
+        {
+            TiltedBlock(0, 0, 0), TiltedBlock(0, 100, 0), TiltedBlock(0, 200, -0.6f), TiltedBlock(0, 300, 0),
+        };
+        MaskQuadExtractor.SnapUncorroboratedTilts(blocks);
+        Assert.All(blocks, b => Assert.Equal(BlockQuad.FromBBox(b.BBox), b.Quad));
+    }
+
+    [Fact]
+    public void DisagreeingTilts_AreAllSnapped()
+    {
+        // Two small leans in opposite directions plus a stray steep one: none corroborated.
+        var blocks = new List<LayoutBlock> { TiltedBlock(0, 0, 0.5f), TiltedBlock(0, 100, -0.7f), TiltedBlock(0, 200, -26f) };
+        MaskQuadExtractor.SnapUncorroboratedTilts(blocks);
+        Assert.All(blocks, b => Assert.Equal(0f, b.Quad!.Value.AngleDegrees));
+    }
+
+    [Fact]
+    public void TwoAgreeingTilts_AreNotEnough()
+    {
+        var blocks = new List<LayoutBlock> { TiltedBlock(0, 0, 3f), TiltedBlock(0, 100, 3.2f) };
+        MaskQuadExtractor.SnapUncorroboratedTilts(blocks);
+        Assert.All(blocks, b => Assert.Equal(0f, b.Quad!.Value.AngleDegrees));
+    }
+
+    [Fact]
+    public void PageWideTilt_IsKept_AndAnOutlierIsSnapped()
+    {
+        var blocks = new List<LayoutBlock>
+        {
+            TiltedBlock(0, 0, 3f), TiltedBlock(0, 100, 2.2f), TiltedBlock(0, 200, 3.6f),
+            TiltedBlock(0, 300, 0), // unresolvable block: stays upright, doesn't vote
+            TiltedBlock(0, 400, -0.6f), // shape noise: disagrees with the page
+        };
+        MaskQuadExtractor.SnapUncorroboratedTilts(blocks);
+        Assert.InRange(blocks[0].Quad!.Value.AngleDegrees, 2.9f, 3.1f);
+        Assert.InRange(blocks[1].Quad!.Value.AngleDegrees, 2.1f, 2.3f);
+        Assert.InRange(blocks[2].Quad!.Value.AngleDegrees, 3.5f, 3.7f);
+        Assert.Equal(BlockQuad.FromBBox(blocks[3].BBox), blocks[3].Quad);
+        Assert.Equal(BlockQuad.FromBBox(blocks[4].BBox), blocks[4].Quad);
+    }
+
+    [Fact]
+    public void BlocksWithoutQuads_AreIgnored()
+    {
+        var blocks = new List<LayoutBlock> { new() { BBox = new BBox(0, 0, 10, 10) }, TiltedBlock(0, 100, 4f) };
+        MaskQuadExtractor.SnapUncorroboratedTilts(blocks);
+        Assert.Null(blocks[0].Quad);
+        Assert.Equal(0f, blocks[1].Quad!.Value.AngleDegrees);
+    }
+
     [Fact]
     public void BlockQuad_FromBBox_HasZeroAngle()
     {

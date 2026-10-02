@@ -9,9 +9,11 @@ public sealed class LayoutBlock
     /// rectangle that may be rotated, for pages photographed or scanned at an
     /// angle. Null when the analyzer has no segmentation output (only
     /// PP-DocLayoutV3 provides one; PP-DocLayout-S, Heron and
-    /// <see cref="Services.TextLayoutAnalyzer"/> leave it unset). When the
-    /// segmentation is axis-aligned to within its own resolution the quad is
-    /// exactly <see cref="BBox"/>'s corners. Rail navigation and line
+    /// <see cref="Services.TextLayoutAnalyzer"/> leave it unset). The quad is
+    /// exactly <see cref="BBox"/>'s corners (angle 0) unless the block's tilt
+    /// is both resolvable in the segmentation and shared by at least two other
+    /// blocks on the page — so isolated shape noise on an upright page, and a
+    /// lone tilted block, read as upright. Rail navigation and line
     /// detection use <see cref="BBox"/> only; post-processing may trim
     /// <see cref="BBox"/> (overlap resolution) but leaves the quad as detected.
     /// </summary>

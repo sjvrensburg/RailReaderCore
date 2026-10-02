@@ -14,15 +14,24 @@ Additive, no breaking change. New dependency: `RailReader.Core.Analysis` now ref
   each surviving detection's mask is now fitted with a minimum-area rectangle (NTS
   `ConvexHull` → `MinimumAreaRectangle`). PP-DocLayout-S, Heron and `TextLayoutAnalyzer` have no
   mask output and leave `Quad` null.
-- When the fitted tilt is below the mask's resolution (the long edge drifts less than one mask
-  pixel), `Quad` is exactly `BBox`'s corners, so upright pages report angle 0 rather than
-  quantisation noise.
+- Upright unless the tilt is real: `Quad` is exactly `BBox`'s corners (angle 0) when the fitted
+  tilt is below the mask's resolution (the long edge drifts less than one mask pixel) **or** when
+  fewer than two other blocks on the page lean the same way to within 1.5°. A resolvable tilt alone
+  is not proof — the ragged last line of an upright paragraph leans the minimum-area rectangle by
+  up to ~0.75°, and thin or tiny blocks lean almost arbitrarily — but such noise is isolated, while
+  a rotated or photographed page tilts every block alike. Measured: no false tilt across 72 upright
+  pages (870 blocks); 88–99% of resolvable tilts kept on pages rotated 1–12°, with or without
+  keystone, median angle within 0.1° of truth. Consequence: a lone tilted block on an otherwise
+  upright page, or a page with fewer than three tilted blocks, reads as upright.
 - Rotated rectangles only — a keystoned (perspective) block gets the minimum-area rectangle
   around its trapezoid, not the trapezoid's own corners.
 - `BBox` is unchanged and remains what rail navigation, line detection, NMS and nested-block
   suppression use. Overlap resolution may trim a block's `BBox` but carries its `Quad` through
   as detected.
-- Cost: the mask tensor is read in place (never copied); fitting is ~0.4 ms for a large block.
+- Cost: the mask tensor is read in place (never copied); fitting is ~0.15 ms per block, ~2 ms per
+  page — well under 1% of V3 inference. The model computes the masks whether or not they are read
+  (dropping the output from the run saves nothing), so there is no hidden inference cost.
+  NetTopologySuite publishes cleanly under Native AOT (no trim warnings).
 
 ## 0.62.2 — Auto-scroll frame-clock timing (2026-09-23)
 
