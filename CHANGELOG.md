@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased — Annotation copy/paste API (#127)
+
+Additive. `Annotation.IsCopyable` / `Annotation.CloneForPaste` (deep copy via the polymorphic JSON
+contract; clears `NativeId`, `InReplyTo`, `Source`, timestamps — a copy keeping its source's `/NM`
+is silently dropped on PDF write-back). `AnnotationInteractionHandler`: `HasAnnotationClipboard`,
+`CopySelectedAnnotation(vp)`, `CutSelectedAnnotation(vp)`, `PasteAnnotation(vp, pageX?, pageY?)`
+(clamped to the page, offset 10 pt per paste when pasting back onto the source page, refused
+while `ViewRotation != 0` — check `IsPasteBlockedByRotation` to tell the user why). Markup and
+carets are not copyable. `AnnotationService.MergeInto` now clears imported `NativeId`s that
+collide with the target's (or earlier in the import), which previously collapsed on save.
+
+## Unreleased — Text markup is select/delete only (#127)
+
+**Behaviour change.** Highlight / Underline / StrikeOut / Squiggly can no longer be dragged in
+browse mode. `HandleBrowsePointerDown` now selects a markup hit but returns `false` (the host
+pans) and arms no drag, so grabbing the page over a highlight no longer moves it off its text.
+New `AnnotationInteractionHandler.SelectionChanged` event fires when that path changes the
+selection, since the return value no longer signals it. `PositionSnapshot` still handles markup
+so undo of moves recorded by older builds keeps working.
+
 ## Unreleased — Rotated block outlines from PP-DocLayoutV3 masks (#125)
 
 Additive, no breaking change. New dependency: `RailReader.Core.Analysis` now references

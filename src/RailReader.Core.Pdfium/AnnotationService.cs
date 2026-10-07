@@ -101,13 +101,30 @@ public sealed class AnnotationService : IAnnotationStore
     /// <summary>
     /// Merges imported annotations into an existing annotation file.
     /// Appends annotations per page and adds bookmarks that don't already exist.
+    /// An imported annotation whose <c>/NM</c> already exists in the target (or earlier in the
+    /// import) has its <see cref="Annotation.NativeId"/> cleared: the PDF writer and
+    /// <c>CompositeAnnotationStore</c> dedupe by <c>/NM</c>, so importing an export back into
+    /// the same PDF would otherwise silently lose the copies on save.
     /// </summary>
     public static int MergeInto(AnnotationFile target, AnnotationFile imported)
     {
         int added = 0;
+        var seenIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var list in target.Pages.Values)
+            foreach (var a in list)
+                if (!string.IsNullOrEmpty(a.NativeId)) seenIds.Add(a.NativeId);
 
         foreach (var (page, annotations) in imported.Pages)
         {
+            foreach (var a in annotations)
+            {
+                if (string.IsNullOrEmpty(a.NativeId) || seenIds.Add(a.NativeId)) continue;
+                // Source must go with the id: the writer skips InPdf annotations that have no /NM,
+                // so a cleared id alone would still drop the copy on save.
+                a.NativeId = null;
+                a.Source = AnnotationSource.RailReader;
+            }
+
             if (!target.Pages.TryGetValue(page, out var existing))
             {
                 existing = [];
