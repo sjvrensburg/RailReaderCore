@@ -3,6 +3,21 @@ namespace RailReader.Core.Models;
 public sealed class LayoutBlock
 {
     public BBox BBox { get; set; }
+
+    /// <summary>
+    /// The block's outline as the detector segmented it — a minimum-area
+    /// rectangle that may be rotated, for pages photographed or scanned at an
+    /// angle. Null when the analyzer has no segmentation output (only
+    /// PP-DocLayoutV3 provides one; PP-DocLayout-S, Heron and
+    /// <see cref="Services.TextLayoutAnalyzer"/> leave it unset). The quad is
+    /// exactly <see cref="BBox"/>'s corners (angle 0) unless the block's tilt
+    /// is both resolvable in the segmentation and shared by at least two other
+    /// blocks on the page — so isolated shape noise on an upright page, and a
+    /// lone tilted block, read as upright. Rail navigation and line
+    /// detection use <see cref="BBox"/> only; post-processing may trim
+    /// <see cref="BBox"/> (overlap resolution) but leaves the quad as detected.
+    /// </summary>
+    public BlockQuad? Quad { get; set; }
     public BlockRole Role { get; set; } = BlockRole.Unknown;
     public int ClassId { get; set; }
     public float Confidence { get; set; }
