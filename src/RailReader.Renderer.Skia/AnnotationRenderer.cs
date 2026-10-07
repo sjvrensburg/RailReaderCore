@@ -77,23 +77,33 @@ public static class AnnotationRenderer
     public static List<Annotation> SortByZOrder(List<Annotation> annotations)
         => annotations.OrderBy(ZOrder).ToList();
 
+    /// <summary>
+    /// True for colour effects whose page background is dark, where a Multiply highlight
+    /// would vanish. Pass the result as <c>darkBackdrop</c> to the draw methods.
+    /// </summary>
+    public static bool IsDarkBackdrop(ColourEffect effect)
+        => effect is ColourEffect.HighContrast or ColourEffect.HighVisibility or ColourEffect.Invert;
+
+    /// <summary>Alpha ceiling for SrcOver highlights on a dark backdrop (render-only; stored /CA is untouched).</summary>
+    private const float DarkBackdropHighlightAlpha = 0.4f;
+
     public static void DrawAnnotations(SKCanvas canvas, List<Annotation> annotations, Annotation? selected,
-        bool expandAllNotes = false)
+        bool expandAllNotes = false, bool darkBackdrop = false)
     {
         // Annotations are expected to arrive pre-sorted by ZOrder from the UI thread.
         foreach (var ann in annotations)
-            DrawAnnotation(canvas, ann, ann == selected, expandAllNotes);
+            DrawAnnotation(canvas, ann, ann == selected, expandAllNotes, darkBackdrop);
     }
 
     public static void DrawAnnotation(SKCanvas canvas, Annotation annotation, bool isSelected,
-        bool expandAllNotes = false)
+        bool expandAllNotes = false, bool darkBackdrop = false)
     {
         var color = ParseColor(annotation.Color, annotation.Opacity);
 
         switch (annotation)
         {
             case HighlightAnnotation highlight:
-                DrawHighlight(canvas, highlight, color);
+                DrawHighlight(canvas, highlight, color, darkBackdrop);
                 break;
             case UnderlineAnnotation underline:
                 DrawTextMarkupLine(canvas, underline, color, MarkupLineStyle.Underline);
@@ -174,12 +184,28 @@ public static class AnnotationRenderer
             IsAntialias = true,
         };
 
-    private static void DrawHighlight(SKCanvas canvas, HighlightAnnotation highlight, SKColor color)
+    private static void DrawHighlight(SKCanvas canvas, HighlightAnnotation highlight, SKColor color, bool darkBackdrop)
     {
+        // Conforming viewers composite highlights with Multiply, so text stays visible
+        // even at /CA 1. Multiply on a dark backdrop is invisible, so fall back to a
+        // capped-alpha SrcOver there.
         var paint = GetFillPaint();
-        paint.Color = color;
-        foreach (var r in highlight.Rects)
-            canvas.DrawRect(SKRect.Create(r.X, r.Y, r.W, r.H), paint);
+        if (darkBackdrop)
+        {
+            paint.BlendMode = SKBlendMode.SrcOver;
+            paint.Color = color.WithAlpha((byte)Math.Min((int)color.Alpha, (int)(DarkBackdropHighlightAlpha * 255)));
+        }
+        else
+        {
+            paint.BlendMode = SKBlendMode.Multiply;
+            paint.Color = color;
+        }
+        try
+        {
+            foreach (var r in highlight.Rects)
+                canvas.DrawRect(SKRect.Create(r.X, r.Y, r.W, r.H), paint);
+        }
+        finally { paint.BlendMode = SKBlendMode.SrcOver; } // paint is shared with other subtypes
     }
 
     private enum MarkupLineStyle { Underline, StrikeOut, Squiggly }

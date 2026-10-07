@@ -154,7 +154,8 @@ public static class ScreenshotCompositor
                 // Storage order is insertion order; DrawAnnotations expects
                 // z-order (markup under notes) so the screenshot matches the
                 // live composition regardless of creation order.
-                AnnotationRenderer.DrawAnnotations(canvas, AnnotationRenderer.SortByZOrder(pageAnnotations), null);
+                AnnotationRenderer.DrawAnnotations(canvas, AnnotationRenderer.SortByZOrder(pageAnnotations), null,
+                    darkBackdrop: AnnotationRenderer.IsDarkBackdrop(activeEffect));
                 canvas.Restore();
             }
         }
@@ -305,7 +306,7 @@ public static class ScreenshotCompositor
                 DrawSearchHighlightsForPage(canvas, controller, visible.Page);
 
             if (options.Annotations)
-                DrawAnnotationsForPage(canvas, doc, visible.Page, (float)visible.Width, (float)visible.Height);
+                DrawAnnotationsForPage(canvas, doc, visible.Page, (float)visible.Width, (float)visible.Height, activeEffect);
 
             // Rail overlay and line highlight: anchor page only — rail is page-local (Phase 3) and
             // only ever seats on the anchor.
@@ -338,12 +339,13 @@ public static class ScreenshotCompositor
             OverlayRenderer.GetHighlightPaint(), OverlayRenderer.GetActivePaint());
     }
 
-    private static void DrawAnnotationsForPage(SKCanvas canvas, DocumentModel doc, int page, float pageWidth, float pageHeight)
+    private static void DrawAnnotationsForPage(SKCanvas canvas, DocumentModel doc, int page, float pageWidth, float pageHeight, ColourEffect effect)
     {
         if (!doc.Annotations.Pages.TryGetValue(page, out var pageAnnotations) || pageAnnotations.Count == 0) return;
         canvas.Save();
         ApplyViewRotation(canvas, doc.ViewRotation, pageWidth, pageHeight);
-        AnnotationRenderer.DrawAnnotations(canvas, AnnotationRenderer.SortByZOrder(pageAnnotations), null);
+        AnnotationRenderer.DrawAnnotations(canvas, AnnotationRenderer.SortByZOrder(pageAnnotations), null,
+            darkBackdrop: AnnotationRenderer.IsDarkBackdrop(effect));
         canvas.Restore();
     }
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.63.1 — Highlights blend with Multiply (2026-10-07)
+
+### Highlights no longer hide text at `/CA 1` (#131)
+
+`AnnotationRenderer.DrawHighlight` now composites with `SKBlendMode.Multiply`, as Acrobat/Okular/MuPDF
+do, so a `/CA 1` highlight (common in review-markup PDFs without `/AP`) no longer paints an opaque block
+over the text. Render-only: the stored `Opacity` and the written `/CA` are unchanged.
+
+**Host integration.** `AnnotationRenderer.DrawAnnotations` / `DrawAnnotation` gain an optional
+`bool darkBackdrop = false` (source-compatible). Multiply on a dark page is invisible, so hosts should pass
+`darkBackdrop: AnnotationRenderer.IsDarkBackdrop(effect)` (true for HighContrast, HighVisibility, Invert),
+which draws highlights `SrcOver` with alpha capped at 0.4. `ScreenshotCompositor` already does this.
+Hosts that draw annotations on a separate layer must verify Multiply blends against the page pixels
+there, not a transparent intermediate surface.
+
 ## 0.63.0 — Rotated block outlines, annotation copy/paste, locked text markup (2026-10-07)
 
 ### Annotation copy/paste API (#127)
