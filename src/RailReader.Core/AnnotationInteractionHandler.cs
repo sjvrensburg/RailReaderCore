@@ -581,8 +581,15 @@ public sealed class AnnotationInteractionHandler
     // --- Browse-mode interaction (select, move, resize) ---
 
     /// <summary>
-    /// Handle pointer down in browse mode. Returns true if an annotation was hit
-    /// (caller should not start camera pan).
+    /// Raised when <see cref="HandleBrowsePointerDown"/> selects a text-markup annotation. That
+    /// path returns false (the host pans), so the return value alone can't tell a host to
+    /// refresh its selection chrome.
+    /// </summary>
+    public event Action? SelectionChanged;
+
+    /// <summary>
+    /// Handle pointer down in browse mode. Returns true if a movable annotation was hit
+    /// (caller should not start camera pan). Text markup is selected but returns false.
     /// </summary>
     public bool HandleBrowsePointerDown(Viewport? vp, float pageX, float pageY)
     {
@@ -612,12 +619,24 @@ public sealed class AnnotationInteractionHandler
             {
                 if (AnnotationGeometry.HitTest(list[i], pageX, pageY))
                 {
+                    var previous = SelectedAnnotation;
                     SelectedAnnotation = list[i];
+                    _resizeHandle = ResizeHandle.None;
+
+                    // Text markup only means something on the text it was made over: select it
+                    // (so it can be deleted) but never arm a drag, and let the host pan.
+                    if (list[i] is TextMarkupAnnotation)
+                    {
+                        _dragAnnotation = null;
+                        _dragOriginalPosition = null;
+                        if (!ReferenceEquals(previous, list[i])) SelectionChanged?.Invoke();
+                        return false;
+                    }
+
                     _dragAnnotation = list[i];
                     _dragStartPageX = pageX;
                     _dragStartPageY = pageY;
                     _dragOriginalPosition = PositionSnapshot.Capture(list[i]);
-                    _resizeHandle = ResizeHandle.None;
                     return true;
                 }
             }
@@ -725,13 +744,8 @@ public sealed class AnnotationInteractionHandler
                 for (int i = 0; i < f.Points.Count && i < original.Points.Count; i++)
                     f.Points[i] = new PointF(original.Points[i].X + dx, original.Points[i].Y + dy);
                 break;
-            case TextMarkupAnnotation m when original.Rects is not null:
-                for (int i = 0; i < m.Rects.Count && i < original.Rects.Count; i++)
-                {
-                    var or = original.Rects[i];
-                    m.Rects[i] = new HighlightRect(or.X + dx, or.Y + dy, or.W, or.H);
-                }
-                break;
+            // TextMarkupAnnotation is deliberately absent: markup is not movable. (Undo of a
+            // MoveAnnotationAction recorded by an older build still goes through PositionSnapshot.)
             case RectAnnotation r:
                 r.X = original.X + dx;
                 r.Y = original.Y + dy;

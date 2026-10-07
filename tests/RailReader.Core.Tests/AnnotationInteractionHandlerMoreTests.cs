@@ -191,23 +191,57 @@ public class AnnotationInteractionHandlerMoreTests : IDisposable
         Assert.NotEmpty(_doc.UndoStack);
     }
 
-    [Fact]
-    public void BrowseDrag_UnderlineMarkup_MovesRects()
+    public static TheoryData<Func<TextMarkupAnnotation>> MarkupFactories => new()
     {
-        // #15: text-markup subtypes (Underline/StrikeOut/Squiggly) must be movable.
-        var underline = new UnderlineAnnotation { Rects = [new HighlightRect(100, 100, 60, 14)], Color = "#FF0000" };
-        _doc.AddAnnotation(0, underline);
+        () => new HighlightAnnotation { Rects = [new HighlightRect(100, 100, 60, 14)], Color = "#FFFF00" },
+        () => new UnderlineAnnotation { Rects = [new HighlightRect(100, 100, 60, 14)], Color = "#FF0000" },
+        () => new StrikeOutAnnotation { Rects = [new HighlightRect(100, 100, 60, 14)], Color = "#FF0000" },
+        () => new SquigglyAnnotation { Rects = [new HighlightRect(100, 100, 60, 14)], Color = "#FF0000" },
+    };
+
+    [Theory]
+    [MemberData(nameof(MarkupFactories))]
+    public void BrowsePointerDown_Markup_SelectsAndReturnsFalse(Func<TextMarkupAnnotation> make)
+    {
+        var markup = make();
+        _doc.AddAnnotation(0, markup);
+        int changes = 0;
+        _handler.SelectionChanged += () => changes++;
+
+        Assert.False(_handler.HandleBrowsePointerDown(_doc.Primary, 120, 107));
+
+        Assert.Same(markup, _handler.SelectedAnnotation);
+        Assert.Equal(1, changes);
+    }
+
+    [Theory]
+    [MemberData(nameof(MarkupFactories))]
+    public void BrowseDrag_Markup_DoesNotMoveOrPushUndo(Func<TextMarkupAnnotation> make)
+    {
+        var markup = make();
+        _doc.AddAnnotation(0, markup);
         _doc.UndoStack.Clear();
 
-        Assert.True(_handler.HandleBrowsePointerDown(_doc.Primary, 120, 107)); // inside the markup rect
-        Assert.Same(underline, _handler.SelectedAnnotation);
-
+        _handler.HandleBrowsePointerDown(_doc.Primary, 120, 107);
         _handler.HandleBrowsePointerMove(140, 127);
         _handler.HandleBrowsePointerUp(_doc.Primary, 140, 127);
 
-        Assert.True(underline.Rects[0].X > 100f);
-        Assert.True(underline.Rects[0].Y > 100f);
-        Assert.NotEmpty(_doc.UndoStack);
+        Assert.Equal(new HighlightRect(100, 100, 60, 14), markup.Rects[0]);
+        Assert.Empty(_doc.UndoStack);
+    }
+
+    [Fact]
+    public void DeleteSelectedAnnotation_Markup_RemovesAndUndoRestores()
+    {
+        var markup = new HighlightAnnotation { Rects = [new HighlightRect(100, 100, 60, 14)], Color = "#FFFF00" };
+        _doc.AddAnnotation(0, markup);
+        _handler.HandleBrowsePointerDown(_doc.Primary, 120, 107);
+
+        Assert.True(_handler.DeleteSelectedAnnotation(_doc.Primary));
+        Assert.DoesNotContain(markup, _doc.Annotations.Pages[0]);
+
+        _doc.Undo();
+        Assert.Contains(markup, _doc.Annotations.Pages[0]);
     }
 
     [Fact]

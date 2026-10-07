@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — Text markup is select/delete only (#127)
+
+**Behaviour change.** Highlight / Underline / StrikeOut / Squiggly can no longer be dragged in
+browse mode. `HandleBrowsePointerDown` now selects a markup hit but returns `false` (the host
+pans) and arms no drag, so grabbing the page over a highlight no longer moves it off its text.
+New `AnnotationInteractionHandler.SelectionChanged` event fires when that path changes the
+selection, since the return value no longer signals it. `PositionSnapshot` still handles markup
+so undo of moves recorded by older builds keeps working.
+
 ## Unreleased — Rotated block outlines from PP-DocLayoutV3 masks (#125)
 
 Additive, no breaking change. New dependency: `RailReader.Core.Analysis` now references
