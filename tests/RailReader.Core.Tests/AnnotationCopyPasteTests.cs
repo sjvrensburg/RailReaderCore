@@ -88,7 +88,7 @@ public class AnnotationCopyPasteTests : IDisposable
         Assert.True(Annotation.IsCopyable(new TextNoteAnnotation()));
         Assert.True(Annotation.IsCopyable(new FreeTextAnnotation()));
         Assert.True(Annotation.IsCopyable(new RectAnnotation()));
-        Assert.True(Annotation.IsCopyable(new FreehandAnnotation()));
+        Assert.True(Annotation.IsCopyable(new FreehandAnnotation { Points = [new PointF(1, 1)] }));
         Assert.False(Annotation.IsCopyable(new HighlightAnnotation()));
         Assert.False(Annotation.IsCopyable(new UnderlineAnnotation()));
         Assert.False(Annotation.IsCopyable(new CaretAnnotation()));
@@ -252,13 +252,54 @@ public class AnnotationCopyPasteTests : IDisposable
         var target = new AnnotationFile();
         target.Pages[0] = [new RectAnnotation { NativeId = "nm-1" }];
         var imported = new AnnotationFile();
-        imported.Pages[0] = [new RectAnnotation { NativeId = "nm-1" }, new RectAnnotation { NativeId = "nm-2" }];
+        imported.Pages[0] = [new RectAnnotation { NativeId = "nm-1", Source = AnnotationSource.InPdf }, new RectAnnotation { NativeId = "nm-2" }];
         imported.Pages[1] = [new RectAnnotation { NativeId = "nm-2" }];
 
         AnnotationService.MergeInto(target, imported);
 
         Assert.Null(target.Pages[0][1].NativeId);          // collided with target
+        Assert.Equal(AnnotationSource.RailReader, target.Pages[0][1].Source); // writer skips InPdf w/o /NM
         Assert.Equal("nm-2", target.Pages[0][2].NativeId); // first sight keeps its id
         Assert.Null(target.Pages[1][0].NativeId);          // collided within the import
+    }
+
+    [Fact]
+    public void BrowsePointerDown_MovableAnnotationBeatsOverlappingMarkup()
+    {
+        var rect = new RectAnnotation { X = 120, Y = 110, W = 20, H = 20 };
+        _doc.AddAnnotation(0, rect);
+        // Added later (so topmost) and its union bounds cover the rect.
+        _doc.AddAnnotation(0, new HighlightAnnotation
+        {
+            Rects = [new HighlightRect(100, 100, 200, 14), new HighlightRect(100, 130, 200, 14)],
+        });
+
+        Assert.True(_handler.HandleBrowsePointerDown(Vp, 130, 120));
+        Assert.Same(rect, _handler.SelectedAnnotation);
+    }
+
+    [Fact]
+    public void Copy_EmptyFreehandOrStaleSelection_ReturnsFalse()
+    {
+        Assert.False(Annotation.IsCopyable(new FreehandAnnotation()));
+
+        var rect = AddAndSelect(() => new RectAnnotation { X = 100, Y = 100, W = 50, H = 40 });
+        _doc.RemoveAnnotation(0, rect);
+        Assert.False(_handler.CopySelectedAnnotation(Vp));
+        Assert.False(_handler.HasAnnotationClipboard);
+    }
+
+    [Fact]
+    public void Cut_StaleSelection_KeepsPreviousClipboard()
+    {
+        AddAndSelect(() => new RectAnnotation { X = 100, Y = 100, W = 50, H = 40 });
+        _handler.CopySelectedAnnotation(Vp);
+        var stale = AddAndSelect(() => new RectAnnotation { X = 10, Y = 10, W = 5, H = 5 });
+        _doc.RemoveAnnotation(0, stale);
+
+        Assert.False(_handler.CutSelectedAnnotation(Vp));
+
+        var p = Assert.IsType<RectAnnotation>(_handler.PasteAnnotation(Vp, 0, 0));
+        Assert.Equal(50f, p.W); // the earlier copy is still on the clipboard
     }
 }

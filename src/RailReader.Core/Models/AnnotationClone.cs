@@ -11,7 +11,8 @@ public abstract partial class Annotation
     /// was made over, and PDFium cannot create carets.
     /// </summary>
     public static bool IsCopyable(Annotation? a)
-        => a is TextNoteAnnotation or FreeTextAnnotation or RectAnnotation or FreehandAnnotation;
+        => a is TextNoteAnnotation or FreeTextAnnotation or RectAnnotation
+           or FreehandAnnotation { Points.Count: > 0 };
 
     /// <summary>
     /// Deep copy of <paramref name="source"/> as a brand-new annotation. Goes through the

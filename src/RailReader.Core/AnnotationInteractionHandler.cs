@@ -587,7 +587,7 @@ public sealed class AnnotationInteractionHandler
     // don't affect it. DocumentController is shared by every document, so this also serves
     // cross-document paste.
     private Annotation? _clipboard;
-    private DocumentModel? _clipboardOwner;
+    private WeakReference<DocumentModel>? _clipboardOwner; // weak: don't pin a closed document
     private int _clipboardPage;
     private int _pasteCount;
 
@@ -601,8 +601,10 @@ public sealed class AnnotationInteractionHandler
     public bool CopySelectedAnnotation(Viewport? vp = null)
     {
         if (SelectedAnnotation is not { } sel || !Annotation.IsCopyable(sel)) return false;
+        // A stale selection (removed, or on another page than the focused view) isn't copyable.
+        if (vp is not null && (GetCurrentPageAnnotations(vp) is not { } onPage || !onPage.Contains(sel))) return false;
         _clipboard = Annotation.CloneForPaste(sel);
-        _clipboardOwner = vp?.Owner;
+        _clipboardOwner = vp is null ? null : new WeakReference<DocumentModel>(vp.Owner);
         _clipboardPage = vp?.CurrentPage ?? -1;
         _pasteCount = 0;
         return true;
@@ -642,7 +644,7 @@ public sealed class AnnotationInteractionHandler
             dx = px - b.Left;
             dy = py - b.Top;
         }
-        else if (ReferenceEquals(vp.Owner, _clipboardOwner) && vp.CurrentPage == _clipboardPage)
+        else if (_clipboardOwner is not null && _clipboardOwner.TryGetTarget(out var owner) && ReferenceEquals(vp.Owner, owner) && vp.CurrentPage == _clipboardPage)
         {
             dx = dy = PasteOffset * (_pasteCount + 1);
         }
@@ -664,7 +666,7 @@ public sealed class AnnotationInteractionHandler
         if (!vp.Owner.Annotations.Pages.TryGetValue(page, out var list) || !list.Contains(clone))
             return null;
 
-        _pasteCount++;
+        if (pageX is null) _pasteCount++;
         SelectedAnnotation = clone;
         return clone;
     }
@@ -703,33 +705,42 @@ public sealed class AnnotationInteractionHandler
             }
         }
 
-        // Hit-test annotations (top to bottom)
+        // Hit-test annotations (top to bottom). Markup hit-tests against its union bounds, so a
+        // multi-line highlight can cover a note or box drawn earlier: movable annotations win over
+        // markup, otherwise a select-only highlight would make them unreachable.
         if (list is not null)
         {
-            for (int i = list.Count - 1; i >= 0; i--)
+            int hitIndex = -1, markupIndex = -1;
+            for (int i = list.Count - 1; i >= 0 && hitIndex < 0; i--)
             {
-                if (AnnotationGeometry.HitTest(list[i], pageX, pageY))
+                if (!AnnotationGeometry.HitTest(list[i], pageX, pageY)) continue;
+                if (list[i] is TextMarkupAnnotation) { if (markupIndex < 0) markupIndex = i; }
+                else hitIndex = i;
+            }
+            if (hitIndex < 0) hitIndex = markupIndex;
+
+            if (hitIndex >= 0)
+            {
+                var hit = list[hitIndex];
+                var previous = SelectedAnnotation;
+                SelectedAnnotation = hit;
+                _resizeHandle = ResizeHandle.None;
+
+                // Text markup only means something on the text it was made over: select it
+                // (so it can be deleted) but never arm a drag, and let the host pan.
+                if (hit is TextMarkupAnnotation)
                 {
-                    var previous = SelectedAnnotation;
-                    SelectedAnnotation = list[i];
-                    _resizeHandle = ResizeHandle.None;
-
-                    // Text markup only means something on the text it was made over: select it
-                    // (so it can be deleted) but never arm a drag, and let the host pan.
-                    if (list[i] is TextMarkupAnnotation)
-                    {
-                        _dragAnnotation = null;
-                        _dragOriginalPosition = null;
-                        if (!ReferenceEquals(previous, list[i])) SelectionChanged?.Invoke();
-                        return false;
-                    }
-
-                    _dragAnnotation = list[i];
-                    _dragStartPageX = pageX;
-                    _dragStartPageY = pageY;
-                    _dragOriginalPosition = PositionSnapshot.Capture(list[i]);
-                    return true;
+                    _dragAnnotation = null;
+                    _dragOriginalPosition = null;
+                    if (!ReferenceEquals(previous, hit)) SelectionChanged?.Invoke();
+                    return false;
                 }
+
+                _dragAnnotation = hit;
+                _dragStartPageX = pageX;
+                _dragStartPageY = pageY;
+                _dragOriginalPosition = PositionSnapshot.Capture(hit);
+                return true;
             }
         }
 

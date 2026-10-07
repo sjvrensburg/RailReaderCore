@@ -117,8 +117,13 @@ public sealed class AnnotationService : IAnnotationStore
         foreach (var (page, annotations) in imported.Pages)
         {
             foreach (var a in annotations)
-                if (!string.IsNullOrEmpty(a.NativeId) && !seenIds.Add(a.NativeId))
-                    a.NativeId = null;
+            {
+                if (string.IsNullOrEmpty(a.NativeId) || seenIds.Add(a.NativeId)) continue;
+                // Source must go with the id: the writer skips InPdf annotations that have no /NM,
+                // so a cleared id alone would still drop the copy on save.
+                a.NativeId = null;
+                a.Source = AnnotationSource.RailReader;
+            }
 
             if (!target.Pages.TryGetValue(page, out var existing))
             {
