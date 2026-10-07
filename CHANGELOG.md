@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased — Annotation copy/paste API (#127)
+## 0.63.0 — Rotated block outlines, annotation copy/paste, locked text markup (2026-10-07)
+
+### Annotation copy/paste API (#127)
 
 Additive. `Annotation.IsCopyable` / `Annotation.CloneForPaste` (deep copy via the polymorphic JSON
 contract; clears `NativeId`, `InReplyTo`, `Source`, timestamps — a copy keeping its source's `/NM`
@@ -11,7 +13,7 @@ while `ViewRotation != 0` — check `IsPasteBlockedByRotation` to tell the user 
 carets are not copyable. `AnnotationService.MergeInto` now clears imported `NativeId`s that
 collide with the target's (or earlier in the import), which previously collapsed on save.
 
-## Unreleased — Text markup is select/delete only (#127)
+### Text markup is select/delete only (#127)
 
 **Behaviour change.** Highlight / Underline / StrikeOut / Squiggly can no longer be dragged in
 browse mode. `HandleBrowsePointerDown` now selects a markup hit but returns `false` (the host
@@ -20,7 +22,7 @@ New `AnnotationInteractionHandler.SelectionChanged` event fires when that path c
 selection, since the return value no longer signals it. `PositionSnapshot` still handles markup
 so undo of moves recorded by older builds keeps working.
 
-## Unreleased — Rotated block outlines from PP-DocLayoutV3 masks (#125)
+### Rotated block outlines from PP-DocLayoutV3 masks (#125)
 
 Additive, no breaking change. New dependency: `RailReader.Core.Analysis` now references
 **NetTopologySuite** (BSD-3, pure managed, no native binaries).
