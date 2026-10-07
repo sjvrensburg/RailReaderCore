@@ -53,7 +53,7 @@ public enum ReviewState
 [JsonDerivedType(typeof(RectAnnotation), "rect")]
 [JsonDerivedType(typeof(CaretAnnotation), "caret")]
 [JsonDerivedType(typeof(FreeTextAnnotation), "free_text")]
-public abstract class Annotation
+public abstract partial class Annotation
 {
     public string Color { get; set; } = "#FFFF00";
     public float Opacity { get; set; } = 1.0f;

@@ -578,6 +578,97 @@ public sealed class AnnotationInteractionHandler
         return true;
     }
 
+    // --- Copy / paste ---
+
+    /// <summary>Offset, in points, between a same-page paste and its source (per successive paste).</summary>
+    public const float PasteOffset = 10f;
+
+    // In-process clipboard: a clone taken at copy time, so later edits/deletes of the source
+    // don't affect it. DocumentController is shared by every document, so this also serves
+    // cross-document paste.
+    private Annotation? _clipboard;
+    private DocumentModel? _clipboardOwner;
+    private int _clipboardPage;
+    private int _pasteCount;
+
+    public bool HasAnnotationClipboard => _clipboard is not null;
+
+    /// <summary>
+    /// Copy the selected annotation. Returns false (clipboard untouched) when nothing is
+    /// selected or the selection is not copyable (text markup, caret).
+    /// </summary>
+    /// <param name="vp">The source view; lets a later paste onto the same page offset itself from the original.</param>
+    public bool CopySelectedAnnotation(Viewport? vp = null)
+    {
+        if (SelectedAnnotation is not { } sel || !Annotation.IsCopyable(sel)) return false;
+        _clipboard = Annotation.CloneForPaste(sel);
+        _clipboardOwner = vp?.Owner;
+        _clipboardPage = vp?.CurrentPage ?? -1;
+        _pasteCount = 0;
+        return true;
+    }
+
+    /// <summary>Copy then delete the selection. Returns false (nothing deleted) if it isn't copyable.</summary>
+    public bool CutSelectedAnnotation(Viewport? vp)
+    {
+        if (vp is null || !CopySelectedAnnotation(vp)) return false;
+        return DeleteSelectedAnnotation(vp);
+    }
+
+    /// <summary>
+    /// True when paste would be refused because the view is rotated. Annotation geometry is
+    /// stored in the rotation-0 frame, so a host can show a toast instead of guessing why
+    /// <see cref="PasteAnnotation"/> returned null.
+    /// </summary>
+    public static bool IsPasteBlockedByRotation(Viewport? vp) => vp is not null && vp.Owner.ViewRotation != 0;
+
+    /// <summary>
+    /// Paste a fresh clone of the clipboard onto <paramref name="vp"/>'s current page, select it,
+    /// and return it (null if refused: empty clipboard, no view, rotated view).
+    /// With <paramref name="pageX"/>/<paramref name="pageY"/> the bounds' top-left lands there;
+    /// otherwise the original position is kept, nudged by <see cref="PasteOffset"/> per paste
+    /// when pasting back onto the page it was copied from. The result is clamped into the page.
+    /// </summary>
+    public Annotation? PasteAnnotation(Viewport? vp, float? pageX = null, float? pageY = null)
+    {
+        if (vp is null || _clipboard is null || IsPasteBlockedByRotation(vp)) return null;
+
+        var clone = Annotation.CloneForPaste(_clipboard);
+        if (AnnotationGeometry.GetAnnotationBounds(clone) is not { } b) return null;
+
+        float dx = 0, dy = 0;
+        if (pageX is { } px && pageY is { } py)
+        {
+            dx = px - b.Left;
+            dy = py - b.Top;
+        }
+        else if (ReferenceEquals(vp.Owner, _clipboardOwner) && vp.CurrentPage == _clipboardPage)
+        {
+            dx = dy = PasteOffset * (_pasteCount + 1);
+        }
+
+        float pw = (float)vp.PageWidth, ph = (float)vp.PageHeight;
+        if (pw > 0 && ph > 0)
+        {
+            // Right/bottom first, then left/top, so an oversize annotation pins to the origin.
+            if (b.Right + dx > pw) dx = pw - b.Right;
+            if (b.Left + dx < 0) dx = -b.Left;
+            if (b.Bottom + dy > ph) dy = ph - b.Bottom;
+            if (b.Top + dy < 0) dy = -b.Top;
+        }
+
+        MoveAnnotation(clone, dx, dy, PositionSnapshot.Capture(clone));
+
+        int page = vp.CurrentPage;
+        vp.Owner.AddAnnotation(page, clone);
+        if (!vp.Owner.Annotations.Pages.TryGetValue(page, out var list) || !list.Contains(clone))
+            return null;
+
+        _pasteCount++;
+        SelectedAnnotation = clone;
+        return clone;
+    }
+
     // --- Browse-mode interaction (select, move, resize) ---
 
     /// <summary>
