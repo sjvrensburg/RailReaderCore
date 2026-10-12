@@ -21,6 +21,14 @@ internal static class PdfiumNative
     // non-ASCII passwords would be mis-encoded and spuriously rejected there.
     [DllImport(Lib)] internal static extern IntPtr FPDF_LoadMemDocument(IntPtr data, int size,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string? password);
+    // Loads lazily from a path: PDFium parses the header, xref and trailer and reads objects on
+    // demand, so a document-level question (the signature count) costs a few KB of I/O rather
+    // than the whole file. The path is FPDF_STRING, decoded as UTF-8 by PDFium on every platform
+    // (Windows included — it converts to a wide path itself). The handle holds the file open;
+    // callers close it before returning so no lock outlives the probe.
+    [DllImport(Lib)] internal static extern IntPtr FPDF_LoadDocument(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string filePath,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? password);
     [DllImport(Lib)] internal static extern void FPDF_CloseDocument(IntPtr document);
     [DllImport(Lib)] internal static extern int FPDF_GetSignatureCount(IntPtr document);
 
@@ -36,6 +44,8 @@ internal static class PdfiumNative
     // FPDF_ERR_* codes (subset). 4 = the document is password-protected and the
     // supplied password was missing or incorrect.
     internal const uint FPDF_ERR_PASSWORD = 4;
+    // 2 = the file could not be found or opened (as opposed to 3 = parsed but malformed).
+    internal const uint FPDF_ERR_FILE = 2;
 
     /// <summary>
     /// Loads a document from pinned bytes, translating a PDFium password failure into

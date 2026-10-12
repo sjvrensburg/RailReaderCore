@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.64.2 — Cheap, cached signature probe (2026-10-12)
+
+### `CompositeAnnotationStore`'s signature probe no longer reads the whole file
+
+The read-only/signed verdict behind `Save` and 0.64.1's `GetSidecarFallbackReason` checked for a
+digital signature by reading the entire PDF into memory and parsing it with `FPDF_LoadMemDocument` —
+a one-off multi-hundred-MB read on a scanned book, paid on whichever UI-thread call probed first
+(a save, or a highlight merge decision), and paid *again on every call* for a document PDFium
+failed to parse, because only a successful probe was cached. Now:
+
+- The probe loads from the **path** (`FPDF_LoadDocument`): PDFium parses the header, xref and trailer
+  and reads objects on demand, so the signature count costs a few KB of I/O. The handle is closed
+  before the call returns, so no file lock outlives it. A whole-file memory load remains only as a
+  fallback when the native layer cannot open the path itself (`FPDF_ERR_FILE`), not for malformed
+  files — the parser is the same either way.
+- **Every outcome is cached**, failures included, keyed by `(full path, password)`. A failed probe
+  still reads as unsigned, as before. Keying on the password is what makes caching a failure safe:
+  an encrypted document probed with a missing/wrong password is a different entry from the later
+  probe with the right one, which the old path-only key could not express and so never cached a
+  failure at all.
+- `SignatureProbeCount` (internal) counts actual loads, for tests.
+
 ## 0.64.1 — Query the annotation store's save verdict (2026-10-12)
 
 ### `CompositeAnnotationStore.GetSidecarFallbackReason(path, password)`
