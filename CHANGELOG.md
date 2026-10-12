@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.64.0 — Comments on text markup; merge overlapping highlights (2026-10-12)
+
+### Comments on highlights (and any other annotation)
+
+A comment body (`/Contents`) could already round-trip on every subtype, but only sticky notes had an
+authoring path. Now any annotation can carry one:
+
+- `DocumentModel.UpdateAnnotationContents(page, annotation, text)` sets the body of **any** annotation
+  as **one undo step** (`EditContentsAction`); null/empty/whitespace-only clears it, an unchanged body is
+  a no-op, and `ModifiedUtc` is stamped. `UpdateAnnotationText(page, note, text)` now routes through it, so **sticky-note
+  edits are undoable for the first time** (they previously bypassed the undo stack). A note's legacy `Text`
+  stays in sync with `Contents`.
+- `AnnotationInteractionHandler.CompleteCommentEdit(vp, annotation, text)` is the handler-level
+  counterpart; `CompleteTextNoteEdit` delegates to it.
+- **`HandleBrowseClick` now returns `(bool Handled, Annotation? Edit)`** (was `TextNoteAnnotation? EditNote`).
+  A double-click on a text markup (highlight/underline/strike-out/squiggly) selects it and returns it as
+  `Edit` so the host can open its comment dialog; single-click on markup is unchanged (not handled — the
+  pointer-down path already selected it and let the host pan). A note under the same point still wins.
+  Hosts switching on the result's type keep working; hosts that assumed a note must pattern-match.
+- `AnnotationRenderer` draws a small comment glyph (a miniature of the sticky-note icon, in the markup's
+  colour) hanging off the top-right of a commented markup's topmost rect, and the note-style popup with
+  the body when the annotation is selected or `expandAllNotes` is set. `GetMarkupCommentGlyphRect` exposes
+  the glyph's page rect for host hit-testing. The popup layout cache is now keyed by `Annotation`.
+
+### Merging overlapping same-style highlights
+
+- New `RailReader.Core.Services.TextMarkupMerge` (pure geometry): `SameStyle` (same subtype, colour
+  case-insensitive, opacity within 0.01), `Overlaps` (strict rect intersection — edge-touching rects do
+  not count, so adjacent lines of separate highlights are not glued), `FindCluster` (transitive, page-list
+  order), `UnionRects` (one rect per line band, horizontally overlapping intervals joined, disjoint ones
+  kept), `TryBuildMerged` (fresh identity via `Annotation.CloneForPaste` — null `NativeId`,
+  `Source.RailReader` — so the reconciling PDF writer deletes the sources by `/NM` and creates the merged
+  one; refuses `ConflictingComments` when two sources carry different non-empty bodies, keeps the one they
+  agree on), and `IsThreaded` (true when a member is a reply or has replies on the page).
+- `DocumentModel.MergeOverlappingTextMarkup(page, seed, out refusal)` replaces the seed's cluster with one
+  merged annotation as a single undo step (`MergeAnnotationsAction`, inserted where the first source was so
+  z-order is kept; undo restores every source at its original index). The seed may be a not-yet-added
+  annotation. A cluster that is part of a reply thread is refused with `Refusal.Threaded` — the sources
+  would be deleted by `/NM` on save and PDFium cannot re-point a reply's `/IRT`, so merging would orphan
+  the thread. `MergeOverlappingTextMarkup(page)` sweeps every cluster on a page (one undo step per cluster,
+  refused clusters skipped) and returns how many sources were merged away.
+- `DocumentModel.AddTextMarkupMerging(page, markup)` adds a freshly authored markup merged into whatever it
+  overlaps, as one undo step (plain add when nothing overlaps).
+- `AnnotationInteractionHandler.AutoMergeTextMarkup` (default **off**) makes the drag-over-text tools commit
+  through `AddTextMarkupMerging`; `MergeSelectedTextMarkup(vp, out refusal)` merges the selection's cluster
+  and selects the result.
+
+**Known limit.** Merging markups that live in the PDF (`Source.InPdf`) of a **read-only or signed** document
+cannot delete the originals (the composite store only writes RailReader-authored annotations to the sidecar
+there), so they reappear beside the merged copy on reload — the same limitation deleting an in-PDF
+annotation has in that fallback. Hosts should disable merging of in-PDF sources when the store reports the
+sidecar fallback.
+
 ## 0.63.1 — Highlights blend with Multiply (2026-10-07)
 
 ### Highlights no longer hide text at `/CA 1` (#131)

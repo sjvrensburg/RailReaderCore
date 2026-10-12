@@ -1109,14 +1109,128 @@ public sealed class DocumentModel : IDisposable
         MarkAnnotationsDirty();
     }
 
+    /// <summary>
+    /// Edits a sticky note's body. Equivalent to <see cref="UpdateAnnotationContents"/>; kept for
+    /// callers that have a typed note in hand.
+    /// </summary>
     public void UpdateAnnotationText(int page, TextNoteAnnotation note, string newText)
+        => UpdateAnnotationContents(page, note, newText);
+
+    /// <summary>
+    /// Sets the comment body (<see cref="Annotation.Contents"/>) of ANY annotation — a sticky
+    /// note's text, or the comment attached to a highlight/underline/box — as one undo step.
+    /// Null, empty, or whitespace-only clears the comment (the same "no comment" rule
+    /// <see cref="TextMarkupMerge.TryBuildMerged"/> and the renderer's glyph apply). A note's legacy
+    /// <c>Text</c> field is kept in sync: <see cref="Annotation.EffectiveContents"/> prefers
+    /// <c>Contents</c> over <c>Text</c> (native PDF notes carry their body in <c>Contents</c>), so an
+    /// edit to a native note would otherwise silently lose to the stale value. No-op when the body
+    /// is unchanged.
+    /// </summary>
+    public void UpdateAnnotationContents(int page, Annotation annotation, string? newContents)
     {
-        // EffectiveContents prefers Contents over the legacy Text field (native PDF
-        // notes carry their body in Contents), so both must be kept in sync or an
-        // edit to a native note silently loses to the stale Contents value.
-        note.Text = newText;
-        note.Contents = newText;
+        var next = string.IsNullOrWhiteSpace(newContents) ? null : newContents;
+        var previous = string.IsNullOrWhiteSpace(annotation.Contents) ? null : annotation.Contents;
+        if (annotation is TextNoteAnnotation { Contents: null } legacy && !string.IsNullOrWhiteSpace(legacy.Text))
+            previous = legacy.Text;
+        if (string.Equals(previous, next, StringComparison.Ordinal)) return;
+
+        var action = new EditContentsAction(annotation, previous, next);
+        action.Redo(Annotations);
+        annotation.ModifiedUtc = DateTimeOffset.UtcNow;
+        UndoStack.Push(action);
+        RedoStack.Clear();
         MarkAnnotationsDirty();
+    }
+
+    /// <summary>
+    /// Merges <paramref name="seed"/> with every same-style text markup on <paramref name="page"/>
+    /// it (transitively) overlaps — same subtype, colour, and opacity — into one annotation with a
+    /// unioned rect list (<see cref="TextMarkupMerge"/>), as a single undo step. Returns the merged
+    /// annotation, or null when nothing overlapped, the cluster carries conflicting comments, or a
+    /// member is part of a reply thread (reported through <paramref name="refusal"/>; the page is
+    /// then left untouched).
+    /// <para>The seed may be a not-yet-added annotation (see <see cref="AddTextMarkupMerging"/>);
+    /// it is then part of the merge but never added by itself.</para>
+    /// </summary>
+    public TextMarkupAnnotation? MergeOverlappingTextMarkup(int page, TextMarkupAnnotation seed,
+        out TextMarkupMerge.Refusal refusal)
+    {
+        refusal = TextMarkupMerge.Refusal.NothingToMerge;
+        if (!Annotations.Pages.TryGetValue(page, out var list)) return null;
+        return MergeCluster(page, list, TextMarkupMerge.FindCluster(list, seed), out refusal);
+    }
+
+    /// <summary>
+    /// Merges every cluster of overlapping same-style text markups on <paramref name="page"/>
+    /// (one undo step per cluster). Clusters that are refused (conflicting comments, reply
+    /// threads) are skipped. Returns the number of source annotations merged away (0 when nothing
+    /// overlapped).
+    /// </summary>
+    public int MergeOverlappingTextMarkup(int page)
+    {
+        if (!Annotations.Pages.TryGetValue(page, out var list)) return 0;
+        int mergedAway = 0;
+        var visited = new HashSet<Annotation>();
+        // Snapshot: each merge mutates the live list. Every member of a visited cluster is
+        // marked, so a source merged away earlier in the pass is never re-seeded.
+        foreach (var ann in list.ToList())
+        {
+            if (ann is not TextMarkupAnnotation m || visited.Contains(m)) continue;
+            var cluster = TextMarkupMerge.FindCluster(list, m);
+            foreach (var c in cluster) visited.Add(c);
+            if (cluster.Count < 2) continue;
+            if (MergeCluster(page, list, cluster, out _) is not null)
+                mergedAway += cluster.Count - 1;
+        }
+        return mergedAway;
+    }
+
+    /// <summary>
+    /// Applies one cluster merge as a single undo step, or refuses it: fewer than two members,
+    /// conflicting comments (<see cref="TextMarkupMerge.TryBuildMerged"/>), or a member that is
+    /// in a reply thread (<see cref="TextMarkupMerge.IsThreaded"/> — the reconciling writer deletes
+    /// a merged-away source by its /NM and PDFium cannot re-point a reply's /IRT, so merging would
+    /// orphan the thread).
+    /// </summary>
+    private TextMarkupAnnotation? MergeCluster(int page, List<Annotation> list,
+        List<TextMarkupAnnotation> cluster, out TextMarkupMerge.Refusal refusal)
+    {
+        refusal = TextMarkupMerge.TryBuildMerged(cluster, out var merged);
+        if (refusal == TextMarkupMerge.Refusal.None && TextMarkupMerge.IsThreaded(list, cluster))
+            refusal = TextMarkupMerge.Refusal.Threaded;
+        if (refusal != TextMarkupMerge.Refusal.None || merged is null)
+        {
+            if (refusal != TextMarkupMerge.Refusal.NothingToMerge)
+                _logger.Info($"[Annotations] Not merging {cluster.Count} markups on page {page}: {refusal}");
+            return null;
+        }
+
+        var action = new MergeAnnotationsAction(page, cluster, merged);
+        action.Redo(Annotations);
+        UndoStack.Push(action);
+        RedoStack.Clear();
+        MarkAnnotationsDirty();
+        return merged;
+    }
+
+    /// <summary>
+    /// Adds a freshly authored text markup, merging it into any same-style markup it overlaps
+    /// (one undo step either way). Same rotation guard as <see cref="AddAnnotation"/>. Returns
+    /// the annotation now on the page: <paramref name="markup"/> itself when nothing overlapped
+    /// (or the merge was refused), else the merged one.
+    /// </summary>
+    public TextMarkupAnnotation? AddTextMarkupMerging(int page, TextMarkupAnnotation markup)
+    {
+        if (_viewRotation != 0)
+        {
+            _logger.Warn($"[Annotations] Refusing to add an annotation while ViewRotation={_viewRotation} — geometry would be stored in the rotated frame");
+            return null;
+        }
+        if (Annotations.Pages.TryGetValue(page, out _)
+            && MergeOverlappingTextMarkup(page, markup, out _) is { } merged)
+            return merged;
+        AddAnnotation(page, markup);
+        return markup;
     }
 
     public void PushUndoAction(IUndoAction action)

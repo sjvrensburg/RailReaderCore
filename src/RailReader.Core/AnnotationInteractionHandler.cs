@@ -30,6 +30,14 @@ public sealed class AnnotationInteractionHandler
     public FreeTextAnnotation? PendingFreeText { get; private set; }
     public string ActiveAnnotationColor { get; set; } = "#FFFF00";
     public float ActiveAnnotationOpacity { get; set; } = 0.4f;
+
+    /// <summary>
+    /// When true, a text markup committed by the drag-over-text tools is merged into any
+    /// same-style markup (same subtype, colour, opacity) it overlaps on the page, so extending
+    /// or re-dragging a highlight yields one annotation instead of a stack (one undo step).
+    /// Default off — hosts expose it as a preference. See <see cref="DocumentModel.AddTextMarkupMerging"/>.
+    /// </summary>
+    public bool AutoMergeTextMarkup { get; set; }
     public float ActiveStrokeWidth { get; set; } = 2f;
 
     /// <summary>
@@ -308,9 +316,31 @@ public sealed class AnnotationInteractionHandler
     /// Complete a text note edit after dialog returns.
     /// </summary>
     public void CompleteTextNoteEdit(Viewport? vp, TextNoteAnnotation note, string newText)
+        => CompleteCommentEdit(vp, note, newText);
+
+    /// <summary>
+    /// Sets the comment body of any annotation after the host's text dialog returns — a sticky
+    /// note's text, or a comment on a highlight/underline/box/drawing. Empty clears it. One undo
+    /// step (<see cref="DocumentModel.UpdateAnnotationContents"/>).
+    /// </summary>
+    public void CompleteCommentEdit(Viewport? vp, Annotation annotation, string? newContents)
     {
         if (vp is null) return;
-        vp.Owner.UpdateAnnotationText(vp.CurrentPage, note, newText);
+        vp.Owner.UpdateAnnotationContents(vp.CurrentPage, annotation, newContents);
+    }
+
+    /// <summary>
+    /// Merges the selected text markup with every same-style markup it overlaps on its page
+    /// (see <see cref="DocumentModel.MergeOverlappingTextMarkup(int, TextMarkupAnnotation, out TextMarkupMerge.Refusal)"/>).
+    /// The merged annotation becomes the selection. Returns it, or null when nothing was merged.
+    /// </summary>
+    public TextMarkupAnnotation? MergeSelectedTextMarkup(Viewport? vp, out TextMarkupMerge.Refusal refusal)
+    {
+        refusal = TextMarkupMerge.Refusal.NothingToMerge;
+        if (vp is null || SelectedAnnotation is not TextMarkupAnnotation m) return null;
+        var merged = vp.Owner.MergeOverlappingTextMarkup(vp.CurrentPage, m, out refusal);
+        if (merged is not null) SelectedAnnotation = merged;
+        return merged;
     }
 
     public bool HandleAnnotationPointerMove(Viewport? vp, double pageX, double pageY,
@@ -403,7 +433,10 @@ public sealed class AnnotationInteractionHandler
         {
             if (PreviewAnnotation is TextMarkupAnnotation tm)
             {
-                vp.Owner.AddAnnotation(vp.CurrentPage, tm);
+                if (AutoMergeTextMarkup)
+                    vp.Owner.AddTextMarkupMerging(vp.CurrentPage, tm);
+                else
+                    vp.Owner.AddAnnotation(vp.CurrentPage, tm);
                 PreviewAnnotation = null;
                 _highlightCharStart = -1;
                 changed = true;
@@ -808,15 +841,24 @@ public sealed class AnnotationInteractionHandler
     }
 
     /// <summary>
-    /// Handle click in browse mode on text notes.
-    /// Single click: toggle expand/collapse. Double click: open edit dialog.
+    /// Handle click in browse mode on annotations that carry a comment body.
+    /// <list type="bullet">
+    /// <item>Text note — single click toggles expand/collapse; double click selects and asks the
+    /// host to open its edit dialog (<c>Edit</c> is the note).</item>
+    /// <item>Text markup (highlight/underline/strike-out/squiggly) — double click selects it and asks
+    /// the host to open a comment dialog for it (<c>Edit</c> is the markup); single click is not
+    /// handled here (the host's pointer-down path already selected it and panned).</item>
+    /// </list>
+    /// A note wins over markup under the same point, mirroring the browse pointer-down priority
+    /// (markup hit-tests on its union bounds, which can cover a note).
     /// </summary>
-    public (bool Handled, TextNoteAnnotation? EditNote) HandleBrowseClick(Viewport? vp, float pageX, float pageY, bool isDoubleClick = false)
+    public (bool Handled, Annotation? Edit) HandleBrowseClick(Viewport? vp, float pageX, float pageY, bool isDoubleClick = false)
     {
         if (vp is null) return (false, null);
         var list = GetCurrentPageAnnotations(vp);
         if (list is null) return (false, null);
 
+        TextMarkupAnnotation? markup = null;
         for (int i = list.Count - 1; i >= 0; i--)
         {
             if (list[i] is TextNoteAnnotation tn && AnnotationGeometry.HitTest(tn, pageX, pageY))
@@ -830,6 +872,14 @@ public sealed class AnnotationInteractionHandler
                 tn.IsExpanded = !tn.IsExpanded;
                 return (true, null);
             }
+            if (markup is null && list[i] is TextMarkupAnnotation m && AnnotationGeometry.HitTest(m, pageX, pageY))
+                markup = m;
+        }
+
+        if (markup is not null && isDoubleClick)
+        {
+            SelectedAnnotation = markup;
+            return (true, markup);
         }
         return (false, null);
     }
