@@ -65,6 +65,18 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
     /// </summary>
     public Action<string>? OnSidecarMigration { get; set; }
 
+    /// <summary>
+    /// The verdict <see cref="Save"/> would reach for this PDF right now, without saving or
+    /// signalling: null when annotations are reconciled into the PDF (so deleting an in-PDF
+    /// annotation sticks), else why they would go to the sidecar instead. Lets a host refuse an
+    /// edit that only makes sense on the writable path — merging away a reviewer's in-PDF
+    /// highlight, say, which the sidecar fallback would resurrect on reload — <i>before</i> the
+    /// first save has fired <see cref="OnSidecarFallback"/>. Probes the file (and, once per
+    /// path, PDFium's signature count), so call it per decision, not per frame.
+    /// </summary>
+    public SidecarFallbackReason? GetSidecarFallbackReason(string pdfPath, string? password = null)
+        => GetFallbackReason(pdfPath, password);
+
     public AnnotationFile? Load(string pdfPath, string? password = null)
     {
         var sidecar = _sidecar.Load(pdfPath, password);
