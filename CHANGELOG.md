@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — Comments on text markup; merge overlapping highlights
+## 0.64.0 — Comments on text markup; merge overlapping highlights (2026-10-12)
 
 ### Comments on highlights (and any other annotation)
 
