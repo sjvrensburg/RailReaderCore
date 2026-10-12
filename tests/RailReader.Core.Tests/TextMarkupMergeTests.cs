@@ -258,7 +258,60 @@ public class TextMarkupMergeTests : IDisposable
         int depth = _doc.UndoStack.Count;
         _doc.UpdateAnnotationContents(0, a, null);
         _doc.UpdateAnnotationContents(0, a, "");
+        _doc.UpdateAnnotationContents(0, a, "   "); // whitespace-only is "no comment", same as merge/renderer
         Assert.Equal(depth, _doc.UndoStack.Count);
+        Assert.Null(a.Contents);
+    }
+
+    [Fact]
+    public void MergeOverlapping_RefusesReplyThreads_SoSaveCannotOrphanThem()
+    {
+        // A source that has a reply on the page: deleting it by /NM would dangle the reply's /IRT.
+        var parent = Hl(rects: new HighlightRect(10, 100, 30, 12));
+        parent.NativeId = "nm-parent"; parent.Source = AnnotationSource.InPdf;
+        var reply = new TextNoteAnnotation { X = 15, Y = 106, Contents = "reply", InReplyTo = "nm-parent" };
+        var other = Hl(rects: new HighlightRect(30, 100, 30, 12));
+        foreach (var ann in new Annotation[] { parent, reply, other }) _doc.AddAnnotation(0, ann);
+        int depth = _doc.UndoStack.Count;
+
+        Assert.Null(_doc.MergeOverlappingTextMarkup(0, other, out var refusal));
+        Assert.Equal(TextMarkupMerge.Refusal.Threaded, refusal);
+        Assert.Equal([parent, reply, other], Page0);
+        Assert.Equal(depth, _doc.UndoStack.Count);
+        Assert.Equal(0, _doc.MergeOverlappingTextMarkup(0)); // the sweep skips it too
+
+        // A source that is itself a reply: the merged copy would lose its /IRT.
+        reply.InReplyTo = null;
+        other.InReplyTo = "someone-else";
+        Assert.Null(_doc.MergeOverlappingTextMarkup(0, parent, out refusal));
+        Assert.Equal(TextMarkupMerge.Refusal.Threaded, refusal);
+
+        other.InReplyTo = null;
+        Assert.NotNull(_doc.MergeOverlappingTextMarkup(0, parent, out refusal));
+        Assert.Equal(TextMarkupMerge.Refusal.None, refusal);
+    }
+
+    [Fact]
+    public void TryBuildMerged_CarriesSeedMetadata_WithFreshIdentity()
+    {
+        var a = Hl(rects: new HighlightRect(10, 100, 30, 12));
+        a.NativeId = "nm-a"; a.Source = AnnotationSource.InPdf; a.Flags = 4; a.State = ReviewState.Accepted;
+        a.ColorComponents = [1f, 1f, 0f]; a.Author = "  "; a.Subject = null;
+        a.CreatedUtc = new DateTimeOffset(2026, 1, 2, 0, 0, 0, TimeSpan.Zero);
+        var b = Hl(rects: new HighlightRect(30, 100, 30, 12));
+        b.Author = "Reviewer"; b.Subject = "Comment on Text";
+        b.CreatedUtc = new DateTimeOffset(2025, 1, 2, 0, 0, 0, TimeSpan.Zero);
+
+        Assert.Equal(TextMarkupMerge.Refusal.None, TextMarkupMerge.TryBuildMerged([a, b], out var merged));
+        Assert.Null(merged!.NativeId);
+        Assert.Equal(AnnotationSource.RailReader, merged.Source);
+        Assert.Equal(4, merged.Flags);
+        Assert.Equal(ReviewState.Accepted, merged.State);
+        Assert.Equal([1f, 1f, 0f], merged.ColorComponents!);
+        Assert.Equal("Reviewer", merged.Author);
+        Assert.Equal("Comment on Text", merged.Subject);
+        Assert.Equal(b.CreatedUtc, merged.CreatedUtc);
+        Assert.NotNull(merged.ModifiedUtc);
     }
 
     [Fact]

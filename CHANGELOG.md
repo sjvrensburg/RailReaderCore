@@ -8,8 +8,8 @@ A comment body (`/Contents`) could already round-trip on every subtype, but only
 authoring path. Now any annotation can carry one:
 
 - `DocumentModel.UpdateAnnotationContents(page, annotation, text)` sets the body of **any** annotation
-  as **one undo step** (`EditContentsAction`); null/empty clears it, an unchanged body is a no-op, and
-  `ModifiedUtc` is stamped. `UpdateAnnotationText(page, note, text)` now routes through it, so **sticky-note
+  as **one undo step** (`EditContentsAction`); null/empty/whitespace-only clears it, an unchanged body is
+  a no-op, and `ModifiedUtc` is stamped. `UpdateAnnotationText(page, note, text)` now routes through it, so **sticky-note
   edits are undoable for the first time** (they previously bypassed the undo stack). A note's legacy `Text`
   stays in sync with `Contents`.
 - `AnnotationInteractionHandler.CompleteCommentEdit(vp, annotation, text)` is the handler-level
@@ -30,14 +30,17 @@ authoring path. Now any annotation can carry one:
   case-insensitive, opacity within 0.01), `Overlaps` (strict rect intersection — edge-touching rects do
   not count, so adjacent lines of separate highlights are not glued), `FindCluster` (transitive, page-list
   order), `UnionRects` (one rect per line band, horizontally overlapping intervals joined, disjoint ones
-  kept), and `TryBuildMerged` (fresh identity — null `NativeId`, `Source.RailReader` — so the reconciling
-  PDF writer deletes the sources by `/NM` and creates the merged one; refuses `ConflictingComments` when
-  two sources carry different non-empty bodies, keeps the one they agree on).
+  kept), `TryBuildMerged` (fresh identity via `Annotation.CloneForPaste` — null `NativeId`,
+  `Source.RailReader` — so the reconciling PDF writer deletes the sources by `/NM` and creates the merged
+  one; refuses `ConflictingComments` when two sources carry different non-empty bodies, keeps the one they
+  agree on), and `IsThreaded` (true when a member is a reply or has replies on the page).
 - `DocumentModel.MergeOverlappingTextMarkup(page, seed, out refusal)` replaces the seed's cluster with one
   merged annotation as a single undo step (`MergeAnnotationsAction`, inserted where the first source was so
   z-order is kept; undo restores every source at its original index). The seed may be a not-yet-added
-  annotation. `MergeOverlappingTextMarkup(page)` sweeps every cluster on a page (one undo step per cluster,
-  conflicting clusters skipped) and returns how many sources were merged away.
+  annotation. A cluster that is part of a reply thread is refused with `Refusal.Threaded` — the sources
+  would be deleted by `/NM` on save and PDFium cannot re-point a reply's `/IRT`, so merging would orphan
+  the thread. `MergeOverlappingTextMarkup(page)` sweeps every cluster on a page (one undo step per cluster,
+  refused clusters skipped) and returns how many sources were merged away.
 - `DocumentModel.AddTextMarkupMerging(page, markup)` adds a freshly authored markup merged into whatever it
   overlaps, as one undo step (plain add when nothing overlaps).
 - `AnnotationInteractionHandler.AutoMergeTextMarkup` (default **off**) makes the drag-over-text tools commit

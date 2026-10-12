@@ -131,7 +131,9 @@ public static class AnnotationRenderer
                 break;
         }
 
-        if (annotation is TextMarkupAnnotation markup && !string.IsNullOrEmpty(markup.EffectiveContents))
+        // Whitespace-only is "no comment" — the same rule UpdateAnnotationContents and
+        // TextMarkupMerge apply — so a PDF carrying a blank /Contents gets no glyph or empty card.
+        if (annotation is TextMarkupAnnotation markup && !string.IsNullOrWhiteSpace(markup.EffectiveContents))
             DrawMarkupComment(canvas, markup, color, isSelected || expandAllNotes);
 
         if (isSelected)

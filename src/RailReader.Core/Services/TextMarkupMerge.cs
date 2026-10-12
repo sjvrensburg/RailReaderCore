@@ -11,11 +11,14 @@ namespace RailReader.Core.Services;
 public static class TextMarkupMerge
 {
     /// <summary>
-    /// Opacity tolerance for "same style" (matches <c>AnnotationEquivalence</c>).
+    /// Opacity tolerance for "same style". Keep in step with the reconciling writer's
+    /// <c>AnnotationEquivalence.StyleEquivalent</c> in <c>RailReader.Core.Pdfium</c> (internal there,
+    /// so the constant is duplicated rather than shared): two markups the writer treats as
+    /// unchanged-in-style should be mergeable here, and vice versa.
     /// </summary>
     private const float OpacityTolerance = 0.01f;
 
-    /// <summary>Why <see cref="TryBuildMerged"/> declined to merge a cluster.</summary>
+    /// <summary>Why a cluster was not merged (<see cref="TryBuildMerged"/>, <see cref="IsThreaded"/>).</summary>
     public enum Refusal
     {
         None,
@@ -24,6 +27,10 @@ public static class TextMarkupMerge
         /// <summary>Two or more sources carry different, non-empty comments. Merging would have
         /// to pick one or concatenate; the caller should leave that to the user.</summary>
         ConflictingComments,
+        /// <summary>A source is a reply (<see cref="Annotation.InReplyTo"/>) or has replies on its
+        /// page. The merged annotation has a fresh /NM and PDFium cannot re-point a reply's /IRT, so
+        /// merging would orphan the thread (see <see cref="IsThreaded"/>).</summary>
+        Threaded,
     }
 
     /// <summary>
@@ -77,14 +84,34 @@ public static class TextMarkupMerge
             }
         }
         // Page-list order (seed first if absent from the page) keeps the result deterministic.
-        cluster.Sort((x, y) => IndexOrFirst(page, x).CompareTo(IndexOrFirst(page, y)));
+        if (cluster.Count > 1)
+        {
+            var index = new Dictionary<Annotation, int>(ReferenceEqualityComparer.Instance);
+            for (int i = 0; i < page.Count; i++) index.TryAdd(page[i], i);
+            cluster.Sort((x, y) => index.GetValueOrDefault(x, -1).CompareTo(index.GetValueOrDefault(y, -1)));
+        }
         return cluster;
     }
 
-    private static int IndexOrFirst(IReadOnlyList<Annotation> page, Annotation a)
+    /// <summary>
+    /// True when merging <paramref name="cluster"/> would break a reply thread: a member is itself
+    /// a reply (<see cref="Annotation.InReplyTo"/>), or another annotation on <paramref name="page"/>
+    /// replies to a member by its /NM. The merged annotation gets a fresh identity and the sources
+    /// are deleted on save, and PDFium has no API to re-point a reply's /IRT, so the thread would be
+    /// orphaned.
+    /// </summary>
+    public static bool IsThreaded(IReadOnlyList<Annotation> page, IReadOnlyList<TextMarkupAnnotation> cluster)
     {
-        for (int i = 0; i < page.Count; i++) if (ReferenceEquals(page[i], a)) return i;
-        return -1;
+        HashSet<string>? ids = null;
+        foreach (var m in cluster)
+        {
+            if (!string.IsNullOrEmpty(m.InReplyTo)) return true;
+            if (!string.IsNullOrEmpty(m.NativeId)) (ids ??= new(StringComparer.Ordinal)).Add(m.NativeId);
+        }
+        if (ids is null) return false;
+        foreach (var ann in page)
+            if (!string.IsNullOrEmpty(ann.InReplyTo) && ids.Contains(ann.InReplyTo)) return true;
+        return false;
     }
 
     /// <summary>
@@ -148,9 +175,12 @@ public static class TextMarkupMerge
     /// Builds the merged annotation for a cluster (see <see cref="FindCluster"/>): a brand-new
     /// instance of the shared subtype with the unioned rects, the shared colour/opacity, the single
     /// comment the sources agree on (or none), and the earliest creation date. Identity is fresh
-    /// (<see cref="Annotation.NativeId"/> null, <see cref="AnnotationSource.RailReader"/>): the
-    /// reconciling PDF writer deletes the sources by their /NM and creates the merged one. Refuses
-    /// when the cluster has fewer than two members or carries conflicting comments.
+    /// (<see cref="Annotation.NativeId"/> null, <see cref="AnnotationSource.RailReader"/>, via
+    /// <see cref="Annotation.CloneForPaste"/>, which also carries the first source's colour, opacity,
+    /// flags and review state): the reconciling PDF writer deletes the sources by their /NM and
+    /// creates the merged one. Refuses when the cluster has fewer than two members or carries
+    /// conflicting comments. Reply-thread safety is the caller's check (<see cref="IsThreaded"/>
+    /// needs the page).
     /// </summary>
     public static Refusal TryBuildMerged(IReadOnlyList<TextMarkupAnnotation> cluster, out TextMarkupAnnotation? merged)
     {
@@ -166,17 +196,11 @@ public static class TextMarkupMerge
             else if (!string.Equals(comment, body, StringComparison.Ordinal)) return Refusal.ConflictingComments;
         }
 
-        var seed = cluster[0];
-        var result = (TextMarkupAnnotation)Activator.CreateInstance(seed.GetType())!;
+        var result = (TextMarkupAnnotation)Annotation.CloneForPaste(cluster[0]);
         result.Rects = UnionRects(cluster.SelectMany(m => m.Rects));
-        result.Color = seed.Color;
-        result.Opacity = seed.Opacity;
         result.Contents = comment;
         result.Author = cluster.Select(m => m.Author).FirstOrDefault(a => !string.IsNullOrWhiteSpace(a));
         result.Subject = cluster.Select(m => m.Subject).FirstOrDefault(s => !string.IsNullOrWhiteSpace(s));
-        result.Flags = seed.Flags;
-        result.State = seed.State;
-        result.ColorComponents = seed.ColorComponents;
         result.CreatedUtc = cluster.Min(m => m.CreatedUtc) ?? DateTimeOffset.UtcNow;
         result.ModifiedUtc = DateTimeOffset.UtcNow;
         merged = result;
