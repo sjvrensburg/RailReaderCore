@@ -149,34 +149,59 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
         }
     }
 
+    /// <summary>How many times the signature probe actually ran (loaded a document) — a
+    /// testability hook for the per-(path, password) cache.</summary>
+    internal int SignatureProbeCount => Volatile.Read(ref _signatureProbes);
+    private int _signatureProbes;
+
+    /// <summary>The verdict cache key. The password is part of it: an encrypted document probed
+    /// with a missing/wrong password fails to load (and counts as unsigned), and a later probe
+    /// with the right one must be a different entry, not a hit on that stale verdict. The
+    /// password already lives in memory for the session on the host's <c>IPdfService</c>.</summary>
+    private static string SignedCacheKey(string pdfPath, string? password)
+        => Path.GetFullPath(pdfPath) + "\0" + (password ?? "");
+
     private bool IsSigned(string pdfPath, string? password)
     {
-        var key = Path.GetFullPath(pdfPath);
+        var key = SignedCacheKey(pdfPath, password);
         lock (_cacheLock)
             if (_signedCache.TryGetValue(key, out var cached)) return cached;
 
         bool signed = false;
-        bool probed = false; // true only when the document actually loaded
         try
         {
-            var bytes = File.ReadAllBytes(pdfPath);
             lock (PdfiumGate.Lock)
             {
                 PdfiumResolver.EnsureLibraryInitialized();
-                var pin = GCHandle.Alloc(bytes, GCHandleType.Pinned);
-                try
+                Interlocked.Increment(ref _signatureProbes);
+                // Path load first: lazy, so a multi-hundred-MB scan costs a few KB of I/O here.
+                // Hosts call this from the UI thread (per save, or per merge decision), so it has
+                // to be cheap. Fall back to a whole-file memory load only when the native layer
+                // can't open the path itself — the parse is the same code either way, so that
+                // fallback is for path problems, not malformed files.
+                var doc = FPDF_LoadDocument(pdfPath, password);
+                if (doc != IntPtr.Zero)
                 {
-                    var doc = FPDF_LoadMemDocument(pin.AddrOfPinnedObject(), bytes.Length, password);
-                    if (doc != IntPtr.Zero)
-                    {
-                        signed = FPDF_GetSignatureCount(doc) > 0;
-                        FPDF_CloseDocument(doc);
-                        probed = true;
-                    }
+                    signed = FPDF_GetSignatureCount(doc) > 0;
+                    FPDF_CloseDocument(doc);
                 }
-                finally
+                else if (FPDF_GetLastError() == FPDF_ERR_FILE)
                 {
-                    pin.Free();
+                    var bytes = File.ReadAllBytes(pdfPath);
+                    var pin = GCHandle.Alloc(bytes, GCHandleType.Pinned);
+                    try
+                    {
+                        doc = FPDF_LoadMemDocument(pin.AddrOfPinnedObject(), bytes.Length, password);
+                        if (doc != IntPtr.Zero)
+                        {
+                            signed = FPDF_GetSignatureCount(doc) > 0;
+                            FPDF_CloseDocument(doc);
+                        }
+                    }
+                    finally
+                    {
+                        pin.Free();
+                    }
                 }
             }
         }
@@ -185,12 +210,11 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
             RailReaderLogging.Logger.Debug($"[Annotations] Signature probe failed for {pdfPath}: {ex.Message}");
         }
 
-        // Don't cache a failed probe. An encrypted document opened with a missing/wrong
-        // password loads as Zero (signed stays false); caching that under the path-only
-        // key would poison a later probe made with the correct password and mis-route a
-        // signed-and-encrypted document into a signature-invalidating in-PDF rewrite.
-        if (probed)
-            lock (_cacheLock) _signedCache[key] = signed;
+        // Every outcome is cached, a failed probe included: it reads as unsigned exactly as it
+        // always did, but used not to be cached, so each later verdict on an unparseable (or
+        // wrong-password) document re-read the whole file. The password in the key is what makes
+        // caching a failure safe — see SignedCacheKey.
+        lock (_cacheLock) _signedCache[key] = signed;
         return signed;
     }
 

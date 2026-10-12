@@ -163,6 +163,69 @@ public class CompositeAnnotationStoreRoutingTests
     }
 
     [Fact]
+    public void SignatureProbe_RunsOnce_PerPathAndPassword()
+    {
+        var path = WritablePdf();
+        try
+        {
+            var store = new CompositeAnnotationStore(new FakeSidecar());
+            Assert.Null(store.GetSidecarFallbackReason(path));
+            Assert.Null(store.GetSidecarFallbackReason(path));
+            Assert.Equal(1, store.SignatureProbeCount);          // second verdict was a cache hit
+
+            Assert.Null(store.GetSidecarFallbackReason(path, "other"));
+            Assert.Equal(2, store.SignatureProbeCount);          // a different password is its own entry
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void SignatureProbe_PathLoad_OpensTheDocumentNatively()
+    {
+        // The lazy path load is what keeps the probe cheap; if the binding or the path encoding
+        // were wrong the probe would still pass via the whole-file fallback, so check it directly.
+        var path = WritablePdf();
+        try
+        {
+            lock (PdfiumGate.Lock)
+            {
+                PdfiumResolver.EnsureLibraryInitialized();
+                var doc = PdfiumNative.FPDF_LoadDocument(path, null);
+                Assert.NotEqual(IntPtr.Zero, doc);
+                Assert.Equal(0, PdfiumNative.FPDF_GetSignatureCount(doc));
+                PdfiumNative.FPDF_CloseDocument(doc);
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void SignatureProbe_FailedProbe_IsCachedToo()
+    {
+        // Not a PDF at all: PDFium can't parse it, the probe fails, and that used to be re-run
+        // (whole-file read included) on every later verdict.
+        var path = Path.Combine(Path.GetTempPath(), $"rr-garbage-{Guid.NewGuid():N}.pdf");
+        File.WriteAllText(path, "this is not a pdf");
+        try
+        {
+            var store = new CompositeAnnotationStore(new FakeSidecar());
+            Assert.Null(store.GetSidecarFallbackReason(path)); // writable, unparseable → treated as unsigned
+            Assert.Null(store.GetSidecarFallbackReason(path));
+            Assert.Equal(1, store.SignatureProbeCount);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void GetSidecarFallbackReason_MissingFile_IsReadOnly()
     {
         var store = new CompositeAnnotationStore(new FakeSidecar());
