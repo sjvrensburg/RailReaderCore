@@ -127,6 +127,50 @@ public class CompositeAnnotationStoreRoutingTests
     }
 
     [Fact]
+    public void GetSidecarFallbackReason_ReportsTheSaveVerdict_WithoutSavingOrSignalling()
+    {
+        var path = WritablePdf();
+        try
+        {
+            var fake = new FakeSidecar();
+            var store = new CompositeAnnotationStore(fake);
+            var reasons = new List<SidecarFallbackReason>();
+            store.OnSidecarFallback = (_, r) => reasons.Add(r);
+
+            Assert.Null(store.GetSidecarFallbackReason(path)); // writable + unsigned → PDF is canonical
+
+            File.SetAttributes(path, FileAttributes.ReadOnly);
+            Assert.Equal(SidecarFallbackReason.ReadOnly, store.GetSidecarFallbackReason(path));
+
+            // The query is side-effect free: nothing saved, nothing signalled...
+            Assert.Empty(reasons);
+            Assert.Empty(fake.Saved);
+
+            // ...and it does not consume the once-per-path signal a real save fires.
+            var file = new AnnotationFile();
+            file.Pages[0] = [new HighlightAnnotation { Rects = [new HighlightRect(72, 100, 80, 16)] }];
+            Assert.True(store.Save(path, file));
+            Assert.Equal([SidecarFallbackReason.ReadOnly], reasons);
+
+            File.SetAttributes(path, FileAttributes.Normal);
+            Assert.Null(store.GetSidecarFallbackReason(path)); // re-probed each call, not cached
+        }
+        finally
+        {
+            File.SetAttributes(path, FileAttributes.Normal);
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void GetSidecarFallbackReason_MissingFile_IsReadOnly()
+    {
+        var store = new CompositeAnnotationStore(new FakeSidecar());
+        var missing = Path.Combine(Path.GetTempPath(), $"rr-missing-{Guid.NewGuid():N}.pdf");
+        Assert.Equal(SidecarFallbackReason.ReadOnly, store.GetSidecarFallbackReason(missing));
+    }
+
+    [Fact]
     public void Writable_LoadAfterSave_SurfacesTheWrittenAnnotation()
     {
         var path = WritablePdf();

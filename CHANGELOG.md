@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.64.1 — Query the annotation store's save verdict (2026-10-12)
+
+### `CompositeAnnotationStore.GetSidecarFallbackReason(path, password)`
+
+The store already decided, at save time, whether a PDF's annotations are reconciled into the file or
+written to the JSON sidecar (read-only or signed), and told the host afterwards via
+`OnSidecarFallback`. A host that needs the verdict *before* the first save had no way to get it: the
+file-writability and PDFium signature probes were private. 0.64.0's highlight merge made that matter —
+merging away a reviewer's in-PDF highlight on a PDF the store won't write back into leaves the sources
+in the PDF, so they return on reload beside the merged copy, and a host could only block that after the
+fallback signal had fired once. The new query returns exactly what `Save` would decide now (`null` when
+the PDF is canonical, else the reason), with no save and no signal; the once-per-path signal is left
+intact for the real save. It probes the file (and, cached per path, the signature count), so it is a
+per-decision call, not a per-frame one.
+
 ## 0.64.0 — Comments on text markup; merge overlapping highlights (2026-10-12)
 
 ### Comments on highlights (and any other annotation)
