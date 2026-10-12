@@ -250,6 +250,64 @@ public sealed class RemoveAnnotationAction(int pageIndex, Annotation annotation)
     }
 }
 
+/// <summary>
+/// Edit of an annotation's comment body (<see cref="Annotation.Contents"/>, plus the legacy
+/// <see cref="TextNoteAnnotation.Text"/> for notes, which <see cref="Annotation.EffectiveContents"/>
+/// prefers over a null <c>Contents</c>). Records old and new body so a note edit or a highlight
+/// comment is a single undo step.
+/// </summary>
+public sealed class EditContentsAction(Annotation annotation, string? oldContents, string? newContents) : IUndoAction
+{
+    public void Undo(AnnotationFile file) => Apply(annotation, oldContents);
+    public void Redo(AnnotationFile file) => Apply(annotation, newContents);
+
+    /// <summary>Writes <paramref name="contents"/> as the annotation's body. For a note the legacy
+    /// <c>Text</c> is kept in sync (null → empty) so both read paths agree.</summary>
+    public static void Apply(Annotation annotation, string? contents)
+    {
+        annotation.Contents = contents;
+        if (annotation is TextNoteAnnotation note) note.Text = contents ?? "";
+    }
+}
+
+/// <summary>
+/// Replaces several annotations on one page with a single merged one as ONE undo step
+/// (see <c>DocumentModel.MergeOverlappingTextMarkup</c>). The merged annotation is inserted at
+/// the list position of the first removed source so z-order within the markup tier is kept;
+/// undo restores every source at its original index.
+/// </summary>
+public sealed class MergeAnnotationsAction(int pageIndex, IReadOnlyList<Annotation> sources, Annotation merged) : IUndoAction
+{
+    private readonly List<(int Index, Annotation Annotation)> _removed = [];
+    private int _insertIndex = -1;
+
+    public void Redo(AnnotationFile file)
+    {
+        _removed.Clear();
+        _insertIndex = -1;
+        if (!file.Pages.TryGetValue(pageIndex, out var list))
+        {
+            list = [];
+            file.Pages[pageIndex] = list;
+        }
+        for (int i = 0; i < list.Count; i++)
+            if (sources.Contains(list[i])) _removed.Add((i, list[i]));
+        for (int k = _removed.Count - 1; k >= 0; k--)
+            list.RemoveAt(_removed[k].Index);
+        _insertIndex = _removed.Count > 0 ? Math.Min(_removed[0].Index, list.Count) : list.Count;
+        list.Insert(_insertIndex, merged);
+    }
+
+    public void Undo(AnnotationFile file)
+    {
+        if (!file.Pages.TryGetValue(pageIndex, out var list)) return;
+        list.Remove(merged);
+        // Re-insert in ascending index order so each original position is valid again.
+        foreach (var (index, ann) in _removed)
+            list.Insert(Math.Min(index, list.Count), ann);
+    }
+}
+
 public sealed class MoveAnnotationAction(
     Annotation annotation, PositionSnapshot oldPosition, PositionSnapshot newPosition) : IUndoAction
 {

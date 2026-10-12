@@ -42,7 +42,7 @@ public static class AnnotationRenderer
     // simultaneously expanded notes each keep their own entry: a single slot
     // thrashes as soon as two expanded notes draw in the same frame.
     private sealed record NoteLayoutCache(string Body, List<string> Lines, float PopupW, float PopupH);
-    [ThreadStatic] private static ConditionalWeakTable<TextNoteAnnotation, NoteLayoutCache>? s_noteLayouts;
+    [ThreadStatic] private static ConditionalWeakTable<Annotation, NoteLayoutCache>? s_noteLayouts;
 
     // Shared unit-size icon path for text notes — translated per note, never rebuilt.
     [ThreadStatic] private static SKPath? s_noteIconPath;
@@ -130,6 +130,9 @@ public static class AnnotationRenderer
                 DrawFreeText(canvas, freeText, color);
                 break;
         }
+
+        if (annotation is TextMarkupAnnotation markup && !string.IsNullOrEmpty(markup.EffectiveContents))
+            DrawMarkupComment(canvas, markup, color, isSelected || expandAllNotes);
 
         if (isSelected)
             DrawSelectionIndicator(canvas, annotation);
@@ -384,42 +387,110 @@ public static class AnnotationRenderer
         // the legacy Text field for RailReader-authored ones) — not Text alone, which is
         // empty for Source.InPdf notes.
         if ((note.IsExpanded || forceExpand) && !string.IsNullOrEmpty(note.EffectiveContents))
+            DrawCommentPopup(canvas, note, note.X + NoteIconSize / 2 + 4, note.Y + NoteIconSize / 2 + 2);
+    }
+
+    /// <summary>Size of the comment glyph drawn beside a commented text markup, in page units.</summary>
+    public const float MarkupCommentGlyphSize = 10f;
+
+    /// <summary>
+    /// Page-space rect of the comment glyph for a commented text markup: a small note icon
+    /// hanging off the top-right corner of its first (topmost) rect. Public so hosts can hit-test
+    /// it. Null when the markup has no rects.
+    /// </summary>
+    public static SKRect? GetMarkupCommentGlyphRect(TextMarkupAnnotation markup)
+    {
+        if (markup.Rects.Count == 0) return null;
+        var first = markup.Rects[0];
+        foreach (var r in markup.Rects)
+            if (r.Y < first.Y || (r.Y == first.Y && r.X + r.W > first.X + first.W)) first = r;
+        float x = first.X + first.W - MarkupCommentGlyphSize * 0.4f;
+        float y = first.Y - MarkupCommentGlyphSize * 0.6f;
+        return SKRect.Create(x, y, MarkupCommentGlyphSize, MarkupCommentGlyphSize);
+    }
+
+    /// <summary>
+    /// Draws the "this markup has a comment" glyph (a miniature of the sticky-note icon in the
+    /// markup's own colour, at full alpha so it reads over the translucent fill) and, when
+    /// <paramref name="showBody"/>, the comment popup beside it — the same popup a text note
+    /// uses, so the two read as one family.
+    /// </summary>
+    private static void DrawMarkupComment(SKCanvas canvas, TextMarkupAnnotation markup, SKColor color, bool showBody)
+    {
+        if (GetMarkupCommentGlyphRect(markup) is not { } glyph) return;
+
+        float scale = MarkupCommentGlyphSize / NoteIconSize;
+        canvas.Save();
+        canvas.Translate(glyph.Left, glyph.Top);
+        canvas.Scale(scale);
+
+        var fillPaint = GetFillPaint();
+        fillPaint.Color = new SKColor(255, 255, 255, 230); // paper, so the glyph stands off the fill
+        canvas.DrawPath(GetNoteIconPath(), fillPaint);
+        fillPaint.Color = color.WithAlpha(255);
+        canvas.DrawPath(GetNoteFoldPath(), fillPaint);
+
+        var borderPaint = s_noteBorderPaint ??= new SKPaint
         {
-            var font = s_noteFont ??= new SKFont(SKTypeface.Default, 9);
-            var textPaint = s_noteTextPaint ??= new SKPaint { Color = new SKColor(0, 0, 0, 220), IsAntialias = true };
-            var bgPaint = s_noteBgPaint ??= new SKPaint { Color = new SKColor(255, 255, 200, 240) };
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 1,
+            IsAntialias = true,
+        };
+        borderPaint.Color = color.WithAlpha(255);
+        borderPaint.StrokeWidth = 1f / scale;
+        canvas.DrawPath(GetNoteIconPath(), borderPaint);
+        borderPaint.StrokeWidth = 1f;
+        canvas.Restore();
 
-            // Cached text layout — skip WrapText + MeasureText when note text hasn't changed.
-            var (lines, popupW, popupH) = GetOrComputeNoteLayout(note, font);
+        if (showBody)
+            DrawCommentPopup(canvas, markup, glyph.Right + 4, glyph.Bottom + 2);
+    }
 
-            float popupX = note.X + NoteIconSize / 2 + 4;
-            float popupY = note.Y + NoteIconSize / 2 + 2;
+    /// <summary>
+    /// Draws an annotation's comment body as the note-style popup (yellow card, drop shadow,
+    /// wrapped text) with its top-left at (<paramref name="popupX"/>, <paramref name="popupY"/>).
+    /// Layout is cached per annotation (<see cref="GetOrComputeNoteLayout"/>).
+    /// </summary>
+    private static void DrawCommentPopup(SKCanvas canvas, Annotation annotation, float popupX, float popupY)
+    {
+        if (string.IsNullOrEmpty(annotation.EffectiveContents)) return;
+        var font = s_noteFont ??= new SKFont(SKTypeface.Default, 9);
+        var textPaint = s_noteTextPaint ??= new SKPaint { Color = new SKColor(0, 0, 0, 220), IsAntialias = true };
+        var bgPaint = s_noteBgPaint ??= new SKPaint { Color = new SKColor(255, 255, 200, 240) };
+        var borderPaint = s_noteBorderPaint ??= new SKPaint
+        {
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 1,
+            IsAntialias = true,
+        };
 
-            // Shadow
-            var shadowPaint = s_shadowPaint ??= new SKPaint
-            {
-                Color = new SKColor(0, 0, 0, 40),
-                MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 2),
-                IsAntialias = true,
-            };
-            canvas.DrawRoundRect(SKRect.Create(popupX + 1, popupY + 1, popupW, popupH), 3, 3, shadowPaint);
+        // Cached text layout — skip WrapText + MeasureText when the body hasn't changed.
+        var (lines, popupW, popupH) = GetOrComputeNoteLayout(annotation, font);
 
-            // Popup background
-            var popupRect = SKRect.Create(popupX, popupY, popupW, popupH);
-            canvas.DrawRoundRect(popupRect, 3, 3, bgPaint);
+        // Shadow
+        var shadowPaint = s_shadowPaint ??= new SKPaint
+        {
+            Color = new SKColor(0, 0, 0, 40),
+            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 2),
+            IsAntialias = true,
+        };
+        canvas.DrawRoundRect(SKRect.Create(popupX + 1, popupY + 1, popupW, popupH), 3, 3, shadowPaint);
 
-            // Popup border
-            borderPaint.Color = new SKColor(180, 170, 100, 200);
-            canvas.DrawRoundRect(popupRect, 3, 3, borderPaint);
+        // Popup background
+        var popupRect = SKRect.Create(popupX, popupY, popupW, popupH);
+        canvas.DrawRoundRect(popupRect, 3, 3, bgPaint);
 
-            // Text lines
-            float lineHeight = font.Size * 1.4f;
-            float ty = popupY + PopupPadding + font.Size;
-            foreach (var line in lines)
-            {
-                canvas.DrawText(line, popupX + PopupPadding, ty, font, textPaint);
-                ty += lineHeight;
-            }
+        // Popup border
+        borderPaint.Color = new SKColor(180, 170, 100, 200);
+        canvas.DrawRoundRect(popupRect, 3, 3, borderPaint);
+
+        // Text lines
+        float lineHeight = font.Size * 1.4f;
+        float ty = popupY + PopupPadding + font.Size;
+        foreach (var line in lines)
+        {
+            canvas.DrawText(line, popupX + PopupPadding, ty, font, textPaint);
+            ty += lineHeight;
         }
     }
 
@@ -463,7 +534,7 @@ public static class AnnotationRenderer
     /// note identity or text changes, eliminating WrapText + MeasureText per frame.
     /// </summary>
     private static (List<string> Lines, float PopupW, float PopupH) GetOrComputeNoteLayout(
-        TextNoteAnnotation note, SKFont font)
+        Annotation note, SKFont font)
     {
         var layouts = s_noteLayouts ??= new();
         string body = note.EffectiveContents;
