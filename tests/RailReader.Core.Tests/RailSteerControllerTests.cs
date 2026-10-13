@@ -125,8 +125,9 @@ public class RailSteerControllerTests : IDisposable
         _controller.SteerRail(vp, 0);                   // dead zone …
         _controller.SteerRail(vp, 1);                   // … re-push
         Assert.False(vp.Rail.SteerParked);
-        for (int i = 0; i < 10; i++) Tick(vp);
+        for (int i = 0; i < 200; i++) Tick(vp);          // past the new line's head (read with the camera still)
         Assert.NotEqual(parkedX, vp.Camera.OffsetX);
+        Assert.True(vp.Rail.SteerReadingPointPageX > 72 + 100);
     }
 
     [Fact]

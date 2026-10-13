@@ -15,7 +15,11 @@ one gesture at every magnification:
   and feeds the **same edge-hold state machine** — so line ends, snaps, snap-to-line-end when reading
   backwards and page turns reach the controller through the existing pending-edge-advance channel.
   `ScrollSpeed` reflects the steered speed (motion blur, deferred DPI re-render). Returning to 0
-  stops the camera where it is. Mutually exclusive with hold-to-scroll and auto-scroll: engaging the
+  stops the camera where it is. The stick carries a **virtual reading point** along the line
+  (`SteerReadingPointPageX`, kept at `SteerReadingPointFraction` of the window where the camera can
+  follow, sweeping the line's head and tail while the camera is pinned at the line's start / end), so
+  every word passes the eye before the edge-hold beat begins — a fixed reading point advanced to the
+  next line before the last words of a line were reached. Mutually exclusive with hold-to-scroll and auto-scroll: engaging the
   stick stops a held arrow scroll; `StartScroll` / `StartAutoScroll` / deactivation clear the stick.
 - **Park on stop units** — `RailNav.ParkSteer()` / `SteerParked`: the controller's edge-advance path
   parks the stick when a steered *forward* flow enters a stop unit (a new chunk, a block in
