@@ -50,8 +50,16 @@ public sealed class ReadingGuideSteer
     /// <summary>Vertical pace at the dead-zone edge, lines per second.</summary>
     public double MinLinesPerSecond { get; set; } = 0.8;
 
-    /// <summary>Vertical pace at full deflection, lines per second.</summary>
+    /// <summary>Vertical pace at full deflection, lines per second (the repeat rate once a hold is under way).</summary>
     public double MaxLinesPerSecond { get; set; } = 3;
+
+    /// <summary>
+    /// Vertical stepping behaves like key repeat: the first line step fires the moment the stick leaves the
+    /// dead zone vertically, then nothing for this long, then steps at the deflection's rate while held.
+    /// A nudge that drifts down therefore moves one line, not several — the line step is a large motion
+    /// (a camera snap when the stick drives the rail).
+    /// </summary>
+    public double LineRepeatDelaySecs { get; set; } = 0.5;
 
     /// <summary>Extra dwell, in characters' worth, on a word that ends a sentence.</summary>
     public double SentencePauseChars { get; set; } = 6;
@@ -74,6 +82,7 @@ public sealed class ReadingGuideSteer
     private double _pointerX, _pointerY;
     private double _progress;   // characters (horizontal) or lines (vertical) accumulated toward the next step
     private int _lastSign;
+    private double _lineHold;   // seconds of repeat delay still to wait after a vertical step
 
     /// <summary>Plant the origin (the follow key went down with the pointer here) and start steering.</summary>
     public void Engage(double originX, double originY)
@@ -85,6 +94,7 @@ public sealed class ReadingGuideSteer
         Throttle = 0;
         _progress = 0;
         _lastSign = 0;
+        _lineHold = 0;
     }
 
     /// <summary>Stop steering (the follow key went up); the guide stays where it is.</summary>
@@ -95,6 +105,7 @@ public sealed class ReadingGuideSteer
         Throttle = 0;
         _progress = 0;
         _lastSign = 0;
+        _lineHold = 0;
     }
 
     /// <summary>The pointer's current host-pixel position.</summary>
@@ -122,6 +133,7 @@ public sealed class ReadingGuideSteer
             Throttle = 0;
             _progress = 0;
             _lastSign = 0;
+            _lineHold = 0;
             return SteerOutput.None;
         }
 
@@ -132,7 +144,10 @@ public sealed class ReadingGuideSteer
         double ramp = t * t;
         if (axis != Axis || sign != _lastSign)
         {
-            _progress = 0;
+            // Entering the vertical axis (or reversing on it) fires one line step at once — the nudge the
+            // reader just made — and the repeat delay then gates any further steps.
+            _progress = axis == SteerAxis.Vertical ? 1 : 0;
+            _lineHold = 0;
             Axis = axis;
             _lastSign = sign;
         }
@@ -154,11 +169,17 @@ public sealed class ReadingGuideSteer
         }
         else
         {
+            if (_lineHold > 0)
+            {
+                _lineHold -= dt;
+                return new SteerOutput(0, 0, axis, Throttle);
+            }
             double rate = MinLinesPerSecond + (MaxLinesPerSecond - MinLinesPerSecond) * ramp;
             _progress += rate * dt;
             if (_progress >= 1)
             {
-                _progress -= 1;
+                _progress = 0;
+                _lineHold = LineRepeatDelaySecs;
                 return new SteerOutput(0, sign, axis, Throttle);
             }
             return new SteerOutput(0, 0, axis, Throttle);
