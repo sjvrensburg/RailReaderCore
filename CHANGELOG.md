@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.65.0 — Reading guide: word index + pointer hit-tester (2026-10-13)
+
+### `WordIndex`, `ReadingGuideHitTester`, `ReadingGuidePosition`, `WordSpan`
+
+Core half of a pointer-driven **reading guide** for readers at low magnification (1.25–2×), where rail
+mode does not transfer (a forced below-threshold session dies on every new page's `SetAnalysis`, and
+`SnapSuppressed` leaves the current line free to walk off-screen). The host lets the reader hold a
+modifier and move the pointer; Core resolves the point to the **line** — and, over text, the **word** —
+to highlight, with no camera motion. Nothing here knows about the mouse; additive, no existing API
+changes. (railreader2 design: `docs/reading-guide-design.md`; issue #136.)
+
+- **`WordIndex.For(analysis, text)`** — words of the page's text layer grouped by layout line, built
+  once per `(PageAnalysis, PageText)` and cached against the analysis (rebuilt if the text instance
+  changes, e.g. OCR landed). A word is a maximal run of glyphs in `CharBox.Index` order broken by any
+  whitespace character between consecutive glyphs (boxed or not — that is how most producers emit the
+  space between words), by a glyph outside the previous one's vertical band, or by a leftward jump of
+  more than a glyph height (a line break with no whitespace emitted). Ligature glyphs stay inside
+  their word; fake-bold duplicates are dropped via `DedupedCharBoxes`. Each word goes to the smallest
+  block containing its centre, then to that block's line whose band contains it (else the nearest);
+  a block with no detected lines is one synthetic line (index 0), as `RailNav.CurrentLineInfo` does;
+  a word in no block is dropped. `WordsOf(block, line)` is sorted by `Left`; `TextOf(word)` reads
+  the page string. `WordSpan(Start, Length, Rect)` spans the word's characters in `PageText.Text`.
+- **`ReadingGuideHitTester`** — one per view, stateful: `Resolve(pageX, pageY, analysis, words?)`
+  returns a `ReadingGuidePosition(BlockIndex, LineIndex, WordIndex?, LineRect, WordRect?)`
+  (page-level indices, the same space as `CurrentNavigableArrayIndex`). Rules: candidate blocks are
+  the `NavigableRoles` blocks whose horizontal extent (± `ColumnToleranceFraction` of their width)
+  contains X — all of them when none does — so a two-column page never snaps to the other column's
+  line at the same Y and page furniture never captures the guide; the current line is **kept while Y
+  stays inside its band widened by `DeadZoneFraction` × height** (hysteresis — an unsteady hand never
+  flickers between lines), else the nearest candidate line by centre; the word is the one containing
+  X or the nearest on that line (so past a ragged line end the last word stays lit), and **null in the
+  margin** (X outside the block's extent) or with no text layer (`words == null`, which a host also
+  passes while the view is rotated, since the text layer is in the page's own frame). A different
+  `PageAnalysis` instance resets the hysteresis; `Clear()` forgets it. Cost per call: linear in blocks
+  and candidate lines plus a binary search over one line's words.
+
 ## 0.64.2 — Cheap, cached signature probe (2026-10-12)
 
 ### `CompositeAnnotationStore`'s signature probe no longer reads the whole file
