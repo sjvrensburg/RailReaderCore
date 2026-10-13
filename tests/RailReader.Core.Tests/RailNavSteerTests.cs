@@ -6,15 +6,16 @@ namespace RailReader.Core.Tests;
 
 /// <summary>
 /// Steered scroll (railreader2 docs/reading-guide-design.md §11): the reading guide's stick carries a
-/// virtual reading point along the line at the steered speed and the camera follows it. One 3-line text
-/// block, x 72…540 pt, at 4× (1872 px) in an 800 px window: the block's start snaps to 5 % (40 px), the
-/// reading point sits at a third (266.7 px), so a line has a ~56.7 pt "head" the eye reads with the
-/// camera still, a scrolled middle, and a tail read with the camera pinned at the line's end.
+/// virtual reading point along the line at the steered speed and the camera eases to keep it centred
+/// where the line's framing allows. One 3-line text block, x 72…540 pt, at 4× (1872 px) in an 800 px
+/// window: the block's start snaps to 5 % (40 px), the reading point is framed at the centre (400 px),
+/// so a line has a 90 pt "head" the eye reads with the camera still, a scrolled middle, and a tail read
+/// with the camera pinned at the line's end.
 /// </summary>
 public class RailNavSteerTests
 {
     private const double WindowWidth = 800, WindowHeight = 600, Zoom = 4.0;
-    private const double LineLeft = 72, LineRight = 540;
+    private const double LineLeft = 72, LineRight = 540, LineY = 72, LineH = 16;
     private readonly AppConfig _config = new() { SnapDurationMs = 1, PixelSnapping = false };
     private readonly RailNav _nav;
     private double _nowMs;
@@ -28,13 +29,13 @@ public class RailNavSteerTests
     private static PageAnalysis Analysis(int lines, BlockRole role = BlockRole.Text, int blocks = 1)
     {
         var list = new List<LayoutBlock>();
-        float y = 72;
+        float y = (float)LineY;
         for (int b = 0; b < blocks; b++)
         {
             var li = new List<LineInfo>();
-            for (int l = 0; l < lines; l++) li.Add(new LineInfo(y + l * 16, 16, (float)LineLeft, (float)(LineRight - LineLeft)));
-            list.Add(new LayoutBlock { BBox = new BBox((float)LineLeft, y, (float)(LineRight - LineLeft), lines * 16), Role = role, Confidence = 0.9f, Order = b, Lines = li });
-            y += lines * 16 + 20;
+            for (int l = 0; l < lines; l++) li.Add(new LineInfo(y + l * (float)LineH, (float)LineH, (float)LineLeft, (float)(LineRight - LineLeft)));
+            list.Add(new LayoutBlock { BBox = new BBox((float)LineLeft, y, (float)(LineRight - LineLeft), lines * (float)LineH), Role = role, Confidence = 0.9f, Order = b, Lines = li });
+            y += lines * (float)LineH + 20;
         }
         return new PageAnalysis { Blocks = list, PageWidth = 612, PageHeight = 792 };
     }
@@ -57,8 +58,13 @@ public class RailNavSteerTests
         return _nav.Tick(ref cx, ref cy, dt, Zoom, WindowWidth);
     }
 
-    /// <summary>Page x of the window's reading point for the given camera.</summary>
-    private static double ReadingPointPage(double cx) => (WindowWidth / 3.0 - cx) / Zoom;
+    private void Run(ref double cx, ref double cy, double secs)
+    {
+        for (double t = 0; t < secs; t += 1.0 / 60) Tick(ref cx, ref cy);
+    }
+
+    /// <summary>Screen x of the reading point for the given camera.</summary>
+    private double ReadScreenX(double cx) => _nav.SteerReadingPointPageX!.Value * Zoom + cx;
 
     [Fact]
     public void SteerSpeed_IsHoldToScrollsRange_WithQuadraticRamp()
@@ -70,39 +76,43 @@ public class RailNavSteerTests
     }
 
     [Fact]
-    public void FreshLine_ReadsTheHeadWithTheCameraStill_ThenScrollsAtTopSpeed()
+    public void FreshLine_ReadsTheHeadWithTheCameraStill_ThenKeepsTheWordCentred()
     {
         var (cx, cy) = Seat();
         double start = cx;
         _nav.SetSteerThrottle(1);
         Assert.True(_nav.Steering);
 
-        // Head: the reading point starts at the line's first word and sweeps toward the window's reading
-        // point at top speed while the camera stays put.
+        // Head: the reading point starts on the first word and advances at top speed; the camera stays put.
         Assert.True(Tick(ref cx, ref cy, 0.5));
         Assert.Equal(start, cx);
         Assert.Equal(LineLeft + _config.ScrollSpeedMax * 0.5, _nav.SteerReadingPointPageX!.Value, 3);
         Assert.Equal(1.0, _nav.ScrollSpeed, 6);
 
-        // Run until the point reaches the window's reading point; from then on the camera carries it.
-        while (_nav.SteerReadingPointPageX < ReadingPointPage(cx) - 1e-6) Tick(ref cx, ref cy, 0.05);
-        double pinnedEnd = cx;
-        Tick(ref cx, ref cy, 0.1);
-        Assert.Equal(pinnedEnd - _config.ScrollSpeedMax * 0.1 * Zoom, cx, 1);
-        Assert.Equal(ReadingPointPage(cx), _nav.SteerReadingPointPageX!.Value, 1);
+        // Middle: once the point passes the centre the camera follows; after the ease settles the point
+        // is held near the centre (a small constant lag from the exponential follower).
+        Run(ref cx, ref cy, 4.0);
+        Assert.True(cx < start - 100);
+        Assert.InRange(ReadScreenX(cx), WindowWidth / 2 - 5, WindowWidth / 2 + 40);
+        double before = cx;
+        Run(ref cx, ref cy, 0.5);
+        double expected = before - _config.ScrollSpeedMax * 0.5 * Zoom;      // steady state: camera speed ≈ steer speed
+        Assert.InRange(cx, expected - 5, expected + 5);
     }
 
     [Fact]
-    public void BackwardFromMidLine_ReversesAtStartSpeed()
+    public void BackwardFromMidLine_ReversesTheCamera()
     {
         var (cx, cy) = Seat();
         _nav.SetSteerThrottle(1);
-        Tick(ref cx, ref cy, 3.0);              // well into the scrolled middle
+        Run(ref cx, ref cy, 4.0);
         double mid = cx;
-        Assert.True(mid < -300);
+        _nav.SetSteerThrottle(-1);
+        Run(ref cx, ref cy, 1.0);
+        Assert.True(cx > mid + 50);
+        Assert.Equal(1.0, _nav.ScrollSpeed, 6);
         _nav.SetSteerThrottle(-1e-3);
         Tick(ref cx, ref cy, 0.1);
-        Assert.Equal(mid + _config.ScrollSpeedStart * 0.1 * Zoom, cx, 1);
         Assert.Equal(_config.ScrollSpeedStart / _config.ScrollSpeedMax, _nav.ScrollSpeed, 3);
     }
 
@@ -111,7 +121,7 @@ public class RailNavSteerTests
     {
         var (cx, cy) = Seat();
         _nav.SetSteerThrottle(1);
-        Tick(ref cx, ref cy, 3.0);
+        Run(ref cx, ref cy, 3.0);
         double held = cx;
         double read = _nav.SteerReadingPointPageX!.Value;
         _nav.SetSteerThrottle(0);
@@ -133,7 +143,7 @@ public class RailNavSteerTests
         {
             Tick(ref cx, ref cy);
             Assert.True(cx >= lineMinX - 0.01, "camera scrolled past the line end");
-            if (Math.Abs(cx - lineMinX) < 0.01 && _nav.SteerReadingPointPageX < LineRight - 1) sawPinnedTail = true;
+            if (Math.Abs(cx - lineMinX) < 1 && _nav.SteerReadingPointPageX < LineRight - 5) sawPinnedTail = true;
             if (_nav.ConsumePendingEdgeAdvance() is { } d)
             {
                 Assert.Equal(ScrollDirection.Forward, d);
@@ -150,7 +160,7 @@ public class RailNavSteerTests
     {
         var (cx, cy) = Seat();
         _nav.SetSteerThrottle(1);
-        Tick(ref cx, ref cy, 3.0);
+        Run(ref cx, ref cy, 3.0);
         Assert.True(_nav.SteerReadingPointPageX > LineLeft + 100);
         _nav.NextLine();                                        // what the controller does on the advance
         Tick(ref cx, ref cy, 0.01);
@@ -163,11 +173,34 @@ public class RailNavSteerTests
     }
 
     [Fact]
+    public void SeatSteerReadingPoint_AppliesOnTheNextTick_AndTheCameraCentresIt()
+    {
+        var (cx, cy) = Seat();
+        _nav.SeatSteerReadingPoint(300);           // "clicked" a word mid-line, before engaging
+        _nav.SetSteerThrottle(1e-3);
+        Tick(ref cx, ref cy, 0.01);
+        Assert.Equal(300 + _config.ScrollSpeedStart * 0.01, _nav.SteerReadingPointPageX!.Value, 3);
+        Run(ref cx, ref cy, 1.5);                  // the ease brings the word to the centre
+        Assert.InRange(ReadScreenX(cx), WindowWidth / 2 - 5, WindowWidth / 2 + 20);
+    }
+
+    [Fact]
+    public void TrySeatAt_OnlyOnTheCurrentLine()
+    {
+        var (cx, cy) = Seat();
+        Assert.False(_nav.TrySeatSteerReadingPointAt(300, LineY + 3 * LineH));   // another line: continue from the rail
+        Assert.True(_nav.TrySeatSteerReadingPointAt(300, LineY + LineH / 2));
+        _nav.SetSteerThrottle(1);
+        Tick(ref cx, ref cy, 0.01);
+        Assert.Equal(300 + _config.ScrollSpeedMax * 0.01, _nav.SteerReadingPointPageX!.Value, 3);
+    }
+
+    [Fact]
     public void Parked_IgnoresThrottle_UntilItReturnsToZeroAndIsReapplied()
     {
         var (cx, cy) = Seat();
         _nav.SetSteerThrottle(1);
-        Tick(ref cx, ref cy, 3.0);
+        Run(ref cx, ref cy, 3.0);
         _nav.ParkSteer();
         Assert.True(_nav.SteerParked);
         double parked = cx;
@@ -245,14 +278,15 @@ public class RailNavSteerTests
     }
 
     [Fact]
-    public void EngagedMidLine_StartsFromTheWordUnderTheReadingPoint()
+    public void EngagedMidLine_StartsFromTheWordAtTheCentre()
     {
         var (cx, cy) = Seat();
         cx -= 600;                                 // the reader had scrolled along the line by hand
         _nav.SetSteerThrottle(1);
         Tick(ref cx, ref cy, 0.01);
-        Assert.Equal(ReadingPointPage(cx + 0) , _nav.SteerReadingPointPageX!.Value, 0);
-        Assert.True(cx < -600 + 0.001);           // and the camera follows at once
+        Assert.Equal((WindowWidth / 2 - (cx + 0)) / Zoom, _nav.SteerReadingPointPageX!.Value, 0);
+        Run(ref cx, ref cy, 1.0);
+        Assert.True(cx < -600 - 100);              // and the camera follows
     }
 
     [Fact]

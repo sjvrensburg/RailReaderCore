@@ -13,16 +13,22 @@ public sealed partial class RailNav
     private double _steerThrottle;
     private bool _steerParked;
     // The virtual reading point (page x on the current line) the stick carries along at the steered
-    // speed. The camera FOLLOWS it — keeping it at SteerReadingPointFraction of the window where it can,
-    // staying pinned at the line's ends where it can't — so every word passes the eye: the first third of
-    // a line is read with the camera still at the line start, the last with it pinned at the line end,
-    // and the edge-hold only begins once the point reaches the line's edge. Null until the first tick.
+    // speed. The camera FOLLOWS it — easing to keep it centred (SteerReadingPointFraction) where the
+    // line's framing allows, staying pinned at the line's start (where the snap landed) and end (the
+    // line's end at the window's right edge) where it doesn't — so every word passes the eye: a line's
+    // head is read with the camera still, the tail with it pinned, and the edge-hold only begins once the
+    // point reaches the line's edge. Null until the first tick.
     private double? _steerReadPage;
+    private double? _steerSeatPending;   // SeatSteerReadingPoint: applied to the then-current line on the next tick
     private (int Block, int Line) _steerLineKey = (-1, -1);
 
-    /// <summary>Where on screen the eye rests while the rail scrolls under the stick, as a fraction of the
-    /// window width; the host's word marker reads <see cref="SteerReadingPointPageX"/> back.</summary>
-    public double SteerReadingPointFraction { get; set; } = 1.0 / 3.0;
+    /// <summary>Where on screen the camera keeps the reading point while the line scrolls under the stick,
+    /// as a fraction of the window width (centred by default); the host's word marker reads
+    /// <see cref="SteerReadingPointPageX"/> back.</summary>
+    public double SteerReadingPointFraction { get; set; } = 0.5;
+
+    /// <summary>Time constant (s) of the camera's ease toward the reading point's framing.</summary>
+    public double SteerFollowTauSecs { get; set; } = 0.12;
 
     /// <summary>The steered reading point on the current line, in page units (null when nothing has been
     /// steered since the stick was cleared). Valid while the throttle is 0 too, so a paused reader's marker
@@ -71,6 +77,31 @@ public sealed partial class RailNav
         _steerThrottle = t;
     }
 
+    /// <summary>
+    /// Start reading from <paramref name="pageX"/> on whatever line is current at the next tick — the host
+    /// calls this with the click point just before the click seats the rail's block / line, so the steered
+    /// reading point (and the host's word marker) lands on the clicked word rather than the line's start.
+    /// Clamped to the line. Takes effect when the stick next ticks (it may not be engaged yet).
+    /// </summary>
+    public void SeatSteerReadingPoint(double pageX) => _steerSeatPending = pageX;
+
+    /// <summary>
+    /// If <paramref name="pageX"/>/<paramref name="pageY"/> lies on the current line, start reading from
+    /// there (the follow key went down with the pointer resting on a word) and return true; otherwise leave
+    /// the reading point alone — the stick continues from where the rail is — and return false.
+    /// </summary>
+    public bool TrySeatSteerReadingPointAt(double pageX, double pageY)
+    {
+        if (!CanNavigate) return false;
+        var line = CurrentLineInfo;
+        double pad = line.Height * 0.5;
+        if (pageY < line.Y - pad || pageY > line.Y + line.Height + pad
+            || pageX < line.X || pageX > line.X + line.Width)
+            return false;
+        _steerSeatPending = pageX;
+        return true;
+    }
+
     /// <summary>Park the stick (controller: a steered advance entered a stop unit).</summary>
     public void ParkSteer()
     {
@@ -85,6 +116,7 @@ public sealed partial class RailNav
         _steerThrottle = 0;
         _steerParked = false;
         _steerReadPage = null;
+        _steerSeatPending = null;
         _steerLineKey = (-1, -1);
     }
 
@@ -115,6 +147,12 @@ public sealed partial class RailNav
             _steerLineKey = key;
             if (!first) _steerReadPage = forward ? lineLeft : lineRight;
         }
+        // A seat (click / follow-key-down on a word) wins over both.
+        if (_steerSeatPending is { } seat)
+        {
+            _steerSeatPending = null;
+            _steerReadPage = Math.Clamp(seat, lineLeft, lineRight);
+        }
 
         // Parked, or a snap (an edge advance's, or a line step's) is still landing: hold the velocity so a
         // held deflection doesn't pan the just-flipped line. Not animating — the snap reports its own.
@@ -125,8 +163,8 @@ public sealed partial class RailNav
         }
 
         double readX = windowWidth * SteerReadingPointFraction;
-        // Engaged mid-line: start from the word under the reading point — unless the camera still sits at
-        // the line's start (a fresh snap), where the eye is at the first word.
+        // Engaged with nothing seated: start from the word under the window's reading point — unless the
+        // camera still sits at the line's start (a fresh snap), where the eye is at the first word.
         _steerReadPage ??= cameraX >= ComputeSnapTarget(zoom, windowWidth, 0).X - 0.5
             ? lineLeft
             : Math.Clamp((readX - cameraX) / zoom, lineLeft, lineRight);
@@ -141,16 +179,18 @@ public sealed partial class RailNav
         if (atEdge) read = forward ? lineRight : lineLeft;
         _steerReadPage = read;
 
-        // The camera follows the reading point to keep it at readX — only in the direction of travel (it
-        // never backs up to meet it), and forward never past the line's end at the window's right edge,
-        // the same stop the edge-hold trigger and auto-scroll use. ClampX bounds it to the framed unit.
-        double followX = readX - read * zoom;
-        double newX = forward ? Math.Min(cameraX, followX) : Math.Max(cameraX, followX);
-        if (forward)
-        {
-            var (_, lr, _) = GetLineBounds(zoom);
-            newX = Math.Max(newX, Math.Min(cameraX, windowWidth - lr * zoom));
-        }
+        // The camera eases toward framing the reading point at readX, within the line's own range: no
+        // further right than the line-start framing the snap lands on (so the head is read with the
+        // camera still, and nothing fights the snap), no further left than the line's end at the window's
+        // right edge (the stop the edge-hold trigger and auto-scroll use). A line that fits sits still.
+        double target = readX - read * zoom;
+        double maxX = ComputeSnapTarget(zoom, windowWidth, 0).X;
+        var (_, lr, _) = GetLineBounds(zoom);
+        double minX = Math.Min(maxX, windowWidth - lr * zoom);
+        target = Math.Clamp(target, minX, maxX);
+        double k = 1 - Math.Exp(-dtSecs / Math.Max(1e-3, SteerFollowTauSecs));
+        double gap = target - cameraX;
+        double newX = Math.Abs(gap) < 0.5 ? target : cameraX + gap * k;
         cameraX = SnapX(ClampX(newX, zoom, windowWidth), zoom);
 
         // The reading point reached the line's edge: hold there (the edge-hold machine's beat), then the
