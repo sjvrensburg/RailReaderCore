@@ -23,6 +23,10 @@ namespace RailReader.Core.Services;
 ///   line that contains the X, else the nearest word on that line — so past a ragged line end the
 ///   last word stays lit. Outside the block's extent, no word: the hand is resting in the margin
 ///   and only the line is marked. No text layer (<c>words == null</c>) also means no word.</item>
+///   <item><b>Carriage return.</b> When the guide was resting on the last word of its line and the point
+///   moves to the line reading order reaches next, it lands on that line's <i>first</i> word rather than
+///   the word under the (still far-right) pointer — the natural end-of-line hop, so a reader in point
+///   mode doesn't have to sweep back before the next line lights up correctly.</item>
 /// </list>
 ///
 /// <para>A block with no detected lines is treated as one line spanning the block (index 0), as
@@ -109,7 +113,11 @@ public sealed class ReadingGuideHitTester
         }
 
         if (bestBlock < 0) { Current = null; return null; }
-        Current = Compose(bestBlock, bestLine, blocks[bestBlock], LineAt(blocks[bestBlock], bestLine), pageX, words);
+        bool carriageReturn = Current is { } prev && words is not null
+            && prev.WordIndex is { } pw && pw == words.WordsOf(prev.BlockIndex, prev.LineIndex).Count - 1
+            && ReadingGuideFlow.IsNextLine(prev, bestBlock, bestLine, analysis, NavigableRoles);
+        Current = Compose(bestBlock, bestLine, blocks[bestBlock], LineAt(blocks[bestBlock], bestLine), pageX, words,
+            landOnFirstWord: carriageReturn);
         return Current;
     }
 
@@ -137,7 +145,7 @@ public sealed class ReadingGuideHitTester
     }
 
     private ReadingGuidePosition Compose(int blockIndex, int lineIndex, LayoutBlock block, LineInfo line,
-        float pageX, WordIndex? words)
+        float pageX, WordIndex? words, bool landOnFirstWord = false)
     {
         var lineRect = new RectF(line.X, line.Y - line.Height / 2f, line.X + line.Width, line.Y + line.Height / 2f);
         int? wordIndex = null;
@@ -145,7 +153,7 @@ public sealed class ReadingGuideHitTester
         if (words is not null && InColumn(block, pageX))
         {
             var list = words.WordsOf(blockIndex, lineIndex);
-            int w = NearestWord(list, pageX);
+            int w = landOnFirstWord && list.Count > 0 ? 0 : NearestWord(list, pageX);
             if (w >= 0) { wordIndex = w; wordRect = list[w].Rect; }
         }
         return new ReadingGuidePosition(blockIndex, lineIndex, wordIndex, lineRect, wordRect);

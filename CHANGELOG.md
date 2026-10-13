@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.66.0 — Reading guide: steer mode (reading-order flow + virtual joystick) (2026-10-13)
+
+### `ReadingGuideFlow`, `ReadingGuideSteer`; carriage return in `ReadingGuideHitTester`
+
+0.65.0's guide mapped the pointer to a position, which made the reader track the text with the mouse
+and sweep back at every line end. Steer mode (railreader2 `docs/reading-guide-design.md` §10) turns the
+pointer into an invisible joystick instead; Core supplies the two pure pieces:
+
+- **`ReadingGuideFlow`** (static) — reading-order stepping over the eligible blocks in
+  `PageAnalysis.Blocks` order: `StepWord` / `StepLine` (next or previous, crossing lines and blocks;
+  null at the page end / start so the host turns the page), `First` / `Last` (page entry points), `At`
+  (rebuild a position's rects from page-level indices — a word index past the line degrades to
+  line-only, a missing block / line returns null; this replaces the shell's own re-anchor), and
+  `IsNextLine`. A line with no words is a line-only position and a word step over it moves by line.
+- **`ReadingGuideSteer`** — the stick: `Engage(originX, originY)` plants the origin where the pointer
+  is when the follow key goes down, `SetPointer` feeds positions, `Tick(dt, currentWordChars,
+  sentenceEnd)` returns at most one signed word step or line step per frame. Inside `DeadZonePx`
+  nothing moves; beyond it the larger axis wins, the rate ramps quadratically to `FullDeflectionPx`,
+  and the horizontal pace is in **characters per second** (`Min/MaxCharsPerSecond`) so a long word
+  dwells longer than a short one (`MinWordChars` floors a lone letter, `SentencePauseChars` adds a
+  beat at a sentence end); vertical is `Min/MaxLinesPerSecond`. A direction or axis change resets the
+  accumulator. No timers — the host ticks it from its frame loop while `IsMoving`.
+- **`ReadingGuideHitTester` carriage return** — in point mode, when the guide rested on the last word
+  of its line and the point moves to the line reading order reaches next
+  (`ReadingGuideFlow.IsNextLine`), it lands on that line's *first* word rather than the word under the
+  still-far-right pointer.
+
+Additive; no existing API changes.
+
 ## 0.65.0 — Reading guide: word index + pointer hit-tester (2026-10-13)
 
 ### `WordIndex`, `ReadingGuideHitTester`, `ReadingGuidePosition`, `WordSpan`
