@@ -132,6 +132,37 @@ public class ReadingGuideHitTesterTests
     }
 
     [Fact]
+    public void CarriageReturn_FromLastWord_LandsOnNextLinesFirstWord()
+    {
+        var (analysis, words) = Page();
+        var t = new ReadingGuideHitTester();
+
+        // Rest on "brown" (last word of line 0, ends at x=85), pointer far right of it, then drop a line.
+        var p0 = t.Resolve(150, 105, analysis, words)!.Value;
+        Assert.Equal(2, p0.WordIndex);
+        var p1 = t.Resolve(150, 120, analysis, words)!.Value;
+        Assert.Equal(1, p1.LineIndex);
+        Assert.Equal(0, p1.WordIndex);                       // "fox", not the nearest word under x=150
+
+        // Not from a mid-line word: the ordinary nearest-word rule applies.
+        t.Clear();
+        Assert.Equal(1, t.Resolve(40, 105, analysis, words)!.Value.WordIndex);   // "quick"
+        Assert.Equal(1, t.Resolve(40, 120, analysis, words)!.Value.WordIndex);   // "jumps" (nearest to x=40)
+    }
+
+    [Fact]
+    public void CarriageReturn_OnlyIntoTheNextLineInReadingOrder()
+    {
+        var (analysis, words) = Page();
+        var t = new ReadingGuideHitTester();
+
+        Assert.Equal(2, t.Resolve(150, 105, analysis, words)!.Value.WordIndex);  // last word, line 0
+        var p = t.Resolve(150, 135, analysis, words)!.Value;                      // skipped a line
+        Assert.Equal(2, p.LineIndex);
+        Assert.Equal(1, p.WordIndex);                                             // nearest ("it"), no return
+    }
+
+    [Fact]
     public void BetweenTwoWords_NearerWordWins()
     {
         var (analysis, words) = Page();
