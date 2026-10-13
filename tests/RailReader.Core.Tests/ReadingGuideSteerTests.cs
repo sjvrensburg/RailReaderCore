@@ -90,20 +90,40 @@ public class ReadingGuideSteerTests
     }
 
     [Fact]
-    public void VerticalDeflection_StepsLines_WhenItDominates()
+    public void VerticalDeflection_StepsOneLineAtOnce_ThenRepeatsAfterTheHoldDelay()
+    {
+        var s = Stick();
+        s.LineRepeatDelaySecs = 0.5;
+        s.Engage(0, 0);
+        s.SetPointer(30, 200);             // |dy| > |dx|
+        var step = s.Tick(1.0 / 60, 5, false);
+        Assert.Equal((0, 1, SteerAxis.Vertical), (step.WordSteps, step.LineSteps, step.Axis));   // immediate
+
+        // Nothing during the repeat delay, then steps at 3 lines/s.
+        double dt = 1.0 / 60, t = dt;
+        while (t < 0.5 - 1e-9) { Assert.False(s.Tick(dt, 5, false).Any); t += dt; }
+        double tNext = SecondsToStep(s, 5, false, out step);
+        Assert.Equal(1, step.LineSteps);
+        Assert.InRange(tNext, 1.0 / 3 - 0.05, 1.0 / 3 + 0.05);   // ± a frame or two of hold/accumulation rounding
+
+        // Reversing fires at once again.
+        s.SetPointer(30, -200);
+        Assert.Equal(-1, s.Tick(dt, 5, false).LineSteps);
+    }
+
+    [Fact]
+    public void ADriftIntoTheVerticalAxis_MovesOneLineOnly()
     {
         var s = Stick();
         s.Engage(0, 0);
-        s.SetPointer(30, 200);             // |dy| > |dx|
-        double t = SecondsToStep(s, 5, false, out var step);
-        Assert.Equal(0, step.WordSteps);
-        Assert.Equal(1, step.LineSteps);
-        Assert.Equal(SteerAxis.Vertical, step.Axis);
-        Assert.InRange(t, 1.0 / 3 - 0.02, 1.0 / 3 + 0.02);           // 3 lines/s at full deflection
-
-        s.SetPointer(30, -200);
-        SecondsToStep(s, 5, false, out step);
-        Assert.Equal(-1, step.LineSteps);
+        s.SetPointer(0, 40);
+        int lines = 0;
+        for (int i = 0; i < 24; i++) lines += s.Tick(1.0 / 60, 5, false).LineSteps;   // 0.4 s of drift
+        Assert.Equal(1, lines);
+        s.SetPointer(0, 0);                // back to the dead zone resets the gesture
+        s.Tick(1.0 / 60, 5, false);
+        s.SetPointer(0, 40);
+        Assert.Equal(1, s.Tick(1.0 / 60, 5, false).LineSteps);
     }
 
     [Fact]

@@ -35,6 +35,10 @@ one gesture at every magnification:
   stops a running (semi-)auto-scroll on engage, as A/Left does; `StepRailLine` is ↑/↓ for the stick's
   vertical axis (advance + snap, page turn at the boundary, snap-to-end when stepping back onto a
   page) and never parks — a deliberate step onto a figure is not a flow.
+- **`ReadingGuideSteer` vertical stepping is key-repeat shaped** — the first line step fires the moment
+  the stick leaves the dead zone vertically, then `LineRepeatDelaySecs` (0.5 s) of nothing, then steps at
+  the deflection's rate while held. A nudge that drifts down moves one line, not several (a line step
+  is a camera snap when the stick drives the rail).
 - `RailNav.EdgeHoldNowMsOverride` (internal) injects a clock into the line edge-hold machine for tests.
 
 Additive; no behaviour change for hosts that never call `SetSteerThrottle`.
