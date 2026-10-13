@@ -350,6 +350,10 @@ Activates above `CoreSettings.RailZoomThreshold` when analysis is available. Loc
   - ✓ Call `ILayoutAnalyzer.RunAnalysis` from the worker thread (it has no PDFium or state refs).
   - ✓ Read `DocumentState` and `Viewport` properties from render/analysis-prep tasks (reads are thread-safe; see footnote §5.6 for disposal guards).
 
+## Reading guide (pointer-driven line/word focus, 0.65.0+)
+
+`Services/WordIndex` + `Services/ReadingGuideHitTester` are the Core half of railreader2's pointer-driven reading guide for low-magnification readers (design: railreader2 `docs/reading-guide-design.md`; issue #136). The host resolves the pointer to page space and calls `Resolve(x, y, analysis, WordIndex.For(analysis, pageText))`; Core returns the line (and, over text, the word) to highlight as a `ReadingGuidePosition` with page-level indices. The tester is **stateful per view** — it owns the line hysteresis (`DeadZoneFraction`), so give each viewport its own and let a new `PageAnalysis` instance reset it. Pass `words: null` for line-only behaviour (no text layer, or a rotated view — `CharBoxes` are in the page's own frame while block lines follow the rotated analysis). Candidate blocks are filtered by `NavigableRoles` and by whether their column contains X; the margin (X outside the block ± `ColumnToleranceFraction`) yields a line with no word by design. Nothing in Core knows about the mouse or modifier keys.
+
 ## Testing
 
 Tests in `tests/RailReader.Core.Tests/` are xUnit. `TestFixtures.cs` generates synthetic PDFs at runtime via SkiaSharp's `SKDocument.CreatePdf` — that's why the test project references `Renderer.Skia` even though the tests themselves exercise Core, Core.Pdfium, and Core.Analysis surfaces.
