@@ -370,6 +370,7 @@ public sealed partial class RailNav : ICameraClamp
             Active = false;
             _snap = null;
             _scroll.Stop();
+            ClearSteer();
             ScrollSpeed = 0.0;
             _pinnedActivationBlock = null;
             // Auto-scroll must not keep panning the camera in browse mode: hand the running
@@ -416,6 +417,7 @@ public sealed partial class RailNav : ICameraClamp
         Active = false;
         _snap = null;
         _scroll.Stop();
+        ClearSteer();
         ScrollSpeed = 0.0;
         _pinnedActivationBlock = null;
         _forceActive = false;
@@ -572,6 +574,7 @@ public sealed partial class RailNav : ICameraClamp
 
         if (ShouldSuppressAfterEdgeAdvance()) return;
 
+        ClearSteer();   // a held arrow key supersedes the stick (see RailNav.Steer.cs)
         if (_scroll.Direction != dir)
         {
             // If a snap is in progress, jump to its target and start scrolling from there.
@@ -799,6 +802,9 @@ public sealed partial class RailNav : ICameraClamp
         bool animating = TickSnapAnimation(ref cameraX, ref cameraY);
 
         if (TickScrollHold(ref cameraX, zoom, windowWidth))
+            animating = true;
+
+        if (TickSteer(ref cameraX, dtSecs, zoom, windowWidth))
             animating = true;
 
         return animating;

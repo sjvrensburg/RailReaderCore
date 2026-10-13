@@ -163,6 +163,8 @@ public sealed partial class DocumentController
         if (vp.Rail.ConsumePendingEdgeAdvance() is not { } edgeDir) return;
 
         bool forward = edgeDir == ScrollDirection.Forward;
+        int prevBlock = vp.Rail.CurrentBlock;
+        int prevChunk = vp.Rail.CurrentChunk;
         var adv = AdvanceLine(vp, forward, ww, wh);
         // A block-confined (portal) viewport can't advance past its focus block: the camera never moves, so
         // the edge-hold keeps re-firing while the key is held. Bail without flagging a repaint — otherwise
@@ -173,11 +175,23 @@ public sealed partial class DocumentController
             FirePageChanged(ref pageChanged, vp);
             if (!forward && adv == LineAdvanceResult.PageChanged)
                 vp.StartSnapToEnd(ww, wh);
+            // A steered flow treats a page boundary as a stop unit, like semi-auto scroll: park the
+            // stick so the reader re-pushes to continue on the new page (RailNav.Steer.cs).
+            if (vp.Rail.Steering) vp.Rail.ParkSteer();
         }
         else if (adv == LineAdvanceResult.LineAdvanced)
         {
             if (forward) vp.StartSnap(ww, wh);
             else vp.StartSnapToEnd(ww, wh);
+            // Steered flow parks on entry to a stop unit — the same decision semi-auto scroll makes
+            // (new chunk, or a newly-entered stop-role block); prose flows through with only the
+            // edge-hold beat. Only forward flow: reading backwards into a figure is deliberate.
+            if (vp.Rail.Steering && forward && ShouldParkOnLineAdvance(
+                    enteredNewChunk: vp.Rail.CurrentChunk != prevChunk,
+                    enteredNewBlock: vp.Rail.CurrentBlock != prevBlock,
+                    newRole: vp.Rail.CurrentNavigableBlock.Role,
+                    _config.AutoScrollStopClasses))
+                vp.Rail.ParkSteer();
         }
         overlayChanged = true;
         cameraChanged = true;

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.67.0 — Steer the rail: the reading guide's stick drives rail mode (2026-10-13)
+
+### `RailNav` steered scroll, `DocumentController.SteerRail` / `StepRailLine`
+
+0.66.0's steer mode (railreader2 `docs/reading-guide-design.md` §10) moved a word highlight below the
+rail threshold. Above it the same invisible joystick now drives the rail (design §11), so a reader has
+one gesture at every magnification:
+
+- **`RailNav.SetSteerThrottle(t)`** — the host applies the stick's signed horizontal deflection
+  (−1…1, 0 inside the dead zone) every frame; `Tick` turns it into a camera velocity along the line
+  with **hold-to-scroll's speed range and quadratic shape** (`SteerSpeed(t, ScrollSpeedStart,
+  ScrollSpeedMax)`: deflection replaces hold time), clamped and pixel-snapped like a held arrow key,
+  and feeds the **same edge-hold state machine** — so line ends, snaps, snap-to-line-end when reading
+  backwards and page turns reach the controller through the existing pending-edge-advance channel.
+  `ScrollSpeed` reflects the steered speed (motion blur, deferred DPI re-render). Returning to 0
+  stops the camera where it is. Mutually exclusive with hold-to-scroll and auto-scroll: engaging the
+  stick stops a held arrow scroll; `StartScroll` / `StartAutoScroll` / deactivation clear the stick.
+- **Park on stop units** — `RailNav.ParkSteer()` / `SteerParked`: the controller's edge-advance path
+  parks the stick when a steered *forward* flow enters a stop unit (a new chunk, a block in
+  `AutoScrollStopClasses`, or a new page — the same `ShouldParkOnLineAdvance` decision semi-auto
+  scroll makes). While parked the throttle is ignored until it returns to 0 and is re-applied; that
+  re-push is the steering reader's advance key. A snap in flight also holds the velocity, so a held
+  deflection never pans the just-flipped line.
+- **`DocumentController.SteerRail(vp, throttle)`** and **`StepRailLine(vp, forward)`** — per-viewport
+  entry points (the stick acts on the view under the pointer, not `FocusedViewport`). `SteerRail`
+  stops a running (semi-)auto-scroll on engage, as A/Left does; `StepRailLine` is ↑/↓ for the stick's
+  vertical axis (advance + snap, page turn at the boundary, snap-to-end when stepping back onto a
+  page) and never parks — a deliberate step onto a figure is not a flow.
+- `RailNav.EdgeHoldNowMsOverride` (internal) injects a clock into the line edge-hold machine for tests.
+
+Additive; no behaviour change for hosts that never call `SetSteerThrottle`.
+
 ## 0.66.0 — Reading guide: steer mode (reading-order flow + virtual joystick) (2026-10-13)
 
 ### `ReadingGuideFlow`, `ReadingGuideSteer`; carriage return in `ReadingGuideHitTester`

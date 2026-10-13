@@ -10,6 +10,7 @@ public sealed partial class RailNav
         if (!CanNavigate) return;
         _autoScrollState.Start(speed);
         StopScrollAndEdgeHold();
+        ClearSteer();
     }
 
     public void StopAutoScroll()
