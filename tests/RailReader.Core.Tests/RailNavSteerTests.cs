@@ -16,7 +16,7 @@ public class RailNavSteerTests
 {
     private const double WindowWidth = 800, WindowHeight = 600, Zoom = 4.0;
     private const double LineLeft = 72, LineRight = 540, LineY = 72, LineH = 16;
-    private readonly AppConfig _config = new() { SnapDurationMs = 1, PixelSnapping = false };
+    private readonly AppConfig _config = new() { SnapDurationMs = 1, PixelSnapping = false, ScrollSpeedZoomReference = 0 };   // raw page-unit speeds: zoom normalisation has its own tests (ScrollSpeedZoomTests)
     private readonly RailNav _nav;
     private double _nowMs;
 
@@ -219,7 +219,7 @@ public class RailNavSteerTests
     [Fact]
     public void Steer_WaitsForARunningSnap()
     {
-        var slow = new RailNav(new AppConfig { SnapDurationMs = 500, PixelSnapping = false }.ToCoreSettings());
+        var slow = new RailNav(new AppConfig { SnapDurationMs = 500, PixelSnapping = false, ScrollSpeedZoomReference = 0 }.ToCoreSettings());
         slow.SetAnalysis(Analysis(3), new HashSet<BlockRole> { BlockRole.Text });
         slow.Active = true;
         double cx = 0, cy = 0;

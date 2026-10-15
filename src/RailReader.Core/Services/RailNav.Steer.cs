@@ -172,7 +172,8 @@ public sealed partial class RailNav
 
         double t = Math.Abs(_steerThrottle);
         double speed = SteerSpeed(t, _config.ScrollSpeedStart, _config.ScrollSpeedMax);
-        ScrollSpeed = _config.ScrollSpeedMax > 0 ? speed / _config.ScrollSpeedMax : 0.0;
+        ScrollSpeed = _config.ScrollSpeedMax > 0 ? speed / _config.ScrollSpeedMax : 0.0;   // normalised 0…1 (blur, DPI gating): pre-zoom-factor
+        speed *= _config.ScrollSpeedZoomFactor(zoom);
 
         double read = _steerReadPage.Value + (forward ? 1 : -1) * speed * dtSecs;
         bool atEdge = forward ? read >= lineRight : read <= lineLeft;

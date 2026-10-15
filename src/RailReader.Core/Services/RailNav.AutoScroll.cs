@@ -82,6 +82,7 @@ public sealed partial class RailNav
             WindowWidth = windowWidth,
             Zoom = zoom,
             MaxSpeed = _config.ScrollSpeedMax,
+            SpeedZoomFactor = _config.ScrollSpeedZoomFactor(zoom),
         };
 
         bool reachedEnd = _autoScrollState.Tick(ref cameraX, dtSecs, in ctx);

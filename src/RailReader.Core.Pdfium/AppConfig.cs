@@ -24,6 +24,12 @@ public sealed class AppConfig : IRecentFilesStore
     public double ScrollSpeedMax { get; set; } = 42.0;
     public double DefaultAutoScrollSpeed => (ScrollSpeedStart + ScrollSpeedMax) / 2.0;
     public double ScrollRampTime { get; set; } = 1.5;
+    /// <summary>Zoom at which the scroll speeds above are exact; hold-to-scroll, auto-scroll and the steered scroll are
+    /// scaled by <c>(reference / zoom) ^ exponent</c> so the on-screen velocity doesn't grow with magnification.
+    /// <c>&lt;= 0</c> disables it. See <see cref="CoreSettings.ScrollSpeedZoomReference"/>.</summary>
+    public double ScrollSpeedZoomReference { get; set; } = 7.0;
+    /// <summary>1 = constant on-screen velocity across zoom, 0 = constant words/s (off). See <see cref="CoreSettings.ScrollSpeedZoomExponent"/>.</summary>
+    public double ScrollSpeedZoomExponent { get; set; } = 1.0;
     public int AnalysisLookaheadPages { get; set; } = 2;
     public int BackgroundAnalysisWindowPages { get; set; } = 12;
     public int PageCacheRadius { get; set; } = 24;
@@ -156,6 +162,8 @@ public sealed class AppConfig : IRecentFilesStore
         ScrollSpeedStart = ScrollSpeedStart,
         ScrollSpeedMax = ScrollSpeedMax,
         ScrollRampTime = ScrollRampTime,
+        ScrollSpeedZoomReference = ScrollSpeedZoomReference,
+        ScrollSpeedZoomExponent = ScrollSpeedZoomExponent,
         AnalysisLookaheadPages = AnalysisLookaheadPages,
         BackgroundAnalysisWindowPages = BackgroundAnalysisWindowPages,
         PageCacheRadius = PageCacheRadius,

@@ -24,6 +24,39 @@ public sealed record CoreSettings
     public double ScrollRampTime { get; init; } = 1.5;
     public double DefaultAutoScrollSpeed => (ScrollSpeedStart + ScrollSpeedMax) / 2.0;
 
+    /// <summary>
+    /// Zoom at which <see cref="ScrollSpeedStart"/>/<see cref="ScrollSpeedMax"/> mean exactly what they say.
+    /// Those speeds are in page units/s, so the text's on-screen velocity is <c>speed × zoom</c>: tuned at one
+    /// magnification, the same setting is twice as fast at double the zoom and half as fast at half of it.
+    /// Hold-to-scroll, auto-scroll and the steered scroll multiply their page-space speed by
+    /// <see cref="ScrollSpeedZoomFactor"/> so the screen velocity stays that of this zoom. <c>&lt;= 0</c>
+    /// disables the normalisation (speeds are plain page units/s at every zoom).
+    /// </summary>
+    public double ScrollSpeedZoomReference { get; init; } = 7.0;
+
+    /// <summary>Exponent of the normalisation: 1 keeps the on-screen velocity constant across zoom, 0 turns it
+    /// off (constant words/s instead), values between trade the two.</summary>
+    public double ScrollSpeedZoomExponent { get; init; } = 1.0;
+
+    /// <summary>Bounds on <see cref="ScrollSpeedZoomFactor"/>, so a very low zoom ("start rail here" at 1×) or an
+    /// extreme one cannot make the scroll frantic or glacial.</summary>
+    public const double ScrollSpeedZoomFactorMin = 0.25, ScrollSpeedZoomFactorMax = 3.0;
+
+    /// <summary>
+    /// Multiplier for a page-space scroll speed at <paramref name="zoom"/>:
+    /// <c>(ScrollSpeedZoomReference / zoom) ^ ScrollSpeedZoomExponent</c>, clamped to
+    /// [<see cref="ScrollSpeedZoomFactorMin"/>, <see cref="ScrollSpeedZoomFactorMax"/>]. 1 when disabled or
+    /// for a non-positive zoom. Hosts that run their own zoom-independent flow (the word-guide steer's
+    /// chars/s) apply it too, so one setting governs both sides of the rail threshold.
+    /// </summary>
+    public double ScrollSpeedZoomFactor(double zoom)
+    {
+        if (ScrollSpeedZoomReference <= 0 || ScrollSpeedZoomExponent == 0 || !(zoom > 0) || !double.IsFinite(zoom))
+            return 1.0;
+        double f = Math.Pow(ScrollSpeedZoomReference / zoom, ScrollSpeedZoomExponent);
+        return double.IsFinite(f) ? Math.Clamp(f, ScrollSpeedZoomFactorMin, ScrollSpeedZoomFactorMax) : 1.0;
+    }
+
     // Auto-scroll (semi-automatic): flow through prose on AutoScrollLinePauseMs, park on
     // entry to a stop-role block / new chunk / new page until an explicit advance keypress.
     public double AutoScrollLinePauseMs { get; init; } = 400.0;
