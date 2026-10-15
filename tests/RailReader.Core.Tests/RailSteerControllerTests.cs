@@ -13,7 +13,7 @@ namespace RailReader.Core.Tests;
 public class RailSteerControllerTests : IDisposable
 {
     private readonly DocumentController _controller;
-    private readonly AppConfig _appConfig = new();
+    private readonly AppConfig _appConfig = new() { ScrollSpeedZoomReference = 0 };   // raw page-unit speeds: zoom normalisation has its own tests (ScrollSpeedZoomTests)
     private double _nowMs;
 
     public RailSteerControllerTests()

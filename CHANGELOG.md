@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.68.0 — Scroll speed is zoom-normalised (2026-10-15)
+
+Hold-to-scroll, auto-scroll and the steered scroll all ran in **page units/s**, so the text's on-screen
+velocity was `speed × zoom`: a pace that felt right at 7× was twice as fast at 14× and half as fast at 3.5×.
+(Words per second were constant; what the reader perceives — and what a hand on a stick is calibrated against —
+is the screen velocity.)
+
+- **`CoreSettings.ScrollSpeedZoomReference`** (default **7**; `<= 0` disables) and **`ScrollSpeedZoomExponent`**
+  (default **1**; 0 disables, values between trade constant screen velocity for constant words/s). New
+  **`CoreSettings.ScrollSpeedZoomFactor(zoom)`** = `(reference / zoom) ^ exponent`, clamped to
+  [`ScrollSpeedZoomFactorMin` 0.25, `ScrollSpeedZoomFactorMax` 3]. Both settings are also on `AppConfig`
+  (`ScrollSpeedZoomReference` / `ScrollSpeedZoomExponent`) and flow through `ToCoreSettings()`.
+- Applied in `RailNav`: hold-to-scroll's displacement, the auto-scroll state machine
+  (`AutoScrollContext.SpeedZoomFactor`, now `required`) and the steered scroll's reading-point speed.
+  `RailNav.ScrollSpeed` (the 0…1 value behind motion blur and the deferred-DPI gate) is **unchanged** — it is
+  still the fraction of the speed range, not a screen velocity.
+- Hosts with their own zoom-independent flow (railreader2's word-guide steer, in chars/s) should multiply by
+  `ScrollSpeedZoomFactor(zoom)` too, so one setting governs both sides of the rail threshold.
+- **Behaviour change**: at the default zoom reference the speed at zoom `z` is `7/z` of what it was — slower than
+  before above 7×, faster below. Set `ScrollSpeedZoomReference = 0` for the old behaviour.
+
 ## 0.67.0 — Steer the rail: the reading guide's stick drives rail mode (2026-10-13)
 
 ### `RailNav` steered scroll, `DocumentController.SteerRail` / `StepRailLine`

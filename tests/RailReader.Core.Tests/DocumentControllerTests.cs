@@ -13,7 +13,7 @@ public class DocumentControllerTests : IDisposable
     public DocumentControllerTests()
     {
         _pdfPath = TestFixtures.GetTestPdfPath();
-        var config = new AppConfig();
+        var config = new AppConfig { ScrollSpeedZoomReference = 0 };   // raw page-unit speeds: zoom normalisation has its own tests (ScrollSpeedZoomTests)
         _controller = new DocumentController(config.ToCoreSettings(), config, AnnotationService.Default, new SynchronousThreadMarshaller(),
             TestFixtures.CreatePdfFactory());
         // Don't initialize worker (requires ONNX model) — test navigation without analysis

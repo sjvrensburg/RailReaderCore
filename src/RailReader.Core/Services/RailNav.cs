@@ -832,7 +832,7 @@ public sealed partial class RailNav : ICameraClamp
         ScrollSpeed = sMax > 0 ? instantSpeed / sMax : 0.0;
 
         double sign = dir == ScrollDirection.Forward ? -1.0 : 1.0;
-        cameraX = SnapX(ClampX(_scroll.StartX + sign * totalDisplacement * zoom, zoom, windowWidth), zoom);
+        cameraX = SnapX(ClampX(_scroll.StartX + sign * totalDisplacement * zoom * _config.ScrollSpeedZoomFactor(zoom), zoom, windowWidth), zoom);
 
         // Auto-scroll trigger: if holding forward scroll for longer than the
         // configured delay, transition to auto-scroll mode.

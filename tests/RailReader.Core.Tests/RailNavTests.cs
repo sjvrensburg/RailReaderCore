@@ -25,6 +25,7 @@ public class RailNavTests
         {
             SnapDurationMs = 1, // near-instant snaps for testing
             PixelSnapping = false, // avoid rounding complications in assertions
+            ScrollSpeedZoomReference = 0, // raw page-unit speeds: zoom normalisation has its own tests (ScrollSpeedZoomTests)
         };
         _nav = new RailNav(_config.ToCoreSettings());
     }

@@ -32,6 +32,9 @@ internal readonly struct AutoScrollContext
     public required double WindowWidth { get; init; }
     public required double Zoom { get; init; }
     public required double MaxSpeed { get; init; }
+    /// <summary>Multiplier on the page-space speed that keeps the on-screen velocity constant across zoom
+    /// (<see cref="Models.CoreSettings.ScrollSpeedZoomFactor"/>); 1 = plain page units/s.</summary>
+    public required double SpeedZoomFactor { get; init; }
 }
 
 /// <summary>
@@ -339,7 +342,7 @@ internal sealed class AutoScrollStateMachine
         _scrollElapsed += step;
 
         double speed = _boost ? _speed * 2.0 : _speed;
-        cameraX = _scrollStartX - speed * ctx.Zoom * ScrollElapsed;
+        cameraX = _scrollStartX - speed * ctx.SpeedZoomFactor * ctx.Zoom * ScrollElapsed;
         NormalizedSpeed = ctx.MaxSpeed > 0 ? Math.Clamp(speed / ctx.MaxSpeed, 0.0, 1.0) : 0.0;
         cameraX = _clamp.ClampX(cameraX, ctx.Zoom, ctx.WindowWidth);
 

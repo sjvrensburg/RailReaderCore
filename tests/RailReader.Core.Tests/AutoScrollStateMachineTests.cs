@@ -16,7 +16,8 @@ public class AutoScrollStateMachineTests
         double linePauseMs = 200,
         double windowWidth = 600,
         double zoom = 1.0,
-        double maxSpeed = 5.0)
+        double maxSpeed = 5.0,
+        double speedZoomFactor = 1.0)
     {
         return new AutoScrollContext
         {
@@ -26,6 +27,7 @@ public class AutoScrollStateMachineTests
             WindowWidth = windowWidth,
             Zoom = zoom,
             MaxSpeed = maxSpeed,
+            SpeedZoomFactor = speedZoomFactor,
         };
     }
 
