@@ -71,6 +71,52 @@ public class PdfAnnotationWriterTests
         Assert.NotNull(hl.CreatedUtc);                    // /CreationDate was stamped
     }
 
+    [Theory]
+    [InlineData(0.35f)]
+    [InlineData(0.8f)]
+    public void Opacity_IsWrittenAsCA_AndRoundTrips(float opacity)
+    {
+        // Opacity travels through FPDFAnnot_SetColor's alpha byte; the reader independently
+        // looks up the /CA key, so a round-trip proves the writer emits /CA (railmark#36).
+        var bytes = new PdfAnnotationWriter().AddAuthoredAnnotations(PlainPdfBytes(),
+            OnePage(new HighlightAnnotation
+            {
+                Rects = [new HighlightRect(72, 100, 80, 16)],
+                Color = "#0066FF",
+                Opacity = opacity,
+            }));
+
+        var hl = Assert.IsType<HighlightAnnotation>(Assert.Single(ReadBack(bytes)));
+        Assert.Equal(opacity, hl.Opacity, 0.01f); // alpha is quantised to 1/255
+        Assert.Equal("#0066FF", hl.Color, ignoreCase: true); // colour unaffected by alpha
+    }
+
+    [Fact]
+    public void Opacity_DefaultsToOpaque_WhenUnset()
+    {
+        var bytes = new PdfAnnotationWriter().AddAuthoredAnnotations(PlainPdfBytes(),
+            OnePage(new HighlightAnnotation { Rects = [new HighlightRect(72, 100, 80, 16)] }));
+
+        var hl = Assert.IsType<HighlightAnnotation>(Assert.Single(ReadBack(bytes)));
+        Assert.Equal(1.0f, hl.Opacity, 0.01f);
+    }
+
+    [Fact]
+    public void Opacity_EditInPlace_IsReconciled()
+    {
+        var writer = new PdfAnnotationWriter();
+        var bytes1 = writer.AddAuthoredAnnotations(PlainPdfBytes(), OnePage(
+            new HighlightAnnotation { Rects = [new HighlightRect(72, 100, 80, 16)], Opacity = 1.0f }));
+
+        var model = new PdfAnnotationReader().Read(bytes1);
+        var hl = Assert.IsType<HighlightAnnotation>(Assert.Single(model.Pages[0]));
+        hl.Opacity = 0.35f;
+        var bytes2 = writer.WriteReconciled(bytes1, model);
+
+        var reread = Assert.IsType<HighlightAnnotation>(Assert.Single(ReadBack(bytes2)));
+        Assert.Equal(0.35f, reread.Opacity, 0.01f);
+    }
+
     [Fact]
     public void NewSubtypes_AreWritten()
     {
