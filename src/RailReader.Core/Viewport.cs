@@ -516,8 +516,6 @@ public sealed partial class Viewport : IDisposable
         // Whatever the in-flight DPI upgrade is rendering, this load replaces it (another page, or this
         // page under new render inputs), and it would otherwise hold the PDFium gate ahead of us.
         _dpiRenderCts?.Cancel();
-        // Same for a thumbnail still rendering for the previous load: it is for the wrong page or frame.
-        _thumbnailCts?.Cancel();
 
         var oldPage = CachedPage;
         var oldMinimap = MinimapPage;
@@ -534,6 +532,10 @@ public sealed partial class Viewport : IDisposable
             }
             if (Prefetched is { } pf && pf.PageIndex == CurrentPageBacking)
             {
+                // A thumbnail still rendering for the previous load is for the wrong page or frame.
+                // Cancelled only once this load commits: a failed load leaves the previous page (and
+                // its pending thumbnail) in place, and GoToPage rolls CurrentPage back onto it.
+                _thumbnailCts?.Cancel();
                 CachedPage = pf.Page;
                 CachedDpi = pf.Dpi;
                 MinimapPage = pf.Minimap;
@@ -587,6 +589,7 @@ public sealed partial class Viewport : IDisposable
             // thumbnail renders in the background (up to ~160 ms on a figure-heavy page, issue #147);
             // until it lands MinimapPage is null, and a host draws the minimap from CachedPage
             // instead (railreader2 already does), so it never shows the previous page's thumbnail.
+            _thumbnailCts?.Cancel(); // see the prefetch branch: cancelled only on commit
             CachedPage = newPage;
             CachedDpi = dpi;
             MinimapPage = null;
@@ -608,7 +611,7 @@ public sealed partial class Viewport : IDisposable
     /// <summary>
     /// Renders <paramref name="pageIndex"/>'s minimap thumbnail on a background task and installs it
     /// as <see cref="MinimapPage"/> on the UI thread, unless the view has since moved to another page,
-    /// changed render generation, been disposed, or started a newer load (which cancels this one).
+    /// been disposed, or committed a newer load (which cancels this one).
     /// A failure only logs: the page itself is loaded, and the minimap falls back to the page bitmap.
     /// </summary>
     private void ScheduleThumbnail(int pageIndex)
@@ -617,7 +620,6 @@ public sealed partial class Viewport : IDisposable
         _thumbnailCts = thumbCts;
         var ct = thumbCts.Token;
         int viewRotation = Owner.ViewRotation;
-        int generation = RenderGeneration;
         // Scheduled on the view's own token, not thumbCts, so the completion always posts and
         // disposes thumbCts (see UpdateRenderDpiIfNeeded).
         Task.Run(() =>
@@ -638,8 +640,12 @@ public sealed partial class Viewport : IDisposable
                 {
                     if (error is not null)
                         Owner.Logger.Error($"Failed to render thumbnail for page {pageIndex + 1}: {error.Message}", error);
+                    // No RenderGeneration check: a thumbnail is DPI-independent, so a render-quality
+                    // change (which bumps the generation without reloading the page) must not discard
+                    // it — that would leave MinimapPage null until the next page load. A rotation
+                    // change reloads the page, and that load cancels this render.
                     if (Owner.IsDisposed || _disposed || ct.IsCancellationRequested
-                        || CurrentPageBacking != pageIndex || RenderGeneration != generation || thumb is null)
+                        || CurrentPageBacking != pageIndex || thumb is null)
                     {
                         thumb?.Dispose();
                         return;
@@ -927,6 +933,9 @@ public sealed partial class Viewport : IDisposable
         // completion must not resurrect the prefetch buffer dropped below (or install an old-DPI
         // bitmap); the forced re-render below produces the new-tuning bitmap instead.
         RenderGeneration++;
+        // ...and stop rendering it: its result is now discarded, and it would hold the PDFium gate
+        // (band by band on a tiled backend) ahead of the forced re-render below.
+        _dpiRenderCts?.Cancel();
 
         // Drop the prefetch buffer — it was rasterised at the previous DPI.
         Prefetched?.Dispose();

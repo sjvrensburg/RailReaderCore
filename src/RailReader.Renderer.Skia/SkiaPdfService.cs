@@ -220,6 +220,11 @@ public sealed class SkiaPdfService : IPdfService, IPdfTiledRenderService
                     try { FPDF_RenderPageBitmap(band, page, 0, -y, sizeX, sizeY, rotate, 0); }
                     finally { FPDFBitmap_Destroy(band); }
                 }
+                // Monitor isn't fair: this loop could re-take the gate before a waiting thread wakes.
+                // Yield offers the CPU to a waiter scheduled on this core. Measured on an idle desktop,
+                // a non-cancelling waiter got the gate within one band with or without it; this is
+                // insurance for a loaded machine, not a guarantee.
+                Thread.Yield();
             }
             return new SkiaRenderedPage(bitmap);
         }
