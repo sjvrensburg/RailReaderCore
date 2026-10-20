@@ -18,6 +18,8 @@
 - **`Viewport.HistoryChanged`** fires when either stack changes. Also new: `Viewport.CaptureHistoryEntry()`,
   `Viewport.PeekBack()` / `PeekForward()` (return `HistoryEntry?`), `Viewport.MaxHistoryDepth` (100; oldest
   dropped). A push identical to the top of the back stack is coalesced.
+- Back/Forward onto a page that fails to render now leaves both stacks untouched. Before, the entry was
+  popped first, so it was lost and the current view was filed under Forward.
 - **Breaking:** `Viewport.PopBack` / `PopForward` take and return `HistoryEntry` instead of `int`.
   `DocumentModel.PeekBack()` / `PeekForward()` still return the page (`int`).
 - **Host follow-up (railreader2):** page-stepping commands that call `GoToPage(current ± 1)` should pass
