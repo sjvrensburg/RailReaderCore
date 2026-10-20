@@ -25,13 +25,18 @@ public class TiledRenderTests : IDisposable
         {
             using var paint = new SKPaint { Color = SKColors.Black, IsAntialias = true, StrokeWidth = 3, Style = SKPaintStyle.Stroke };
             using var fill = new SKPaint { Color = SKColors.DarkBlue, IsAntialias = true };
-            using var font = new SKFont(SKTypeface.Default, 14);
-            var canvas = doc.BeginPage(612, 792);
-            canvas.DrawLine(20, 20, 592, 772, paint);
-            canvas.DrawCircle(400, 300, 120, fill);
-            for (int y = 60; y < 780; y += 37)
-                canvas.DrawText($"Line at {y} — the quick brown fox", 72, y, font, fill);
-            doc.EndPage();
+            // Page 1 uses the platform default face, page 2 DejaVu Sans: its em dash ends on a
+            // half-pixel at 400 DPI under rotation 3, which is what first exposed the rounding below.
+            foreach (var typeface in new[] { SKTypeface.Default, SKTypeface.FromFamilyName("DejaVu Sans") })
+            {
+                using var font = new SKFont(typeface, 14);
+                var canvas = doc.BeginPage(612, 792);
+                canvas.DrawLine(20, 20, 592, 772, paint);
+                canvas.DrawCircle(400, 300, 120, fill);
+                for (int y = 60; y < 780; y += 37)
+                    canvas.DrawText($"Line at {y} — the quick brown fox", 72, y, font, fill);
+                doc.EndPage();
+            }
             doc.Close();
         }
         _pdf = new SkiaPdfService(_pdfPath);
@@ -42,16 +47,22 @@ public class TiledRenderTests : IDisposable
         try { File.Delete(_pdfPath); } catch { }
     }
 
+    public static TheoryData<int, int> PagesAndRotations()
+    {
+        var data = new TheoryData<int, int>();
+        for (int page = 0; page < 2; page++)
+            for (int rotation = 0; rotation < 4; rotation++)
+                data.Add(page, rotation);
+        return data;
+    }
+
     [Theory]
-    [InlineData(0)]
-    [InlineData(1)]
-    [InlineData(2)]
-    [InlineData(3)]
-    public void TiledRender_MatchesWholePageRender(int viewRotation)
+    [MemberData(nameof(PagesAndRotations))]
+    public void TiledRender_MatchesWholePageRender(int page, int viewRotation)
     {
         // 400 DPI: 3400 px wide → ~588-row bands, so the page renders in several bands.
-        using var whole = (SkiaRenderedPage)_pdf.RenderPage(0, 400, viewRotation);
-        using var tiled = (SkiaRenderedPage)_pdf.RenderPageTiled(0, 400, viewRotation, CancellationToken.None);
+        using var whole = (SkiaRenderedPage)_pdf.RenderPage(page, 400, viewRotation);
+        using var tiled = (SkiaRenderedPage)_pdf.RenderPageTiled(page, 400, viewRotation, CancellationToken.None);
 
         Assert.Equal(whole.Width, tiled.Width);
         Assert.Equal(whole.Height, tiled.Height);
@@ -59,29 +70,43 @@ public class TiledRenderTests : IDisposable
         var a = whole.Bitmap.GetPixelSpan();
         var b = tiled.Bitmap.GetPixelSpan();
         Assert.Equal(a.Length, b.Length);
-        // Bands render the whole page's transform shifted by an integer offset, but PDFium's
-        // anti-aliasing isn't strictly independent of the target bitmap's extent: a handful of edge
-        // pixels (glyph and curve edges) come out a few levels apart, anywhere in the page — not at
-        // band boundaries, and up to ~1% of a row that runs along an edge. Bound that noise. A
-        // misplaced band would instead show full-contrast deltas along the diagonal and text, which
-        // the max-delta bound rules out.
-        int rowBytes = whole.Bitmap.RowBytes;
-        long differing = 0;
-        int maxDelta = 0, worstRow = 0;
-        for (int row = 0; row < whole.Height; row++)
+
+        // Bands render the whole page's transform shifted by an integer offset, but PDFium's rounding
+        // isn't strictly offset-independent: anti-aliased edges come out a few levels apart, and a
+        // glyph edge that lands exactly on a half-pixel (an em dash's ends, depending on the font) can
+        // round one pixel the other way — anywhere in the page, not at band boundaries. So every
+        // strongly differing pixel must be matched by the other render within one pixel; a misplaced
+        // or missing band is off by far more than that and fails.
+        int w = whole.Width, h = whole.Height, rowBytes = whole.Bitmap.RowBytes;
+        const int Tol = 32;
+        bool Near(ReadOnlySpan<byte> src, int x, int y, ReadOnlySpan<byte> other)
         {
-            int rowDiffs = 0;
-            for (int i = row * rowBytes, end = i + rowBytes; i < end; i++)
-            {
-                int d = Math.Abs(a[i] - b[i]);
-                if (d > 0) { rowDiffs++; maxDelta = Math.Max(maxDelta, d); }
-            }
-            differing += rowDiffs;
-            worstRow = Math.Max(worstRow, rowDiffs);
+            int o = y * rowBytes + x * 4;
+            for (int dy = -1; dy <= 1; dy++)
+                for (int dx = -1; dx <= 1; dx++)
+                {
+                    int nx = x + dx, ny = y + dy;
+                    if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                    int n = ny * rowBytes + nx * 4;
+                    if (Math.Abs(src[o] - other[n]) <= Tol && Math.Abs(src[o + 1] - other[n + 1]) <= Tol
+                        && Math.Abs(src[o + 2] - other[n + 2]) <= Tol)
+                        return true;
+                }
+            return false;
         }
-        Assert.True(differing <= a.Length / 1_000, $"{differing} of {a.Length} bytes differ");
-        Assert.True(maxDelta <= 32, $"max channel delta {maxDelta}");
-        Assert.True(worstRow <= rowBytes / 50, $"a row has {worstRow} of {rowBytes} bytes differing");
+
+        long differing = 0, unmatched = 0;
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+            {
+                int o = y * rowBytes + x * 4;
+                int d = Math.Max(Math.Abs(a[o] - b[o]), Math.Max(Math.Abs(a[o + 1] - b[o + 1]), Math.Abs(a[o + 2] - b[o + 2])));
+                if (d == 0) continue;
+                differing++;
+                if (d > Tol && !(Near(a, x, y, b) && Near(b, x, y, a))) unmatched++;
+            }
+        Assert.True(differing <= (long)w * h / 500, $"{differing} of {w * h} pixels differ");
+        Assert.True(unmatched == 0, $"{unmatched} pixels differ beyond a one-pixel shift");
     }
 
     [Fact]
