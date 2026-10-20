@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.70.0 — Progressive page loads at rail zoom: low-DPI preview, tiled background upgrade, background thumbnail (2026-10-20)
 
 ### Page changes at rail zoom no longer block on a full-resolution render (#147)
 
