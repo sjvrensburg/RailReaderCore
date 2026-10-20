@@ -327,37 +327,95 @@ public sealed partial class Viewport : IDisposable
     /// <summary>Lookahead pages queued for analysis for this view.</summary>
     public Queue<int> PendingAnalysis { get; } = new();
 
-    // Navigation history (back/forward) — per-view so each viewport navigates independently.
-    internal readonly Stack<int> BackStack = new();
-    internal readonly Stack<int> ForwardStack = new();
+    // Navigation history (back/forward) — per-view so each viewport navigates independently. Lists used
+    // as stacks (top = last) so the oldest entry can be dropped at MaxHistoryDepth.
+    internal readonly List<HistoryEntry> BackStack = new();
+    internal readonly List<HistoryEntry> ForwardStack = new();
+
+    /// <summary>Maximum depth of each history stack; the oldest entry is dropped beyond it.</summary>
+    public const int MaxHistoryDepth = 100;
 
     /// <summary>Depth of this view's back / forward stacks.</summary>
     public int BackStackCount => BackStack.Count;
     public int ForwardStackCount => ForwardStack.Count;
 
-    /// <summary>Record a navigation away from <paramref name="currentPage"/> on this view: push it
-    /// onto the back stack and clear the forward stack (a new branch).</summary>
-    public void PushHistory(int currentPage)
+    /// <summary>The entry <see cref="PopBack"/> would return, or null when the back stack is empty.</summary>
+    public HistoryEntry? PeekBack() => BackStack.Count > 0 ? BackStack[^1] : null;
+
+    /// <summary>The entry <see cref="PopForward"/> would return, or null when the forward stack is empty.</summary>
+    public HistoryEntry? PeekForward() => ForwardStack.Count > 0 ? ForwardStack[^1] : null;
+
+    /// <summary>Fires when this view's back or forward stack changes, so a host can update Back/Forward
+    /// buttons without polling <see cref="BackStackCount"/>.</summary>
+    public Action? HistoryChanged;
+
+    /// <summary>Snapshot of where this view is now: page, camera and, when the rail is seated (active,
+    /// not paused, analysis for this page resident), the rail's page-level block and line.</summary>
+    public HistoryEntry CaptureHistoryEntry()
     {
-        BackStack.Push(currentPage);
+        bool railSeated = Rail.Active && !Rail.Paused && Rail.HasAnalysis && !PendingRailSetup;
+        return new HistoryEntry(CurrentPage, Camera.Zoom, Camera.OffsetX, Camera.OffsetY,
+            railSeated ? Rail.CurrentNavigableArrayIndex : null,
+            railSeated ? Rail.CurrentLine : null);
+    }
+
+    /// <summary>Record a navigation away from <paramref name="currentPage"/> on this view as a page-only
+    /// entry. Prefer <see cref="PushHistory(HistoryEntry)"/> with <see cref="CaptureHistoryEntry"/>.</summary>
+    public void PushHistory(int currentPage) => PushHistory(HistoryEntry.ForPage(currentPage));
+
+    /// <summary>Record a navigation away from <paramref name="entry"/> on this view: push it onto the back
+    /// stack and clear the forward stack (a new branch). An entry equal to the current top is not pushed
+    /// again, though the forward stack is still cleared.</summary>
+    public void PushHistory(HistoryEntry entry)
+    {
+        bool changed = ForwardStack.Count > 0;
         ForwardStack.Clear();
+        if (BackStack.Count == 0 || BackStack[^1] != entry)
+        {
+            Push(BackStack, entry);
+            changed = true;
+        }
+        if (changed) HistoryChanged?.Invoke();
     }
 
-    /// <summary>Pop the back stack for this view, pushing <paramref name="currentPage"/> onto forward.
+    /// <summary>Pop the back stack for this view, pushing <paramref name="current"/> onto forward.
     /// Caller guards on <see cref="BackStackCount"/> &gt; 0.</summary>
-    public int PopBack(int currentPage)
+    public HistoryEntry PopBack(HistoryEntry current)
     {
-        ForwardStack.Push(currentPage);
-        return BackStack.Pop();
+        Push(ForwardStack, current);
+        var entry = Pop(BackStack);
+        HistoryChanged?.Invoke();
+        return entry;
     }
 
-    /// <summary>Pop the forward stack for this view, pushing <paramref name="currentPage"/> onto back.
+    /// <summary>Pop the forward stack for this view, pushing <paramref name="current"/> onto back.
     /// Caller guards on <see cref="ForwardStackCount"/> &gt; 0.</summary>
-    public int PopForward(int currentPage)
+    public HistoryEntry PopForward(HistoryEntry current)
     {
-        BackStack.Push(currentPage);
-        return ForwardStack.Pop();
+        Push(BackStack, current);
+        var entry = Pop(ForwardStack);
+        HistoryChanged?.Invoke();
+        return entry;
     }
+
+    private static void Push(List<HistoryEntry> stack, HistoryEntry entry)
+    {
+        stack.Add(entry);
+        if (stack.Count > MaxHistoryDepth) stack.RemoveAt(0);
+    }
+
+    private static HistoryEntry Pop(List<HistoryEntry> stack)
+    {
+        var entry = stack[^1];
+        stack.RemoveAt(stack.Count - 1);
+        return entry;
+    }
+
+    /// <summary>Rail position a history restore wants seated once this page's analysis arrives
+    /// (page-level block index, line). Set by <c>DocumentController</c>'s back/forward when the
+    /// destination page's analysis isn't resident yet; consumed by the async seat and cleared by
+    /// <see cref="DocumentModel.ClearPendingState"/> on any other page change.</summary>
+    internal (int Block, int Line)? PendingHistorySeat { get; set; }
 
     // --- Rasterised page output (rendered at THIS view's DPI) ---
 
@@ -1107,6 +1165,7 @@ public sealed partial class Viewport : IDisposable
 
         StateChanged = null;
         PageChanged = null;
+        HistoryChanged = null;
         ReadingPositionChanged = null;
         OnDpiRenderComplete = null;
         RequestAnimation = null;

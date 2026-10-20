@@ -485,16 +485,24 @@ public sealed partial class DocumentController : IDisposable
     }
 
     // --- Navigation history (back/forward) ---
-    // Stacks live on DocumentModel so each tab has independent history.
+    // Stacks live on each Viewport so every view has independent history. Entries carry the full view
+    // state (page, camera, seated rail block/line — HistoryEntry), so Back returns the reader to the
+    // same magnified spot rather than the top of the page (issue #143).
 
     public bool CanGoBack => FocusedViewport is { } vp && vp.BackStackCount > 0;
     public bool CanGoForward => FocusedViewport is { } vp && vp.ForwardStackCount > 0;
 
-    /// <summary>Pushes the current page onto the back stack and clears forward history.</summary>
-    private void PushHistory()
+    /// <summary>
+    /// Records the focused view's current state on its back stack and clears forward history. Jump
+    /// navigation inside Core already does this (<see cref="GoToPage(int)"/>, link clicks,
+    /// <see cref="FollowLink"/>, bookmarks, search matches on another page, <see cref="NavigateToRole"/>);
+    /// a host calls it before a jump of its own that doesn't go through one of those. No-op on a
+    /// confined (portal) view, whose history is frozen.
+    /// </summary>
+    public void PushHistory()
     {
-        if (FocusedViewport is not { } vp) return;
-        vp.PushHistory(vp.CurrentPage);
+        if (FocusedViewport is not { } vp || vp.CurrentFocusBlockIndex is not null) return;
+        vp.PushHistory(vp.CaptureHistoryEntry());
     }
 
     public void NavigateToBookmark(int index)
@@ -504,8 +512,10 @@ public sealed partial class DocumentController : IDisposable
         // Confined (portal) view: GoToPage would no-op, but PushHistory()/FitPage() would still run and
         // corrupt the focused view's back/forward stacks. Bail before any mutation (mirrors NavigateBack/Forward).
         if (FocusedViewport is { CurrentFocusBlockIndex: not null }) return;
+        // Push explicitly (not via GoToPage) so a bookmark on the current page, which only re-fits the
+        // camera, is recorded too.
         PushHistory();
-        GoToPage(annotations.Bookmarks[index].Page);
+        GoToPage(annotations.Bookmarks[index].Page, recordHistory: false);
         FitPage();
     }
 
@@ -514,7 +524,7 @@ public sealed partial class DocumentController : IDisposable
         if (FocusedViewport is not { } vp) return;
         if (vp.CurrentFocusBlockIndex is not null) return;   // confined: don't pop/page (would corrupt history)
         if (vp.BackStackCount == 0) return;
-        GoToPage(vp.PopBack(vp.CurrentPage));
+        RestoreHistoryEntry(vp, vp.PopBack(vp.CaptureHistoryEntry()));
     }
 
     public void NavigateForward()
@@ -522,7 +532,138 @@ public sealed partial class DocumentController : IDisposable
         if (FocusedViewport is not { } vp) return;
         if (vp.CurrentFocusBlockIndex is not null) return;   // confined: don't pop/page (would corrupt history)
         if (vp.ForwardStackCount == 0) return;
-        GoToPage(vp.PopForward(vp.CurrentPage));
+        RestoreHistoryEntry(vp, vp.PopForward(vp.CaptureHistoryEntry()));
+    }
+
+    /// <summary>
+    /// Returns <paramref name="vp"/> to a history entry: its page, then (for a full entry) its exact
+    /// camera, then its rail block/line. When the page's analysis is resident the rail is seated now,
+    /// with its vertical bias set so the restored camera IS the rail framing (no snap moves it); when
+    /// the analysis is still pending the seat is deferred to <see cref="ApplyAnalysisToViewport"/>.
+    /// </summary>
+    private void RestoreHistoryEntry(Viewport vp, HistoryEntry entry)
+    {
+        GoToPage(entry.Page, recordHistory: false);
+        if (vp.CurrentPage != Math.Clamp(entry.Page, 0, vp.Owner.PageCount - 1)) return; // render failure
+        if (entry.Zoom is not { } zoom) return; // page-only entry: default landing camera
+
+        if (AutoScrollActive) StopAutoScroll();
+        var (ww, wh) = (vp.Width, vp.Height);
+        vp.Camera.Zoom = Math.Clamp(zoom, Camera.ZoomMin, Camera.ZoomMax);
+        vp.Camera.OffsetX = entry.OffsetX;
+        vp.Camera.OffsetY = entry.OffsetY;
+        vp.Camera.NotifyZoomChange();
+        vp.ClampCamera(ww, wh);
+
+        if (entry.RailBlock is { } block)
+        {
+            int line = entry.RailLine ?? 0;
+            if (vp.PendingRailSetup)
+            {
+                // The rail still holds the previous page's analysis until the worker result lands; at
+                // the restored (rail) zoom it would engage on that stale geometry. Drop it, and seat
+                // the remembered block/line when this page's analysis arrives.
+                vp.Rail.ClearAnalysis();
+                vp.PendingHistorySeat = (block, line);
+            }
+            else if (vp.Rail.TrySetCurrentByPageIndex(block, line) && !vp.Rail.Active)
+            {
+                vp.Rail.PinCurrentBlockForActivation();
+            }
+        }
+
+        vp.UpdateRailZoom(ww, wh);
+        if (entry.RailBlock is not null && vp.Rail.Active && !vp.PendingRailSetup)
+        {
+            // Keep the restored camera: express its Y as the rail's vertical bias so the next snap or
+            // line advance doesn't recentre the line.
+            var li = vp.Rail.CurrentLineInfo;
+            vp.Rail.VerticalBias = vp.Camera.OffsetY - (wh / 2.0 - li.Y * vp.Camera.Zoom);
+        }
+        vp.UpdateRenderDpiIfNeeded();
+        FireReadingPositionChanged();
+    }
+
+    /// <summary>
+    /// Follows a link destination the way a link click does: for a <see cref="PageDestination"/>,
+    /// records history, goes to the page and scrolls the destination point into view. Returns false
+    /// without navigating for a <see cref="UriDestination"/> (host-handled), a confined (portal) view,
+    /// or a page that failed to render. Lets a host decide what a click on a link does — ignore it
+    /// (<see cref="HandleClick(double, double, bool)"/> with <c>followLinks: false</c>), follow it on a
+    /// modifier, or follow it from a preview popup (issue #142).
+    /// </summary>
+    public bool FollowLink(PdfLinkDestination dest)
+    {
+        if (FocusedViewport is not { } vp) return false;
+        if (dest is not PageDestination pageDest) return false;
+        // Confined (portal) view: suppress internal page-link navigation entirely — pushing history before
+        // the GoToPage no-op would corrupt the back stack and leave the block.
+        if (vp.CurrentFocusBlockIndex is not null) return false;
+
+        var before = vp.CaptureHistoryEntry();
+        int target = Math.Clamp(pageDest.PageIndex, 0, vp.Owner.PageCount - 1);
+        GoToPage(target, recordHistory: false);
+        if (vp.CurrentPage != target) return false; // render failure: nothing moved, nothing recorded
+        ScrollToDestination(pageDest);
+        // Recorded even when the link targets the current page: the scroll is still a jump.
+        vp.PushHistory(before);
+        return true;
+    }
+
+    /// <summary>
+    /// Where a link destination lands, for a host-drawn preview ("peek") of it: the destination page and
+    /// a page-space rect to show. When that page's analysis is cached, the rect is the layout block
+    /// containing the destination point (a reference entry, an equation, a figure) and
+    /// <see cref="DestinationPreview.BlockIndex"/> is its page-level index; otherwise it is a
+    /// full-width band of <paramref name="bandHeight"/> points starting at the destination Y (the page
+    /// top when the destination has no Y). Returns null when there is no document or the page is out of
+    /// range. Uses the same coordinate resolution as following the link.
+    /// </summary>
+    public DestinationPreview? ResolveDestinationPreview(PageDestination dest, double bandHeight = 200)
+    {
+        if (FocusedViewport is not { } vp) return null;
+        var doc = vp.Owner;
+        if (dest.PageIndex < 0 || dest.PageIndex >= doc.PageCount) return null;
+
+        var (pageW, pageH) = doc.Pdf.GetPageSize(dest.PageIndex, doc.ViewRotation);
+        var (px, py) = ResolveDestinationPoint(dest, pageH);
+
+        if (py is { } y && doc.TryGetAnalysis(dest.PageIndex, vp.AnalysisParams, out var analysis))
+        {
+            int best = -1;
+            float bestArea = float.MaxValue;
+            for (int i = 0; i < analysis.Blocks.Count; i++)
+            {
+                var b = analysis.Blocks[i].BBox;
+                // Destinations commonly sit a hair above their target's ink (the anchor is placed at the
+                // baseline-minus-ascent or just above a heading), so allow a small vertical slack.
+                const float slack = 4f;
+                if (y < b.Y - slack || y > b.Y + b.H) continue;
+                if (px is { } x && (x < b.X - slack || x > b.X + b.W + slack)) continue;
+                float area = b.W * b.H;
+                if (area < bestArea) { best = i; bestArea = area; }
+            }
+            if (best >= 0)
+            {
+                var bb = analysis.Blocks[best].BBox;
+                return new DestinationPreview(dest.PageIndex, RectF.Create(bb.X, bb.Y, bb.W, bb.H), best);
+            }
+        }
+
+        float top = (float)Math.Clamp(py ?? 0, 0, pageH);
+        float bottom = (float)Math.Min(pageH, top + Math.Max(1, bandHeight));
+        return new DestinationPreview(dest.PageIndex, new RectF(0, top, (float)pageW, bottom), null);
+    }
+
+    /// <summary>Destination point in page-point space: the provider-resolved PageX/PageY when present
+    /// (CropBox- and /Rotate-aware), else the legacy PDF-user-space conversion against
+    /// <paramref name="pageHeight"/>.</summary>
+    private static (float? X, float? Y) ResolveDestinationPoint(PageDestination dest, double pageHeight)
+    {
+        float? pageX = dest.PageX, pageY = dest.PageY;
+        if (pageX is null && dest.PdfX is { } pdfX) pageX = pdfX;
+        if (pageY is null && dest.PdfY is { } pdfY) pageY = (float)(pageHeight - pdfY);
+        return (pageX, pageY);
     }
 
     /// <summary>
@@ -535,9 +676,7 @@ public sealed partial class DocumentController : IDisposable
     {
         if (FocusedViewport is not { } vp) return;
 
-        float? pageX = dest.PageX, pageY = dest.PageY;
-        if (pageX is null && dest.PdfX is { } pdfX) pageX = pdfX;
-        if (pageY is null && dest.PdfY is { } pdfY) pageY = (float)(vp.PageHeight - pdfY);
+        var (pageX, pageY) = ResolveDestinationPoint(dest, vp.PageHeight);
         if (pageX is null && pageY is null) return;
 
         var (ww, wh) = (vp.Width, vp.Height);
@@ -558,7 +697,17 @@ public sealed partial class DocumentController : IDisposable
 
     // --- Navigation ---
 
-    public void GoToPage(int page)
+    /// <summary>Jumps the focused view to <paramref name="page"/>, recording history when the page
+    /// changes. Same as <c>GoToPage(page, recordHistory: true)</c>.</summary>
+    public void GoToPage(int page) => GoToPage(page, recordHistory: true);
+
+    /// <summary>
+    /// Moves the focused view to <paramref name="page"/>. With <paramref name="recordHistory"/> (the
+    /// default for <see cref="GoToPage(int)"/>) and an actual page change, the view's state before the
+    /// move is pushed onto its back stack — right for outline, index, go-to-page and first/last-page
+    /// jumps. Pass false for incremental movement (previous/next page stepping) so Back skips it.
+    /// </summary>
+    public void GoToPage(int page, bool recordHistory)
     {
         if (FocusedViewport is not { } vp) return;
         // Confined (portal) view: bail BEFORE cancelling the zoom tween / any other work — the
@@ -570,6 +719,7 @@ public sealed partial class DocumentController : IDisposable
         var doc = vp.Owner;
         var (ww, wh) = (vp.Width, vp.Height);
         int prevPage = vp.CurrentPage;
+        var before = recordHistory ? vp.CaptureHistoryEntry() : default;
         if (!doc.GoToPage(vp, page, _worker, _config.NavigableRoles, ww, wh))
         {
             NotifyRenderFailed(page);
@@ -578,9 +728,12 @@ public sealed partial class DocumentController : IDisposable
         doc.QueueLookahead(vp, _config.AnalysisLookaheadPages);
         Search.UpdateCurrentPageMatches();
         // DocumentModel.GoToPage returns true without changing anything when the
-        // target clamps to the current page; only announce a real transition.
+        // target clamps to the current page; only record + announce a real transition.
         if (vp.CurrentPage != prevPage)
+        {
+            if (recordHistory) vp.PushHistory(before);
             RaisePageChanged(vp);
+        }
     }
 
     private void NotifyRenderFailed(int page)
@@ -660,7 +813,7 @@ public sealed partial class DocumentController : IDisposable
         if (page < 0 || page >= vp.Owner.PageCount) return false;
         vp.Focus = new FocusBlock(page, blockIndex, bounds);
         if (page != vp.CurrentPage)
-            GoToPage(page); // not confined yet (Focus targets the new page) → allowed; re-confines on landing
+            GoToPage(page, recordHistory: false); // not confined yet (Focus targets the new page) → allowed; re-confines on landing
         FitPage();          // frame the destination block (confinement-aware: CenterPage fits the block rect)
         return true;
     }
@@ -829,8 +982,14 @@ public sealed partial class DocumentController : IDisposable
     /// index can't seat — fall back to a geometric centred frame instead of failing (and ignore
     /// <paramref name="line"/>), so callers can frame any detected block. Returns false only if
     /// there's no document / no current-page analysis / the index is out of range.
+    /// <para><paramref name="focusPageX"/> (page-space X, e.g. where a double-click landed) keeps that
+    /// point in view on a line wider than the window at the target zoom: the landing camera centres it
+    /// (clamped to the line and to the rail's horizontal scroll range) instead of aligning the line
+    /// start, and the completion snap preserves that position. Ignored for centred (narrow) units and
+    /// for non-navigable blocks.</para>
     /// </summary>
-    public bool SmoothlyFrameBlock(int pageBlockIndex, double? targetZoom = null, double? durationMs = null, int line = 0)
+    public bool SmoothlyFrameBlock(int pageBlockIndex, double? targetZoom = null, double? durationMs = null, int line = 0,
+        double? focusPageX = null)
     {
         if (FocusedViewport is not { } vp) return false;
         var doc = vp.Owner;
@@ -862,10 +1021,19 @@ public sealed partial class DocumentController : IDisposable
         double z = Math.Clamp(targetZoom ?? vp.ComputeBlockFitZoom(box, ww, wh),
             _config.RailZoomThreshold, Camera.ZoomMax);
 
-        var (ox, oy) = vp.Rail.ComputeSnapTarget(z, ww, wh);
+        var (ox, oy) = vp.Rail.ComputeSnapTarget(z, ww, wh, focusPageX);
         var lineInfo = vp.Rail.CurrentLineInfo; // seated block's target line
         if (AutoScrollActive) StopAutoScroll();
-        vp.Zoom.StartTo(vp, z, ox, oy, lineInfo.X + lineInfo.Width / 2.0, lineInfo.Y, durationMs);
+        double hFrac = focusPageX is null ? 0 : vp.Rail.HorizontalFractionOf(ox, z, ww);
+        if (hFrac > 0)
+        {
+            // The hinted landing isn't the line start, so the completion snap must preserve it rather
+            // than re-run the default framing (which would slide back to the line start).
+            vp.Zoom.StartTo(vp, z, ox, oy, lineInfo.X + lineInfo.Width / 2.0, lineInfo.Y, durationMs,
+                hFrac, lineInfo.Y * z + oy);
+        }
+        else
+            vp.Zoom.StartTo(vp, z, ox, oy, lineInfo.X + lineInfo.Width / 2.0, lineInfo.Y, durationMs);
         FireReadingPositionChanged();
         return true;
     }
@@ -1237,7 +1405,9 @@ public sealed partial class DocumentController : IDisposable
         if (FocusedViewport is not { } vp) return false;
         if (!vp.Rail.Active || !vp.Rail.HasAnalysis) return false;
         if (!_config.NavigableRoles.Contains(target)) return false;
+        var before = vp.CaptureHistoryEntry();
         if (!vp.Rail.TryNavigateToRole(target, forward)) return false;
+        if (vp.CurrentFocusBlockIndex is null) vp.PushHistory(before); // a jump, not a line step
 
         var (ww, wh) = (vp.Width, vp.Height);
         vp.StartSnap(ww, wh);

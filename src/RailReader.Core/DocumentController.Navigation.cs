@@ -254,7 +254,7 @@ public sealed partial class DocumentController
                     int targetPage = vp.CurrentPage + (forward ? 1 : -1);
                     if (targetPage >= 0 && targetPage < doc.PageCount)
                     {
-                        GoToPage(targetPage);
+                        GoToPage(targetPage, recordHistory: false); // edge-hold page turn: incremental
                         var (_, ry, _, rh) = vp.GetFitRect();
                         double topTarget = -ry * vp.Camera.Zoom;
                         vp.Camera.OffsetY = forward
@@ -375,9 +375,12 @@ public sealed partial class DocumentController
 
     /// <summary>
     /// Handles a click on the viewport. Returns link destination if a link was clicked,
-    /// otherwise falls through to rail-mode block snapping.
+    /// otherwise falls through to rail-mode block snapping. With <paramref name="followLinks"/>
+    /// false, links are ignored entirely and the click seats the rail as if no link were there — a
+    /// host that wants links to need a modifier, open a preview first, or do nothing passes false and
+    /// acts on links itself through <see cref="HitTestLink"/> and <see cref="FollowLink"/>.
     /// </summary>
-    public (bool Handled, PdfLinkDestination? Link) HandleClick(double canvasX, double canvasY)
+    public (bool Handled, PdfLinkDestination? Link) HandleClick(double canvasX, double canvasY, bool followLinks = true)
     {
         if (FocusedViewport is not { } vp) return (false, null);
         var doc = vp.Owner;
@@ -397,17 +400,11 @@ public sealed partial class DocumentController
 
         // Check for PDF links first (takes priority over rail-mode snap). Hit-test the FOCUSED view's
         // own page so a detached pane sitting on a different page than the primary clicks its own links.
-        var link = doc.HitTestLink(vp.CurrentPage, pageX, pageY);
+        var link = followLinks ? doc.HitTestLink(vp.CurrentPage, pageX, pageY) : null;
         if (link is not null)
         {
-            if (link.Destination is PageDestination pageDest && vp.CurrentFocusBlockIndex is null)
-            {
-                // Confined (portal) view: suppress internal page-link navigation entirely — pushing
-                // history before the GoToPage no-op would corrupt the back stack and leave the block.
-                PushHistory();
-                GoToPage(pageDest.PageIndex);
-                ScrollToDestination(pageDest);
-            }
+            // Internal links navigate here (FollowLink skips confined views); URI links are the host's.
+            FollowLink(link.Destination);
             return (true, link.Destination);
         }
 

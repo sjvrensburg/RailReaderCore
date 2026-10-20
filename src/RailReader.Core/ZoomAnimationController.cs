@@ -98,7 +98,8 @@ internal sealed class ZoomAnimationController
     /// </summary>
     public void StartTo(Viewport vp,
         double targetZoom, double targetOffsetX, double targetOffsetY,
-        double cursorPageX, double cursorPageY, double? durationMs = null)
+        double cursorPageX, double cursorPageY, double? durationMs = null,
+        double horizontalFraction = -1, double lineScreenY = 0)
     {
         _zoomAnim = new ZoomAnimation
         {
@@ -110,8 +111,10 @@ internal sealed class ZoomAnimationController
             TargetOffsetY = targetOffsetY,
             CursorPageX = cursorPageX,
             CursorPageY = cursorPageY,
-            HorizontalFraction = -1, // not preserving a prior rail position → completion takes the StartSnap branch
-            LineScreenY = 0,
+            // -1 (the default): not preserving a rail position → completion takes the StartSnap branch.
+            // A caller landing mid-line (SmoothlyFrameBlock's focusPageX) passes the landing's fraction.
+            HorizontalFraction = horizontalFraction,
+            LineScreenY = lineScreenY,
             DurationMs = durationMs ?? CoreTuning.ZoomAnimationDurationMs,
         };
     }

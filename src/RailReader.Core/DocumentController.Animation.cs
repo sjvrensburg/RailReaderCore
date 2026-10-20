@@ -432,6 +432,14 @@ public sealed partial class DocumentController
 
         vp.Rail.SetAnalysis(analysis, _config.NavigableRoles, vp.PreserveRailOnSeat, vp.CurrentFocusBlockIndex);
         vp.PendingRailSetup = false;
+        // A back/forward restore that landed before this analysis: seat the remembered block/line and
+        // pin it so the activation below keeps it instead of picking the nearest block.
+        if (vp.PendingHistorySeat is { } seat)
+        {
+            vp.PendingHistorySeat = null;
+            if (vp.Rail.TrySetCurrentByPageIndex(seat.Block, seat.Line) && !vp.Rail.Active)
+                vp.Rail.PinCurrentBlockForActivation();
+        }
         vp.UpdateRailZoom(ww, wh);
         _logger.Debug($"[Analysis] Rail has {vp.Rail.NavigableCount} navigable blocks, Active={vp.Rail.Active}");
 
