@@ -523,16 +523,20 @@ public sealed partial class DocumentController : IDisposable
     {
         if (FocusedViewport is not { } vp) return;
         if (vp.CurrentFocusBlockIndex is not null) return;   // confined: don't pop/page (would corrupt history)
-        if (vp.BackStackCount == 0) return;
-        RestoreHistoryEntry(vp, vp.PopBack(vp.CaptureHistoryEntry()));
+        if (vp.PeekBack() is not { } target) return;
+        // Restore first, pop after: a target page that fails to render leaves both stacks untouched
+        // instead of losing the entry and filing the current view under Forward.
+        var current = vp.CaptureHistoryEntry();
+        if (RestoreHistoryEntry(vp, target)) vp.PopBack(current);
     }
 
     public void NavigateForward()
     {
         if (FocusedViewport is not { } vp) return;
         if (vp.CurrentFocusBlockIndex is not null) return;   // confined: don't pop/page (would corrupt history)
-        if (vp.ForwardStackCount == 0) return;
-        RestoreHistoryEntry(vp, vp.PopForward(vp.CaptureHistoryEntry()));
+        if (vp.PeekForward() is not { } target) return;
+        var current = vp.CaptureHistoryEntry();   // see NavigateBack: pop only once the restore landed
+        if (RestoreHistoryEntry(vp, target)) vp.PopForward(current);
     }
 
     /// <summary>
@@ -540,12 +544,13 @@ public sealed partial class DocumentController : IDisposable
     /// camera, then its rail block/line. When the page's analysis is resident the rail is seated now,
     /// with its vertical bias set so the restored camera IS the rail framing (no snap moves it); when
     /// the analysis is still pending the seat is deferred to <see cref="ApplyAnalysisToViewport"/>.
+    /// Returns false, having changed nothing, when the entry's page fails to render.
     /// </summary>
-    private void RestoreHistoryEntry(Viewport vp, HistoryEntry entry)
+    private bool RestoreHistoryEntry(Viewport vp, HistoryEntry entry)
     {
         GoToPage(entry.Page, recordHistory: false);
-        if (vp.CurrentPage != Math.Clamp(entry.Page, 0, vp.Owner.PageCount - 1)) return; // render failure
-        if (entry.Zoom is not { } zoom) return; // page-only entry: default landing camera
+        if (vp.CurrentPage != Math.Clamp(entry.Page, 0, vp.Owner.PageCount - 1)) return false; // render failure
+        if (entry.Zoom is not { } zoom) return true; // page-only entry: default landing camera
 
         if (AutoScrollActive) StopAutoScroll();
         var (ww, wh) = (vp.Width, vp.Height);
@@ -600,6 +605,7 @@ public sealed partial class DocumentController : IDisposable
         }
         vp.UpdateRenderDpiIfNeeded();
         FireReadingPositionChanged();
+        return true;
     }
 
     /// <summary>

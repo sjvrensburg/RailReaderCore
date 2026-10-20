@@ -16,7 +16,7 @@ public class NavigationHistoryLinkTests : IDisposable
 {
     private readonly string _pdfPath;
     private readonly AppConfig _config;
-    private readonly DocumentController _controller;
+    private DocumentController _controller;
 
     private const double Vw = 800, Vh = 600;
 
@@ -34,6 +34,42 @@ public class NavigationHistoryLinkTests : IDisposable
     }
 
     public void Dispose() => _controller.Dispose();
+
+    /// <summary>Replaces the controller, for a test that needs different settings or a PDF backend that
+    /// fails to render a page.</summary>
+    private void UseController(AppConfig config, IPdfServiceFactory? factory = null)
+    {
+        _controller.Dispose();
+        _controller = new DocumentController(config.ToCoreSettings(), config,
+            AnnotationService.Default, new SynchronousThreadMarshaller(),
+            factory ?? TestFixtures.CreatePdfFactory());
+    }
+
+    /// <summary>Skia-backed PDF services whose <see cref="IPdfService.RenderPage"/> throws for one page.</summary>
+    private sealed class FailingPageFactory(int failPage) : IPdfServiceFactory
+    {
+        private readonly IPdfServiceFactory _inner = TestFixtures.CreatePdfFactory();
+        public IPdfService CreatePdfService(string filePath, string? password = null)
+            => new FailingRenderPdfService(_inner.CreatePdfService(filePath, password), failPage);
+        public IPdfTextService CreatePdfTextService() => _inner.CreatePdfTextService();
+        public IPdfLinkService CreatePdfLinkService() => _inner.CreatePdfLinkService();
+    }
+
+    private sealed class FailingRenderPdfService(IPdfService inner, int failPage) : IPdfService
+    {
+        public byte[] PdfBytes => inner.PdfBytes;
+        public string? Password => inner.Password;
+        public int PageCount => inner.PageCount;
+        public List<OutlineEntry> Outline => inner.Outline;
+        public (double Width, double Height) GetPageSize(int pageIndex) => inner.GetPageSize(pageIndex);
+        public IRenderedPage RenderPage(int pageIndex, int dpi = 200)
+            => pageIndex == failPage
+                ? throw new InvalidOperationException("synthetic corrupt page")
+                : inner.RenderPage(pageIndex, dpi);
+        public IRenderedPage RenderThumbnail(int pageIndex) => inner.RenderThumbnail(pageIndex);
+        public (byte[] RgbBytes, int Width, int Height) RenderPagePixmap(int pageIndex, int targetSize)
+            => inner.RenderPagePixmap(pageIndex, targetSize);
+    }
 
     /// <summary>Two navigable text blocks (page indices 0 and 2) around a figure (index 1); three
     /// full-width lines each.</summary>
@@ -219,7 +255,9 @@ public class NavigationHistoryLinkTests : IDisposable
         Settle();
         // (Built by hand: the worker's own analysis of page 0 may still be in flight, which
         // CaptureHistoryEntry rightly reports as "rail not seated".)
-        var entry = new HistoryEntry(2, vp.Camera.Zoom, vp.Camera.OffsetX, vp.Camera.OffsetY,
+        // Scrolled partway along the line and off-centre vertically, so it differs from the default
+        // framing (line start, line centred) that a plain snap would land on.
+        var entry = new HistoryEntry(2, vp.Camera.Zoom, vp.Camera.OffsetX - 600, vp.Camera.OffsetY + 60,
             RailBlock: 2, RailLine: 1);
 
         _controller.GoToPage(1, recordHistory: false);
@@ -244,6 +282,94 @@ public class NavigationHistoryLinkTests : IDisposable
         Assert.True(vp.Rail.Active);
         Assert.Equal(2, vp.Rail.CurrentNavigableArrayIndex); // the remembered block, not the nearest one
         Assert.Null(vp.PendingHistorySeat);
+
+        // The seat settles from the restored camera rather than re-running the default framing (which
+        // would recentre the line and slide back to the line start).
+        Settle();
+        Assert.Equal(entry.OffsetX, vp.Camera.OffsetX, 0);
+        Assert.Equal(entry.OffsetY, vp.Camera.OffsetY, 0);
+    }
+
+    [Fact]
+    public void NavigateBack_CancelsARailSnapInFlight()
+    {
+        UseController(new AppConfig { SnapDurationMs = 2000, PixelSnapping = false });
+        var state = Open();
+        var vp = state.Primary;
+        Assert.True(_controller.SmoothlyFrameBlock(0, targetZoom: 5.0));
+        Settle(timeoutMs: 5000);
+        double ox = vp.Camera.OffsetX, oy = vp.Camera.OffsetY;
+
+        Assert.True(_controller.NavigateToRole(BlockRole.Text)); // records history, starts a 2 s snap
+        Assert.True(vp.Rail.SnapProgress < 1.0);
+
+        _controller.NavigateBack();                              // same page, snap still running
+        Assert.Equal(1.0, vp.Rail.SnapProgress);
+        for (int i = 0; i < 10; i++) { _controller.Tick(1.0 / 60.0); Thread.Sleep(5); }
+
+        Assert.Equal(ox, vp.Camera.OffsetX, 3);
+        Assert.Equal(oy, vp.Camera.OffsetY, 3);
+        Assert.Equal(0, vp.Rail.CurrentNavigableArrayIndex);
+    }
+
+    [Fact]
+    public void NavigateBack_RestoresAForcedRailBelowTheThreshold()
+    {
+        var state = Open();
+        var vp = state.Primary;
+        Assert.True(vp.Camera.Zoom < _controller.Config.RailZoomThreshold);
+
+        // "Start rail here" on block 2 at browse zoom.
+        double cx = 300 * vp.Camera.Zoom + vp.Camera.OffsetX;
+        double cy = 576 * vp.Camera.Zoom + vp.Camera.OffsetY;
+        Assert.True(_controller.ActivateRailAt(cx, cy));
+        Assert.True(vp.Rail.ForceActive);
+        Assert.Equal(2, vp.Rail.CurrentNavigableArrayIndex);
+        int line = vp.Rail.CurrentLine;
+
+        _controller.GoToPage(1);
+        _controller.NavigateBack();
+
+        Assert.Equal(0, state.CurrentPage);
+        Assert.True(vp.Rail.Active);
+        Assert.True(vp.Rail.ForceActive);
+        Assert.Equal(2, vp.Rail.CurrentNavigableArrayIndex);
+        Assert.Equal(line, vp.Rail.CurrentLine);
+    }
+
+    // --- Back/Forward onto a page that fails to render ---
+
+    [Fact]
+    public void NavigateBack_RenderFailure_KeepsBothStacks()
+    {
+        UseController(_config, new FailingPageFactory(failPage: 2));
+        var state = Open(withAnalysis: false);
+        var vp = state.Primary;
+        vp.PushHistory(new HistoryEntry(2, 2.0, -10, -20));
+
+        _controller.NavigateBack();
+
+        Assert.Equal(0, state.CurrentPage);
+        Assert.Equal(1, vp.BackStackCount);
+        Assert.Equal(2, vp.PeekBack()!.Value.Page);   // the entry survives
+        Assert.Equal(0, vp.ForwardStackCount);         // and the current view isn't filed under Forward
+    }
+
+    [Fact]
+    public void NavigateForward_RenderFailure_KeepsBothStacks()
+    {
+        UseController(_config, new FailingPageFactory(failPage: 2));
+        var state = Open(withAnalysis: false);
+        var vp = state.Primary;
+        vp.PushHistory(HistoryEntry.ForPage(1));
+        vp.PopBack(HistoryEntry.ForPage(2));            // forward stack now holds page 2
+
+        _controller.NavigateForward();
+
+        Assert.Equal(0, state.CurrentPage);
+        Assert.Equal(1, vp.ForwardStackCount);
+        Assert.Equal(2, vp.PeekForward()!.Value.Page);
+        Assert.Equal(0, vp.BackStackCount);
     }
 
     // --- #142: link click behaviour ---
