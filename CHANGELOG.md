@@ -15,6 +15,16 @@
   `PreviewDpi <= 0` disables the preview, for a consumer that reads `CachedPage` right after a page change
   and needs it at full resolution. Page geometry (`PageWidth`/`PageHeight`) still comes from the page size,
   not the bitmap, so camera, rail and transition maths are unaffected.
+- **Tiled background upgrade.** New optional capability **`IPdfTiledRenderService.RenderPageTiled(page,
+  dpi, viewRotation, ct)`**, implemented by `SkiaPdfService`: renders the page in ~2 MP horizontal bands
+  straight into one bitmap, taking `PdfiumGate.Lock` per band instead of for the whole page and checking
+  the token between bands. The DPI upgrade uses it when the backend implements it (discovered by cast,
+  like `IPdfRulingService`; the PdfPig backend keeps the whole-page render), and every `LoadPageBitmap`
+  cancels the in-flight upgrade. A page change made while the previous page is still sharpening now waits
+  for one band, not a whole page: measured at 525 DPI on *Attention is all you need*, the UI-thread wait
+  behind an upgrade dropped from ~990 ms to ~340 ms (most of which is the new page's own preview). Bands
+  match a whole-page render to within anti-aliasing noise; banding costs 4–20% more background time,
+  depending on how much vector content the page has.
 - No host change needed: the frame loop already applies the async DPI swap.
 
 ## 0.69.0 — Full-state Back/Forward, host-controlled link clicks, focus-hinted block framing (2026-10-20)

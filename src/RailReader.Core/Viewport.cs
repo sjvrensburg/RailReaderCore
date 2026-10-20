@@ -461,6 +461,11 @@ public sealed partial class Viewport : IDisposable
     /// <summary>True while a DPI re-render task is in flight.</summary>
     internal bool DpiRenderPending { get; set; }
 
+    /// <summary>Cancels the in-flight DPI re-render (linked to <see cref="Cts"/>). A fresh
+    /// <see cref="LoadPageBitmap"/> supersedes it, and with a tiled backend the cancellation lands
+    /// between bands, so the load's own render waits for one band, not the whole page (issue #147).</summary>
+    private CancellationTokenSource? _dpiRenderCts;
+
     /// <summary>Render-configuration generation for this view. Bumped (UI thread) whenever an
     /// in-flight background render's inputs are invalidated — a view-rotation change (the bitmap
     /// frame changed) or a render-quality change (the DPI tuning changed). Background prefetch /
@@ -503,6 +508,10 @@ public sealed partial class Viewport : IDisposable
     /// </summary>
     public bool LoadPageBitmap()
     {
+        // Whatever the in-flight DPI upgrade is rendering, this load replaces it (another page, or this
+        // page under new render inputs), and it would otherwise hold the PDFium gate ahead of us.
+        _dpiRenderCts?.Cancel();
+
         var oldPage = CachedPage;
         var oldMinimap = MinimapPage;
 
@@ -761,7 +770,14 @@ public sealed partial class Viewport : IDisposable
             int page = CurrentPageBacking;
             int viewRotation = Owner.ViewRotation;
             int generation = RenderGeneration;
-            var ct = Cts.Token;
+            var renderCts = CancellationTokenSource.CreateLinkedTokenSource(Cts.Token);
+            _dpiRenderCts = renderCts;
+            var ct = renderCts.Token;
+            // Banded where the backend supports it, so the gate is released between bands and a
+            // superseding LoadPageBitmap's cancellation takes effect within one band.
+            var tiled = Owner.Pdf as IPdfTiledRenderService;
+            // Scheduled on the view's own token, not renderCts: a task cancelled before it starts never
+            // runs, so its completion would never post and DpiRenderPending would stay latched.
             Task.Run(() =>
             {
                 IRenderedPage? newPage = null;
@@ -769,8 +785,10 @@ public sealed partial class Viewport : IDisposable
                 try
                 {
                     ct.ThrowIfCancellationRequested();
-                    Owner.Logger.Debug($"[PDFium] dpi-rerender pg {page} @ {neededDpi}dpi tid={Environment.CurrentManagedThreadId} file={Path.GetFileName(Owner.FilePath)}");
-                    newPage = Owner.Pdf.RenderPage(page, neededDpi, viewRotation);
+                    Owner.Logger.Debug($"[PDFium] dpi-rerender pg {page} @ {neededDpi}dpi tiled={tiled is not null} tid={Environment.CurrentManagedThreadId} file={Path.GetFileName(Owner.FilePath)}");
+                    newPage = tiled is not null
+                        ? tiled.RenderPageTiled(page, neededDpi, viewRotation, ct)
+                        : Owner.Pdf.RenderPage(page, neededDpi, viewRotation);
                 }
                 catch (OperationCanceledException) { }
                 catch (Exception ex) { error = ex; }
@@ -794,8 +812,9 @@ public sealed partial class Viewport : IDisposable
                             // Re-arm a forced re-render that FAILED (RenderPage threw →
                             // error set) so the pending preset change is retried, not
                             // lost. A page-navigation abort or cancellation leaves error
-                            // null, and GoToPage's LoadPageBitmap already rendered the new
-                            // page at the new DPI, so neither needs a re-arm. A disposed
+                            // null: the LoadPageBitmap that superseded it rendered the page
+                            // under the current settings (flagging its own upgrade if that was
+                            // a preview), so neither needs a re-arm. A disposed
                             // view is gone — never re-arm it.
                             if (force && !Owner.IsDisposed && !_disposed && error is not null)
                                 RenderDpiDirty = true;
@@ -808,9 +827,14 @@ public sealed partial class Viewport : IDisposable
                         oldPage?.Dispose();
                         OnDpiRenderComplete?.Invoke();
                     }
-                    finally { DpiRenderPending = false; }
+                    finally
+                    {
+                        DpiRenderPending = false;
+                        if (ReferenceEquals(_dpiRenderCts, renderCts)) _dpiRenderCts = null;
+                        renderCts.Dispose();
+                    }
                 });
-            }, ct);
+            }, Cts.Token);
             return true;
         }
 
