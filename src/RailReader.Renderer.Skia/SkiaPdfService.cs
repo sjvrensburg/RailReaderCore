@@ -11,7 +11,7 @@ namespace RailReader.Renderer.Skia;
 /// <summary>
 /// PDFium/SkiaSharp implementation of IPdfService.
 /// </summary>
-public sealed class SkiaPdfService : IPdfService
+public sealed class SkiaPdfService : IPdfService, IPdfTiledRenderService
 {
 
     public byte[] PdfBytes { get; }
@@ -159,6 +159,91 @@ public sealed class SkiaPdfService : IPdfService
             var bitmap = Conversion.ToImage(PdfBytes, password: Password, page: pageIndex,
                 options: new RenderOptions(Dpi: dpi, Rotation: ToPdfRotation(viewRotation)));
             return new SkiaRenderedPage(bitmap);
+        }
+    }
+
+    /// <summary>Pixels per band of <see cref="RenderPageTiled"/> (~2 MP, so a band of a 5× US Letter
+    /// page holds the gate for a tenth of the page's full render), with a floor on the band height so
+    /// a very wide page still renders in a sensible number of bands.</summary>
+    private const int TilePixelBudget = 2_000_000;
+    private const int MinTileRows = 64;
+
+    /// <summary>
+    /// Renders the page band by band straight into one bitmap, taking <see cref="PdfiumGate.Lock"/>
+    /// per band rather than for the whole page (issue #147). The document and page are loaded once and
+    /// kept open across bands; each band is a PDFium bitmap wrapping that band's rows of the full
+    /// bitmap, rendered with the whole page's transform shifted up by the band's offset, so bands join
+    /// without a seam. Size, rotation and flags mirror PDFtoImage's own path in
+    /// <see cref="RenderPage(int, int, int)"/> (float page size × dpi/72, truncated; no annotations).
+    /// </summary>
+    public IRenderedPage RenderPageTiled(int pageIndex, int dpi, int viewRotation, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var (pw, ph) = GetPageSize(pageIndex, viewRotation);
+        float sx = (float)pw * (dpi / 72f), sy = (float)ph * (dpi / 72f);
+        int width = (int)sx, height = (int)sy;
+        if (width <= 0 || height <= 0)
+            throw new InvalidOperationException($"Page {pageIndex + 1} has no renderable area.");
+        int sizeX = (int)Math.Ceiling(sx), sizeY = (int)Math.Ceiling(sy);
+        int rotate = (int)ToPdfRotation(viewRotation);
+        int bandRows = Math.Max(MinTileRows, TilePixelBudget / width);
+
+        var bitmap = new SKBitmap(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
+        var pinned = GCHandle.Alloc(PdfBytes, GCHandleType.Pinned);
+        IntPtr doc = IntPtr.Zero, page = IntPtr.Zero;
+        try
+        {
+            bitmap.Erase(SKColors.White);
+            IntPtr pixels = bitmap.GetPixels();
+            int stride = bitmap.RowBytes;
+
+            lock (PdfiumGate.Lock)
+            {
+                PdfiumResolver.EnsureLibraryInitialized();
+                doc = LoadDocumentChecked(pinned.AddrOfPinnedObject(), PdfBytes.Length, Password, _filePath);
+                if (doc == IntPtr.Zero)
+                    throw new InvalidOperationException($"Failed to open PDF '{_filePath}' for rendering.");
+                page = FPDF_LoadPage(doc, pageIndex);
+                if (page == IntPtr.Zero)
+                    throw new InvalidOperationException($"Failed to load page {pageIndex + 1} for rendering.");
+            }
+
+            for (int y = 0; y < height; y += bandRows)
+            {
+                ct.ThrowIfCancellationRequested();
+                int rows = Math.Min(bandRows, height - y);
+                lock (PdfiumGate.Lock)
+                {
+                    IntPtr band = FPDFBitmap_CreateEx(width, rows, FPDFBitmap_BGRA, pixels + (nint)y * stride, stride);
+                    if (band == IntPtr.Zero)
+                        throw new InvalidOperationException($"Failed to allocate a render band for page {pageIndex + 1}.");
+                    try { FPDF_RenderPageBitmap(band, page, 0, -y, sizeX, sizeY, rotate, 0); }
+                    finally { FPDFBitmap_Destroy(band); }
+                }
+                // Monitor isn't fair: this loop could re-take the gate before a waiting thread wakes.
+                // Yield offers the CPU to a waiter scheduled on this core. Measured on an idle desktop,
+                // a non-cancelling waiter got the gate within one band with or without it; this is
+                // insurance for a loaded machine, not a guarantee.
+                Thread.Yield();
+            }
+            return new SkiaRenderedPage(bitmap);
+        }
+        catch
+        {
+            bitmap.Dispose();
+            throw;
+        }
+        finally
+        {
+            if (doc != IntPtr.Zero)
+            {
+                lock (PdfiumGate.Lock)
+                {
+                    if (page != IntPtr.Zero) FPDF_ClosePage(page);
+                    FPDF_CloseDocument(doc);
+                }
+            }
+            pinned.Free();
         }
     }
 

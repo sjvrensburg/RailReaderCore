@@ -78,7 +78,11 @@ public class MultiViewportTests : IDisposable
         Assert.NotSame(vp1.CachedPage, vp2.CachedPage);   // distinct bitmaps
         Assert.True(vp1.PageWidth > 0);
         Assert.True(vp2.PageWidth > 0);
-        Assert.True(vp2.CachedDpi > vp1.CachedDpi);        // DPI ∝ zoom, per-view
+        // DPI ∝ zoom, per-view. vp2's load at 3× is a low-DPI preview (issue #147), so compare
+        // the full DPI it upgrades to.
+        int vp2FullDpi = DocumentModel.CalculateRenderDpi(vp2.Camera.Zoom, vp2.PageWidth, vp2.PageHeight, vp2.RenderDpi);
+        Assert.True(vp2FullDpi > vp1.CachedDpi);
+        Assert.True(vp2.CachedDpi == vp2FullDpi || vp2.RenderDpiDirty);
     }
 
     [Fact]

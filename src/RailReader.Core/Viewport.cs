@@ -432,7 +432,9 @@ public sealed partial class Viewport : IDisposable
     /// <summary>The DPI <see cref="CachedPage"/> was rendered at.</summary>
     public int CachedDpi { get; internal set; }
 
-    /// <summary>Small pre-scaled thumbnail used by the minimap (≤200×280 px).</summary>
+    /// <summary>Small pre-scaled thumbnail used by the minimap (≤200×280 px). Rendered in the
+    /// background after a fresh <see cref="LoadPageBitmap"/>, so it is null for a moment after a page
+    /// change; draw the minimap from <see cref="CachedPage"/> until it arrives.</summary>
     public IRenderedPage? MinimapPage { get; internal set; }
 
     /// <summary>
@@ -460,6 +462,14 @@ public sealed partial class Viewport : IDisposable
 
     /// <summary>True while a DPI re-render task is in flight.</summary>
     internal bool DpiRenderPending { get; set; }
+
+    /// <summary>Cancels the in-flight DPI re-render (linked to <see cref="Cts"/>). A fresh
+    /// <see cref="LoadPageBitmap"/> supersedes it, and with a tiled backend the cancellation lands
+    /// between bands, so the load's own render waits for one band, not the whole page (issue #147).</summary>
+    private CancellationTokenSource? _dpiRenderCts;
+
+    /// <summary>Cancels the in-flight background thumbnail render started by <see cref="LoadPageBitmap"/>.</summary>
+    private CancellationTokenSource? _thumbnailCts;
 
     /// <summary>Render-configuration generation for this view. Bumped (UI thread) whenever an
     /// in-flight background render's inputs are invalidated — a view-rotation change (the bitmap
@@ -503,6 +513,10 @@ public sealed partial class Viewport : IDisposable
     /// </summary>
     public bool LoadPageBitmap()
     {
+        // Whatever the in-flight DPI upgrade is rendering, this load replaces it (another page, or this
+        // page under new render inputs), and it would otherwise hold the PDFium gate ahead of us.
+        _dpiRenderCts?.Cancel();
+
         var oldPage = CachedPage;
         var oldMinimap = MinimapPage;
 
@@ -518,6 +532,10 @@ public sealed partial class Viewport : IDisposable
             }
             if (Prefetched is { } pf && pf.PageIndex == CurrentPageBacking)
             {
+                // A thumbnail still rendering for the previous load is for the wrong page or frame.
+                // Cancelled only once this load commits: a failed load leaves the previous page (and
+                // its pending thumbnail) in place, and GoToPage rolls CurrentPage back onto it.
+                _thumbnailCts?.Cancel();
                 CachedPage = pf.Page;
                 CachedDpi = pf.Dpi;
                 MinimapPage = pf.Minimap;
@@ -552,17 +570,33 @@ public sealed partial class Viewport : IDisposable
             {
                 (w, h) = Owner.Pdf.GetPageSize(CurrentPageBacking, Owner.ViewRotation);
                 dpi = DocumentModel.CalculateRenderDpi(Camera.Zoom, w, h, RenderDpi);
+
+                // Progressive load (issue #147): at rail zoom a full-DPI render is ~1 s of UI-thread
+                // stall on every page change. Show a cheap low-DPI preview now and flag a forced
+                // re-render so UpdateRenderDpiIfNeeded brings it to full DPI on the next tick, past
+                // hysteresis — the same promotion path a taken window neighbour uses above. Skipped
+                // while scrolling: that path defers re-renders until scrolling stops, which would
+                // leave the page soft for the whole scroll.
+                if (PreviewDpiFor(dpi) is int previewDpi && !IsScrollingForRender)
+                {
+                    dpi = previewDpi;
+                    RenderDpiDirty = true;
+                }
                 newPage = Owner.Pdf.RenderPage(CurrentPageBacking, dpi, Owner.ViewRotation);
             }
-            var newMinimap = Owner.Pdf.RenderThumbnail(CurrentPageBacking, Owner.ViewRotation);
 
-            // Commit: swap fields and dispose old bitmaps only after full success
+            // Commit: swap fields and dispose old bitmaps only after full success. The minimap
+            // thumbnail renders in the background (up to ~160 ms on a figure-heavy page, issue #147);
+            // until it lands MinimapPage is null, and a host draws the minimap from CachedPage
+            // instead (railreader2 already does), so it never shows the previous page's thumbnail.
+            _thumbnailCts?.Cancel(); // see the prefetch branch: cancelled only on commit
             CachedPage = newPage;
             CachedDpi = dpi;
-            MinimapPage = newMinimap;
+            MinimapPage = null;
             SetPageSizeFromLoad(w, h);
             oldPage?.Dispose();
             oldMinimap?.Dispose();
+            ScheduleThumbnail(CurrentPageBacking);
             if (ContinuousScroll) EnsureRenderWindow(Width, Height);
             return true;
         }
@@ -573,6 +607,74 @@ public sealed partial class Viewport : IDisposable
             return false;
         }
     }
+
+    /// <summary>
+    /// Renders <paramref name="pageIndex"/>'s minimap thumbnail on a background task and installs it
+    /// as <see cref="MinimapPage"/> on the UI thread, unless the view has since moved to another page,
+    /// been disposed, or committed a newer load (which cancels this one).
+    /// A failure only logs: the page itself is loaded, and the minimap falls back to the page bitmap.
+    /// </summary>
+    private void ScheduleThumbnail(int pageIndex)
+    {
+        var thumbCts = CancellationTokenSource.CreateLinkedTokenSource(Cts.Token);
+        _thumbnailCts = thumbCts;
+        var ct = thumbCts.Token;
+        int viewRotation = Owner.ViewRotation;
+        // Scheduled on the view's own token, not thumbCts, so the completion always posts and
+        // disposes thumbCts (see UpdateRenderDpiIfNeeded).
+        Task.Run(() =>
+        {
+            IRenderedPage? thumb = null;
+            Exception? error = null;
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                thumb = Owner.Pdf.RenderThumbnail(pageIndex, viewRotation);
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { error = ex; }
+
+            Owner.Marshaller.Post(() =>
+            {
+                try
+                {
+                    if (error is not null)
+                        Owner.Logger.Error($"Failed to render thumbnail for page {pageIndex + 1}: {error.Message}", error);
+                    // No RenderGeneration check: a thumbnail is DPI-independent, so a render-quality
+                    // change (which bumps the generation without reloading the page) must not discard
+                    // it — that would leave MinimapPage null until the next page load. A rotation
+                    // change reloads the page, and that load cancels this render.
+                    if (Owner.IsDisposed || _disposed || ct.IsCancellationRequested
+                        || CurrentPageBacking != pageIndex || thumb is null)
+                    {
+                        thumb?.Dispose();
+                        return;
+                    }
+                    var old = MinimapPage;
+                    MinimapPage = thumb;
+                    old?.Dispose();
+                }
+                finally
+                {
+                    if (ReferenceEquals(_thumbnailCts, thumbCts)) _thumbnailCts = null;
+                    thumbCts.Dispose();
+                }
+            });
+        }, Cts.Token);
+    }
+
+    /// <summary>The preview DPI a fresh load of a page whose full DPI is <paramref name="fullDpi"/>
+    /// should render at first, or null when the full render is cheap enough to do directly (preview
+    /// disabled, or the full DPI within <see cref="RenderDpiSettings.PreviewMinRatio"/> of it).</summary>
+    private int? PreviewDpiFor(int fullDpi)
+    {
+        if (RenderDpi.PreviewDpi <= 0) return null;
+        int previewDpi = Math.Max(Math.Max(1, RenderDpi.MinDpi), RenderDpi.PreviewDpi);
+        return fullDpi > previewDpi * Math.Max(1.0, RenderDpi.PreviewMinRatio) ? previewDpi : null;
+    }
+
+    /// <summary>True while scrolling suppresses DPI re-renders (see <see cref="UpdateRenderDpiIfNeeded"/>).</summary>
+    private bool IsScrollingForRender => Rail.ScrollSpeed > 0.1 || Rail.AutoScrolling;
 
     /// <summary>Sets the page dimensions from <see cref="LoadPageBitmap"/>, which may run on a
     /// background thread (see its contract) — so it can't use <see cref="SetField"/>, whose UI-thread
@@ -713,7 +815,7 @@ public sealed partial class Viewport : IDisposable
         // re-renders too: jumping the gate mid-scroll would stutter the scroll,
         // so the change stays dirty and the animation tick retries it the moment
         // scroll velocity drops to zero.
-        if (Rail.ScrollSpeed > 0.1 || Rail.AutoScrolling) return false;
+        if (IsScrollingForRender) return false;
 
         if (ContinuousScroll) EnsureRenderWindow(Width, Height);
 
@@ -736,7 +838,14 @@ public sealed partial class Viewport : IDisposable
             int page = CurrentPageBacking;
             int viewRotation = Owner.ViewRotation;
             int generation = RenderGeneration;
-            var ct = Cts.Token;
+            var renderCts = CancellationTokenSource.CreateLinkedTokenSource(Cts.Token);
+            _dpiRenderCts = renderCts;
+            var ct = renderCts.Token;
+            // Banded where the backend supports it, so the gate is released between bands and a
+            // superseding LoadPageBitmap's cancellation takes effect within one band.
+            var tiled = Owner.Pdf as IPdfTiledRenderService;
+            // Scheduled on the view's own token, not renderCts: a task cancelled before it starts never
+            // runs, so its completion would never post and DpiRenderPending would stay latched.
             Task.Run(() =>
             {
                 IRenderedPage? newPage = null;
@@ -744,8 +853,10 @@ public sealed partial class Viewport : IDisposable
                 try
                 {
                     ct.ThrowIfCancellationRequested();
-                    Owner.Logger.Debug($"[PDFium] dpi-rerender pg {page} @ {neededDpi}dpi tid={Environment.CurrentManagedThreadId} file={Path.GetFileName(Owner.FilePath)}");
-                    newPage = Owner.Pdf.RenderPage(page, neededDpi, viewRotation);
+                    Owner.Logger.Debug($"[PDFium] dpi-rerender pg {page} @ {neededDpi}dpi tiled={tiled is not null} tid={Environment.CurrentManagedThreadId} file={Path.GetFileName(Owner.FilePath)}");
+                    newPage = tiled is not null
+                        ? tiled.RenderPageTiled(page, neededDpi, viewRotation, ct)
+                        : Owner.Pdf.RenderPage(page, neededDpi, viewRotation);
                 }
                 catch (OperationCanceledException) { }
                 catch (Exception ex) { error = ex; }
@@ -769,8 +880,9 @@ public sealed partial class Viewport : IDisposable
                             // Re-arm a forced re-render that FAILED (RenderPage threw →
                             // error set) so the pending preset change is retried, not
                             // lost. A page-navigation abort or cancellation leaves error
-                            // null, and GoToPage's LoadPageBitmap already rendered the new
-                            // page at the new DPI, so neither needs a re-arm. A disposed
+                            // null: the LoadPageBitmap that superseded it rendered the page
+                            // under the current settings (flagging its own upgrade if that was
+                            // a preview), so neither needs a re-arm. A disposed
                             // view is gone — never re-arm it.
                             if (force && !Owner.IsDisposed && !_disposed && error is not null)
                                 RenderDpiDirty = true;
@@ -783,9 +895,14 @@ public sealed partial class Viewport : IDisposable
                         oldPage?.Dispose();
                         OnDpiRenderComplete?.Invoke();
                     }
-                    finally { DpiRenderPending = false; }
+                    finally
+                    {
+                        DpiRenderPending = false;
+                        if (ReferenceEquals(_dpiRenderCts, renderCts)) _dpiRenderCts = null;
+                        renderCts.Dispose();
+                    }
                 });
-            }, ct);
+            }, Cts.Token);
             return true;
         }
 
@@ -816,6 +933,9 @@ public sealed partial class Viewport : IDisposable
         // completion must not resurrect the prefetch buffer dropped below (or install an old-DPI
         // bitmap); the forced re-render below produces the new-tuning bitmap instead.
         RenderGeneration++;
+        // ...and stop rendering it: its result is now discarded, and it would hold the PDFium gate
+        // (band by band on a tiled backend) ahead of the forced re-render below.
+        _dpiRenderCts?.Cancel();
 
         // Drop the prefetch buffer — it was rasterised at the previous DPI.
         Prefetched?.Dispose();

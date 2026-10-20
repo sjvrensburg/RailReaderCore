@@ -65,6 +65,18 @@ internal static class PdfiumNative
     [DllImport(Lib)] internal static extern int FPDF_GetPageCount(IntPtr document);
     [DllImport(Lib)] internal static extern IntPtr FPDF_LoadPage(IntPtr document, int pageIndex);
     [DllImport(Lib)] internal static extern void FPDF_ClosePage(IntPtr page);
+
+    // Rendering into a caller-owned buffer (tiled page render, issue #147). FPDFBitmap_CreateEx wraps
+    // `firstScan` without copying, so a band of a larger bitmap is rendered by pointing it at the
+    // band's first row with the full bitmap's stride. Format 4 = FPDFBitmap_BGRA.
+    internal const int FPDFBitmap_BGRA = 4;
+    [DllImport(Lib)] internal static extern IntPtr FPDFBitmap_CreateEx(int width, int height, int format,
+        IntPtr firstScan, int stride);
+    [DllImport(Lib)] internal static extern void FPDFBitmap_Destroy(IntPtr bitmap);
+    // rotate is in clockwise quarter-turns on top of the page's own /Rotate; flags 0 = no annotations,
+    // full anti-aliasing (PDFtoImage's RenderOptions defaults, which RenderPage uses).
+    [DllImport(Lib)] internal static extern void FPDF_RenderPageBitmap(IntPtr bitmap, IntPtr page,
+        int startX, int startY, int sizeX, int sizeY, int rotate, int flags);
     [DllImport(Lib)] internal static extern double FPDF_GetPageWidth(IntPtr page);
     [DllImport(Lib)] internal static extern double FPDF_GetPageHeight(IntPtr page);
     [DllImport(Lib)] internal static extern int FPDFPage_GetRotation(IntPtr page);

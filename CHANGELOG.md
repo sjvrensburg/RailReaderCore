@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.70.0 — Progressive page loads at rail zoom: low-DPI preview, tiled background upgrade, background thumbnail (2026-10-20)
+
+### Page changes at rail zoom no longer block on a full-resolution render (#147)
+
+- A fresh single-page load (`Viewport.LoadPageBitmap` with no prefetch or render-window hit) whose full DPI
+  is more than `PreviewMinRatio` (2×) above `PreviewDpi` (150) now rasterises a low-DPI preview
+  synchronously and flags a forced re-render, so the existing async `UpdateRenderDpiIfNeeded` path brings
+  the page to full DPI a frame or two later. At 5× under High this turns a ~0.8–1 s UI stall on every link
+  click, Back/Forward, outline/search jump and PgUp/PgDn into a ~0.1 s preview render. Low-zoom page turns
+  are unchanged, and so are loads made while scrolling or auto-scrolling, where re-renders are deferred and
+  a preview would stay soft.
+- **`RenderDpiSettings.PreviewDpi` / `PreviewMinRatio`** (new): set on every preset by `ForPreset`.
+  `PreviewDpi <= 0` disables the preview, for a consumer that reads `CachedPage` right after a page change
+  and needs it at full resolution. Page geometry (`PageWidth`/`PageHeight`) still comes from the page size,
+  not the bitmap, so camera, rail and transition maths are unaffected.
+- **Tiled background upgrade.** New optional capability **`IPdfTiledRenderService.RenderPageTiled(page,
+  dpi, viewRotation, ct)`**, implemented by `SkiaPdfService`: renders the page in ~2 MP horizontal bands
+  straight into one bitmap, taking `PdfiumGate.Lock` per band instead of for the whole page and checking
+  the token between bands. The DPI upgrade uses it when the backend implements it (discovered by cast,
+  like `IPdfRulingService`; the PdfPig backend keeps the whole-page render), and every `LoadPageBitmap`
+  cancels the in-flight upgrade. A page change made while the previous page is still sharpening now waits
+  for one band, not a whole page: measured at 525 DPI on *Attention is all you need*, the UI-thread wait
+  behind an upgrade dropped from ~990 ms to ~340 ms (most of which is the new page's own preview). Bands
+  match a whole-page render to within anti-aliasing noise; banding costs 4–20% more background time,
+  depending on how much vector content the page has.
+- **The minimap thumbnail renders in the background.** A fresh `LoadPageBitmap` no longer rasterises
+  `MinimapPage` synchronously; that was up to ~160 ms on a figure-heavy page, on top of the preview. It is
+  null until the background render lands, and a superseded thumbnail (the view moved on, a newer load, a
+  rotation) is discarded. A host should draw the minimap from `CachedPage` while it's null; railreader2's
+  minimap already does. A thumbnail failure now only logs instead of failing the page load. Prefetched
+  pages still carry their own thumbnail.
+- No host change needed: the frame loop already applies the async DPI swap.
+
 ## 0.69.0 — Full-state Back/Forward, host-controlled link clicks, focus-hinted block framing (2026-10-20)
 
 ### Navigation history keeps the view, and covers every jump (#143)
