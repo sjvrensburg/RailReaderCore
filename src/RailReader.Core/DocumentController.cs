@@ -554,26 +554,44 @@ public sealed partial class DocumentController : IDisposable
         vp.Camera.OffsetY = entry.OffsetY;
         vp.Camera.NotifyZoomChange();
         vp.ClampCamera(ww, wh);
+        // A rail snap still in flight (e.g. a role jump's snap, then an immediate Back on the same page)
+        // would otherwise keep easing toward its old target and overwrite the restored camera.
+        vp.Rail.CancelSnap();
 
+        if (vp.PendingRailSetup)
+        {
+            // The rail still holds the previous page's analysis until the worker result lands; at the
+            // restored zoom it would engage on that stale geometry. Drop it; the worker result reseats.
+            vp.Rail.ClearAnalysis();
+        }
+
+        bool seated = false;
         if (entry.RailBlock is { } block)
         {
             int line = entry.RailLine ?? 0;
             if (vp.PendingRailSetup)
             {
-                // The rail still holds the previous page's analysis until the worker result lands; at
-                // the restored (rail) zoom it would engage on that stale geometry. Drop it, and seat
-                // the remembered block/line when this page's analysis arrives.
-                vp.Rail.ClearAnalysis();
+                // Seat the remembered block/line when this page's analysis arrives.
                 vp.PendingHistorySeat = (block, line);
             }
-            else if (vp.Rail.TrySetCurrentByPageIndex(block, line) && !vp.Rail.Active)
+            else if (vp.Rail.TrySetCurrentByPageIndex(block, line))
             {
-                vp.Rail.PinCurrentBlockForActivation();
+                seated = true;
+                if (!vp.Rail.Active) vp.Rail.PinCurrentBlockForActivation();
             }
         }
 
         vp.UpdateRailZoom(ww, wh);
-        if (entry.RailBlock is not null && vp.Rail.Active && !vp.PendingRailSetup)
+        if (seated && !vp.Rail.Active)
+        {
+            // The entry was captured with the rail seated below the zoom threshold — a forced ("start
+            // rail here") session. Re-force it rather than leaving a pin that a later, unrelated zoom-in
+            // would consume.
+            var fl = vp.Rail.CurrentLineInfo;
+            vp.Rail.ForceActivateAt(fl.X + fl.Width / 2.0, fl.Y);
+            vp.Rail.TrySetCurrentByPageIndex(entry.RailBlock!.Value, entry.RailLine ?? 0);
+        }
+        if (seated && vp.Rail.Active)
         {
             // Keep the restored camera: express its Y as the rail's vertical bias so the next snap or
             // line advance doesn't recentre the line.
@@ -1024,16 +1042,12 @@ public sealed partial class DocumentController : IDisposable
         var (ox, oy) = vp.Rail.ComputeSnapTarget(z, ww, wh, focusPageX);
         var lineInfo = vp.Rail.CurrentLineInfo; // seated block's target line
         if (AutoScrollActive) StopAutoScroll();
-        double hFrac = focusPageX is null ? 0 : vp.Rail.HorizontalFractionOf(ox, z, ww);
-        if (hFrac > 0)
-        {
-            // The hinted landing isn't the line start, so the completion snap must preserve it rather
-            // than re-run the default framing (which would slide back to the line start).
-            vp.Zoom.StartTo(vp, z, ox, oy, lineInfo.X + lineInfo.Width / 2.0, lineInfo.Y, durationMs,
-                hFrac, lineInfo.Y * z + oy);
-        }
-        else
-            vp.Zoom.StartTo(vp, z, ox, oy, lineInfo.X + lineInfo.Width / 2.0, lineInfo.Y, durationMs);
+        // A hinted landing must survive the completion snap: pass its fraction so the snap preserves it
+        // rather than re-running the default framing (which would slide back to the line start).
+        // -1 (no hint) takes the default StartSnap branch.
+        double hFrac = focusPageX is null ? -1 : vp.Rail.HorizontalFractionOf(ox, z, ww);
+        vp.Zoom.StartTo(vp, z, ox, oy, lineInfo.X + lineInfo.Width / 2.0, lineInfo.Y, durationMs,
+            hFrac, lineInfo.Y * z + oy);
         FireReadingPositionChanged();
         return true;
     }
