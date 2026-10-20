@@ -81,8 +81,13 @@ public sealed partial class RailNav
     /// camera position. Used to preserve reading position across zoom changes.
     /// </summary>
     public double ComputeHorizontalFraction(double cameraX, double zoom, double windowWidth)
+        => CanNavigate ? HorizontalFractionOf(cameraX, zoom, windowWidth) : 0;
+
+    /// <summary><see cref="ComputeHorizontalFraction"/> without the <see cref="Active"/> gate, for a
+    /// landing computed before the rail engages (<c>SmoothlyFrameBlock</c>'s focus hint). Needs analysis.</summary>
+    internal double HorizontalFractionOf(double cameraX, double zoom, double windowWidth)
     {
-        if (!CanNavigate) return 0;
+        if (!HasAnalysis) return 0;
         var (blockLeft, blockRight, blockWidthPx) = GetFramingBounds(zoom);
         if (blockWidthPx <= windowWidth) return 0;
 
@@ -159,11 +164,30 @@ public sealed partial class RailNav
     /// rail framing (centre narrow chunks, left-align wide ones with the 5% inset).
     /// Works regardless of <see cref="Active"/> as long as analysis is loaded, so a
     /// caller can compute the landing frame before zoom crosses the rail threshold.
+    /// <para><paramref name="focusPageX"/>, when set and the framed unit is wider than the window,
+    /// replaces the line-start alignment: the target X centres that page point (clamped to the current
+    /// line first, then hard-clamped to the unit's scroll range like the default framing). A centred
+    /// (narrow) unit ignores it.</para>
     /// </summary>
-    public (double X, double Y) ComputeSnapTarget(double zoom, double windowWidth, double windowHeight)
+    public (double X, double Y) ComputeSnapTarget(double zoom, double windowWidth, double windowHeight,
+        double? focusPageX = null)
     {
         if (!HasAnalysis) return (0, 0); // caller guarantees HasAnalysis; defensive only
-        return ComputeTargetCamera(zoom, windowWidth, windowHeight);
+        var (targetX, targetY) = ComputeTargetCamera(zoom, windowWidth, windowHeight);
+        if (focusPageX is not { } fx) return (targetX, targetY);
+
+        var (chunkLeft, chunkRight, chunkWidthPx) = GetFramingBounds(zoom);
+        if (chunkWidthPx <= windowWidth || ShouldCenterUnit(chunkWidthPx, windowWidth))
+            return (targetX, targetY);
+
+        // A click past the line's end (or in its indent) still means "this line": aim at the nearest
+        // point on it so the landing never shows only whitespace.
+        var line = CurrentLineInfo;
+        fx = Math.Clamp(fx, line.X, line.X + line.Width);
+        double maxX = -chunkLeft * zoom;
+        double minX = windowWidth - chunkRight * zoom;
+        targetX = Math.Clamp(windowWidth / 2.0 - fx * zoom, minX, maxX);
+        return (_config.PixelSnapping ? SnapX(targetX, zoom) : targetX, targetY);
     }
 
     private (double X, double Y) ComputeTargetCamera(double zoom, double windowWidth, double windowHeight)

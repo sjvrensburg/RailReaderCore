@@ -361,8 +361,8 @@ public sealed class DocumentModel : IDisposable
     // Navigation history (back/forward) — per-view so each viewport navigates independently
     public int BackStackCount => Primary.BackStack.Count;
     public int ForwardStackCount => Primary.ForwardStack.Count;
-    public int PeekBack() => Primary.BackStack.Peek();
-    public int PeekForward() => Primary.ForwardStack.Peek();
+    public int PeekBack() => Primary.PeekBack()?.Page ?? throw new InvalidOperationException("Back stack is empty.");
+    public int PeekForward() => Primary.PeekForward()?.Page ?? throw new InvalidOperationException("Forward stack is empty.");
 
     // Annotations (shared via AnnotationFileManager when set)
     public AnnotationFile Annotations { get; set; } = new();
@@ -975,6 +975,7 @@ public sealed class DocumentModel : IDisposable
     {
         vp.PendingRailSetup = false;
         vp.PendingSkip = null;
+        vp.PendingHistorySeat = null;
         // A genuine page change resets rail position, so a lingering config-toggle preserve request
         // must not carry onto the new page.
         vp.PreserveRailOnSeat = false;

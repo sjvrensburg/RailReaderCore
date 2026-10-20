@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.69.0 — Full-state Back/Forward, host-controlled link clicks, focus-hinted block framing (2026-10-20)
+
+### Navigation history keeps the view, and covers every jump (#143)
+
+- **`HistoryEntry`** (new record struct): page, zoom, camera offsets and the seated rail block/line.
+  `NavigateBack` / `NavigateForward` restore all of it — the camera exactly, the rail block/line now if the
+  page's analysis is resident (vertical bias set so nothing re-centres), otherwise on the analysis's arrival.
+  A page-only entry (`HistoryEntry.ForPage`, or the kept `Viewport.PushHistory(int)` overload) lands on the
+  page with the default camera, as before. In continuous-scroll mode the anchor page + offsets already pin
+  the document position, so there is no separate document offset.
+- **`DocumentController.GoToPage(int)` now records history** when the page actually changes. New overload
+  **`GoToPage(int page, bool recordHistory)`** — pass `false` for previous/next-page stepping so Back skips it.
+  Search-match navigation onto another page, `NavigateToRole`, link clicks and bookmarks record too; rail
+  advance, edge-hold page turns, auto-scroll and continuous-scroll re-anchoring don't.
+- **`DocumentController.PushHistory()`** is now public, for host jumps that don't go through Core.
+- **`Viewport.HistoryChanged`** fires when either stack changes. Also new: `Viewport.CaptureHistoryEntry()`,
+  `Viewport.PeekBack()` / `PeekForward()` (return `HistoryEntry?`), `Viewport.MaxHistoryDepth` (100; oldest
+  dropped). A push identical to the top of the back stack is coalesced.
+- **Breaking:** `Viewport.PopBack` / `PopForward` take and return `HistoryEntry` instead of `int`.
+  `DocumentModel.PeekBack()` / `PeekForward()` still return the page (`int`).
+- **Host follow-up (railreader2):** page-stepping commands that call `GoToPage(current ± 1)` should pass
+  `recordHistory: false`; outline, index, go-to-page and first/last-page jumps get history with no change.
+
+### Link click behaviour is the host's call (#142)
+
+- **`HandleClick(x, y, bool followLinks = true)`** — with `false` the link hit-test is skipped and the click
+  seats the rail as if no link were there.
+- **`DocumentController.FollowLink(PdfLinkDestination)`** follows a `PageDestination` the way a link click
+  does (history, page, scroll to the destination point). Returns false for a `UriDestination`, a confined
+  view or a render failure. `HandleClick` now uses it, so there is one code path.
+- **`DocumentController.ResolveDestinationPreview(PageDestination, bandHeight = 200)`** → `DestinationPreview?`
+  (page, page-space rect, block index): the cached-analysis block containing the destination point, or a
+  full-width band from the destination Y. For a "peek" popup.
+
+### `SmoothlyFrameBlock` horizontal focus hint (#144)
+
+- New optional **`focusPageX`** parameter on `SmoothlyFrameBlock`, and on **`RailNav.ComputeSnapTarget`**. On a
+  unit wider than the window at the target zoom, the landing centres that page X (clamped to the line, then
+  to the rail's scroll range) instead of aligning the line start, and the zoom tween's completion snap keeps
+  that position. Centred units and non-navigable blocks ignore it; `null` changes nothing.
+
 ## 0.68.0 — Scroll speed is zoom-normalised (2026-10-15)
 
 Hold-to-scroll, auto-scroll and the steered scroll all ran in **page units/s**, so the text's on-screen

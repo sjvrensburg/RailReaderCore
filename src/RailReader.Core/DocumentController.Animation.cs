@@ -432,6 +432,16 @@ public sealed partial class DocumentController
 
         vp.Rail.SetAnalysis(analysis, _config.NavigableRoles, vp.PreserveRailOnSeat, vp.CurrentFocusBlockIndex);
         vp.PendingRailSetup = false;
+        // A back/forward restore that landed before this analysis: seat the remembered block/line and
+        // pin it so the activation below keeps it instead of picking the nearest block.
+        bool historySeated = false;
+        if (vp.PendingHistorySeat is { } seat)
+        {
+            vp.PendingHistorySeat = null;
+            historySeated = vp.Rail.TrySetCurrentByPageIndex(seat.Block, seat.Line);
+            if (historySeated && !vp.Rail.Active)
+                vp.Rail.PinCurrentBlockForActivation();
+        }
         vp.UpdateRailZoom(ww, wh);
         _logger.Debug($"[Analysis] Rail has {vp.Rail.NavigableCount} navigable blocks, Active={vp.Rail.Active}");
 
@@ -455,7 +465,18 @@ public sealed partial class DocumentController
             if (vp.PendingSkip is { } pendingSkip)
                 ApplySkipLanding(vp, pendingSkip.Forward, pendingSkip.SavedVerticalBias);
             vp.PendingSkip = null;
-            vp.StartSnap(ww, wh);
+            if (historySeated)
+            {
+                // Settle onto the remembered line from the restored camera instead of re-running the
+                // default framing, which would recentre it and slide back to the line start.
+                var li = vp.Rail.CurrentLineInfo;
+                double z = vp.Camera.Zoom;
+                vp.StartSnapPreservingPosition(ww, wh,
+                    vp.Rail.ComputeHorizontalFraction(vp.Camera.OffsetX, z, ww),
+                    li.Y * z + vp.Camera.OffsetY);
+            }
+            else
+                vp.StartSnap(ww, wh);
             if (live)
                 WakeSeatedView(vp, focused, ref needsAnim);
         }
