@@ -126,4 +126,40 @@ public class ProgressivePageLoadTests : IDisposable
         }
         Assert.Equal(full, vp.CachedDpi);
     }
+
+    private static void WaitForMinimap(Viewport vp)
+    {
+        long deadline = Environment.TickCount64 + 5000;
+        while (vp.MinimapPage is null && Environment.TickCount64 < deadline)
+            Thread.Sleep(5);
+    }
+
+    [Fact]
+    public void FreshLoad_RendersThumbnailInTheBackground()
+    {
+        // The thumbnail no longer blocks the load: it arrives shortly after, for the loaded page.
+        var vp = _doc.Primary;
+        vp.Camera.Zoom = 5.0;
+        Assert.True(vp.LoadPageBitmap());
+        WaitForMinimap(vp);
+        Assert.NotNull(vp.MinimapPage);
+        Assert.True(vp.MinimapPage!.Width > 0 && vp.MinimapPage.Width <= 200);
+    }
+
+    [Fact]
+    public void RapidPageChanges_LeaveTheLastPagesThumbnail()
+    {
+        if (_doc.PageCount < 3) return;
+        var vp = _doc.Primary;
+        _controller.GoToPage(1);
+        _controller.GoToPage(2);
+        WaitForMinimap(vp);
+        Assert.Equal(2, vp.CurrentPage);
+        Assert.NotNull(vp.MinimapPage);
+
+        // A superseded thumbnail (page 1's) must not replace page 2's after the fact.
+        var installed = vp.MinimapPage;
+        Thread.Sleep(200);
+        Assert.Same(installed, vp.MinimapPage);
+    }
 }

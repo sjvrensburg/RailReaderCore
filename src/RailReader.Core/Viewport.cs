@@ -432,7 +432,9 @@ public sealed partial class Viewport : IDisposable
     /// <summary>The DPI <see cref="CachedPage"/> was rendered at.</summary>
     public int CachedDpi { get; internal set; }
 
-    /// <summary>Small pre-scaled thumbnail used by the minimap (≤200×280 px).</summary>
+    /// <summary>Small pre-scaled thumbnail used by the minimap (≤200×280 px). Rendered in the
+    /// background after a fresh <see cref="LoadPageBitmap"/>, so it is null for a moment after a page
+    /// change; draw the minimap from <see cref="CachedPage"/> until it arrives.</summary>
     public IRenderedPage? MinimapPage { get; internal set; }
 
     /// <summary>
@@ -465,6 +467,9 @@ public sealed partial class Viewport : IDisposable
     /// <see cref="LoadPageBitmap"/> supersedes it, and with a tiled backend the cancellation lands
     /// between bands, so the load's own render waits for one band, not the whole page (issue #147).</summary>
     private CancellationTokenSource? _dpiRenderCts;
+
+    /// <summary>Cancels the in-flight background thumbnail render started by <see cref="LoadPageBitmap"/>.</summary>
+    private CancellationTokenSource? _thumbnailCts;
 
     /// <summary>Render-configuration generation for this view. Bumped (UI thread) whenever an
     /// in-flight background render's inputs are invalidated — a view-rotation change (the bitmap
@@ -511,6 +516,8 @@ public sealed partial class Viewport : IDisposable
         // Whatever the in-flight DPI upgrade is rendering, this load replaces it (another page, or this
         // page under new render inputs), and it would otherwise hold the PDFium gate ahead of us.
         _dpiRenderCts?.Cancel();
+        // Same for a thumbnail still rendering for the previous load: it is for the wrong page or frame.
+        _thumbnailCts?.Cancel();
 
         var oldPage = CachedPage;
         var oldMinimap = MinimapPage;
@@ -575,15 +582,18 @@ public sealed partial class Viewport : IDisposable
                 }
                 newPage = Owner.Pdf.RenderPage(CurrentPageBacking, dpi, Owner.ViewRotation);
             }
-            var newMinimap = Owner.Pdf.RenderThumbnail(CurrentPageBacking, Owner.ViewRotation);
 
-            // Commit: swap fields and dispose old bitmaps only after full success
+            // Commit: swap fields and dispose old bitmaps only after full success. The minimap
+            // thumbnail renders in the background (up to ~160 ms on a figure-heavy page, issue #147);
+            // until it lands MinimapPage is null, and a host draws the minimap from CachedPage
+            // instead (railreader2 already does), so it never shows the previous page's thumbnail.
             CachedPage = newPage;
             CachedDpi = dpi;
-            MinimapPage = newMinimap;
+            MinimapPage = null;
             SetPageSizeFromLoad(w, h);
             oldPage?.Dispose();
             oldMinimap?.Dispose();
+            ScheduleThumbnail(CurrentPageBacking);
             if (ContinuousScroll) EnsureRenderWindow(Width, Height);
             return true;
         }
@@ -593,6 +603,58 @@ public sealed partial class Viewport : IDisposable
             Owner.Logger.Error($"Failed to render page {CurrentPageBacking + 1}: {ex.Message}", ex);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Renders <paramref name="pageIndex"/>'s minimap thumbnail on a background task and installs it
+    /// as <see cref="MinimapPage"/> on the UI thread, unless the view has since moved to another page,
+    /// changed render generation, been disposed, or started a newer load (which cancels this one).
+    /// A failure only logs: the page itself is loaded, and the minimap falls back to the page bitmap.
+    /// </summary>
+    private void ScheduleThumbnail(int pageIndex)
+    {
+        var thumbCts = CancellationTokenSource.CreateLinkedTokenSource(Cts.Token);
+        _thumbnailCts = thumbCts;
+        var ct = thumbCts.Token;
+        int viewRotation = Owner.ViewRotation;
+        int generation = RenderGeneration;
+        // Scheduled on the view's own token, not thumbCts, so the completion always posts and
+        // disposes thumbCts (see UpdateRenderDpiIfNeeded).
+        Task.Run(() =>
+        {
+            IRenderedPage? thumb = null;
+            Exception? error = null;
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                thumb = Owner.Pdf.RenderThumbnail(pageIndex, viewRotation);
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { error = ex; }
+
+            Owner.Marshaller.Post(() =>
+            {
+                try
+                {
+                    if (error is not null)
+                        Owner.Logger.Error($"Failed to render thumbnail for page {pageIndex + 1}: {error.Message}", error);
+                    if (Owner.IsDisposed || _disposed || ct.IsCancellationRequested
+                        || CurrentPageBacking != pageIndex || RenderGeneration != generation || thumb is null)
+                    {
+                        thumb?.Dispose();
+                        return;
+                    }
+                    var old = MinimapPage;
+                    MinimapPage = thumb;
+                    old?.Dispose();
+                }
+                finally
+                {
+                    if (ReferenceEquals(_thumbnailCts, thumbCts)) _thumbnailCts = null;
+                    thumbCts.Dispose();
+                }
+            });
+        }, Cts.Token);
     }
 
     /// <summary>The preview DPI a fresh load of a page whose full DPI is <paramref name="fullDpi"/>

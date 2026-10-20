@@ -25,6 +25,12 @@
   behind an upgrade dropped from ~990 ms to ~340 ms (most of which is the new page's own preview). Bands
   match a whole-page render to within anti-aliasing noise; banding costs 4–20% more background time,
   depending on how much vector content the page has.
+- **The minimap thumbnail renders in the background.** A fresh `LoadPageBitmap` no longer rasterises
+  `MinimapPage` synchronously; that was up to ~160 ms on a figure-heavy page, on top of the preview. It is
+  null until the background render lands, and a superseded thumbnail (the view moved on, a newer load, a
+  rotation) is discarded. A host should draw the minimap from `CachedPage` while it's null; railreader2's
+  minimap already does. A thumbnail failure now only logs instead of failing the page load. Prefetched
+  pages still carry their own thumbnail.
 - No host change needed: the frame loop already applies the async DPI swap.
 
 ## 0.69.0 — Full-state Back/Forward, host-controlled link clicks, focus-hinted block framing (2026-10-20)
