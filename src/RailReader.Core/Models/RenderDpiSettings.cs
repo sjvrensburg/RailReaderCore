@@ -37,6 +37,22 @@ public readonly record struct RenderDpiSettings
     /// <summary>A re-render down is triggered when the needed DPI drops below the cached DPI by this factor.</summary>
     public double DownscaleHysteresis { get; init; }
 
+    /// <summary>
+    /// DPI of the low-resolution preview a fresh single-page load rasterises synchronously when the
+    /// full DPI is far above it (issue #147). The page is shown at this DPI at once and upgraded to
+    /// the full DPI by the async re-render path a frame or two later, so a page change at rail zoom
+    /// doesn't block the UI thread for a full-resolution render. Clamped to
+    /// <see cref="MinDpi"/>. <c>&lt;= 0</c> disables the preview (every load renders at full DPI).
+    /// </summary>
+    public int PreviewDpi { get; init; }
+
+    /// <summary>
+    /// The preview path is taken only when the full DPI exceeds <see cref="PreviewDpi"/> by more than
+    /// this factor; below it a full render is cheap enough to do synchronously, so low-zoom page turns
+    /// load exactly as before.
+    /// </summary>
+    public double PreviewMinRatio { get; init; }
+
     // Defaults shared by every built-in preset (the preset schema only varies
     // MaxDpi and TierStep). Custom presets may override MaxDpi/TierStep but
     // inherit these.
@@ -44,6 +60,8 @@ public readonly record struct RenderDpiSettings
     internal const double DefaultMaxMegapixels = 64.0;
     internal const double DefaultUpscaleHysteresis = 1.5;
     internal const double DefaultDownscaleHysteresis = 0.5;
+    internal const int DefaultPreviewDpi = DefaultMinDpi;
+    internal const double DefaultPreviewMinRatio = 2.0;
 
     /// <summary>The settings used when no preset is specified — equivalent to <see cref="RenderQuality.Quality"/>.</summary>
     public static readonly RenderDpiSettings Default = ForPreset(RenderQuality.Quality);
@@ -77,5 +95,7 @@ public readonly record struct RenderDpiSettings
         MaxMegapixels = DefaultMaxMegapixels,
         UpscaleHysteresis = DefaultUpscaleHysteresis,
         DownscaleHysteresis = DefaultDownscaleHysteresis,
+        PreviewDpi = DefaultPreviewDpi,
+        PreviewMinRatio = DefaultPreviewMinRatio,
     };
 }

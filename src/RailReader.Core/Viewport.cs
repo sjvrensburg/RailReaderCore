@@ -552,6 +552,18 @@ public sealed partial class Viewport : IDisposable
             {
                 (w, h) = Owner.Pdf.GetPageSize(CurrentPageBacking, Owner.ViewRotation);
                 dpi = DocumentModel.CalculateRenderDpi(Camera.Zoom, w, h, RenderDpi);
+
+                // Progressive load (issue #147): at rail zoom a full-DPI render is ~1 s of UI-thread
+                // stall on every page change. Show a cheap low-DPI preview now and flag a forced
+                // re-render so UpdateRenderDpiIfNeeded brings it to full DPI on the next tick, past
+                // hysteresis — the same promotion path a taken window neighbour uses above. Skipped
+                // while scrolling: that path defers re-renders until scrolling stops, which would
+                // leave the page soft for the whole scroll.
+                if (PreviewDpiFor(dpi) is int previewDpi && !IsScrollingForRender)
+                {
+                    dpi = previewDpi;
+                    RenderDpiDirty = true;
+                }
                 newPage = Owner.Pdf.RenderPage(CurrentPageBacking, dpi, Owner.ViewRotation);
             }
             var newMinimap = Owner.Pdf.RenderThumbnail(CurrentPageBacking, Owner.ViewRotation);
@@ -573,6 +585,19 @@ public sealed partial class Viewport : IDisposable
             return false;
         }
     }
+
+    /// <summary>The preview DPI a fresh load of a page whose full DPI is <paramref name="fullDpi"/>
+    /// should render at first, or null when the full render is cheap enough to do directly (preview
+    /// disabled, or the full DPI within <see cref="RenderDpiSettings.PreviewMinRatio"/> of it).</summary>
+    private int? PreviewDpiFor(int fullDpi)
+    {
+        if (RenderDpi.PreviewDpi <= 0) return null;
+        int previewDpi = Math.Max(Math.Max(1, RenderDpi.MinDpi), RenderDpi.PreviewDpi);
+        return fullDpi > previewDpi * Math.Max(1.0, RenderDpi.PreviewMinRatio) ? previewDpi : null;
+    }
+
+    /// <summary>True while scrolling suppresses DPI re-renders (see <see cref="UpdateRenderDpiIfNeeded"/>).</summary>
+    private bool IsScrollingForRender => Rail.ScrollSpeed > 0.1 || Rail.AutoScrolling;
 
     /// <summary>Sets the page dimensions from <see cref="LoadPageBitmap"/>, which may run on a
     /// background thread (see its contract) — so it can't use <see cref="SetField"/>, whose UI-thread
@@ -713,7 +738,7 @@ public sealed partial class Viewport : IDisposable
         // re-renders too: jumping the gate mid-scroll would stutter the scroll,
         // so the change stays dirty and the animation tick retries it the moment
         // scroll velocity drops to zero.
-        if (Rail.ScrollSpeed > 0.1 || Rail.AutoScrolling) return false;
+        if (IsScrollingForRender) return false;
 
         if (ContinuousScroll) EnsureRenderWindow(Width, Height);
 

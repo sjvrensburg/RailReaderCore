@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Page changes at rail zoom no longer block on a full-resolution render (#147)
+
+- A fresh single-page load (`Viewport.LoadPageBitmap` with no prefetch or render-window hit) whose full DPI
+  is more than `PreviewMinRatio` (2×) above `PreviewDpi` (150) now rasterises a low-DPI preview
+  synchronously and flags a forced re-render, so the existing async `UpdateRenderDpiIfNeeded` path brings
+  the page to full DPI a frame or two later. At 5× under High this turns a ~0.8–1 s UI stall on every link
+  click, Back/Forward, outline/search jump and PgUp/PgDn into a ~0.1 s preview render. Low-zoom page turns
+  are unchanged, and so are loads made while scrolling or auto-scrolling, where re-renders are deferred and
+  a preview would stay soft.
+- **`RenderDpiSettings.PreviewDpi` / `PreviewMinRatio`** (new): set on every preset by `ForPreset`.
+  `PreviewDpi <= 0` disables the preview, for a consumer that reads `CachedPage` right after a page change
+  and needs it at full resolution. Page geometry (`PageWidth`/`PageHeight`) still comes from the page size,
+  not the bitmap, so camera, rail and transition maths are unaffected.
+- No host change needed: the frame loop already applies the async DPI swap.
+
 ## 0.69.0 — Full-state Back/Forward, host-controlled link clicks, focus-hinted block framing (2026-10-20)
 
 ### Navigation history keeps the view, and covers every jump (#143)
