@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — Annotation reply threads: `/IRT` written to the PDF, author stamping, thread API (#149, #150, #151)
+## 0.71.0 — Annotation reply threads: `/IRT` written to the PDF, author stamping, thread API (2026-10-23)
 
 ### Reply linkage is written into the PDF (#149)
 
