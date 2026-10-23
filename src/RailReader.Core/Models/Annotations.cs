@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using RailReader.Core.Services;
 
 namespace RailReader.Core.Models;
 
@@ -221,32 +222,76 @@ public sealed class AddAnnotationAction(int pageIndex, Annotation annotation) : 
     }
 }
 
+/// <summary>
+/// Removes an annotation <b>and every reply beneath it</b> (<see cref="AnnotationThreads.Descendants"/>) as
+/// one undo step — the Acrobat behaviour: deleting a comment deletes its thread, never leaving replies
+/// stranded as unrelated notes.
+/// </summary>
 public sealed class RemoveAnnotationAction(int pageIndex, Annotation annotation) : IUndoAction
 {
-    /// <summary>
-    /// Position the annotation was removed from, or −1 when the last <see cref="Redo"/> found
-    /// nothing to remove (annotation absent from the page, or page key missing). Undo of a
-    /// no-op removal must itself be a no-op: inserting anyway would either throw
-    /// (List.Insert(−1)) or silently duplicate the annotation onto a page it was never on.
-    /// </summary>
-    private int _index = -1;
+    /// <summary>Everything the last <see cref="Redo"/> removed, in removal order, with the position each
+    /// came from. Empty when it found nothing to remove (annotation absent from the page, or page key
+    /// missing) — Undo of a no-op removal must itself be a no-op: inserting anyway would either throw
+    /// or silently duplicate the annotation onto a page it was never on.</summary>
+    private readonly List<(int Page, int Index, Annotation Annotation)> _removed = [];
 
     public void Undo(AnnotationFile file)
     {
-        if (_index < 0) return; // Redo removed nothing — nothing to restore
-        if (!file.Pages.TryGetValue(pageIndex, out var list))
+        // Reverse of removal order, so each index is valid again by the time it is re-inserted.
+        for (int i = _removed.Count - 1; i >= 0; i--)
         {
-            list = [];
-            file.Pages[pageIndex] = list;
+            var (page, index, ann) = _removed[i];
+            if (!file.Pages.TryGetValue(page, out var list))
+            {
+                list = [];
+                file.Pages[page] = list;
+            }
+            list.Insert(Math.Min(index, list.Count), ann);
         }
-        list.Insert(Math.Min(_index, list.Count), annotation);
+        _removed.Clear();
     }
 
     public void Redo(AnnotationFile file)
     {
-        _index = file.Pages.TryGetValue(pageIndex, out var list) ? list.IndexOf(annotation) : -1;
-        if (_index >= 0)
-            list!.RemoveAt(_index);
+        _removed.Clear();
+        if (!file.Pages.TryGetValue(pageIndex, out var list) || list.IndexOf(annotation) is var at && at < 0) return;
+
+        var doomed = AnnotationThreads.Descendants(file, annotation);
+        list.RemoveAt(at);
+        _removed.Add((pageIndex, at, annotation));
+        foreach (var page in file.Pages.Keys.ToList())
+        {
+            var l = file.Pages[page];
+            for (int i = l.Count - 1; i >= 0; i--)
+            {
+                if (!doomed.Contains(l[i])) continue;
+                _removed.Add((page, i, l[i]));
+                l.RemoveAt(i);
+            }
+        }
+    }
+}
+
+/// <summary>
+/// Adds a reply (<see cref="Annotation.InReplyTo"/> set) as ONE undo step, including the
+/// <see cref="Annotation.NativeId"/> minted on the thread root when it had none — undo removes
+/// the reply and un-mints the id, so a reply can never be left pointing at an id that no longer
+/// exists.
+/// </summary>
+public sealed class AddReplyAction(int pageIndex, Annotation root, Annotation reply, string? mintedRootId) : IUndoAction
+{
+    private readonly AddAnnotationAction _add = new(pageIndex, reply);
+
+    public void Redo(AnnotationFile file)
+    {
+        if (mintedRootId is not null) root.NativeId = mintedRootId;
+        _add.Redo(file);
+    }
+
+    public void Undo(AnnotationFile file)
+    {
+        _add.Undo(file);
+        if (mintedRootId is not null) root.NativeId = null;
     }
 }
 
@@ -279,11 +324,15 @@ public sealed class EditContentsAction(Annotation annotation, string? oldContent
 public sealed class MergeAnnotationsAction(int pageIndex, IReadOnlyList<Annotation> sources, Annotation merged) : IUndoAction
 {
     private readonly List<(int Index, Annotation Annotation)> _removed = [];
+    private readonly List<(Annotation Reply, string? Parent)> _repointed = [];
+    private bool _mintedId;
     private int _insertIndex = -1;
 
     public void Redo(AnnotationFile file)
     {
         _removed.Clear();
+        _repointed.Clear();
+        _mintedId = false;
         _insertIndex = -1;
         if (!file.Pages.TryGetValue(pageIndex, out var list))
         {
@@ -296,10 +345,37 @@ public sealed class MergeAnnotationsAction(int pageIndex, IReadOnlyList<Annotati
             list.RemoveAt(_removed[k].Index);
         _insertIndex = _removed.Count > 0 ? Math.Min(_removed[0].Index, list.Count) : list.Count;
         list.Insert(_insertIndex, merged);
+        RepointReplies(file);
+    }
+
+    /// <summary>Replies to a merged-away source are re-pointed at the merged annotation (minting
+    /// its id if it has none) so the thread follows the markup instead of dangling.</summary>
+    private void RepointReplies(AnnotationFile file)
+    {
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (_, src) in _removed)
+            if (!string.IsNullOrEmpty(src.NativeId)) ids.Add(src.NativeId);
+        if (ids.Count == 0) return;
+
+        foreach (var ann in file.Pages.Values.SelectMany(l => l))
+        {
+            if (ReferenceEquals(ann, merged) || string.IsNullOrEmpty(ann.InReplyTo) || !ids.Contains(ann.InReplyTo)) continue;
+            if (string.IsNullOrEmpty(merged.NativeId))
+            {
+                merged.NativeId = Guid.NewGuid().ToString();
+                _mintedId = true;
+            }
+            _repointed.Add((ann, ann.InReplyTo));
+            ann.InReplyTo = merged.NativeId;
+        }
     }
 
     public void Undo(AnnotationFile file)
     {
+        foreach (var (reply, parent) in _repointed) reply.InReplyTo = parent;
+        _repointed.Clear();
+        if (_mintedId) merged.NativeId = null;
+        _mintedId = false;
         if (!file.Pages.TryGetValue(pageIndex, out var list)) return;
         list.Remove(merged);
         // Re-insert in ascending index order so each original position is valid again.

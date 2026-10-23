@@ -106,12 +106,30 @@ public sealed class PdfAnnotationWriter
     /// updated in place; changed text-markup/ink ones are deleted and recreated with the
     /// same /NM.</item>
     /// </list>
+    /// <para><b>Replies:</b> <see cref="Annotation.InReplyTo"/> is written as <c>/IRT</c> + <c>/RT /R</c>
+    /// by a raw-PDF post-pass (<see cref="PdfReplyLinker"/>) because PDFium cannot store an indirect
+    /// reference. Links that already match are left alone; changed or stale ones (re-parented, parent
+    /// deleted or recreated) are rewritten; a parent absent from the document drops the link rather
+    /// than leave it dangling.</para>
     /// <b>Mutates</b> <paramref name="file"/> by back-filling /NM and Source on newly persisted
     /// annotations. Caret annotations can be edited in place but never created
     /// (<see cref="CaretAnnotation"/>). Only pages present in <paramref name="file"/> are
     /// visited.
     /// </summary>
     public byte[] WriteReconciled(byte[] pdfBytes, AnnotationFile file, string? password = null)
+    {
+        var linked = WriteReconciledCore(pdfBytes, file, password, withLinks: true);
+        if (linked is not null) return linked;
+        // The linker could not finish (and so could not strip its marker keys). PDFium can't remove a
+        // key, so redo the save from the original bytes without tagging anything: no links this time,
+        // but no junk in the user's PDF either. `file` already carries the minted /NM values, so the
+        // second pass reconciles to the same document.
+        return WriteReconciledCore(pdfBytes, file, password, withLinks: false)!;
+    }
+
+    /// <returns>The saved bytes, or null when <paramref name="withLinks"/> was requested, needed, and
+    /// <see cref="PdfReplyLinker"/> backed off.</returns>
+    private byte[]? WriteReconciledCore(byte[] pdfBytes, AnnotationFile file, string? password, bool withLinks)
     {
         lock (PdfiumGate.Lock)
         {
@@ -127,13 +145,14 @@ public sealed class PdfAnnotationWriter
                 try
                 {
                     int pageCount = FPDF_GetPageCount(doc);
+                    var recreated = new HashSet<string>(StringComparer.Ordinal);
                     foreach (var pageIndex in file.Pages.Keys.Where(k => k >= 0 && k < pageCount).OrderBy(k => k))
                     {
                         var page = FPDF_LoadPage(doc, pageIndex);
                         if (page == IntPtr.Zero) continue;
                         try
                         {
-                            ReconcilePage(page, file.Pages[pageIndex]);
+                            ReconcilePage(page, file.Pages[pageIndex], recreated);
                         }
                         finally
                         {
@@ -141,7 +160,13 @@ public sealed class PdfAnnotationWriter
                         }
                     }
 
-                    return SaveDocumentBytes(doc);
+                    // Links only matter when a reply exists in the model, or the file carries an /IRT that
+                    // might now be stale. Otherwise skip the extra passes over every annotated page.
+                    var links = withLinks && MayNeedLinks(pdfBytes, file)
+                        ? PlanReplyLinks(doc, pageCount, file, recreated)
+                        : new ReplyLinkPlan();
+                    var saved = SaveDocumentBytes(doc);
+                    return links.IsEmpty ? saved : LinkApplier(saved, links);
                 }
                 finally
                 {
@@ -155,7 +180,7 @@ public sealed class PdfAnnotationWriter
         }
     }
 
-    private static void ReconcilePage(IntPtr page, List<Annotation> desired)
+    private static void ReconcilePage(IntPtr page, List<Annotation> desired, HashSet<string> recreated)
     {
         var tx = GetPageTransform(page);
 
@@ -217,6 +242,10 @@ public sealed class PdfAnnotationWriter
         foreach (var (nm, want) in desiredByNm)
             if (!matched.Contains(nm)) recreate.Add(want);
 
+        // A recreated annotation is a new object, so any /IRT that pointed at the old one now dangles.
+        foreach (var ann in recreate)
+            if (!string.IsNullOrEmpty(ann.NativeId)) recreated.Add(ann.NativeId!);
+
         // In-place edits first (indices are still valid)…
         foreach (var (index, ann) in inPlace)
         {
@@ -247,7 +276,113 @@ public sealed class PdfAnnotationWriter
                 ann.NativeId = null;
         }
         foreach (var ann in recreate)
-            WriteAnnotationToPage(page, ann, tx);
+        {
+            // Same rule as a brand-new annotation: once actually written, it is persisted. Edits of an
+            // annotation already in the PDF are InPdf anyway; this covers one that arrived with an id
+            // but no PDF counterpart (migrated from the sidecar, or given an id by AddReply). A write
+            // that produces nothing (empty geometry) must not be flagged, or it would be lost.
+            if (WriteAnnotationToPage(page, ann, tx))
+                ann.Source = AnnotationSource.InPdf;
+        }
+    }
+
+    /// <summary>The post-pass that writes the links; a seam so tests can force its back-off path.</summary>
+    internal Func<byte[], ReplyLinkPlan, byte[]?> LinkApplier { get; set; } = PdfReplyLinker.Apply;
+
+    private static readonly byte[] IrtKey = "/IRT"u8.ToArray();
+
+    private static bool MayNeedLinks(byte[] pdfBytes, AnnotationFile file)
+        => file.Pages.Values.Any(l => l.Any(a => !string.IsNullOrEmpty(a.InReplyTo)))
+           || pdfBytes.AsSpan().IndexOf(IrtKey) >= 0;
+
+    /// <summary>
+    /// Works out which annotations need their <c>/IRT</c> set, changed or cleared, and tags each with
+    /// a throw-away marker key so <see cref="PdfReplyLinker"/> can find its object in the saved bytes
+    /// (PDFium exposes no object numbers). Annotations whose link already matches are not tagged, so
+    /// an ordinary re-save appends nothing.
+    /// </summary>
+    private static ReplyLinkPlan PlanReplyLinks(IntPtr doc, int pageCount, AnnotationFile file, HashSet<string> recreated)
+    {
+        var plan = new ReplyLinkPlan();
+        var byNm = new Dictionary<string, Annotation>(StringComparer.Ordinal);
+        foreach (var a in file.Pages.Values.SelectMany(l => l))
+            if (!string.IsNullOrEmpty(a.NativeId)) byNm.TryAdd(a.NativeId!, a);
+        if (byNm.Count == 0) return plan;
+
+        var pages = file.Pages.Keys.Where(k => k >= 0 && k < pageCount).OrderBy(k => k).ToList();
+        var present = new HashSet<string>(StringComparer.Ordinal);
+        var needs = new List<(string Child, string? Parent, bool HasLink)>();
+
+        ForEachManagedAnnot(doc, pages, (annot, nm) =>
+        {
+            present.Add(nm);
+            if (!byNm.TryGetValue(nm, out var ann)) return;
+
+            string? desired = !string.IsNullOrEmpty(ann.InReplyTo) && ann.InReplyTo != nm && byNm.ContainsKey(ann.InReplyTo)
+                ? ann.InReplyTo : null;
+            bool has = FPDFAnnot_HasKey(annot, "IRT");
+            string? actual = null;
+            if (has)
+            {
+                var linked = FPDFAnnot_GetLinkedAnnot(annot, "IRT");
+                if (linked != IntPtr.Zero)
+                {
+                    try { actual = ReadAnnotString(linked, "NM"); }
+                    finally { FPDFPage_CloseAnnot(linked); }
+                }
+            }
+            bool consistent = desired is null ? !has : actual == desired && !recreated.Contains(desired);
+            if (!consistent) needs.Add((nm, desired, has));
+        });
+
+        foreach (var (child, parent, hasLink) in needs)
+        {
+            // A parent that was never written (empty geometry, uncreatable caret) is an orphan.
+            string? target = parent is not null && present.Contains(parent) ? parent : null;
+            // Nothing to clear and nowhere to point: leave the child alone.
+            if (target is null && !hasLink) continue;
+            plan.Links.Add((plan.MarkerFor(child), target is null ? -1 : plan.MarkerFor(target)));
+        }
+        if (plan.IsEmpty) return plan;
+
+        ForEachManagedAnnot(doc, pages, (annot, nm) =>
+        {
+            int marker = plan.TryGetMarker(nm);
+            if (marker >= 0) SetString(annot, plan.KeyFor(marker), "1");
+        });
+        return plan;
+    }
+
+    private static void ForEachManagedAnnot(IntPtr doc, List<int> pages, Action<IntPtr, string> visit)
+    {
+        foreach (var pageIndex in pages)
+        {
+            var page = FPDF_LoadPage(doc, pageIndex);
+            if (page == IntPtr.Zero) continue;
+            try
+            {
+                int count = FPDFPage_GetAnnotCount(page);
+                for (int i = 0; i < count; i++)
+                {
+                    var annot = FPDFPage_GetAnnot(page, i);
+                    if (annot == IntPtr.Zero) continue;
+                    try
+                    {
+                        if (!IsManagedSubtype(FPDFAnnot_GetSubtype(annot))) continue;
+                        var nm = ReadAnnotString(annot, "NM");
+                        if (!string.IsNullOrEmpty(nm)) visit(annot, nm!);
+                    }
+                    finally
+                    {
+                        FPDFPage_CloseAnnot(annot);
+                    }
+                }
+            }
+            finally
+            {
+                FPDF_ClosePage(page);
+            }
+        }
     }
 
     private static bool IsManagedSubtype(int subtype) => subtype is
@@ -538,8 +673,8 @@ public sealed class PdfAnnotationWriter
         SetString(annot, "M", FormatPdfDate(ann.ModifiedUtc ?? now));
 
         WriteReviewState(annot, ann.State);
-        // Note: /IRT (reply linkage) is an indirect object reference; PDFium has no API to set
-        // it, so reply threading is read-only and not re-emitted on write.
+        // /IRT (reply linkage) is an indirect object reference, which PDFium has no API to set.
+        // WriteReconciled adds it after saving — see PdfReplyLinker.
     }
 
     /// <summary>Writes the Acrobat review state (/State + /StateModel "Review"); no-op for None.</summary>

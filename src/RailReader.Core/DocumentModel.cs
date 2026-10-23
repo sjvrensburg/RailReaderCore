@@ -1189,9 +1189,8 @@ public sealed class DocumentModel : IDisposable
     /// <summary>
     /// Applies one cluster merge as a single undo step, or refuses it: fewer than two members,
     /// conflicting comments (<see cref="TextMarkupMerge.TryBuildMerged"/>), or a member that is
-    /// in a reply thread (<see cref="TextMarkupMerge.IsThreaded"/> — the reconciling writer deletes
-    /// a merged-away source by its /NM and PDFium cannot re-point a reply's /IRT, so merging would
-    /// orphan the thread).
+    /// itself a reply (<see cref="TextMarkupMerge.IsThreaded"/>). Replies <i>to</i> a merged-away
+    /// source are re-pointed at the merged annotation as part of the same undo step.
     /// </summary>
     private TextMarkupAnnotation? MergeCluster(int page, List<Annotation> list,
         List<TextMarkupAnnotation> cluster, out TextMarkupMerge.Refusal refusal)
@@ -1241,6 +1240,68 @@ public sealed class DocumentModel : IDisposable
         MarkAnnotationsDirty();
     }
 
+    /// <summary>
+    /// Adds a reply to <paramref name="parent"/> as one undo step and returns it (null when the
+    /// text is blank, the parent is not in this document, or the view is rotated — same guard as
+    /// <see cref="AddAnnotation"/>). The reply is a <see cref="TextNoteAnnotation"/> anchored at the
+    /// thread root's top-left corner, with <see cref="Annotation.Author"/> and
+    /// <see cref="Annotation.CreatedUtc"/> stamped (author only when non-empty).
+    /// <para>Threads are flat: replying to a reply attaches to that thread's <i>root</i>
+    /// (<see cref="AnnotationThreads.RootOf"/>), never nests deeper. The root gets a
+    /// <see cref="Annotation.NativeId"/> if it has none, as part of the same undo step.</para>
+    /// </summary>
+    public TextNoteAnnotation? AddReply(Annotation parent, string text, string? author = null)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        if (_viewRotation != 0)
+        {
+            _logger.Warn($"[Annotations] Refusing to add a reply while ViewRotation={_viewRotation} — geometry would be stored in the rotated frame");
+            return null;
+        }
+        if (AnnotationThreads.PageOf(Annotations, parent) is null) return null;
+
+        var root = AnnotationThreads.RootOf(Annotations, parent);
+        if (AnnotationThreads.PageOf(Annotations, root) is not { } page) return null;
+
+        // An in-PDF annotation with no /NM is unidentifiable to the writer: minting an id would make
+        // it look like a missing annotation (duplicated on save, or deleted again after an undo).
+        if (string.IsNullOrEmpty(root.NativeId) && root.Source == AnnotationSource.InPdf)
+        {
+            _logger.Warn("[Annotations] Refusing to reply to an in-PDF annotation that has no /NM");
+            return null;
+        }
+
+        string? minted = string.IsNullOrEmpty(root.NativeId) ? Guid.NewGuid().ToString() : null;
+        var bounds = AnnotationGeometry.GetAnnotationBounds(root);
+        var reply = new TextNoteAnnotation
+        {
+            X = bounds?.Left ?? 0,
+            Y = bounds?.Top ?? 0,
+            Color = "#FFFF00",
+            Opacity = 0.9f,
+            Text = text,
+            Contents = text,
+            InReplyTo = minted ?? root.NativeId,
+            CreatedUtc = DateTimeOffset.UtcNow,
+        };
+        if (!string.IsNullOrWhiteSpace(author)) reply.Author = author;
+
+        var action = new AddReplyAction(page, root, reply, minted);
+        action.Redo(Annotations);
+        UndoStack.Push(action);
+        RedoStack.Clear();
+        MarkAnnotationsDirty();
+        return reply;
+    }
+
+    /// <summary>The reply threads of this document (see <see cref="AnnotationThreads.Build"/>),
+    /// optionally only those rooted on <paramref name="page"/>.</summary>
+    public List<AnnotationThread> GetThreads(int? page = null) => AnnotationThreads.Build(Annotations, page);
+
+    /// <summary>
+    /// Removes an annotation as one undo step, together with every reply beneath it (as Acrobat does),
+    /// so deleting a comment never leaves its replies stranded as unrelated notes.
+    /// </summary>
     public void RemoveAnnotation(int page, Annotation annotation)
     {
         var action = new RemoveAnnotationAction(page, annotation);

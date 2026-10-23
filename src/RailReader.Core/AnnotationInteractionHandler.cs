@@ -38,6 +38,24 @@ public sealed class AnnotationInteractionHandler
     /// Default off — hosts expose it as a preference. See <see cref="DocumentModel.AddTextMarkupMerging"/>.
     /// </summary>
     public bool AutoMergeTextMarkup { get; set; }
+
+    /// <summary>
+    /// Name stamped into <see cref="Annotation.Author"/> (PDF /T) of every annotation this handler
+    /// creates — all tools, paste, merge results and replies — along with
+    /// <see cref="Annotation.CreatedUtc"/>. Null/blank keeps the historical behaviour (no author).
+    /// Driven by <c>CoreSettings.AnnotationAuthor</c>. Annotations that already exist (read from the
+    /// PDF) are never re-authored.
+    /// </summary>
+    public string? Author { get; set; }
+
+    /// <summary>Stamps a freshly authored annotation (see <see cref="Author"/>). No-op without an author.</summary>
+    private T Stamp<T>(T annotation) where T : Annotation
+    {
+        if (string.IsNullOrWhiteSpace(Author)) return annotation;
+        annotation.Author = Author;
+        annotation.CreatedUtc = DateTimeOffset.UtcNow;
+        return annotation;
+    }
     public float ActiveStrokeWidth { get; set; } = 2f;
 
     /// <summary>
@@ -309,8 +327,22 @@ public sealed class AnnotationInteractionHandler
             Opacity = ActiveAnnotationOpacity,
             Text = text,
         };
-        vp.Owner.AddAnnotation(vp.CurrentPage, note);
+        vp.Owner.AddAnnotation(vp.CurrentPage, Stamp(note));
     }
+
+    /// <summary>
+    /// Replies to <paramref name="parent"/> with <paramref name="text"/> as one undo step, stamped
+    /// with <see cref="Author"/>. See <see cref="DocumentModel.AddReply"/> for the (flat) threading
+    /// rule. Returns the reply, or null when refused (no view, blank text, parent not on the
+    /// document, rotated view).
+    /// </summary>
+    public TextNoteAnnotation? CreateReply(Viewport? vp, Annotation parent, string text)
+        => vp?.Owner.AddReply(parent, text, Author);
+
+    /// <summary>The reply threads on the view's document — only those rooted on the view's current
+    /// page when <paramref name="currentPageOnly"/>.</summary>
+    public List<AnnotationThread> GetThreads(Viewport? vp, bool currentPageOnly = false)
+        => vp is null ? [] : vp.Owner.GetThreads(currentPageOnly ? vp.CurrentPage : null);
 
     /// <summary>
     /// Complete a text note edit after dialog returns.
@@ -339,7 +371,12 @@ public sealed class AnnotationInteractionHandler
         refusal = TextMarkupMerge.Refusal.NothingToMerge;
         if (vp is null || SelectedAnnotation is not TextMarkupAnnotation m) return null;
         var merged = vp.Owner.MergeOverlappingTextMarkup(vp.CurrentPage, m, out refusal);
-        if (merged is not null) SelectedAnnotation = merged;
+        if (merged is not null)
+        {
+            // The merge keeps the sources' author; only fill the gap when none had one.
+            if (string.IsNullOrWhiteSpace(merged.Author) && !string.IsNullOrWhiteSpace(Author)) merged.Author = Author;
+            SelectedAnnotation = merged;
+        }
         return merged;
     }
 
@@ -433,6 +470,7 @@ public sealed class AnnotationInteractionHandler
         {
             if (PreviewAnnotation is TextMarkupAnnotation tm)
             {
+                Stamp(tm);
                 if (AutoMergeTextMarkup)
                     vp.Owner.AddTextMarkupMerging(vp.CurrentPage, tm);
                 else
@@ -450,14 +488,14 @@ public sealed class AnnotationInteractionHandler
                 _textSelectCharStart = -1;
                 break;
             case AnnotationTool.Pen when PreviewAnnotation is FreehandAnnotation f:
-                vp.Owner.AddAnnotation(vp.CurrentPage, f);
+                vp.Owner.AddAnnotation(vp.CurrentPage, Stamp(f));
                 PreviewAnnotation = null;
                 _freehandPoints = null;
                 changed = true;
                 break;
             case AnnotationTool.Rectangle when PreviewAnnotation is RectAnnotation r:
                 if (r.W > 1 && r.H > 1)
-                    vp.Owner.AddAnnotation(vp.CurrentPage, r);
+                    vp.Owner.AddAnnotation(vp.CurrentPage, Stamp(r));
                 PreviewAnnotation = null;
                 _boxDragActive = false;
                 changed = true;
@@ -497,7 +535,7 @@ public sealed class AnnotationInteractionHandler
         PendingFreeText = null;
         if (vp is null || pending is null || string.IsNullOrWhiteSpace(text)) return null;
         pending.Contents = text;
-        vp.Owner.AddAnnotation(vp.CurrentPage, pending);
+        vp.Owner.AddAnnotation(vp.CurrentPage, Stamp(pending));
         return pending;
     }
 
@@ -521,7 +559,7 @@ public sealed class AnnotationInteractionHandler
             FontSize = fontSize,
             Contents = text,
         };
-        vp.Owner.AddAnnotation(vp.CurrentPage, ft);
+        vp.Owner.AddAnnotation(vp.CurrentPage, Stamp(ft));
         return ft;
     }
 
@@ -695,6 +733,8 @@ public sealed class AnnotationInteractionHandler
         MoveAnnotation(clone, dx, dy, PositionSnapshot.Capture(clone));
 
         int page = vp.CurrentPage;
+        // CloneForPaste keeps the source's author; a paste is a new annotation by the current user.
+        Stamp(clone);
         vp.Owner.AddAnnotation(page, clone);
         if (!vp.Owner.Annotations.Pages.TryGetValue(page, out var list) || !list.Contains(clone))
             return null;
@@ -819,7 +859,10 @@ public sealed class AnnotationInteractionHandler
         {
             List<PointF> newPoints = [.. freehand.Points];
             if (!PointsEqual(_resizeOriginalPoints, newPoints))
+            {
+                freehand.ModifiedUtc = DateTimeOffset.UtcNow;
                 vp.Owner.PushUndoAction(new ResizeFreehandAction(freehand, _resizeOriginalPoints, newPoints));
+            }
             _resizeHandle = ResizeHandle.None;
             _resizeOriginalPoints = null;
             return true;
@@ -831,7 +874,10 @@ public sealed class AnnotationInteractionHandler
             float dx = pageX - _dragStartPageX;
             float dy = pageY - _dragStartPageY;
             if (Math.Abs(dx) > 0.5f || Math.Abs(dy) > 0.5f)
+            {
+                _dragAnnotation.ModifiedUtc = DateTimeOffset.UtcNow;
                 vp.Owner.PushUndoAction(new MoveAnnotationAction(_dragAnnotation, _dragOriginalPosition, newPosition));
+            }
             _dragAnnotation = null;
             _dragOriginalPosition = null;
             return true;

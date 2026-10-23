@@ -164,6 +164,7 @@ public sealed partial class DocumentController : IDisposable
         _annotationManager.OnSaveFailure = msg => StatusMessage?.Invoke(msg);
         Annotations = new AnnotationInteractionHandler();
         Annotations.ApplyColorIndices(config.AnnotationColorIndices);
+        Annotations.Author = config.AnnotationAuthor;
         Search = new SearchService(
             () => FocusedViewport,
             GoToPage);
@@ -1153,6 +1154,7 @@ public sealed partial class DocumentController : IDisposable
         // scanned pages already analysed under the old value, which its setter handles.
         DeskewOcrLines = newConfig.DeskewOcrLines;
         Annotations.ApplyColorIndices(newConfig.AnnotationColorIndices);
+        Annotations.Author = newConfig.AnnotationAuthor;
         // ApplyColorIndices only updates the stored index (see its doc comment) — refresh the
         // active tool's live colour too, so a colour changed elsewhere (e.g. a second viewport's
         // settings dialog) is reflected immediately rather than on next tool switch. Uses the

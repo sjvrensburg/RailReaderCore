@@ -264,9 +264,8 @@ public class TextMarkupMergeTests : IDisposable
     }
 
     [Fact]
-    public void MergeOverlapping_RefusesReplyThreads_SoSaveCannotOrphanThem()
+    public void MergeOverlapping_RepointsRepliesOfMergedSources_AndUndoRestoresThem()
     {
-        // A source that has a reply on the page: deleting it by /NM would dangle the reply's /IRT.
         var parent = Hl(rects: new HighlightRect(10, 100, 30, 12));
         parent.NativeId = "nm-parent"; parent.Source = AnnotationSource.InPdf;
         var reply = new TextNoteAnnotation { X = 15, Y = 106, Contents = "reply", InReplyTo = "nm-parent" };
@@ -274,17 +273,33 @@ public class TextMarkupMergeTests : IDisposable
         foreach (var ann in new Annotation[] { parent, reply, other }) _doc.AddAnnotation(0, ann);
         int depth = _doc.UndoStack.Count;
 
-        Assert.Null(_doc.MergeOverlappingTextMarkup(0, other, out var refusal));
-        Assert.Equal(TextMarkupMerge.Refusal.Threaded, refusal);
-        Assert.Equal([parent, reply, other], Page0);
-        Assert.Equal(depth, _doc.UndoStack.Count);
-        Assert.Equal(0, _doc.MergeOverlappingTextMarkup(0)); // the sweep skips it too
+        var merged = _doc.MergeOverlappingTextMarkup(0, other, out var refusal);
+        Assert.NotNull(merged);
+        Assert.Equal(TextMarkupMerge.Refusal.None, refusal);
+        Assert.False(string.IsNullOrEmpty(merged!.NativeId));        // minted so the reply has something to point at
+        Assert.Equal(merged.NativeId, reply.InReplyTo);              // thread follows the merged markup
+        Assert.Equal(depth + 1, _doc.UndoStack.Count);               // still one undo step
 
-        // A source that is itself a reply: the merged copy would lose its /IRT.
-        reply.InReplyTo = null;
+        _doc.Undo();
+        Assert.Equal("nm-parent", reply.InReplyTo);
+        Assert.Null(merged.NativeId);
+        Assert.Equal([parent, reply, other], Page0);
+
+        _doc.Redo();
+        Assert.Equal(merged.NativeId, reply.InReplyTo);
+    }
+
+    [Fact]
+    public void MergeOverlapping_StillRefuses_WhenASourceIsItselfAReply()
+    {
+        var parent = Hl(rects: new HighlightRect(10, 100, 30, 12));
+        var other = Hl(rects: new HighlightRect(30, 100, 30, 12));
         other.InReplyTo = "someone-else";
-        Assert.Null(_doc.MergeOverlappingTextMarkup(0, parent, out refusal));
+        foreach (var ann in new Annotation[] { parent, other }) _doc.AddAnnotation(0, ann);
+
+        Assert.Null(_doc.MergeOverlappingTextMarkup(0, parent, out var refusal));
         Assert.Equal(TextMarkupMerge.Refusal.Threaded, refusal);
+        Assert.Equal(0, _doc.MergeOverlappingTextMarkup(0)); // the sweep skips it too
 
         other.InReplyTo = null;
         Assert.NotNull(_doc.MergeOverlappingTextMarkup(0, parent, out refusal));
