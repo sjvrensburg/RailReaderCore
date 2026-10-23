@@ -194,4 +194,12 @@ public sealed record CoreSettings
     /// </summary>
     public IReadOnlyDictionary<AnnotationTool, int> AnnotationColorIndices { get; init; } =
         new Dictionary<AnnotationTool, int>();
+
+    /// <summary>
+    /// Name written as the author (PDF /T) of annotations authored in RailReader, with a creation
+    /// timestamp; also the author of replies. Null/empty (the default) leaves new annotations
+    /// unattributed. Live: pushed through <c>DocumentController.OnConfigChanged</c>. Annotations
+    /// already in the document are never re-authored.
+    /// </summary>
+    public string? AnnotationAuthor { get; init; }
 }

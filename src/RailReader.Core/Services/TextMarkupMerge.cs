@@ -27,9 +27,10 @@ public static class TextMarkupMerge
         /// <summary>Two or more sources carry different, non-empty comments. Merging would have
         /// to pick one or concatenate; the caller should leave that to the user.</summary>
         ConflictingComments,
-        /// <summary>A source is a reply (<see cref="Annotation.InReplyTo"/>) or has replies on its
-        /// page. The merged annotation has a fresh /NM and PDFium cannot re-point a reply's /IRT, so
-        /// merging would orphan the thread (see <see cref="IsThreaded"/>).</summary>
+        /// <summary>A source is itself a reply (<see cref="Annotation.InReplyTo"/>). The merged
+        /// annotation would have to sit in several threads at once (see <see cref="IsThreaded"/>).
+        /// Sources that merely <i>have</i> replies are fine: their replies are re-pointed at the
+        /// merged annotation.</summary>
         Threaded,
     }
 
@@ -94,23 +95,17 @@ public static class TextMarkupMerge
     }
 
     /// <summary>
-    /// True when merging <paramref name="cluster"/> would break a reply thread: a member is itself
-    /// a reply (<see cref="Annotation.InReplyTo"/>), or another annotation on <paramref name="page"/>
-    /// replies to a member by its /NM. The merged annotation gets a fresh identity and the sources
-    /// are deleted on save, and PDFium has no API to re-point a reply's /IRT, so the thread would be
-    /// orphaned.
+    /// True when a member of <paramref name="cluster"/> is itself a reply
+    /// (<see cref="Annotation.InReplyTo"/>): the merged annotation has one identity and could not
+    /// stand in for members of different threads. A member that only <i>has</i> replies does not
+    /// count — the merge re-points those replies at the merged annotation
+    /// (<see cref="MergeAnnotationsAction"/>). <paramref name="page"/> is unused and kept for
+    /// source compatibility.
     /// </summary>
     public static bool IsThreaded(IReadOnlyList<Annotation> page, IReadOnlyList<TextMarkupAnnotation> cluster)
     {
-        HashSet<string>? ids = null;
         foreach (var m in cluster)
-        {
             if (!string.IsNullOrEmpty(m.InReplyTo)) return true;
-            if (!string.IsNullOrEmpty(m.NativeId)) (ids ??= new(StringComparer.Ordinal)).Add(m.NativeId);
-        }
-        if (ids is null) return false;
-        foreach (var ann in page)
-            if (!string.IsNullOrEmpty(ann.InReplyTo) && ids.Contains(ann.InReplyTo)) return true;
         return false;
     }
 

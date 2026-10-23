@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.71.0 — Annotation reply threads: `/IRT` written to the PDF, author stamping, thread API (2026-10-23)
+
+### Reply linkage is written into the PDF (#149)
+
+- `PdfAnnotationWriter.WriteReconciled` now persists `Annotation.InReplyTo` as `/IRT` + `/RT /R`; replies
+  authored in RailReader survive save and reopen, and show nested in readers that support threads. PDFium
+  cannot store an indirect reference (and creates annotations as *direct* dictionaries in `/Annots`), so a
+  raw-PDF post-pass (`PdfReplyLinker`, internal) promotes a direct parent to an indirect object, sets the
+  reply's `/IRT`, and appends the result as an incremental update. The bytes PDFium wrote are untouched.
+- The links are reconciled, not just added: a re-parented reply is rewritten, a link to a deleted or
+  recreated parent is cleared or re-pointed, an `InReplyTo` naming no annotation is dropped rather than left
+  dangling, and an unchanged re-save appends nothing. Signed and read-only files still fall back to the
+  sidecar (`GetSidecarFallbackReason` is unchanged).
+- Encrypted sources stay encrypted. Promoting a direct annotation into its own object needs a file-wide key,
+  so it is done for AES-256 (`/V` 5) and skipped for RC4/AES-128, where that reply is left unlinked.
+- `AddAuthoredAnnotations` (the add-only path) does not write links; use `WriteReconciled`.
+
+### Author and creation time on new annotations (#150)
+
+- **`CoreSettings.AnnotationAuthor`** (and `AppConfig.AnnotationAuthor`), live through `OnConfigChanged`,
+  feeds **`AnnotationInteractionHandler.Author`**. When non-empty, every annotation the handler creates —
+  all tools, FreeText, paste (`CloneForPaste` keeps the source's author; paste now overrides it), replies —
+  gets `Author` and `CreatedUtc`. A merge keeps the sources' author and only fills a gap. Moving or resizing
+  sets `ModifiedUtc`. Annotations read from the PDF are never re-authored; empty author is today's behaviour.
+
+### Reply / thread API (#151)
+
+- **`DocumentModel.AddReply(parent, text, author)`** / `AnnotationInteractionHandler.CreateReply`: a
+  `TextNoteAnnotation` anchored at the thread root, `InReplyTo` set, parent `NativeId` minted if absent — one
+  undo step. **Threads are flat**: replying to a reply attaches to the root.
+- **`DocumentModel.GetThreads(page?)`** / `AnnotationThreads.Build`: roots with all their replies ordered by
+  `CreatedUtc` (undated first), then document order. Dangling, self and cyclic `InReplyTo` are treated as roots.
+- **Deleting a comment deletes its thread** (as Acrobat does): `RemoveAnnotationAction` takes the annotation
+  and every reply beneath it, on any page, as one undo step that restores them in place.
+- **Merging text markup no longer refuses just because a source has replies**: they are re-pointed at the
+  merged annotation (one undo step). `TextMarkupMerge.IsThreaded` is now true only when a source is itself a
+  reply (`Refusal.Threaded` keeps that meaning).
+- Editing another author's reply keeps its `Author`; add, edit and delete are all undoable.
+
 ## 0.70.0 — Progressive page loads at rail zoom: low-DPI preview, tiled background upgrade, background thumbnail (2026-10-20)
 
 ### Page changes at rail zoom no longer block on a full-resolution render (#147)

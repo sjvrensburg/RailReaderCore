@@ -104,6 +104,10 @@ public sealed class AppConfig : IRecentFilesStore
     // defaults and semantic shifts — none of which this is.
     public bool DeskewOcrLines { get; set; } = true;
 
+    /// <summary>Author name stamped on newly authored annotations and replies (PDF /T). Empty
+    /// leaves them unattributed. See <see cref="CoreSettings.AnnotationAuthor"/>.</summary>
+    public string? AnnotationAuthor { get; set; }
+
     /// <summary>Treat pages as one continuous, scrollable document instead of one page at a
     /// time — opt-in, off by default so single-page behaviour is unaffected. See
     /// <see cref="CoreSettings.ContinuousScroll"/> and docs/continuous-scroll-plan.md.</summary>
@@ -190,6 +194,7 @@ public sealed class AppConfig : IRecentFilesStore
         TableRowReading = TableRowReading,
         CellNavigation = CellNavigation,
         DeskewOcrLines = DeskewOcrLines,
+        AnnotationAuthor = AnnotationAuthor,
         ContinuousScroll = ContinuousScroll,
         ContinuousPageGapPts = ContinuousPageGapPts,
         ContinuousRenderWindowPages = ContinuousRenderWindowPages,
