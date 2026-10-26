@@ -82,4 +82,20 @@ public class AnnotationDocumentKeyTests : IDisposable
         Assert.True(svc.Delete(pdf));
         Assert.Null(svc.Load(pdf));
     }
+
+    [Fact]
+    public void ResolverFailure_FailsCallsAndLeavesPathHashFileUntouched()
+    {
+        var pdf = PdfPath("boom");
+        new AnnotationService().Save(pdf, Sample());
+        var legacy = AnnotationService.GetInternalPath(pdf);
+        _cleanup.Add(legacy);
+        var before = File.ReadAllText(legacy);
+
+        var svc = new AnnotationService { DocumentKeyResolver = _ => throw new IOException("locked") };
+        Assert.Null(svc.Load(pdf));
+        Assert.False(svc.Save(pdf, new AnnotationFile()));
+        Assert.False(svc.Delete(pdf));
+        Assert.Equal(before, File.ReadAllText(legacy));
+    }
 }

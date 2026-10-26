@@ -52,7 +52,7 @@ public sealed class AnnotationService : IAnnotationStore
 
     /// <summary>
     /// Storage path for a PDF's annotations: keyed by <see cref="DocumentKeyResolver"/> when it
-    /// yields a usable key, else the path-hash file.
+    /// yields a usable key, else the path-hash file. Propagates a resolver failure.
     /// </summary>
     public string GetStoragePath(string pdfPath)
     {
@@ -62,13 +62,9 @@ public sealed class AnnotationService : IAnnotationStore
 
     private string? ResolveKey(string pdfPath)
     {
-        string? key;
-        try { key = DocumentKeyResolver?.Invoke(pdfPath); }
-        catch (Exception ex)
-        {
-            RailReaderLogging.Logger.Debug($"[Annotations] Document key resolver failed: {ex.Message}");
-            return null;
-        }
+        // Deliberately not caught: falling back to the path hash would put this call's sidecar
+        // somewhere other than the keyed file a successful call uses, so edits would look lost.
+        var key = DocumentKeyResolver?.Invoke(pdfPath);
         if (string.IsNullOrWhiteSpace(key) || key.Trim('.').Length == 0
             || key.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
             return null;
@@ -91,8 +87,11 @@ public sealed class AnnotationService : IAnnotationStore
     // and never opens the (possibly encrypted) PDF itself.
     public AnnotationFile? Load(string pdfPath, string? password = null)
     {
+        string storagePath;
+        try { storagePath = GetStoragePath(pdfPath); }
+        catch (Exception ex) { return ResolverFailed<AnnotationFile?>(ex, null); }
+
         // Try internal storage first
-        var storagePath = GetStoragePath(pdfPath);
         if (File.Exists(storagePath))
             return LoadFromFile(storagePath);
 
@@ -124,8 +123,12 @@ public sealed class AnnotationService : IAnnotationStore
     /// <summary>Save annotations to internal storage. Returns false if the write fails.</summary>
     public bool Save(string pdfPath, AnnotationFile annotations, string? password = null)
     {
+        string storagePath;
+        try { storagePath = GetStoragePath(pdfPath); }
+        catch (Exception ex) { return ResolverFailed(ex, false); }
+
         annotations.SourcePdfPath = Path.GetFullPath(pdfPath);
-        return SaveToFile(GetStoragePath(pdfPath), annotations);
+        return SaveToFile(storagePath, annotations);
     }
 
     /// <summary>Export annotations to a JSON file at a user-chosen path. Throws on failure.</summary>
@@ -194,8 +197,12 @@ public sealed class AnnotationService : IAnnotationStore
     public bool Delete(string pdfPath, string? password = null)
     {
         // Both files: a surviving legacy file would be read back by Load once the keyed one is gone.
+        string storagePath;
+        try { storagePath = GetStoragePath(pdfPath); }
+        catch (Exception ex) { return ResolverFailed(ex, false); }
+
         var deleted = false;
-        foreach (var path in new[] { GetStoragePath(pdfPath), GetInternalPath(pdfPath) }.Distinct())
+        foreach (var path in new[] { storagePath, GetInternalPath(pdfPath) }.Distinct())
         {
             if (!File.Exists(path)) continue;
             try { File.Delete(path); deleted = true; }
@@ -285,6 +292,16 @@ public sealed class AnnotationService : IAnnotationStore
             RailReaderLogging.Logger.Error($"[Annotations] Failed to save {path}", ex);
             return false;
         }
+    }
+
+    /// <summary>
+    /// A failed resolver means the keyed location is unknown, so the call fails (Save/Delete
+    /// return false, Load returns null) rather than touching the path-hash file; logged as an error.
+    /// </summary>
+    private static T ResolverFailed<T>(Exception ex, T result)
+    {
+        RailReaderLogging.Logger.Error("[Annotations] Document key resolver failed; sidecar left untouched", ex);
+        return result;
     }
 
     private static bool IsPathHashName(string name) =>
