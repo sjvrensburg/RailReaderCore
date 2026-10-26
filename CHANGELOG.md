@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Sidecar annotations can be keyed by document identity (#153)
+
+- `AnnotationService.DocumentKeyResolver` (`Func<string, string?>`, pdfPath → key) lets the host name the
+  sidecar `annotations/<key>.json` instead of by path hash, so it survives a move, rename or copy. A null or
+  unusable key (empty, dots-only, path separators) falls back to path hashing. When the keyed file does not
+  exist yet, the legacy path-hash file is read and the keyed one written on the next save; the legacy file
+  is kept. `Delete` removes both. New `GetStoragePath(pdfPath)` returns the resolved location. Set it on
+  the instance handed to `CompositeAnnotationStore` (e.g. `AnnotationService.Default`). Purely additive.
+
 ## 0.71.0 — Annotation reply threads: `/IRT` written to the PDF, author stamping, thread API (2026-10-23)
 
 ### Reply linkage is written into the PDF (#149)
