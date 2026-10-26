@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.72.0 — Sidecar annotations keyed by document identity (2026-10-26)
 
 ### Sidecar annotations can be keyed by document identity (#153)
 
