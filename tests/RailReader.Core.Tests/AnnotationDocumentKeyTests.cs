@@ -92,10 +92,17 @@ public class AnnotationDocumentKeyTests : IDisposable
         _cleanup.Add(legacy);
         var before = File.ReadAllText(legacy);
 
-        var svc = new AnnotationService { DocumentKeyResolver = _ => throw new IOException("locked") };
+        var failures = new List<(string, Exception)>();
+        var svc = new AnnotationService
+        {
+            DocumentKeyResolver = _ => throw new IOException("locked"),
+            OnResolverFailure = (p, e) => failures.Add((p, e)),
+        };
         Assert.Null(svc.Load(pdf));
         Assert.False(svc.Save(pdf, new AnnotationFile()));
         Assert.False(svc.Delete(pdf));
         Assert.Equal(before, File.ReadAllText(legacy));
+        Assert.Equal(3, failures.Count);
+        Assert.All(failures, f => { Assert.Equal(pdf, f.Item1); Assert.IsType<IOException>(f.Item2); });
     }
 }
