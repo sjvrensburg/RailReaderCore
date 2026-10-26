@@ -241,6 +241,11 @@ public sealed class AnnotationService : IAnnotationStore
             if (info.SourcePdfExists || string.IsNullOrEmpty(info.SourcePdfPath))
                 continue;
 
+            // A document-keyed sidecar is meant to outlive the PDF moving or being renamed, so
+            // its recorded path going stale does not make it an orphan. Only path-hash files do.
+            if (!IsPathHashName(Path.GetFileNameWithoutExtension(info.InternalPath)))
+                continue;
+
             try
             {
                 bytesFreed += info.Size;
@@ -281,6 +286,9 @@ public sealed class AnnotationService : IAnnotationStore
             return false;
         }
     }
+
+    private static bool IsPathHashName(string name) =>
+        name.Length == 16 && name.All(c => char.IsAsciiDigit(c) || (c >= 'a' && c <= 'f'));
 
     private static string GetPathHash(string pdfPath)
     {
