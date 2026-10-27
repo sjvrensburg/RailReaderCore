@@ -18,6 +18,35 @@ public sealed partial class PdfTextService : IPdfTextService
     // PdfiumGate.Lock; see CachedPdfDocument for the lifetime contract.
     private readonly CachedPdfDocument _docCache = new();
 
+    // Per-page OCR-provenance results for the cached document, so repeat
+    // extractions (Export and other direct callers bypass DocumentModel's
+    // text cache) do not rescan every page object each time. Keyed by the
+    // same bytes-identity contract as CachedPdfDocument; guarded by the gate.
+    private byte[]? _ocrFlagBytes;
+    private string? _ocrFlagPassword;
+    private readonly Dictionary<int, bool> _ocrFlags = new();
+
+    private bool CachedFromOcr(byte[] pdfBytes, string? password, int pageIndex, IntPtr page)
+    {
+        if (!ReferenceEquals(_ocrFlagBytes, pdfBytes) || _ocrFlagPassword != password)
+        {
+            _ocrFlags.Clear();
+            _ocrFlagBytes = pdfBytes;
+            _ocrFlagPassword = password;
+        }
+        if (_ocrFlags.TryGetValue(pageIndex, out bool cached)) return cached;
+        bool fromOcr = false;
+        try
+        {
+            fromOcr = PdfTextLayerWriter.PageHasOcrLayer(page);
+            // Only a successful scan is cached: a transient failure must not
+            // cement "native" for this page for the document's lifetime.
+            _ocrFlags[pageIndex] = fromOcr;
+        }
+        catch { /* provenance is best-effort; never lose the extracted text */ }
+        return fromOcr;
+    }
+
     /// <summary>
     /// Extracts all text and per-character bounding boxes for a given page.
     /// PDFium returns coordinates in PDF user space (origin bottom-left, Y-up).
@@ -30,7 +59,7 @@ public sealed partial class PdfTextService : IPdfTextService
     public PageText ExtractPageText(byte[] pdfBytes, int pageIndex, int viewRotation, string? password = null)
     {
         return WithTextPage(pdfBytes, pageIndex, viewRotation, password, s_empty, "extract text",
-            (textPage, tx) =>
+            (page, textPage, tx) =>
             {
                 int charCount = FPDFText_CountChars(textPage);
                 if (charCount <= 0)
@@ -65,7 +94,10 @@ public sealed partial class PdfTextService : IPdfTextService
                 }
                 string text = new string(textChars);
 
-                return new PageText(text, charBoxes);
+                return new PageText(text, charBoxes)
+                {
+                    FromOcr = CachedFromOcr(pdfBytes, password, pageIndex, page),
+                };
             });
     }
 
@@ -86,7 +118,7 @@ public sealed partial class PdfTextService : IPdfTextService
             result.Add([]);
 
         return WithTextPage(pdfBytes, pageIndex, viewRotation, password, result, "get text range rects",
-            (textPage, tx) =>
+            (page, textPage, tx) =>
             {
                 for (int i = 0; i < ranges.Count; i++)
                 {
@@ -115,7 +147,7 @@ public sealed partial class PdfTextService : IPdfTextService
     /// fails to load, or if an exception is thrown.
     /// </summary>
     private T WithTextPage<T>(byte[] pdfBytes, int pageIndex, int viewRotation, string? password, T defaultValue,
-        string operationName, Func<IntPtr, PageTransform, T> action)
+        string operationName, Func<IntPtr, IntPtr, PageTransform, T> action)
     {
         lock (PdfiumGate.Lock)
         {
@@ -150,7 +182,7 @@ public sealed partial class PdfTextService : IPdfTextService
                 if (textPage == IntPtr.Zero)
                     return defaultValue;
 
-                return action(textPage, tx);
+                return action(page, textPage, tx);
             }
             catch (Exception ex)
             {

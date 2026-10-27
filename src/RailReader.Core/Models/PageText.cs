@@ -4,6 +4,18 @@ namespace RailReader.Core.Models;
 
 public record PageText(string Text, List<CharBox> CharBoxes)
 {
+    /// <summary>
+    /// True when this text came from OCR rather than the document's native text
+    /// layer: either synthesised live by the analysis worker for a page with no
+    /// text layer, or read back from an invisible OCR layer baked into the PDF
+    /// and tagged with the writer's provenance mark (issue #155). OCR text is
+    /// unverified — hosts should present it as such. Native text is false.
+    /// </summary>
+    public bool FromOcr { get; init; }
+
+    /// <summary>Alias for <see cref="FromOcr"/>.</summary>
+    public bool IsOcrText => FromOcr;
+
     // Lazily-built spatial index: the CharBoxes sorted by vertical midpoint, with a
     // parallel array of those midpoints for binary search. Built once per PageText
     // (which is created once per page and cached), then reused by every geometric

@@ -67,7 +67,7 @@ internal static class OcrPageMapper
             sb.Append('\n');
         }
 
-        return (new PageText(sb.ToString(), charBoxes), lines, skew);
+        return (new PageText(sb.ToString(), charBoxes) { FromOcr = true }, lines, skew);
     }
 
     /// <summary>

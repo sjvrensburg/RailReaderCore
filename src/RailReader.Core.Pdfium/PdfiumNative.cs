@@ -346,4 +346,78 @@ internal static class PdfiumNative
     // FPDFPage_GetObject alone.
     [DllImport(Lib)] internal static extern int FPDFFormObj_CountObjects(IntPtr formObject);
     [DllImport(Lib)] internal static extern IntPtr FPDFFormObj_GetObject(IntPtr formObject, uint index);
+
+    // --- Text objects (invisible OCR text layer, issue #155) --------------------
+    internal const int FPDF_PAGEOBJ_TEXT = 1;
+    internal const int FPDF_TEXTRENDERMODE_INVISIBLE = 3;
+    internal const int FPDF_FONT_TRUETYPE = 2;
+
+    [DllImport(Lib)] internal static extern IntPtr FPDFPageObj_NewTextObj(IntPtr document,
+        [MarshalAs(UnmanagedType.LPStr)] string font, float fontSize);
+    [DllImport(Lib)] internal static extern IntPtr FPDFPageObj_CreateTextObj(IntPtr document,
+        IntPtr font, float fontSize);
+    [DllImport(Lib)] internal static extern IntPtr FPDFText_LoadStandardFont(IntPtr document,
+        [MarshalAs(UnmanagedType.LPStr)] string font);
+    [DllImport(Lib)] internal static extern IntPtr FPDFText_LoadFont(IntPtr document,
+        byte[] data, uint size, int fontType, int cid);
+    [DllImport(Lib)] internal static extern IntPtr FPDFText_LoadCidType2Font(IntPtr document,
+        byte[] fontData, uint fontDataSize,
+        [MarshalAs(UnmanagedType.LPStr)] string toUnicodeCmap,
+        byte[] cidToGidMapData, uint cidToGidMapDataSize);
+    [DllImport(Lib)] internal static extern void FPDFFont_Close(IntPtr font);
+    [DllImport(Lib)] internal static extern bool FPDFText_SetText(IntPtr textObject, IntPtr text);
+    [DllImport(Lib)] internal static extern bool FPDFText_SetCharcodes(IntPtr textObject,
+        uint[] charcodes, nuint count);
+    [DllImport(Lib)] internal static extern bool FPDFTextObj_SetTextRenderMode(IntPtr textObject, int renderMode);
+    [DllImport(Lib)] internal static extern int FPDFTextObj_GetTextRenderMode(IntPtr textObject);
+    [DllImport(Lib)] internal static extern IntPtr FPDFTextObj_GetFont(IntPtr textObject);
+    [DllImport(Lib)] internal static extern nuint FPDFFont_GetBaseFontName(IntPtr font,
+        byte[]? buffer, nuint length);
+
+    [DllImport(Lib)] internal static extern void FPDFPage_InsertObject(IntPtr page, IntPtr pageObject);
+    [DllImport(Lib)] internal static extern bool FPDFPage_RemoveObject(IntPtr page, IntPtr pageObject);
+    [DllImport(Lib)] internal static extern void FPDFPageObj_Destroy(IntPtr pageObject);
+    [DllImport(Lib)] internal static extern bool FPDFPage_GenerateContent(IntPtr page);
+    [DllImport(Lib)] internal static extern bool FPDFPageObj_SetMatrix(IntPtr pageObject, ref FsMatrix matrix);
+
+    // Marked content (provenance tag on OCR text objects)
+    [DllImport(Lib)] internal static extern int FPDFPageObj_CountMarks(IntPtr pageObject);
+    // index is C `unsigned long` — nuint, as for GetName below.
+    [DllImport(Lib)] internal static extern IntPtr FPDFPageObj_GetMark(IntPtr pageObject, nuint index);
+    [DllImport(Lib)] internal static extern IntPtr FPDFPageObj_AddMark(IntPtr pageObject,
+        [MarshalAs(UnmanagedType.LPStr)] string name);
+    // buflen/out_buflen are C `unsigned long` (4 bytes on Windows LLP64, 8 on
+    // LP64). nuint is pointer-sized: on Win64 the native side writes only the
+    // low 4 bytes of the zero-initialised out slot, which reads back correctly
+    // on little-endian; a plain uint out would be overflowed by 4 bytes on LP64.
+    [DllImport(Lib)] internal static extern bool FPDFPageObjMark_GetName(IntPtr mark,
+        IntPtr buffer, nuint buflen, out nuint outBuflen);
+
+    /// <summary>Reads a content-mark name (UTF-16LE). Returns null on failure.</summary>
+    internal static string? ReadMarkName(IntPtr mark)
+    {
+        if (!FPDFPageObjMark_GetName(mark, IntPtr.Zero, 0, out nuint needed) || needed < 2 || needed > 4096)
+            return null;
+        var buffer = Marshal.AllocHGlobal((int)needed);
+        try
+        {
+            if (!FPDFPageObjMark_GetName(mark, buffer, needed, out _)) return null;
+            return Marshal.PtrToStringUni(buffer, (int)(needed / 2) - 1);
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    /// <summary>Reads a font's BaseFont name (UTF-8). Returns null on failure.
+    /// The reported length is capped: callers only substring-check the name, and
+    /// a corrupt font must not be able to force an unbounded allocation.</summary>
+    internal static string? ReadFontBaseName(IntPtr font)
+    {
+        if (font == IntPtr.Zero) return null;
+        nuint needed = FPDFFont_GetBaseFontName(font, null, 0);
+        if (needed < 2 || needed > 4096) return null;
+        var buffer = new byte[needed];
+        if (FPDFFont_GetBaseFontName(font, buffer, needed) != needed) return null;
+        int len = (int)needed - 1; // trailing NUL included in the count
+        return System.Text.Encoding.UTF8.GetString(buffer, 0, Math.Max(0, len));
+    }
 }

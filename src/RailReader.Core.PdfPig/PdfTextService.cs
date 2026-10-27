@@ -2,6 +2,7 @@ using System.Text;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
 using UglyToad.PdfPig;
+using UglyToad.PdfPig.Core;
 using UglyToad.PdfPig.Content;
 using UglyToad.PdfPig.DocumentLayoutAnalysis.WordExtractor;
 
@@ -192,6 +193,11 @@ public sealed partial class PdfTextService : IPdfTextService
         double pageH = page.Height;
         var sb = new StringBuilder(words.Sum(w => w.Letters.Count));
         var boxes = new List<CharBox>(sb.Capacity);
+        // Provenance (#155): the same rule as the PDFium backend
+        // (OcrProvenance) — our marked-content tag, or invisible letters in our
+        // glyphless font when a producer stripped the marks. Other producers'
+        // invisible text is not ours to vouch for either way.
+        bool fromOcr = HasOcrMark(page.GetMarkedContents());
 
         float prevWordRight = float.NaN;
         float prevWordTop = float.NaN;
@@ -253,6 +259,9 @@ public sealed partial class PdfTextService : IPdfTextService
 
             foreach (var letter in word.Letters)
             {
+                if (!fromOcr && letter.RenderingMode == TextRenderingMode.Neither
+                    && letter.FontName?.Contains(OcrProvenance.FontName, StringComparison.Ordinal) == true)
+                    fromOcr = true;
                 var (left, top, right, bottom) = FlippedAabb(letter.BoundingBox, pageH);
                 float angle = DisplayAngle(letter);
 
@@ -279,7 +288,18 @@ public sealed partial class PdfTextService : IPdfTextService
             prevWordBottom = wBottom;
         }
 
-        return new PageText(sb.ToString(), boxes);
+        return new PageText(sb.ToString(), boxes) { FromOcr = fromOcr };
+    }
+
+    /// <summary>True when any letter sits inside an <see cref="OcrProvenance.MarkName"/> marked-content sequence.</summary>
+    private static bool HasOcrMark(IReadOnlyList<MarkedContentElement> elements)
+    {
+        foreach (var el in elements)
+        {
+            if (el.Tag == OcrProvenance.MarkName && el.Letters.Count > 0) return true;
+            if (HasOcrMark(el.Children)) return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -301,7 +321,7 @@ public sealed partial class PdfTextService : IPdfTextService
             float angle = (b.Angle + 90 * q) % 360;
             rotated.Add(new CharBox(b.Index, r.Left, r.Top, r.Right, r.Bottom, angle));
         }
-        return new PageText(pageText.Text, rotated);
+        return pageText with { CharBoxes = rotated };
     }
 
     /// <summary>
