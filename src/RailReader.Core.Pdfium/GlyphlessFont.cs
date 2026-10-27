@@ -6,44 +6,58 @@ namespace RailReader.Core.Services;
 /// <summary>
 /// Synthesises a minimal glyphless TrueType font for the invisible OCR text layer
 /// (issue #155): every glyph carries the same trivial outline and text written
-/// with it is put in render mode 3 (invisible), so it can never paint, and every
-/// codepoint up to a caller-chosen maximum exists as a glyph.
+/// with it is put in render mode 3 (invisible), so it can never paint.
 /// This is the <c>ocrmypdf</c>/Tesseract "GlyphLessFont" approach — the standard-14
-/// fonts are WinAnsi-only, so a real embedded CID font with an identity
-/// <c>/ToUnicode</c> is the only way CJK and other non-Latin OCR packs round-trip.
+/// fonts are WinAnsi-only, so a real embedded CID font with a <c>/ToUnicode</c>
+/// CMap is the only way CJK and other non-Latin OCR packs round-trip.
 ///
-/// <para>The font is generated in memory (AOT-safe, no embedded assets, no file IO):
-/// glyph count adapts to the largest codepoint actually used, so a Latin document
-/// embeds a few KB and only a full-CJK document pays for a large glyph table.
-/// <c>unitsPerEm</c> is 1000 and every glyph advances 1000 units, which makes the
-/// natural advance of an <c>n</c>-character string exactly <c>n × fontSize</c> — the
-/// writer's horizontal scaling then reduces to one division per text unit.</para>
+/// <para>Glyphs are assigned <b>densely</b>: the caller passes the exact set of
+/// codepoints used, glyph <c>i + 1</c> serves the <c>i</c>-th codepoint, and the
+/// <c>/ToUnicode</c> CMap (<see cref="BuildToUnicodeCmap"/>) maps those CIDs back
+/// to Unicode. The font therefore costs a few hundred bytes per distinct
+/// character actually present — not per codepoint in the BMP range spanned —
+/// however high the highest character sits. Characters outside the BMP cannot
+/// be represented by a two-byte CID and are replaced with U+FFFD by the writer
+/// before they reach this font.</para>
+///
+/// <para>The font is generated in memory (AOT-safe, no embedded assets, no file
+/// IO). <c>unitsPerEm</c> is 1000 and every glyph advances 1000 units, which
+/// makes the natural advance of an <c>n</c>-character string exactly
+/// <c>n × fontSize</c> — the writer's horizontal scaling then reduces to one
+/// division per text unit.</para>
 /// </summary>
 internal static class GlyphlessFont
 {
     public const string FontName = "RailReaderGlyphless";
     public const int UnitsPerEm = 1000;
 
-    /// <summary>The identity <c>/ToUnicode</c> CMap handed to PDFium for the CID font.</summary>
-    public const string ToUnicodeCmap =
-        "/CIDInit /ProcSet findresource begin\n" +
-        "12 dict begin\n" +
-        "begincmap\n" +
-        "/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n" +
-        "/CMapName /Adobe-Identity-UCS def\n" +
-        "/CMapType 2 def\n" +
-        "1 begincodespacerange\n" +
-        "<0000> <FFFF>\n" +
-        "endcodespacerange\n" +
-        "1 beginbfrange\n" +
-        "<0000> <FFFF> <0000>\n" +
-        "endbfrange\n" +
-        "endcmap\n" +
-        "CMapName currentdict /CMap defineresource pop\n" +
-        "end\n" +
-        "end\n";
+    /// <summary>
+    /// Builds the <c>/ToUnicode</c> CMap for a dense CID assignment:
+    /// <paramref name="cidToUnicode"/> maps each assigned CID to its Unicode
+    /// codepoint (BMP only). Entries are chunked into <c>bfchar</c> blocks of
+    /// at most 100, as the CMap spec requires.
+    /// </summary>
+    public static string BuildToUnicodeCmap(IReadOnlyDictionary<int, int> cidToUnicode)
+    {
+        var sb = new StringBuilder();
+        sb.Append("/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n");
+        sb.Append("/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n");
+        sb.Append("/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n");
+        sb.Append("1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n");
+        var entries = cidToUnicode.OrderBy(kv => kv.Key).ToList();
+        for (int i = 0; i < entries.Count; i += 100)
+        {
+            var chunk = entries.Skip(i).Take(100).ToList();
+            sb.Append($"{chunk.Count} beginbfchar\n");
+            foreach (var (cid, unicode) in chunk)
+                sb.Append($"<{cid:X4}> <{unicode:X4}>\n");
+            sb.Append("endbfchar\n");
+        }
+        sb.Append("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
+        return sb.ToString();
+    }
 
-    /// <summary>Identity CIDToGIDMap: CID <c>n</c> maps to glyph <c>n</c>.</summary>
+    /// <summary>Identity CIDToGIDMap over the dense glyph range: CID <c>n</c> maps to glyph <c>n</c>.</summary>
     public static byte[] BuildCidToGidMap(int numGlyphs)
     {
         var map = new byte[numGlyphs * 2];
@@ -53,12 +67,14 @@ internal static class GlyphlessFont
     }
 
     /// <summary>
-    /// Builds the TTF for codepoints <c>0..maxCodepoint</c> (clamped to the BMP).
-    /// Glyphs are all empty: <c>glyf</c> is zero-length and every <c>loca</c> offset is 0.
+    /// Builds the TTF with exactly <paramref name="numGlyphs"/> glyphs.
+    /// <paramref name="codeToGlyph"/> is the font <c>cmap</c>: Unicode codepoint
+    /// → glyph index (the dense CID assignment); null maps the whole glyph
+    /// range identically. Every glyph is the same 1000×1000 rectangle.
     /// </summary>
-    public static byte[] Build(int maxCodepoint)
+    public static byte[] Build(int numGlyphs, IReadOnlyDictionary<int, int>? codeToGlyph = null)
     {
-        int numGlyphs = Math.Clamp(maxCodepoint + 1, 2, 0x10000);
+        numGlyphs = Math.Clamp(numGlyphs, 2, 0x10000);
 
         var glyph = BuildGlyph();
         var glyf = new byte[glyph.Length * numGlyphs];
@@ -67,10 +83,11 @@ internal static class GlyphlessFont
         for (int i = 0; i <= numGlyphs; i++)
             BinaryPrimitives.WriteUInt32BigEndian(loca.AsSpan(i * 4), (uint)(i * glyph.Length));
 
+        int lastChar = codeToGlyph is { Count: > 0 } ? codeToGlyph.Keys.Max() : numGlyphs - 1;
         var tables = new List<(string Tag, byte[] Data)>
         {
-            ("OS/2", BuildOs2()),
-            ("cmap", BuildCmap()),
+            ("OS/2", BuildOs2(lastChar)),
+            ("cmap", BuildCmap(codeToGlyph, numGlyphs)),
             ("glyf", glyf),
             ("head", BuildHead()),
             ("hhea", BuildHhea()),
@@ -148,6 +165,8 @@ internal static class GlyphlessFont
         BinaryPrimitives.WriteUInt32BigEndian(b.AsSpan(4), 0x00010000);
         BinaryPrimitives.WriteUInt32BigEndian(b.AsSpan(12), 0x5F0F3CF5);
         BinaryPrimitives.WriteUInt16BigEndian(b.AsSpan(18), UnitsPerEm);
+        BinaryPrimitives.WriteInt16BigEndian(b.AsSpan(42), UnitsPerEm); // yMax (x/yMin stay 0)
+        BinaryPrimitives.WriteInt16BigEndian(b.AsSpan(40), UnitsPerEm); // xMax
         BinaryPrimitives.WriteInt16BigEndian(b.AsSpan(46), 8);   // lowestRecPPEM
         BinaryPrimitives.WriteInt16BigEndian(b.AsSpan(48), 2);   // fontDirectionHint
         BinaryPrimitives.WriteInt16BigEndian(b.AsSpan(50), 1);   // indexToLocFormat: long
@@ -180,6 +199,7 @@ internal static class GlyphlessFont
         BinaryPrimitives.WriteUInt32BigEndian(b.AsSpan(0), 0x00010000);
         BinaryPrimitives.WriteInt16BigEndian(b.AsSpan(4), UnitsPerEm); // ascender
         BinaryPrimitives.WriteUInt16BigEndian(b.AsSpan(10), UnitsPerEm); // advanceWidthMax
+        BinaryPrimitives.WriteInt16BigEndian(b.AsSpan(16), UnitsPerEm); // xMaxExtent
         BinaryPrimitives.WriteUInt16BigEndian(b.AsSpan(34), 1);  // numberOfHMetrics
         return b;
     }
@@ -203,24 +223,44 @@ internal static class GlyphlessFont
         return b;
     }
 
-    private static byte[] BuildCmap()
+    private static byte[] BuildCmap(IReadOnlyDictionary<int, int>? codeToGlyph, int numGlyphs)
     {
-        var c = new byte[12 + 28];
+        // Format 12: one group per codepoint (dense assignment is not a range),
+        // or a single identity group when no explicit mapping was supplied.
+        var groups = new List<(int Start, int End, int Glyph)>();
+        if (codeToGlyph is { Count: > 0 })
+        {
+            foreach (var (code, glyph) in codeToGlyph.OrderBy(kv => kv.Key))
+                if (glyph >= 0 && glyph < numGlyphs)
+                    groups.Add((code, code, glyph));
+        }
+        else
+        {
+            groups.Add((0, numGlyphs - 1, 0));
+        }
+        if (groups.Count == 0) groups.Add((0, 0, 0));
+
+        int length = 16 + groups.Count * 12;
+        var c = new byte[12 + length];
         BinaryPrimitives.WriteUInt16BigEndian(c.AsSpan(0), 0);   // version
         BinaryPrimitives.WriteUInt16BigEndian(c.AsSpan(2), 1);   // numTables
         BinaryPrimitives.WriteUInt16BigEndian(c.AsSpan(4), 3);
         BinaryPrimitives.WriteUInt16BigEndian(c.AsSpan(6), 10);
         BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(8), 12);
         BinaryPrimitives.WriteUInt16BigEndian(c.AsSpan(12), 12); // format
-        BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(16), 28); // length
-        BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(24), 1);  // nGroups
-        BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(28), 0);  // startCharCode
-        BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(32), 0xFFFF); // endCharCode
-        BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(36), 0);  // startGlyphID
+        BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(16), (uint)length);
+        BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(24), (uint)groups.Count);
+        for (int i = 0; i < groups.Count; i++)
+        {
+            int at = 28 + i * 12;
+            BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(at), (uint)groups[i].Start);
+            BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(at + 4), (uint)groups[i].End);
+            BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(at + 8), (uint)groups[i].Glyph);
+        }
         return c;
     }
 
-    private static byte[] BuildOs2()
+    private static byte[] BuildOs2(int lastChar)
     {
         var b = new byte[78];
         BinaryPrimitives.WriteInt16BigEndian(b.AsSpan(2), UnitsPerEm); // xAvgCharWidth
@@ -229,7 +269,7 @@ internal static class GlyphlessFont
         byte[] vend = Encoding.ASCII.GetBytes("RR  ");
         vend.CopyTo(b.AsSpan(58));
         BinaryPrimitives.WriteUInt16BigEndian(b.AsSpan(62), 0x40);    // fsSelection: REGULAR
-        BinaryPrimitives.WriteUInt16BigEndian(b.AsSpan(66), 0xFFFF);  // usLastCharIndex
+        BinaryPrimitives.WriteUInt16BigEndian(b.AsSpan(66), (ushort)Math.Clamp(lastChar, 0, 0xFFFF)); // usLastCharIndex
         BinaryPrimitives.WriteInt16BigEndian(b.AsSpan(68), UnitsPerEm); // sTypoAscender
         BinaryPrimitives.WriteUInt16BigEndian(b.AsSpan(74), UnitsPerEm); // usWinAscent
         return b;
@@ -263,7 +303,7 @@ internal static class GlyphlessFont
     {
         var b = new byte[32];
         BinaryPrimitives.WriteUInt32BigEndian(b.AsSpan(0), 0x00030000); // format 3: no glyph names
-        BinaryPrimitives.WriteUInt32BigEndian(b.AsSpan(16), 1);         // isFixedPitch
+        BinaryPrimitives.WriteUInt32BigEndian(b.AsSpan(12), 1);         // isFixedPitch
         return b;
     }
 }

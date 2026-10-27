@@ -11,8 +11,9 @@
   line angle/skew, page `/Rotate` and CropBox/MediaBox origins. Signed sources are reported via
   `TextLayerWriteResult.SourceWasSigned` (a copy invalidates signatures). Pages with native text are skipped
   by default; re-running replaces the previous OCR layer instead of stacking (`TextLayerOptions`).
-- Unicode beyond WinAnsi is carried by a synthesised glyphless CID font (`RailReaderGlyphless`, identity
-  `/ToUnicode`), generated in memory sized to the largest codepoint used; Helvetica is only a fallback.
+- Unicode beyond WinAnsi is carried by a synthesised glyphless CID font (`RailReaderGlyphless`, densely
+  assigned CIDs with a `/ToUnicode` CMap), generated in memory sized to the distinct characters used
+  (astral-plane characters become U+FFFD — a two-byte CID cannot address them); Helvetica is only a fallback.
 - Provenance: every OCR object is tagged with the marked-content name `PdfTextLayerWriter.OcrMarkName`
   (`RailReaderOCR`). `PageText.FromOcr` (alias `IsOcrText`) is now set both for live-OCR text
   (`OcrPageMapper`) and for text read back from a marked layer (`PdfTextService`), replacing host inference.

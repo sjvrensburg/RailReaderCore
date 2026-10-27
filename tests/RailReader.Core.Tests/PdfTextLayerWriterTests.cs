@@ -236,6 +236,75 @@ public class PdfTextLayerWriterTests
     }
 
     [Fact]
+    public void AstralCharacter_BecomesReplacementInsteadOfCollidingAtFFFF()
+    {
+        var path = TestFixtures.GetTextlessTestPdfPath();
+        var source = File.ReadAllBytes(path);
+        // U+20000 (CJK Ext-B): a surrogate pair at UTF-16 indices 1..2.
+        const string text = "A\U00020000B";
+        var chars = new List<CharBox>
+        {
+            new(0, 72f, 100f, 86f, 120f),
+            new(1, 88f, 100f, 102f, 120f), // the astral character
+            new(3, 104f, 100f, 118f, 120f),
+        };
+        var page = new OcrPage([new OcrLine(new BBox(72f, 100f, 48f, 20f), text, chars)]);
+
+        var (bytes, result) = PdfTextLayerWriter.WriteToBytes(source,
+            new Dictionary<int, OcrPage> { [0] = page });
+
+        Assert.Equal(1, result.PagesWritten);
+        var extracted = new PdfTextService().ExtractPageText(bytes, 0);
+        Assert.Contains("A", extracted.Text);
+        Assert.Contains("B", extracted.Text);
+        Assert.Contains('�', extracted.Text);       // deterministic U+FFFD
+        Assert.DoesNotContain('￿', extracted.Text); // never the U+FFFF clamp collision
+    }
+
+    [Fact]
+    public void GlyphlessFont_HighCodepointCostsOnlyItsOwnGlyph()
+    {
+        // Dense assignment: one distinct character at U+9FFF needs two glyphs
+        // total, not 40960 — the font stays a few KB however high it sits.
+        var font = GlyphlessFont.Build(2, new Dictionary<int, int> { [0x9FFF] = 1 });
+        Assert.True(font.Length < 8192, $"glyphless font was {font.Length} bytes for one distinct character");
+    }
+
+    [Fact]
+    public void GlyphlessFont_TablesDeclareTheRealMetrics()
+    {
+        var font = GlyphlessFont.Build(2, new Dictionary<int, int> { [0x41] = 1 });
+        var post = TableData(font, "post");
+        Assert.Equal(1u, ReadU32(post, 12));  // isFixedPitch (was written at 16)
+        Assert.Equal(0u, ReadU32(post, 16));  // minMemType42 stays zero
+        var head = TableData(font, "head");
+        Assert.Equal((short)1000, ReadI16(head, 40)); // xMax
+        Assert.Equal((short)1000, ReadI16(head, 42)); // yMax
+        var hhea = TableData(font, "hhea");
+        Assert.Equal((short)1000, ReadI16(hhea, 16)); // xMaxExtent
+    }
+
+    private static byte[] TableData(byte[] font, string tag)
+    {
+        int numTables = (font[4] << 8) | font[5];
+        for (int i = 0; i < numTables; i++)
+        {
+            int at = 12 + i * 16;
+            if (System.Text.Encoding.ASCII.GetString(font, at, 4) != tag) continue;
+            int offset = (int)ReadU32(font, at + 8);
+            int length = (int)ReadU32(font, at + 12);
+            return font.AsSpan(offset, length).ToArray();
+        }
+        throw new InvalidOperationException($"table {tag} not found");
+    }
+
+    private static uint ReadU32(ReadOnlySpan<byte> b, int at)
+        => (uint)((b[at] << 24) | (b[at + 1] << 16) | (b[at + 2] << 8) | b[at + 3]);
+
+    private static short ReadI16(ReadOnlySpan<byte> b, int at)
+        => (short)((b[at] << 8) | b[at + 1]);
+
+    [Fact]
     public void LiveOcrPageText_IsFlaggedAsOcr()
     {
         var page = new OcrPage([

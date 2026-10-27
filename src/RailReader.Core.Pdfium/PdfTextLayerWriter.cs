@@ -208,7 +208,11 @@ public static class PdfTextLayerWriter
                 if (cb.Index < 0 || cb.Index >= line.Text!.Length) continue;
                 if (cb.Right <= cb.Left || cb.Bottom <= cb.Top) continue;
                 any = true;
-                yield return new TextUnit(line.Text.Substring(cb.Index, 1), cb.Left, cb.Top, cb.Right, cb.Bottom);
+                // Slice the whole rune: a one-code-unit slice splits a surrogate
+                // pair and the astral character is lost before it is written.
+                int len = cb.Index + 1 < line.Text.Length
+                    && char.IsSurrogatePair(line.Text, cb.Index) ? 2 : 1;
+                yield return new TextUnit(line.Text.Substring(cb.Index, len), cb.Left, cb.Top, cb.Right, cb.Bottom);
             }
             if (any) yield break;
         }
@@ -354,25 +358,43 @@ public static class PdfTextLayerWriter
     /// </summary>
     private sealed class FontHandle : IDisposable
     {
+        /// <summary>Replacement for characters a two-byte CID cannot represent (astral planes).</summary>
+        internal const int ReplacementCodepoint = 0xFFFD;
+
         private readonly IntPtr _font;
+        private readonly Dictionary<int, int> _cidByCodepoint = new();
         public bool IsCid { get; }
 
         public FontHandle(IntPtr doc, IEnumerable<OcrPage> pages)
         {
-            int maxCode = 0;
+            // Dense CID assignment: collect the distinct BMP codepoints actually
+            // used (astral runes collapse to U+FFFD — a two-byte CID cannot
+            // address them, and clamping them to U+FFFF would collide distinct
+            // characters on a noncharacter outside the sized font).
+            var used = new SortedSet<int>();
             foreach (var page in pages)
             foreach (var line in page.Lines)
             {
                 if (line.Text is null) continue;
                 foreach (var rune in line.Text.EnumerateRunes())
-                    if (rune.Value <= 0xFFFF && rune.Value > maxCode) maxCode = rune.Value;
+                    used.Add(Sanitize(rune.Value));
             }
-            maxCode = Math.Max(maxCode, 0xFF);
+            if (used.Count == 0) used.Add(' ');
 
-            var ttf = GlyphlessFont.Build(maxCode);
-            var cidToGid = GlyphlessFont.BuildCidToGidMap(maxCode + 1);
+            int cid = 1; // CID 0 is .notdef
+            var cidToUnicode = new Dictionary<int, int>();
+            foreach (int codepoint in used)
+            {
+                _cidByCodepoint[codepoint] = cid;
+                cidToUnicode[cid] = codepoint;
+                cid++;
+            }
+            int numGlyphs = used.Count + 1;
+
+            var ttf = GlyphlessFont.Build(numGlyphs, _cidByCodepoint);
+            var cidToGid = GlyphlessFont.BuildCidToGidMap(numGlyphs);
             _font = FPDFText_LoadCidType2Font(doc, ttf, (uint)ttf.Length,
-                GlyphlessFont.ToUnicodeCmap, cidToGid, (uint)cidToGid.Length);
+                GlyphlessFont.BuildToUnicodeCmap(cidToUnicode), cidToGid, (uint)cidToGid.Length);
             IsCid = _font != IntPtr.Zero;
             if (!IsCid)
             {
@@ -380,6 +402,9 @@ public static class PdfTextLayerWriter
                 _font = FPDFText_LoadStandardFont(doc, "Helvetica");
             }
         }
+
+        internal static int Sanitize(int runeValue)
+            => runeValue is >= 0 and <= 0xFFFF ? runeValue : ReplacementCodepoint;
 
         public IntPtr CreateTextObject(IntPtr doc, float fontSize)
             => IsCid && _font != IntPtr.Zero
@@ -392,7 +417,13 @@ public static class PdfTextLayerWriter
             {
                 var codes = new List<uint>();
                 foreach (var rune in text.EnumerateRunes())
-                    codes.Add((uint)Math.Min(rune.Value, 0xFFFF));
+                {
+                    int codepoint = Sanitize(rune.Value);
+                    if (_cidByCodepoint.TryGetValue(codepoint, out int assigned))
+                        codes.Add((uint)assigned);
+                    else if (_cidByCodepoint.TryGetValue(ReplacementCodepoint, out int fallback))
+                        codes.Add((uint)fallback);
+                }
                 return codes.Count > 0 && FPDFText_SetCharcodes(obj, codes.ToArray(), (nuint)codes.Count);
             }
             var utf16 = Encoding.Unicode.GetBytes(text + "\0");
