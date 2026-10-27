@@ -30,7 +30,7 @@ public sealed partial class PdfTextService : IPdfTextService
     public PageText ExtractPageText(byte[] pdfBytes, int pageIndex, int viewRotation, string? password = null)
     {
         return WithTextPage(pdfBytes, pageIndex, viewRotation, password, s_empty, "extract text",
-            (textPage, tx) =>
+            (page, textPage, tx) =>
             {
                 int charCount = FPDFText_CountChars(textPage);
                 if (charCount <= 0)
@@ -65,7 +65,10 @@ public sealed partial class PdfTextService : IPdfTextService
                 }
                 string text = new string(textChars);
 
-                return new PageText(text, charBoxes);
+                return new PageText(text, charBoxes)
+                {
+                    FromOcr = PdfTextLayerWriter.PageHasOcrLayer(page),
+                };
             });
     }
 
@@ -86,7 +89,7 @@ public sealed partial class PdfTextService : IPdfTextService
             result.Add([]);
 
         return WithTextPage(pdfBytes, pageIndex, viewRotation, password, result, "get text range rects",
-            (textPage, tx) =>
+            (page, textPage, tx) =>
             {
                 for (int i = 0; i < ranges.Count; i++)
                 {
@@ -115,7 +118,7 @@ public sealed partial class PdfTextService : IPdfTextService
     /// fails to load, or if an exception is thrown.
     /// </summary>
     private T WithTextPage<T>(byte[] pdfBytes, int pageIndex, int viewRotation, string? password, T defaultValue,
-        string operationName, Func<IntPtr, PageTransform, T> action)
+        string operationName, Func<IntPtr, IntPtr, PageTransform, T> action)
     {
         lock (PdfiumGate.Lock)
         {
@@ -150,7 +153,7 @@ public sealed partial class PdfTextService : IPdfTextService
                 if (textPage == IntPtr.Zero)
                     return defaultValue;
 
-                return action(textPage, tx);
+                return action(page, textPage, tx);
             }
             catch (Exception ex)
             {

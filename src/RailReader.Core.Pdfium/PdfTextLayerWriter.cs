@@ -1,0 +1,409 @@
+using System.Runtime.InteropServices;
+using System.Text;
+using RailReader.Core.Models;
+using static RailReader.Core.Services.PdfiumNative;
+
+namespace RailReader.Core.Services;
+
+/// <summary>Options for <see cref="PdfTextLayerWriter"/>.</summary>
+public sealed record TextLayerOptions
+{
+    /// <summary>
+    /// Skip pages that already carry native (non-OCR) text. Default true: OCR text
+    /// must never shadow a real text layer.
+    /// </summary>
+    public bool SkipPagesWithNativeText { get; init; } = true;
+
+    /// <summary>
+    /// When a page already carries a layer written by this writer, remove it and
+    /// write the new one instead of stacking a second layer. Default true.
+    /// </summary>
+    public bool ReplaceExistingOcrLayer { get; init; } = true;
+
+    /// <summary>
+    /// Emit one text object per character (from <see cref="OcrLine.Chars"/>) so each
+    /// glyph's selection box matches its printed position. When false — or when a
+    /// line has no char boxes — one object per word is emitted instead. Default true.
+    /// </summary>
+    public bool PerCharacter { get; init; } = true;
+}
+
+/// <summary>Outcome of a <see cref="PdfTextLayerWriter"/> run.</summary>
+/// <param name="PagesWritten">Pages that received a (new) OCR text layer.</param>
+/// <param name="PagesSkipped">
+/// Pages left untouched because they already had native text (or an existing OCR
+/// layer with replacement disabled).
+/// </param>
+/// <param name="SourceWasSigned">
+/// The source carried at least one digital signature. Saving a copy invalidates
+/// signatures, so the host should tell the user; writing still succeeds.
+/// </param>
+public sealed record TextLayerWriteResult(int PagesWritten, int PagesSkipped, bool SourceWasSigned)
+{
+    public static readonly TextLayerWriteResult Empty = new(0, 0, false);
+}
+
+/// <summary>
+/// Writes OCR results into a copy of a PDF as an invisible text layer, the way
+/// <c>ocrmypdf</c> does (issue #155): every recognised word/character becomes a
+/// text object in render mode 3 (invisible), positioned and horizontally scaled
+/// over the printed glyphs, so the copy becomes searchable, selectable,
+/// copyable and highlightable in any reader.
+///
+/// <para><b>Copy, never in place.</b> The document is loaded from the source
+/// bytes, modified in memory and saved to <c>outputPath</c> via
+/// <c>FPDF_SaveAsCopy</c>; annotations, AcroForm and outline are preserved and
+/// an encrypted source stays encrypted (same contract as
+/// <see cref="PdfAnnotationWriter"/>).</para>
+///
+/// <para><b>Unicode.</b> A synthesised glyphless CID font
+/// (<see cref="GlyphlessFont"/>) with an identity <c>/ToUnicode</c> carries the
+/// text, so non-Latin scripts round-trip; the standard-14 fallback (Helvetica)
+/// is used only if the CID font fails to load, and is WinAnsi-limited.</para>
+///
+/// <para><b>Provenance.</b> Every written object is tagged with the marked-content
+/// name <see cref="OcrMarkName"/> (and uses the recognisable glyphless font), so
+/// <see cref="PdfTextService"/> can flag the read-back text as OCR-derived via
+/// <see cref="PageText.FromOcr"/> instead of the host guessing.</para>
+///
+/// <para>All PDFium work runs inside <see cref="PdfiumGate.Lock"/>; the writer
+/// holds no state and is safe to call from a background thread.</para>
+/// </summary>
+public static class PdfTextLayerWriter
+{
+    /// <summary>Marked-content name stamped on every OCR text object.</summary>
+    public const string OcrMarkName = "RailReaderOCR";
+
+    /// <summary>
+    /// Writes <paramref name="pages"/> (keyed by zero-based page index, geometry
+    /// in displayed page points — top-left origin, Y-down) into a copy of the
+    /// source document at <paramref name="outputPath"/>.
+    /// </summary>
+    public static TextLayerWriteResult Write(IPdfService source,
+        IReadOnlyDictionary<int, OcrPage> pages, string outputPath,
+        TextLayerOptions? options = null, IProgress<(int Page, int Total)>? progress = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        return Write(source.PdfBytes, pages, outputPath, source.Password, options, progress, ct);
+    }
+
+    /// <summary>Byte-source overload of <see cref="Write(IPdfService, IReadOnlyDictionary{int, OcrPage}, string, TextLayerOptions, IProgress{ValueTuple{int, int}}, CancellationToken)"/>.</summary>
+    public static TextLayerWriteResult Write(byte[] pdfBytes,
+        IReadOnlyDictionary<int, OcrPage> pages, string outputPath,
+        string? password = null, TextLayerOptions? options = null,
+        IProgress<(int Page, int Total)>? progress = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(pdfBytes);
+        ArgumentNullException.ThrowIfNull(pages);
+        ArgumentException.ThrowIfNullOrEmpty(outputPath);
+        var (bytes, result) = WriteToBytesCore(pdfBytes, pages, password, options, progress, ct);
+        File.WriteAllBytes(outputPath, bytes);
+        return result;
+    }
+
+    /// <summary>
+    /// Same write as <see cref="Write(IPdfService, IReadOnlyDictionary{int, OcrPage}, string, TextLayerOptions, IProgress{ValueTuple{int, int}}, CancellationToken)"/>
+    /// but returns the saved document bytes instead of writing a file.
+    /// </summary>
+    public static (byte[] Bytes, TextLayerWriteResult Result) WriteToBytes(byte[] pdfBytes,
+        IReadOnlyDictionary<int, OcrPage> pages, string? password = null,
+        TextLayerOptions? options = null, IProgress<(int Page, int Total)>? progress = null,
+        CancellationToken ct = default)
+        => WriteToBytesCore(pdfBytes, pages, password, options, progress, ct);
+
+    private static (byte[], TextLayerWriteResult) WriteToBytesCore(byte[] pdfBytes,
+        IReadOnlyDictionary<int, OcrPage> pages, string? password, TextLayerOptions? options,
+        IProgress<(int Page, int Total)>? progress, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(pdfBytes);
+        ArgumentNullException.ThrowIfNull(pages);
+        options ??= new TextLayerOptions();
+
+        lock (PdfiumGate.Lock)
+        {
+            PdfiumResolver.EnsureLibraryInitialized();
+            var pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
+            try
+            {
+                var doc = LoadDocumentChecked(pinned.AddrOfPinnedObject(), pdfBytes.Length, password);
+                if (doc == IntPtr.Zero)
+                    throw new InvalidOperationException("Failed to load PDF via PDFium");
+
+                try
+                {
+                    bool signed = FPDF_GetSignatureCount(doc) > 0;
+                    int pageCount = FPDF_GetPageCount(doc);
+                    var ordered = pages.Keys.Where(p => p >= 0 && p < pageCount).OrderBy(p => p).ToList();
+
+                    using var font = new FontHandle(doc, pages.Values);
+                    int written = 0, skipped = 0, done = 0;
+                    foreach (int pageIndex in ordered)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        progress?.Report((done, ordered.Count));
+                        var page = FPDF_LoadPage(doc, pageIndex);
+                        if (page == IntPtr.Zero) { skipped++; done++; continue; }
+                        try
+                        {
+                            if (WritePage(doc, page, pages[pageIndex], font, options))
+                                written++;
+                            else
+                                skipped++;
+                        }
+                        finally { FPDF_ClosePage(page); }
+                        done++;
+                    }
+                    progress?.Report((done, ordered.Count));
+
+                    var bytes = PdfAnnotationWriter.SaveDocumentBytes(doc);
+                    return (bytes, new TextLayerWriteResult(written, skipped, signed));
+                }
+                finally { FPDF_CloseDocument(doc); }
+            }
+            finally { pinned.Free(); }
+        }
+    }
+
+    /// <summary>Returns true when the page received a layer, false when skipped.</summary>
+    private static bool WritePage(IntPtr doc, IntPtr page, OcrPage ocr, FontHandle font, TextLayerOptions options)
+    {
+        bool hadOcr = PageHasOcrLayer(page);
+        if (hadOcr && options.ReplaceExistingOcrLayer)
+        {
+            RemoveOcrObjects(page);
+            FPDFPage_GenerateContent(page);
+            hadOcr = false;
+        }
+
+        // Remaining chars are either native text, or a previous OCR layer the
+        // caller asked us to keep. Either way: do not stack text on top.
+        if (options.SkipPagesWithNativeText && CountChars(page) > 0) return false;
+        if (hadOcr && !options.ReplaceExistingOcrLayer) return false;
+
+        var tx = GetPageTransform(page);
+        bool any = false;
+        foreach (var line in ocr.Lines)
+        {
+            if (string.IsNullOrEmpty(line.Text)) continue;
+            float angle = line.Angle != 0f ? line.Angle : ocr.SkewAngle;
+            foreach (var unit in UnitsOf(line, options.PerCharacter))
+            {
+                if (WriteUnit(doc, page, unit, angle, tx, font)) any = true;
+            }
+        }
+        if (any) FPDFPage_GenerateContent(page);
+        return any;
+    }
+
+    private readonly record struct TextUnit(string Text, float Left, float Top, float Right, float Bottom);
+
+    private static IEnumerable<TextUnit> UnitsOf(OcrLine line, bool perCharacter)
+    {
+        if (perCharacter && line.Chars is { Count: > 0 })
+        {
+            bool any = false;
+            foreach (var cb in line.Chars.OrderBy(c => c.Index))
+            {
+                if (cb.Index < 0 || cb.Index >= line.Text!.Length) continue;
+                if (cb.Right <= cb.Left || cb.Bottom <= cb.Top) continue;
+                any = true;
+                yield return new TextUnit(line.Text.Substring(cb.Index, 1), cb.Left, cb.Top, cb.Right, cb.Bottom);
+            }
+            if (any) yield break;
+        }
+
+        // Word fallback: split on spaces, distributing the line box by character
+        // position so each word lands over its printed glyphs.
+        var text = line.Text!;
+        float x0 = line.Box.X, totalW = line.Box.W;
+        float top = line.Box.Y, bottom = line.Box.Y + line.EffectiveHeight;
+        int n = Math.Max(text.Length, 1);
+        int i = 0;
+        while (i < text.Length)
+        {
+            while (i < text.Length && text[i] == ' ') i++;
+            int start = i;
+            while (i < text.Length && text[i] != ' ') i++;
+            if (i <= start) break;
+            float l = x0 + totalW * start / n;
+            float r = x0 + totalW * i / n;
+            yield return new TextUnit(text[start..i], l, top, r, bottom);
+        }
+    }
+
+    private static bool WriteUnit(IntPtr doc, IntPtr page, TextUnit unit, float angleRad,
+        in PageTransform tx, FontHandle font)
+    {
+        float width = unit.Right - unit.Left;
+        float height = unit.Bottom - unit.Top;
+        if (width <= 0f || height <= 0f || string.IsNullOrEmpty(unit.Text)) return false;
+        float fontSize = Math.Max(height, 0.5f);
+
+        var obj = font.CreateTextObject(doc, fontSize);
+        if (obj == IntPtr.Zero) return false;
+        bool inserted = false;
+        try
+        {
+            if (!font.SetText(obj, unit.Text)) return false;
+            FPDFTextObj_SetTextRenderMode(obj, FPDF_TEXTRENDERMODE_INVISIBLE);
+            FPDFPageObj_AddMark(obj, OcrMarkName);
+
+            // Displayed-frame axes (Y-down): baseline direction and glyph-up.
+            double cos = Math.Cos(angleRad), sin = Math.Sin(angleRad);
+            var (vx, vy) = Linear(tx, cos, sin);
+            var (ux, uy) = Linear(tx, sin, -cos);
+            var (ex, ey) = tx.PageToPdf(unit.Left, unit.Bottom);
+
+            // Glyphless advance is UnitsPerEm per char, so the natural width of
+            // the unit at this font size is glyphCount × fontSize; scale X to fit.
+            // For the CID font each codepoint is one glyph; for the fallback the
+            // UTF-16 length is the glyph count PDFium lays out.
+            int glyphs = font.IsCid ? CodepointCount(unit.Text) : unit.Text.Length;
+            double natural = Math.Max(glyphs, 1) * (double)fontSize;
+            double along = Math.Abs(cos) > 0.01 ? width / Math.Abs(cos) : width;
+            double sx = along / natural;
+
+            var matrix = new FsMatrix
+            {
+                A = (float)(vx * sx), B = (float)(vy * sx),
+                C = (float)ux, D = (float)uy,
+                E = ex, F = ey,
+            };
+            FPDFPageObj_SetMatrix(obj, ref matrix);
+            FPDFPage_InsertObject(page, obj);
+            inserted = true;
+            return true;
+        }
+        finally
+        {
+            if (!inserted) FPDFPageObj_Destroy(obj);
+        }
+    }
+
+    /// <summary>Applies only the linear part of the page transform to a displayed-frame vector.</summary>
+    private static (double X, double Y) Linear(in PageTransform tx, double x, double y)
+    {
+        var (ox, oy) = tx.PageToPdf(0f, 0f);
+        var (px, py) = tx.PageToPdf((float)x, (float)y);
+        return (px - ox, py - oy);
+    }
+
+    private static int CodepointCount(string text)
+    {
+        int count = 0;
+        foreach (var _ in text.EnumerateRunes()) count++;
+        return Math.Max(count, 1);
+    }
+
+    private static int CountChars(IntPtr page)
+    {
+        var textPage = FPDFText_LoadPage(page);
+        if (textPage == IntPtr.Zero) return 0;
+        try { return FPDFText_CountChars(textPage); }
+        finally { FPDFText_ClosePage(textPage); }
+    }
+
+    /// <summary>
+    /// True when any text object on the page carries our provenance mark (or our
+    /// glyphless font, as a belt-and-braces fallback if a producer strips marks).
+    /// Caller holds <see cref="PdfiumGate.Lock"/> and owns <paramref name="page"/>.
+    /// </summary>
+    internal static bool PageHasOcrLayer(IntPtr page)
+    {
+        int count = FPDFPage_CountObjects(page);
+        for (int i = 0; i < count; i++)
+        {
+            var obj = FPDFPage_GetObject(page, i);
+            if (obj != IntPtr.Zero && IsOcrTextObject(obj)) return true;
+        }
+        return false;
+    }
+
+    internal static bool IsOcrTextObject(IntPtr obj)
+    {
+        if (FPDFPageObj_GetType(obj) != FPDF_PAGEOBJ_TEXT) return false;
+        int marks = FPDFPageObj_CountMarks(obj);
+        for (int m = 0; m < marks; m++)
+        {
+            var mark = FPDFPageObj_GetMark(obj, (uint)m);
+            if (mark != IntPtr.Zero && ReadMarkName(mark) == OcrMarkName) return true;
+        }
+        var name = ReadFontBaseName(FPDFTextObj_GetFont(obj));
+        return name is not null && name.Contains(GlyphlessFont.FontName, StringComparison.Ordinal);
+    }
+
+    private static void RemoveOcrObjects(IntPtr page)
+    {
+        var doomed = new List<IntPtr>();
+        int count = FPDFPage_CountObjects(page);
+        for (int i = 0; i < count; i++)
+        {
+            var obj = FPDFPage_GetObject(page, i);
+            if (obj != IntPtr.Zero && IsOcrTextObject(obj)) doomed.Add(obj);
+        }
+        foreach (var obj in doomed)
+        {
+            if (FPDFPage_RemoveObject(page, obj)) FPDFPageObj_Destroy(obj);
+        }
+    }
+
+    /// <summary>
+    /// The document's OCR font: the glyphless CID font when it loads, Helvetica
+    /// otherwise. Loaded once per write; closed with the document write.
+    /// </summary>
+    private sealed class FontHandle : IDisposable
+    {
+        private readonly IntPtr _font;
+        public bool IsCid { get; }
+
+        public FontHandle(IntPtr doc, IEnumerable<OcrPage> pages)
+        {
+            int maxCode = 0;
+            foreach (var page in pages)
+            foreach (var line in page.Lines)
+            {
+                if (line.Text is null) continue;
+                foreach (var rune in line.Text.EnumerateRunes())
+                    if (rune.Value <= 0xFFFF && rune.Value > maxCode) maxCode = rune.Value;
+            }
+            maxCode = Math.Max(maxCode, 0xFF);
+
+            var ttf = GlyphlessFont.Build(maxCode);
+            var cidToGid = GlyphlessFont.BuildCidToGidMap(maxCode + 1);
+            _font = FPDFText_LoadCidType2Font(doc, ttf, (uint)ttf.Length,
+                GlyphlessFont.ToUnicodeCmap, cidToGid, (uint)cidToGid.Length);
+            IsCid = _font != IntPtr.Zero;
+            if (!IsCid)
+            {
+                RailReaderLogging.Logger.Debug("[PdfTextLayerWriter] Glyphless CID font failed to load; falling back to Helvetica (WinAnsi only)");
+                _font = FPDFText_LoadStandardFont(doc, "Helvetica");
+            }
+        }
+
+        public IntPtr CreateTextObject(IntPtr doc, float fontSize)
+            => IsCid && _font != IntPtr.Zero
+                ? FPDFPageObj_CreateTextObj(doc, _font, fontSize)
+                : FPDFPageObj_NewTextObj(doc, "Helvetica", fontSize);
+
+        public bool SetText(IntPtr obj, string text)
+        {
+            if (IsCid)
+            {
+                var codes = new List<uint>();
+                foreach (var rune in text.EnumerateRunes())
+                    codes.Add((uint)Math.Min(rune.Value, 0xFFFF));
+                return codes.Count > 0 && FPDFText_SetCharcodes(obj, codes.ToArray(), (nuint)codes.Count);
+            }
+            var utf16 = Encoding.Unicode.GetBytes(text + "\0");
+            var pin = GCHandle.Alloc(utf16, GCHandleType.Pinned);
+            try { return FPDFText_SetText(obj, pin.AddrOfPinnedObject()); }
+            finally { pin.Free(); }
+        }
+
+        public void Dispose()
+        {
+            if (_font != IntPtr.Zero) FPDFFont_Close(_font);
+        }
+    }
+}

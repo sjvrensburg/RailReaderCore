@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Invisible OCR text layer written into a PDF copy (#155)
+
+- `PdfTextLayerWriter.Write(IPdfService, IReadOnlyDictionary<int, OcrPage>, outputPath, …)` (plus byte-source
+  and `WriteToBytes` overloads) writes recognised pages into a copy via `FPDF_SaveAsCopy` — never in place;
+  annotations, AcroForm and outline are preserved and an encrypted source stays encrypted. Text is invisible
+  (render mode 3), positioned and horizontally scaled per character (or per word without char boxes), honouring
+  line angle/skew, page `/Rotate` and CropBox/MediaBox origins. Signed sources are reported via
+  `TextLayerWriteResult.SourceWasSigned` (a copy invalidates signatures). Pages with native text are skipped
+  by default; re-running replaces the previous OCR layer instead of stacking (`TextLayerOptions`).
+- Unicode beyond WinAnsi is carried by a synthesised glyphless CID font (`RailReaderGlyphless`, identity
+  `/ToUnicode`), generated in memory sized to the largest codepoint used; Helvetica is only a fallback.
+- Provenance: every OCR object is tagged with the marked-content name `PdfTextLayerWriter.OcrMarkName`
+  (`RailReaderOCR`). `PageText.FromOcr` (alias `IsOcrText`) is now set both for live-OCR text
+  (`OcrPageMapper`) and for text read back from a marked layer (`PdfTextService`), replacing host inference.
+- `OcrRecognizer.RecognizePage` / `RecognizeDocument` (Core) share the render → recognise → page-points
+  mapping between the CLI and the app's background job.
+
 ## 0.72.0 — Sidecar annotations keyed by document identity (2026-10-26)
 
 ### Sidecar annotations can be keyed by document identity (#153)

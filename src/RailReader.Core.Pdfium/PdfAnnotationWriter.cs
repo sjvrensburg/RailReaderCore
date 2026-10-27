@@ -723,7 +723,7 @@ public sealed class PdfAnnotationWriter
     /// the sidecar by <see cref="CompositeAnnotationStore"/> — so incremental's
     /// signature-ByteRange preservation is not needed.
     /// </summary>
-    private static byte[] SaveDocumentBytes(IntPtr document)
+    internal static byte[] SaveDocumentBytes(IntPtr document)
     {
         using var ms = new MemoryStream();
         byte[] buffer = [];
