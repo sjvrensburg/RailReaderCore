@@ -374,7 +374,7 @@ public class PdfTextLayerWriterTests
         var page = new OcrPage([new OcrLine(new BBox(72f, 100f, 80f, 20f), "A\0￿B")]);
         var (bytes, _) = PdfTextLayerWriter.WriteToBytes(source,
             new Dictionary<int, OcrPage> { [0] = page },
-            options: new TextLayerOptions { PerCharacter = false });
+            options: new TextLayerOptions { UseCharBoxes = false });
 
         var extracted = new PdfTextService().ExtractPageText(bytes, 0);
         Assert.DoesNotContain('\0', extracted.Text);
@@ -416,7 +416,7 @@ public class PdfTextLayerWriterTests
         var line = new OcrLine(new BBox(72f, 100f, 320f, 20f), "Hello world foo bar", Angle: angle);
         var (bytes, result) = PdfTextLayerWriter.WriteToBytes(source,
             new Dictionary<int, OcrPage> { [0] = new OcrPage([line]) },
-            options: new TextLayerOptions { PerCharacter = false });
+            options: new TextLayerOptions { UseCharBoxes = false });
 
         Assert.Equal(1, result.PagesWritten);
         var extracted = new PdfTextService().ExtractPageText(bytes, 0);
@@ -525,5 +525,201 @@ public class PdfTextLayerWriterTests
             Assert.Equal("Hi", page.Lines[0].Text);
         }
         finally { (svc as IDisposable)?.Dispose(); }
+    }
+
+    // --- Read-back fidelity (review of #156) ----------------------------------
+
+    /// <summary>
+    /// A line boxed the way RapidOcrService boxes it: one ink-tight box per
+    /// non-space character, none on the spaces, glyph tops and bottoms following
+    /// the ink (x-height letters, descenders, apostrophe high, hyphen mid, period low).
+    /// </summary>
+    private static OcrLine InkBoxedLine(string text, float x0, float top, float advance = 10f)
+    {
+        var chars = new List<CharBox>();
+        for (int i = 0; i < text.Length; i++)
+        {
+            char c = text[i];
+            if (c == ' ') continue;
+            var (t, b) = c switch
+            {
+                '\'' => (0f, 4f),
+                '-' => (7f, 8.5f),
+                '.' => (12f, 14f),
+                'p' or 'g' or 'y' => (4f, 18f),
+                _ when char.IsLower(c) && "bdfhklt".IndexOf(c) < 0 => (4f, 14f),
+                _ => (0f, 14f),
+            };
+            float left = x0 + i * advance;
+            chars.Add(new CharBox(i, left, top + t, left + advance * 0.8f, top + b));
+        }
+        return new OcrLine(new BBox(x0, top, text.Length * advance, 18f), text, chars);
+    }
+
+    [Fact]
+    public void InkBoxedLines_ReadBackAsWholeWordsAndLines()
+    {
+        // Per-glyph objects seated on these boxes read back as "H e l l o" with
+        // the apostrophe and hyphen on lines of their own.
+        var source = File.ReadAllBytes(TestFixtures.GetTextlessTestPdfPath());
+        var page = new OcrPage([
+            InkBoxedLine("Hello brave world", 72f, 100f),
+            InkBoxedLine("don't stop-gap typing.", 72f, 130f),
+        ]);
+        var (bytes, _) = PdfTextLayerWriter.WriteToBytes(source, new Dictionary<int, OcrPage> { [0] = page });
+
+        var lines = new PdfTextService().ExtractPageText(bytes, 0).Text
+            .Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(["Hello brave world", "don't stop-gap typing."], lines);
+    }
+
+    [Fact]
+    public void WordsWithoutCharBoxes_AreWrittenInTheirOwnSlot()
+    {
+        // The engine boxed "Hello" and "again" but could not locate "world".
+        var source = File.ReadAllBytes(TestFixtures.GetTextlessTestPdfPath());
+        const string text = "Hello world again";
+        var chars = new List<CharBox>();
+        foreach (int i in new[] { 0, 1, 2, 3, 4, 12, 13, 14, 15, 16 })
+            chars.Add(new CharBox(i, 72f + i * 10f, 100f, 80f + i * 10f, 114f));
+        var line = new OcrLine(new BBox(72f, 100f, 170f, 14f), text, chars);
+        var (bytes, _) = PdfTextLayerWriter.WriteToBytes(source,
+            new Dictionary<int, OcrPage> { [0] = new OcrPage([line]) });
+
+        var extracted = new PdfTextService().ExtractPageText(bytes, 0);
+        Assert.Contains(text, extracted.Text);
+        // "world" sits between its fitted neighbours: after "Hello", before "again".
+        int w = extracted.Text.IndexOf("world", StringComparison.Ordinal);
+        var boxes = extracted.CharBoxes.ToDictionary(c => c.Index);
+        Assert.InRange(boxes[w].Left, boxes[w - 2].Right, boxes[w + 6].Left);
+        Assert.InRange(boxes[w + 4].Right, boxes[w].Left, boxes[w + 6].Left);
+    }
+
+    [Fact]
+    public void ReadBackGlyphHeights_FollowTheInkNotTheDetectorBand()
+    {
+        // The detector's band (TrueHeight) is dilated well past the ink; read-back
+        // glyphs that tall would overlap the next line and merge the two in
+        // char-clustering line detection.
+        var source = File.ReadAllBytes(TestFixtures.GetTextlessTestPdfPath());
+        var chars = new List<CharBox>();
+        for (int i = 0; i < 5; i++) chars.Add(new CharBox(i, 72f + i * 12f, 100f, 82f + i * 12f, 114f));
+        var line = new OcrLine(new BBox(72f, 92f, 60f, 30f), "Hello", chars, TrueHeight: 30f);
+        var (bytes, _) = PdfTextLayerWriter.WriteToBytes(source,
+            new Dictionary<int, OcrPage> { [0] = new OcrPage([line]) });
+
+        var glyphs = new PdfTextService().ExtractPageText(bytes, 0).CharBoxes.Where(c => c.Right > c.Left).ToList();
+        Assert.Equal(5, glyphs.Count);
+        Assert.All(glyphs, g =>
+        {
+            Assert.InRange(g.Top, 99f, 101f);
+            Assert.InRange(g.Bottom, 113f, 115f);
+        });
+    }
+
+    [Fact]
+    public void GlyphBoxesLeakingIntoTheNextLine_DoNotMergeTheLines()
+    {
+        // Tightly set lines (12pt glyphs, 16pt pitch) where the tightener's window
+        // caught a neighbour's ink: one glyph per line reaches deep into the other
+        // line. A plain union of the boxes would overlap the two bands.
+        var source = File.ReadAllBytes(TestFixtures.GetTextlessTestPdfPath());
+        OcrLine Line(string text, float top, int leaker, float leakTop, float leakBottom)
+        {
+            var chars = new List<CharBox>();
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (text[i] == ' ') continue;
+                float t = i == leaker ? leakTop : top, b = i == leaker ? leakBottom : top + 12f;
+                chars.Add(new CharBox(i, 72f + i * 8f, t, 78f + i * 8f, b));
+            }
+            return new OcrLine(new BBox(72f, top - 3f, text.Length * 8f, 18f), text, chars, TrueHeight: 18f);
+        }
+        var page = new OcrPage([
+            Line("first line of text", 100f, leaker: 2, leakTop: 100f, leakBottom: 122f),
+            Line("second line of text", 116f, leaker: 3, leakTop: 104f, leakBottom: 128f),
+        ]);
+        var (bytes, _) = PdfTextLayerWriter.WriteToBytes(source, new Dictionary<int, OcrPage> { [0] = page });
+
+        var lines = new PdfTextService().ExtractPageText(bytes, 0).Text
+            .Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(["first line of text", "second line of text"], lines);
+    }
+
+    [Fact]
+    public void WordsSeparatedByNonAsciiWhitespace_AreJoinedWithARealSpace()
+    {
+        // No U+0020 anywhere in the input; the joining space must still be one.
+        var source = File.ReadAllBytes(TestFixtures.GetTextlessTestPdfPath());
+        var line = new OcrLine(new BBox(72f, 100f, 120f, 14f), "中文\u3000テスト");
+        var (bytes, _) = PdfTextLayerWriter.WriteToBytes(source,
+            new Dictionary<int, OcrPage> { [0] = new OcrPage([line]) });
+
+        var extracted = new PdfTextService().ExtractPageText(bytes, 0);
+        Assert.Contains("中文 テスト", extracted.Text);
+        Assert.DoesNotContain('\uFFFD', extracted.Text);
+    }
+
+    [OcrModelFact]
+    public void RealOcr_RoundTripsThroughTheLayerVerbatim()
+    {
+        // End to end on a rasterised page: whatever the engine read must read back
+        // from the written layer unchanged — same words, same spacing, same lines.
+        string[] lines =
+        [
+            "The quick brown fox doesn't jump over the lazy dog.",
+            "Rail reading guides the eye line-by-line, e.g. at high zoom.",
+            "Searching for typography should find this exact word, right?",
+        ];
+        const float scale = 200f / 72f;
+        using var bitmap = new SkiaSharp.SKBitmap((int)(612 * scale), (int)(792 * scale));
+        using (var canvas = new SkiaSharp.SKCanvas(bitmap))
+        using (var paint = new SkiaSharp.SKPaint { Color = SkiaSharp.SKColors.Black, IsAntialias = true })
+        using (var font = new SkiaSharp.SKFont(SkiaSharp.SKTypeface.Default, 12f * scale))
+        {
+            canvas.Clear(SkiaSharp.SKColors.White);
+            for (int i = 0; i < lines.Length; i++)
+                canvas.DrawText(lines[i], 72f * scale, (100f + i * 16f) * scale, font, paint);
+        }
+        var path = Path.Combine(Path.GetTempPath(), $"railreader_scan_{Guid.NewGuid():N}.pdf");
+        try
+        {
+            using (var stream = File.Create(path))
+            using (var doc = SkiaSharp.SKDocument.CreatePdf(stream))
+            {
+                doc.BeginPage(612, 792).DrawBitmap(bitmap, SkiaSharp.SKRect.Create(0, 0, 612, 792));
+                doc.EndPage();
+                doc.Close();
+            }
+
+            var svc = TestFixtures.CreatePdfFactory().CreatePdfService(path);
+            using var ocr = new RailReader.Core.Ocr.RapidOcr.RapidOcrService();
+            var pages = OcrRecognizer.RecognizeDocument(svc, ocr);
+            var recognised = pages[0].Lines.Select(l => l.Text!.Trim()).ToArray();
+            Assert.Equal(lines.Length, recognised.Length);
+
+            var (bytes, result) = PdfTextLayerWriter.WriteToBytes(svc.PdfBytes, pages);
+            Assert.Equal(1, result.PagesWritten);
+            var readBack = new PdfTextService().ExtractPageText(bytes, 0).Text
+                .Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            Assert.Equal(recognised, readBack);
+            (svc as IDisposable)?.Dispose();
+        }
+        finally { try { File.Delete(path); } catch { } }
+    }
+
+    [Fact]
+    public void ProvenanceRule_MatchesThePdfPigBackend()
+    {
+        // Same fixtures as PdfPigServiceTests: our mark ⇒ OCR; another producer's
+        // invisible text ⇒ not ours to vouch for.
+        var svc = new PdfTextService();
+        var marked = svc.ExtractPageText(Convert.FromBase64String(OcrProvenanceFixtures.MarkedInvisibleHelveticaPdfBase64), 0);
+        Assert.Contains("Marked", marked.Text);
+        Assert.True(marked.FromOcr);
+
+        var foreign = svc.ExtractPageText(Convert.FromBase64String(OcrProvenanceFixtures.UnmarkedInvisibleHelveticaPdfBase64), 0);
+        Assert.Contains("Fallback", foreign.Text);
+        Assert.False(foreign.FromOcr);
     }
 }

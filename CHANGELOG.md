@@ -7,16 +7,22 @@
 - `PdfTextLayerWriter.Write(IPdfService, IReadOnlyDictionary<int, OcrPage>, outputPath, …)` (plus byte-source
   and `WriteToBytes` overloads) writes recognised pages into a copy via `FPDF_SaveAsCopy` — never in place;
   annotations, AcroForm and outline are preserved and an encrypted source stays encrypted. Text is invisible
-  (render mode 3), positioned and horizontally scaled per character (or per word without char boxes), honouring
-  line angle/skew, page `/Rotate` and CropBox/MediaBox origins. Signed sources are reported via
-  `TextLayerWriteResult.SourceWasSigned` (a copy invalidates signatures). Pages with native text are skipped
-  by default; re-running replaces the previous OCR layer instead of stacking (`TextLayerOptions`).
+  (render mode 3), one object per word on a baseline shared by the whole line with a real space stretched to the
+  next word (as Tesseract's renderer does), so PDFium, Poppler and MuPDF all read it back as whole words and
+  lines. With `TextLayerOptions.UseCharBoxes` (default) each word spans its own OCR char boxes and the glyph band
+  is the line's ink (robust to boxes that caught a neighbouring line); words the engine could not box are placed
+  between their fitted neighbours rather than dropped. Honours line angle/skew, page `/Rotate` and CropBox/MediaBox
+  origins. Signed sources are reported via `TextLayerWriteResult.SourceWasSigned` (a copy invalidates
+  signatures). Pages with native text are skipped by default; re-running replaces the previous OCR layer instead
+  of stacking (`TextLayerOptions`).
 - Unicode beyond WinAnsi is carried by a synthesised glyphless CID font (`RailReaderGlyphless`, densely
   assigned CIDs with a `/ToUnicode` CMap), generated in memory sized to the distinct characters used
   (astral-plane characters become U+FFFD — a two-byte CID cannot address them); Helvetica is only a fallback.
 - Provenance: every OCR object is tagged with the marked-content name `PdfTextLayerWriter.OcrMarkName`
   (`RailReaderOCR`). `PageText.FromOcr` (alias `IsOcrText`) is now set both for live-OCR text
-  (`OcrPageMapper`) and for text read back from a marked layer (`PdfTextService`), replacing host inference.
+  (`OcrPageMapper`) and for text read back from a marked layer, replacing host inference. Both text backends
+  (PDFium and PdfPig) apply one rule, published as `OcrProvenance`: our marked-content tag, or invisible text in
+  the glyphless font if a producer stripped the marks. Other producers' invisible text is not flagged.
 - `OcrRecognizer.RecognizePage` / `RecognizeDocument` (Core) share the render → recognise → page-points
   mapping between the CLI and the app's background job.
 

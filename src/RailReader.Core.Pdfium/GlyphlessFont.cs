@@ -28,7 +28,7 @@ namespace RailReader.Core.Services;
 /// </summary>
 internal static class GlyphlessFont
 {
-    public const string FontName = "RailReaderGlyphless";
+    public const string FontName = OcrProvenance.FontName;
     public const int UnitsPerEm = 1000;
 
     /// <summary>

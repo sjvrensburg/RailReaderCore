@@ -193,13 +193,11 @@ public sealed partial class PdfTextService : IPdfTextService
         double pageH = page.Height;
         var sb = new StringBuilder(words.Sum(w => w.Letters.Count));
         var boxes = new List<CharBox>(sb.Capacity);
-        // Provenance (#155): a baked-in OCR layer is recognised by either of
-        // its two signatures — the writer's glyphless font, or the invisible
-        // rendering mode every OCR layer (including this writer's Helvetica
-        // fallback, which PdfPig letters cannot distinguish by font) is
-        // written with. Over-flagging other invisible text is the fail-safe
-        // direction: it is presented as unverified, never the reverse.
-        bool fromOcr = false;
+        // Provenance (#155): the same rule as the PDFium backend
+        // (OcrProvenance) — our marked-content tag, or invisible letters in our
+        // glyphless font when a producer stripped the marks. Other producers'
+        // invisible text is not ours to vouch for either way.
+        bool fromOcr = HasOcrMark(page.GetMarkedContents());
 
         float prevWordRight = float.NaN;
         float prevWordTop = float.NaN;
@@ -261,8 +259,8 @@ public sealed partial class PdfTextService : IPdfTextService
 
             foreach (var letter in word.Letters)
             {
-                if (!fromOcr && (letter.RenderingMode == TextRenderingMode.Neither
-                    || letter.FontName?.Contains("RailReaderGlyphless", StringComparison.Ordinal) == true))
+                if (!fromOcr && letter.RenderingMode == TextRenderingMode.Neither
+                    && letter.FontName?.Contains(OcrProvenance.FontName, StringComparison.Ordinal) == true)
                     fromOcr = true;
                 var (left, top, right, bottom) = FlippedAabb(letter.BoundingBox, pageH);
                 float angle = DisplayAngle(letter);
@@ -291,6 +289,17 @@ public sealed partial class PdfTextService : IPdfTextService
         }
 
         return new PageText(sb.ToString(), boxes) { FromOcr = fromOcr };
+    }
+
+    /// <summary>True when any letter sits inside an <see cref="OcrProvenance.MarkName"/> marked-content sequence.</summary>
+    private static bool HasOcrMark(IReadOnlyList<MarkedContentElement> elements)
+    {
+        foreach (var el in elements)
+        {
+            if (el.Tag == OcrProvenance.MarkName && el.Letters.Count > 0) return true;
+            if (HasOcrMark(el.Children)) return true;
+        }
+        return false;
     }
 
     /// <summary>

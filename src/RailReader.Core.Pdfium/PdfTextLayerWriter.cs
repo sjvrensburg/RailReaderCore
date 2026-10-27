@@ -21,11 +21,18 @@ public sealed record TextLayerOptions
     public bool ReplaceExistingOcrLayer { get; init; } = true;
 
     /// <summary>
-    /// Emit one text object per character (from <see cref="OcrLine.Chars"/>) so each
-    /// glyph's selection box matches its printed position. When false — or when a
-    /// line has no char boxes — one object per word is emitted instead. Default true.
+    /// Fit the layer to the line's char boxes (<see cref="OcrLine.Chars"/>): each word
+    /// spans its own glyphs, and the line's glyph band is the ink the boxes cover.
+    /// Words whose characters are not all boxed are placed between their fitted
+    /// neighbours. When false — or when a line has no char boxes — words are
+    /// apportioned along the line box by character count. Default true.
+    ///
+    /// <para>Either way the layer is one text object per word on a baseline shared by
+    /// the whole line. Per-glyph objects seated on their own ink boxes read back
+    /// letter-spaced (<c>H e l l o</c>) and broken at every apostrophe and hyphen in
+    /// PDFium, Poppler and MuPDF alike, which defeats search and copy.</para>
     /// </summary>
-    public bool PerCharacter { get; init; } = true;
+    public bool UseCharBoxes { get; init; } = true;
 }
 
 /// <summary>Outcome of a <see cref="PdfTextLayerWriter"/> run.</summary>
@@ -47,10 +54,10 @@ public sealed record TextLayerWriteResult(int PagesWritten, int PagesSkipped, bo
 
 /// <summary>
 /// Writes OCR results into a copy of a PDF as an invisible text layer, the way
-/// <c>ocrmypdf</c> does (issue #155): every recognised word/character becomes a
-/// text object in render mode 3 (invisible), positioned and horizontally scaled
-/// over the printed glyphs, so the copy becomes searchable, selectable,
-/// copyable and highlightable in any reader.
+/// <c>ocrmypdf</c> does (issue #155): every recognised word becomes a text
+/// object in render mode 3 (invisible) on its line's shared baseline, positioned
+/// and horizontally scaled over the printed glyphs, so the copy becomes
+/// searchable, selectable, copyable and highlightable in any reader.
 ///
 /// <para><b>Copy, never in place.</b> The document is loaded from the source
 /// bytes, modified in memory and saved to <c>outputPath</c> via
@@ -65,8 +72,9 @@ public sealed record TextLayerWriteResult(int PagesWritten, int PagesSkipped, bo
 ///
 /// <para><b>Provenance.</b> Every written object is tagged with the marked-content
 /// name <see cref="OcrMarkName"/> (and uses the recognisable glyphless font), so
-/// <see cref="PdfTextService"/> can flag the read-back text as OCR-derived via
-/// <see cref="PageText.FromOcr"/> instead of the host guessing.</para>
+/// both text backends can flag the read-back text as OCR-derived via
+/// <see cref="PageText.FromOcr"/> instead of the host guessing — by the one rule
+/// in <see cref="OcrProvenance"/>.</para>
 ///
 /// <para>All PDFium work runs inside <see cref="PdfiumGate.Lock"/>; the writer
 /// holds no state and is safe to call from a background thread.</para>
@@ -74,7 +82,7 @@ public sealed record TextLayerWriteResult(int PagesWritten, int PagesSkipped, bo
 public static class PdfTextLayerWriter
 {
     /// <summary>Marked-content name stamped on every OCR text object.</summary>
-    public const string OcrMarkName = "RailReaderOCR";
+    public const string OcrMarkName = OcrProvenance.MarkName;
 
     /// <summary>
     /// Writes <paramref name="pages"/> (keyed by zero-based page index, geometry
@@ -208,7 +216,7 @@ public static class PdfTextLayerWriter
         {
             if (string.IsNullOrEmpty(line.Text)) continue;
             float angle = line.Angle != 0f ? line.Angle : ocr.SkewAngle;
-            foreach (var unit in UnitsOf(line, angle, options.PerCharacter))
+            foreach (var unit in UnitsOf(line, angle, options.UseCharBoxes))
                 units.Add((unit, angle));
         }
         if (units.Count == 0) return false;
@@ -265,36 +273,27 @@ public static class PdfTextLayerWriter
     /// baseline origin, along-baseline length, and glyph height (all points).</summary>
     private readonly record struct TextUnit(string Text, float OriginX, float OriginY, float Along, float Height);
 
-    private static IEnumerable<TextUnit> UnitsOf(OcrLine line, float angleRad, bool perCharacter)
+    /// <summary>
+    /// Resolves a line into one unit per word, all on the line's shared baseline.
+    ///
+    /// <para>The line frame is the baseline direction <c>v = (cos, sin)</c> and the
+    /// downward normal <c>n = (−sin, cos)</c> (displayed frame, Y-down) through the
+    /// line box's centre, so a slanted line's words descend/rise with it. Without
+    /// char boxes the glyph band is the line box centre-deflated to
+    /// EffectiveHeight (matching OcrPageMapper/OcrRecognizer) and words are
+    /// apportioned by character count. With them, the band is re-seated on the ink
+    /// the boxes cover — read-back char heights then match the printed glyphs rather
+    /// than the detector's dilated band, which would otherwise exceed the line pitch
+    /// and merge neighbouring lines in char-clustering line detection — and each
+    /// fully boxed word spans its own glyphs.</para>
+    /// </summary>
+    private static IEnumerable<TextUnit> UnitsOf(OcrLine line, float angleRad, bool useCharBoxes)
     {
         var text = line.Text!;
+        var words = WordSpans(text);
+        if (words.Count == 0) yield break;
+
         double cos = Math.Cos(angleRad), sin = Math.Sin(angleRad);
-
-        if (perCharacter && line.Chars is { Count: > 0 })
-        {
-            bool any = false;
-            foreach (var cb in line.Chars.OrderBy(c => c.Index))
-            {
-                if (cb.Index < 0 || cb.Index >= text.Length) continue;
-                if (cb.Right <= cb.Left || cb.Bottom <= cb.Top) continue;
-                // Engines emit one box per UTF-16 code unit; the low-surrogate
-                // box is the same astral glyph as its high-surrogate partner,
-                // which the whole-rune slice below already covers.
-                if (char.IsLowSurrogate(text, cb.Index)) continue;
-                any = true;
-                // Slice the whole rune: a one-code-unit slice splits a surrogate pair.
-                int len = cb.Index + 1 < text.Length
-                    && char.IsSurrogatePair(text, cb.Index) ? 2 : 1;
-                yield return FromAabb(text.Substring(cb.Index, len),
-                    cb.Left, cb.Top, cb.Right, cb.Bottom, cos, sin);
-            }
-            if (any) yield break;
-        }
-
-        // Word fallback: walk the baseline through the line box's centre, so a
-        // slanted line's words descend/rise with it instead of restarting at
-        // the box top. The glyph band is centre-deflated to EffectiveHeight,
-        // matching OcrPageMapper/OcrRecognizer.
         float ac = (float)Math.Abs(cos), asn = (float)Math.Abs(sin);
         var box = line.Box;
         float perp = box.H * ac + box.W * asn;
@@ -306,37 +305,171 @@ public static class PdfTextLayerWriter
             : Math.Max((box.H - glyphHeight * ac) / Math.Max(asn, 0.001f), 0f);
         if (totalAlong <= 0f) totalAlong = box.W;
 
-        float cx = box.X + box.W / 2f, cy = box.Y + box.H / 2f;
-        int n = Math.Max(text.Length, 1);
-        int i = 0;
-        while (i < text.Length)
+        double cx = box.X + box.W / 2.0, cy = box.Y + box.H / 2.0;
+        double height = glyphHeight;
+
+        // Along-baseline extent of each word, measured from the line centre.
+        var lo = new double[words.Count];
+        var hi = new double[words.Count];
+        var fitted = new bool[words.Count];
+
+        if (useCharBoxes && line.Chars is { Count: > 0 })
         {
-            while (i < text.Length && text[i] == ' ') i++;
-            int start = i;
-            while (i < text.Length && text[i] != ' ') i++;
-            if (i <= start) break;
-            float wordAlong = totalAlong * (i - start) / n;
-            double centreOffset = -totalAlong / 2.0 + totalAlong * start / n + wordAlong / 2.0;
-            // Glyph centre = origin + (along/2)·v + (height/2)·up, up=(sin,-cos).
-            double ox = cx + centreOffset * cos - (wordAlong / 2.0) * cos - (glyphHeight / 2.0) * sin;
-            double oy = cy + centreOffset * sin - (wordAlong / 2.0) * sin + (glyphHeight / 2.0) * cos;
-            yield return new TextUnit(text[start..i], (float)ox, (float)oy, wordAlong, glyphHeight);
+            var byIndex = BoxesByIndex(line.Chars, text);
+            var tops = new List<double>();
+            var bottoms = new List<double>();
+            foreach (var b in byIndex)
+            {
+                if (b is not { } cb) continue;
+                var (pLo, pHi) = Project(cb, cx, cy, -sin, cos);
+                tops.Add(pLo);
+                bottoms.Add(pHi);
+            }
+            if (InkBand(tops, bottoms) is var (bandLo, bandHi))
+            {
+                height = Math.Min(bandHi - bandLo, glyphHeight);
+                double mid = (bandLo + bandHi) / 2.0;
+                cx -= mid * sin;
+                cy += mid * cos;
+            }
+
+            // A word is fitted only when every one of its characters is boxed: a
+            // partial box set would shrink the word onto the glyphs it happens to have.
+            for (int k = 0; k < words.Count; k++)
+            {
+                var (start, end) = words[k];
+                double wLo = double.PositiveInfinity, wHi = double.NegativeInfinity;
+                bool complete = true;
+                for (int i = start; i < end && complete; i++)
+                {
+                    if (char.IsLowSurrogate(text[i])) continue;
+                    if (byIndex[i] is not { } cb) { complete = false; continue; }
+                    var (aLo, aHi) = Project(cb, cx, cy, cos, sin);
+                    wLo = Math.Min(wLo, aLo);
+                    wHi = Math.Max(wHi, aHi);
+                }
+                if (complete && wHi > wLo) (lo[k], hi[k], fitted[k]) = (wLo, wHi, true);
+            }
+        }
+
+        // Unfitted words are spaced by character count between their fitted
+        // neighbours (or the line ends), so a word the engine could not box is still
+        // written in its own slot rather than dropped. With nothing fitted this is the
+        // plain proportional layout along the line box.
+        double half = totalAlong / 2.0;
+        for (int k = 0; k < words.Count;)
+        {
+            if (fitted[k]) { k++; continue; }
+            int j = k;
+            while (j < words.Count && !fitted[j]) j++;
+            double a = k > 0 ? hi[k - 1] : -half, b = j < words.Count ? lo[j] : half;
+            int ia = k > 0 ? words[k - 1].End : 0, ib = j < words.Count ? words[j].Start : text.Length;
+            // Fitted neighbours that leave no room: fall back to the line's own span.
+            if (b <= a) (a, b, ia, ib) = (-half, half, 0, text.Length);
+            double scale = (b - a) / (ib - ia);
+            for (int m = k; m < j; m++)
+            {
+                lo[m] = a + (words[m].Start - ia) * scale;
+                hi[m] = a + (words[m].End - ia) * scale;
+            }
+            k = j;
+        }
+
+        for (int k = 0; k < words.Count; k++)
+        {
+            // Origin = centre + lo·v + (height/2)·n: the baseline start of a glyph
+            // band centred on the line.
+            double ox = cx + lo[k] * cos - (height / 2.0) * sin;
+            double oy = cy + lo[k] * sin + (height / 2.0) * cos;
+            var (start, end) = words[k];
+            // Every word but the line's last carries a real space stretched to the
+            // next word's start (as Tesseract's PDF renderer does), so readers find
+            // the space instead of inferring it from a gap — MuPDF reads a gap wider
+            // than ~0.8 em as a line break.
+            bool last = k == words.Count - 1;
+            double along = last ? hi[k] - lo[k] : Math.Max(lo[k + 1], hi[k]) - lo[k];
+            yield return new TextUnit(last ? text[start..end] : text[start..end] + " ",
+                (float)ox, (float)oy, (float)along, (float)height);
         }
     }
 
     /// <summary>
-    /// Resolves a char box to baseline origin, along-length and height. Char
-    /// boxes in this codebase are upright ink boxes positioned along the
-    /// baseline (tightened OCR boxes, PDFium glyph boxes), not axis-aligned
-    /// bounds of a rotated glyph rectangle — so the origin is the box's
-    /// bottom-left and the along-length is its width projected on the baseline.
+    /// How far past the median glyph's top/bottom, as a fraction of the median
+    /// glyph's height, an extent may reach and still count as this line's ink.
+    /// Ascenders, capitals, brackets and descenders reach about half of it.
     /// </summary>
-    private static TextUnit FromAabb(string text, float left, float top, float right, float bottom,
-        double cos, double sin)
+    private const double BandOutlierFraction = 0.75;
+
+    /// <summary>
+    /// The line's ink band from its glyphs' perpendicular extents — not their plain
+    /// union. On tightly set text a box's vertical tightening window reaches into
+    /// the neighbouring line, and one glyph that picked up a descender from the line
+    /// above (or an ascender from below) would stretch the whole band past the line
+    /// pitch, so that the lines overlap and readers merge them. Null when nothing usable remains.
+    /// </summary>
+    private static (double Lo, double Hi)? InkBand(List<double> tops, List<double> bottoms)
     {
-        float w = right - left, ha = bottom - top;
-        double ac = Math.Abs(cos);
-        return new TextUnit(text, left, bottom, ac > 0.01 ? (float)(w / ac) : w, ha);
+        if (tops.Count == 0) return null;
+        double medTop = Median(tops), medBottom = Median(bottoms);
+        double reach = Math.Max(medBottom - medTop, 0.0) * BandOutlierFraction;
+        double lo = double.PositiveInfinity, hi = double.NegativeInfinity;
+        foreach (double t in tops) if (t >= medTop - reach) lo = Math.Min(lo, t);
+        foreach (double b in bottoms) if (b <= medBottom + reach) hi = Math.Max(hi, b);
+        return hi > lo ? (lo, hi) : null;
+    }
+
+    private static double Median(List<double> values)
+    {
+        var sorted = values.Order().ToList();
+        int m = sorted.Count / 2;
+        return sorted.Count % 2 == 1 ? sorted[m] : (sorted[m - 1] + sorted[m]) / 2.0;
+    }
+
+    private static List<(int Start, int End)> WordSpans(string text)
+    {
+        var spans = new List<(int Start, int End)>();
+        int i = 0;
+        while (i < text.Length)
+        {
+            while (i < text.Length && char.IsWhiteSpace(text[i])) i++;
+            int start = i;
+            while (i < text.Length && !char.IsWhiteSpace(text[i])) i++;
+            if (i > start) spans.Add((start, i));
+        }
+        return spans;
+    }
+
+    /// <summary>
+    /// The usable char box for each index of <paramref name="text"/>: in range,
+    /// non-degenerate, and not on whitespace or on the low-surrogate half of an
+    /// astral glyph (engines box each UTF-16 code unit; the glyph is its high half's).
+    /// </summary>
+    private static CharBox?[] BoxesByIndex(List<CharBox> chars, string text)
+    {
+        var byIndex = new CharBox?[text.Length];
+        foreach (var cb in chars)
+        {
+            if (cb.Index < 0 || cb.Index >= text.Length) continue;
+            if (cb.Right <= cb.Left || cb.Bottom <= cb.Top) continue;
+            char c = text[cb.Index];
+            if (char.IsLowSurrogate(c) || char.IsWhiteSpace(c)) continue;
+            byIndex[cb.Index] = cb;
+        }
+        return byIndex;
+    }
+
+    /// <summary>
+    /// Extent of an axis-aligned box projected onto the direction
+    /// (<paramref name="dx"/>, <paramref name="dy"/>), relative to (<paramref name="ox"/>, <paramref name="oy"/>).
+    /// On a slanted line the box is the bound of a tilted glyph, so the extent
+    /// overshoots by up to the glyph's size × |sin θ| — under a point at the
+    /// skew estimator's ±5° gate.
+    /// </summary>
+    private static (double Lo, double Hi) Project(CharBox b, double ox, double oy, double dx, double dy)
+    {
+        double l = (b.Left - ox) * dx, r = (b.Right - ox) * dx;
+        double t = (b.Top - oy) * dy, u = (b.Bottom - oy) * dy;
+        return (Math.Min(l, r) + Math.Min(t, u), Math.Max(l, r) + Math.Max(t, u));
     }
 
     private static bool WriteUnit(IntPtr doc, IntPtr page, TextUnit unit, float angleRad,
@@ -484,7 +617,8 @@ public static class PdfTextLayerWriter
                 foreach (var rune in line.Text.EnumerateRunes())
                     used.Add(Sanitize(rune.Value));
             }
-            if (used.Count == 0) used.Add(' ');
+            // The writer joins words with U+0020 whatever whitespace separated them.
+            used.Add(' ');
 
             int cid = 1; // CID 0 is .notdef
             var cidToUnicode = new Dictionary<int, int>();
