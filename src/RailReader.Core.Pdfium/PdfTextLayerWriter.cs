@@ -122,57 +122,76 @@ public static class PdfTextLayerWriter
         ArgumentNullException.ThrowIfNull(pages);
         options ??= new TextLayerOptions();
 
-        lock (PdfiumGate.Lock)
+        // The gate is taken per native phase, never across a host callback:
+        // a synchronous IProgress.Report that blocks on a thread waiting for
+        // the gate would otherwise deadlock the process.
+        PdfiumResolver.EnsureLibraryInitialized();
+        var pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
+        IntPtr doc = IntPtr.Zero;
+        FontHandle? font = null;
+        try
         {
-            PdfiumResolver.EnsureLibraryInitialized();
-            var pinned = GCHandle.Alloc(pdfBytes, GCHandleType.Pinned);
-            try
+            bool signed;
+            int pageCount;
+            lock (PdfiumGate.Lock)
             {
-                var doc = LoadDocumentChecked(pinned.AddrOfPinnedObject(), pdfBytes.Length, password);
+                doc = LoadDocumentChecked(pinned.AddrOfPinnedObject(), pdfBytes.Length, password);
                 if (doc == IntPtr.Zero)
                     throw new InvalidOperationException("Failed to load PDF via PDFium");
-
-                try
-                {
-                    bool signed = FPDF_GetSignatureCount(doc) > 0;
-                    int pageCount = FPDF_GetPageCount(doc);
-                    var ordered = pages.Keys.Where(p => p >= 0 && p < pageCount).OrderBy(p => p).ToList();
-
-                    // Out-of-range keys are counted as skipped, never silently dropped.
-                    int total = pages.Count;
-                    int written = 0, skipped = total - ordered.Count, done = skipped;
-                    // The font is loaded lazily on the first page that actually
-                    // writes: an all-skipped or empty write must not embed it.
-                    FontHandle? font = null;
-                    FontHandle GetFont() => font ??= new FontHandle(doc, pages.Values);
-                    try
-                    {
-                        foreach (int pageIndex in ordered)
-                        {
-                            ct.ThrowIfCancellationRequested();
-                            progress?.Report((done, total));
-                            var page = FPDF_LoadPage(doc, pageIndex);
-                            if (page == IntPtr.Zero) { skipped++; done++; continue; }
-                            try
-                            {
-                                if (WritePage(doc, page, pages[pageIndex], GetFont, options))
-                                    written++;
-                                else
-                                    skipped++;
-                            }
-                            finally { FPDF_ClosePage(page); }
-                            done++;
-                        }
-                    }
-                    finally { font?.Dispose(); }
-                    progress?.Report((total, total));
-
-                    var bytes = PdfAnnotationWriter.SaveDocumentBytes(doc);
-                    return (bytes, new TextLayerWriteResult(written, skipped, signed));
-                }
-                finally { FPDF_CloseDocument(doc); }
+                signed = FPDF_GetSignatureCount(doc) > 0;
+                pageCount = FPDF_GetPageCount(doc);
             }
-            finally { pinned.Free(); }
+
+            var ordered = pages.Keys.Where(p => p >= 0 && p < pageCount).OrderBy(p => p).ToList();
+            // Out-of-range keys are counted as skipped, never silently dropped.
+            int total = pages.Count;
+            int written = 0, skipped = total - ordered.Count, done = skipped;
+            // The font is loaded lazily on the first page that actually
+            // writes: an all-skipped or empty write must not embed it.
+            // GetFont is only invoked from WritePage, inside the gate.
+            FontHandle GetFont() => font ??= new FontHandle(doc, pages.Values);
+
+            foreach (int pageIndex in ordered)
+            {
+                ct.ThrowIfCancellationRequested();
+                progress?.Report((done, total));
+                lock (PdfiumGate.Lock)
+                {
+                    var page = FPDF_LoadPage(doc, pageIndex);
+                    if (page == IntPtr.Zero) { skipped++; }
+                    else
+                    {
+                        try
+                        {
+                            if (WritePage(doc, page, pages[pageIndex], GetFont, options))
+                                written++;
+                            else
+                                skipped++;
+                        }
+                        finally { FPDF_ClosePage(page); }
+                    }
+                }
+                done++;
+            }
+            progress?.Report((total, total));
+
+            byte[] bytes;
+            lock (PdfiumGate.Lock)
+            {
+                font?.Dispose();
+                font = null;
+                bytes = PdfAnnotationWriter.SaveDocumentBytes(doc);
+            }
+            return (bytes, new TextLayerWriteResult(written, skipped, signed));
+        }
+        finally
+        {
+            lock (PdfiumGate.Lock)
+            {
+                font?.Dispose();
+                if (doc != IntPtr.Zero) FPDF_CloseDocument(doc);
+            }
+            pinned.Free();
         }
     }
 
@@ -217,19 +236,27 @@ public static class PdfTextLayerWriter
     /// <summary>
     /// Native-text detection that does not require removing anything first:
     /// with no OCR layer the char count decides; with one, a text object that
-    /// is not ours is native (text inside form XObjects is never removed by
-    /// the replacement path, so missing it costs nothing).
+    /// is not ours is native. Form XObjects are descended into — native text
+    /// drawn through a form would otherwise be shadowed by a new layer even
+    /// though <see cref="TextLayerOptions.SkipPagesWithNativeText"/> is on.
     /// </summary>
     private static bool HasNativeText(IntPtr page, bool hadOcr)
     {
         if (!hadOcr) return CountChars(page) > 0;
-        int count = FPDFPage_CountObjects(page);
+        return AnyNativeTextObject(page, isForm: false, depth: 0);
+    }
+
+    private static bool AnyNativeTextObject(IntPtr container, bool isForm, int depth)
+    {
+        if (depth > 10) return false;
+        int count = isForm ? FPDFFormObj_CountObjects(container) : FPDFPage_CountObjects(container);
         for (int i = 0; i < count; i++)
         {
-            var obj = FPDFPage_GetObject(page, i);
-            if (obj != IntPtr.Zero && FPDFPageObj_GetType(obj) == FPDF_PAGEOBJ_TEXT
-                && !IsOcrTextObject(obj))
-                return true;
+            var obj = isForm ? FPDFFormObj_GetObject(container, (uint)i) : FPDFPage_GetObject(container, i);
+            if (obj == IntPtr.Zero) continue;
+            int type = FPDFPageObj_GetType(obj);
+            if (type == FPDF_PAGEOBJ_TEXT && !IsOcrTextObject(obj)) return true;
+            if (type == FPDF_PAGEOBJ_FORM && AnyNativeTextObject(obj, isForm: true, depth + 1)) return true;
         }
         return false;
     }
@@ -406,6 +433,11 @@ public static class PdfTextLayerWriter
             var mark = FPDFPageObj_GetMark(obj, (nuint)m);
             if (mark != IntPtr.Zero && ReadMarkName(mark) == OcrMarkName) return true;
         }
+        // Font-name fallback (mark stripped by another producer): only for
+        // invisible objects. Visible native text that merely happens to use a
+        // similarly named font must never be classified — and thus removed —
+        // as OCR. Genuine layers are always written invisible, marked or not.
+        if (FPDFTextObj_GetTextRenderMode(obj) != FPDF_TEXTRENDERMODE_INVISIBLE) return false;
         var name = ReadFontBaseName(FPDFTextObj_GetFont(obj));
         return name is not null && name.Contains(GlyphlessFont.FontName, StringComparison.Ordinal);
     }

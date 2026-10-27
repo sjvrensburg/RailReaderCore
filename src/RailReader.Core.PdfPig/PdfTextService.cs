@@ -2,6 +2,7 @@ using System.Text;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
 using UglyToad.PdfPig;
+using UglyToad.PdfPig.Core;
 using UglyToad.PdfPig.Content;
 using UglyToad.PdfPig.DocumentLayoutAnalysis.WordExtractor;
 
@@ -192,10 +193,12 @@ public sealed partial class PdfTextService : IPdfTextService
         double pageH = page.Height;
         var sb = new StringBuilder(words.Sum(w => w.Letters.Count));
         var boxes = new List<CharBox>(sb.Capacity);
-        // Provenance (#155): letters set in the OCR writer's glyphless font mean
-        // this page's text is a baked-in OCR layer, not a native one. (The font
-        // name is the same signal the PDFium backend's mark scan falls back to;
-        // PdfPig letters expose no marked-content tag.)
+        // Provenance (#155): a baked-in OCR layer is recognised by either of
+        // its two signatures — the writer's glyphless font, or the invisible
+        // rendering mode every OCR layer (including this writer's Helvetica
+        // fallback, which PdfPig letters cannot distinguish by font) is
+        // written with. Over-flagging other invisible text is the fail-safe
+        // direction: it is presented as unverified, never the reverse.
         bool fromOcr = false;
 
         float prevWordRight = float.NaN;
@@ -258,8 +261,8 @@ public sealed partial class PdfTextService : IPdfTextService
 
             foreach (var letter in word.Letters)
             {
-                if (!fromOcr && letter.FontName is not null
-                    && letter.FontName.Contains("RailReaderGlyphless", StringComparison.Ordinal))
+                if (!fromOcr && (letter.RenderingMode == TextRenderingMode.Neither
+                    || letter.FontName?.Contains("RailReaderGlyphless", StringComparison.Ordinal) == true))
                     fromOcr = true;
                 var (left, top, right, bottom) = FlippedAabb(letter.BoundingBox, pageH);
                 float angle = DisplayAngle(letter);

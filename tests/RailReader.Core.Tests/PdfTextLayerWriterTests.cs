@@ -441,6 +441,44 @@ public class PdfTextLayerWriterTests
         Assert.Single(page.Lines);
     }
 
+    // Hand-crafted one-page PDFs (generated out-of-process, embedded as golden
+    // fixtures): native text drawn only inside a form XObject, and visible
+    // native text in a font whose name contains "RailReaderGlyphless".
+    private const string FormNativePdfBase64 = "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gL1hPYmplY3QgPDwgL0ZtMSA2IDAgUiA+PiA+PiA+PgplbmRvYmoKNCAwIG9iago8PCAvTGVuZ3RoIDExID4+CnN0cmVhbQpxIC9GbTEgRG8gUQplbmRzdHJlYW0KZW5kb2JqCjUgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhIC9FbmNvZGluZyAvV2luQW5zaUVuY29kaW5nID4+CmVuZG9iago2IDAgb2JqCjw8IC9UeXBlIC9YT2JqZWN0IC9TdWJ0eXBlIC9Gb3JtIC9CQm94IFswIDAgNjEyIDc5Ml0gL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gL0xlbmd0aCA0MSA+PgpzdHJlYW0KQlQgL0YxIDEyIFRmIDUwIDcwMCBUZCAoTkFUSVZFRk9STSkgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNwowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNjcgMDAwMDAgbiAKMDAwMDAwMDMyOCAwMDAwMCBuIAowMDAwMDAwNDI1IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNyAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNjA1CiUlRU9GCg==";
+    private const string SimilarFontPdfBase64 = "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gL1hPYmplY3QgPDwgL0ZtMSA2IDAgUiA+PiA+PiA+PgplbmRvYmoKNCAwIG9iago8PCAvTGVuZ3RoIDM2ID4+CnN0cmVhbQpCVCAvRjEgMTIgVGYgNTAgNzAwIFRkIChIZWxsbykgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCjw8IC9UeXBlIC9Gb250IC9TdWJ0eXBlIC9UeXBlMSAvQmFzZUZvbnQgL0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFSYWlsUmVhZGVyR2x5cGhsZXNzIC9FbmNvZGluZyAvV2luQW5zaUVuY29kaW5nID4+CmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNjcgMDAwMDAgbiAKMDAwMDAwMDM1MyAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjU2MAolJUVPRgo=";
+
+    [Fact]
+    public void MixedFormNativePage_SkipLeavesEverythingUntouched()
+    {
+        var source = Convert.FromBase64String(FormNativePdfBase64);
+        Assert.Contains("NATIVEFORM", new PdfTextService().ExtractPageText(source, 0).Text);
+
+        var noSkip = new TextLayerOptions { SkipPagesWithNativeText = false };
+        var (mixed, _) = PdfTextLayerWriter.WriteToBytes(source,
+            new Dictionary<int, OcrPage> { [0] = SamplePage() }, options: noSkip);
+
+        var (after, result) = PdfTextLayerWriter.WriteToBytes(mixed,
+            new Dictionary<int, OcrPage> { [0] = SamplePage("World") });
+        Assert.Equal(0, result.PagesWritten);
+        Assert.Equal(1, result.PagesSkipped);
+        var extracted = new PdfTextService().ExtractPageText(after, 0);
+        Assert.Contains("NATIVEFORM", extracted.Text);
+        Assert.Contains("Hello", extracted.Text);
+        Assert.DoesNotContain("World", extracted.Text);
+    }
+
+    [Fact]
+    public void VisibleTextInSimilarlyNamedFont_IsNotRemoved()
+    {
+        var source = Convert.FromBase64String(SimilarFontPdfBase64);
+        var (after, result) = PdfTextLayerWriter.WriteToBytes(source,
+            new Dictionary<int, OcrPage> { [0] = SamplePage("NEWOCR") });
+        Assert.Equal(0, result.PagesWritten);
+        var extracted = new PdfTextService().ExtractPageText(after, 0);
+        Assert.Contains("Hello", extracted.Text); // native text survives
+        Assert.False(extracted.FromOcr);
+    }
+
     [Fact]
     public void LiveOcrPageText_IsFlaggedAsOcr()
     {

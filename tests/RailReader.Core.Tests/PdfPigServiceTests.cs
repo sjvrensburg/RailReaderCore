@@ -159,6 +159,20 @@ public class PdfPigServiceTests
         Assert.True(rotated.FromOcr);
     }
 
+    // Invisible (render-mode-3) Helvetica text — the shape of the writer's
+    // fallback layer, which carries no glyphless-font signature.
+    private const string InvisibleHelveticaPdfBase64 = "JVBERi0xLjQKMSAwIG9iago8PCAvTGVuZ3RoIDQ5ID4+CnN0cmVhbQpCVCAvRjEgMjQgVGYgMyBUciAxMDAgNzAwIFRkIChGYWxsYmFjayBPQ1IpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKMiAwIG9iago8PCAvVHlwZSAvUGFnZSAvUGFyZW50IDMgMCBSIC9NZWRpYUJveCBbMCAwIDYxMiA3OTJdIC9Db250ZW50cyAxIDAgUiAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiA+PgplbmRvYmoKMyAwIG9iago8PCAvVHlwZSAvUGFnZXMgL0tpZHMgWzIgMCBSXSAvQ291bnQgMSA+PgplbmRvYmoKNCAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgL0VuY29kaW5nIC9XaW5BbnNpRW5jb2RpbmcgPj4KZW5kb2JqCjUgMCBvYmoKPDwgL1R5cGUgL0NhdGFsb2cgL1BhZ2VzIDMgMCBSID4+CmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDEwOCAwMDAwMCBuIAowMDAwMDAwMjM0IDAwMDAwIG4gCjAwMDAwMDAyOTEgMDAwMDAgbiAKMDAwMDAwMDM4OCAwMDAwMCBuIAp0cmFpbGVyIDw8IC9TaXplIDYgL1Jvb3QgNSAwIFIgPj4Kc3RhcnR4cmVmCjQzNwolJUVPRg==";
+
+    [Fact]
+    public void Invisible_text_reports_FromOcr()
+    {
+        var bytes = Convert.FromBase64String(InvisibleHelveticaPdfBase64);
+        var page = new PdfTextService().ExtractPageText(bytes, 0);
+        var compact = new string(page.Text.Where(c => !char.IsWhiteSpace(c)).ToArray());
+        Assert.Contains("Fallback", compact);
+        Assert.True(page.FromOcr);
+    }
+
     [Fact]
     public void Each_page_extracts_its_own_text()
     {

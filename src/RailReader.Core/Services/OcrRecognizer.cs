@@ -10,6 +10,11 @@ namespace RailReader.Core.Services;
 /// consumes, and the same mapping the analysis worker applies internally.
 /// Keeping this in Core means a CLI batch job and the desktop's background job
 /// cannot drift apart.
+///
+/// <para>The supplied <see cref="IOcrService"/> is used exactly as given and
+/// implementations need not be thread-safe: concurrent
+/// <see cref="RecognizePage"/> calls must not share one instance
+/// (<see cref="RecognizeDocument"/> is sequential).</para>
 /// </summary>
 public static class OcrRecognizer
 {

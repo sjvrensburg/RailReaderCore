@@ -36,9 +36,14 @@ public sealed partial class PdfTextService : IPdfTextService
         }
         if (_ocrFlags.TryGetValue(pageIndex, out bool cached)) return cached;
         bool fromOcr = false;
-        try { fromOcr = PdfTextLayerWriter.PageHasOcrLayer(page); }
+        try
+        {
+            fromOcr = PdfTextLayerWriter.PageHasOcrLayer(page);
+            // Only a successful scan is cached: a transient failure must not
+            // cement "native" for this page for the document's lifetime.
+            _ocrFlags[pageIndex] = fromOcr;
+        }
         catch { /* provenance is best-effort; never lose the extracted text */ }
-        _ocrFlags[pageIndex] = fromOcr;
         return fromOcr;
     }
 
