@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.73.0 — Invisible OCR text layer written into a PDF copy (2026-10-27)
 
 ### Invisible OCR text layer written into a PDF copy (#155)
 
