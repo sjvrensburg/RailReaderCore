@@ -305,6 +305,129 @@ public class PdfTextLayerWriterTests
         => (short)((b[at] << 8) | b[at + 1]);
 
     [Fact]
+    public void MixedPage_SkipLeavesNativeAndExistingOcrUntouched()
+    {
+        var path = TestFixtures.GetTestPdfPath(); // native text
+        var source = File.ReadAllBytes(path);
+        var noSkip = new TextLayerOptions { SkipPagesWithNativeText = false };
+        var (mixed, _) = PdfTextLayerWriter.WriteToBytes(source,
+            new Dictionary<int, OcrPage> { [0] = SamplePage() }, options: noSkip);
+        Assert.True(new PdfTextService().ExtractPageText(mixed, 0).FromOcr);
+
+        // Default rewrite must skip — and skipping must not delete the old layer.
+        var (after, result) = PdfTextLayerWriter.WriteToBytes(mixed,
+            new Dictionary<int, OcrPage> { [0] = SamplePage("World") });
+        Assert.Equal(0, result.PagesWritten);
+        Assert.Equal(1, result.PagesSkipped);
+        var extracted = new PdfTextService().ExtractPageText(after, 0);
+        Assert.Contains("Hello", extracted.Text);   // old OCR layer survives
+        Assert.DoesNotContain("World", extracted.Text);
+        Assert.True(extracted.FromOcr);
+    }
+
+    [Fact]
+    public void EmptyReplacement_PreservesExistingOcrLayer()
+    {
+        var path = TestFixtures.GetTextlessTestPdfPath();
+        var source = File.ReadAllBytes(path);
+        var (once, _) = WriteSample(source);
+
+        var (after, result) = PdfTextLayerWriter.WriteToBytes(once,
+            new Dictionary<int, OcrPage> { [0] = new OcrPage([]) });
+        Assert.Equal(0, result.PagesWritten);
+        Assert.Equal(1, result.PagesSkipped);
+        var extracted = new PdfTextService().ExtractPageText(after, 0);
+        Assert.Contains("Hello", extracted.Text);
+        Assert.True(extracted.FromOcr);
+    }
+
+    [Fact]
+    public void AstralWithCodeUnitBoxes_IsWrittenOnce()
+    {
+        // Engines emit one box per UTF-16 code unit, so the astral glyph at
+        // indices 1..2 arrives as two boxes; it must still be written once.
+        var path = TestFixtures.GetTextlessTestPdfPath();
+        var source = File.ReadAllBytes(path);
+        const string text = "A\U00020000B";
+        var chars = new List<CharBox>
+        {
+            new(0, 72f, 100f, 86f, 120f),
+            new(1, 88f, 100f, 102f, 120f),
+            new(2, 88f, 100f, 102f, 120f), // low-surrogate half of the same glyph
+            new(3, 104f, 100f, 118f, 120f),
+        };
+        var page = new OcrPage([new OcrLine(new BBox(72f, 100f, 48f, 20f), text, chars)]);
+        var (bytes, _) = PdfTextLayerWriter.WriteToBytes(source,
+            new Dictionary<int, OcrPage> { [0] = page });
+
+        var extracted = new PdfTextService().ExtractPageText(bytes, 0);
+        Assert.Equal(1, extracted.Text.Count(c => c == '�'));
+        Assert.Contains("A", extracted.Text);
+        Assert.Contains("B", extracted.Text);
+    }
+
+    [Fact]
+    public void ControlAndNoncharacterCodepoints_AreSanitized()
+    {
+        var path = TestFixtures.GetTextlessTestPdfPath();
+        var source = File.ReadAllBytes(path);
+        var page = new OcrPage([new OcrLine(new BBox(72f, 100f, 80f, 20f), "A\0￿B")]);
+        var (bytes, _) = PdfTextLayerWriter.WriteToBytes(source,
+            new Dictionary<int, OcrPage> { [0] = page },
+            options: new TextLayerOptions { PerCharacter = false });
+
+        var extracted = new PdfTextService().ExtractPageText(bytes, 0);
+        Assert.DoesNotContain('\0', extracted.Text);
+        Assert.DoesNotContain('￿', extracted.Text);
+        Assert.Contains('�', extracted.Text);
+    }
+
+    [Fact]
+    public void EmptyDictionary_WritesNothingAndEmbedsNoFont()
+    {
+        var path = TestFixtures.GetTextlessTestPdfPath();
+        var source = File.ReadAllBytes(path);
+        var (bytes, result) = PdfTextLayerWriter.WriteToBytes(source,
+            new Dictionary<int, OcrPage>());
+        Assert.Equal(0, result.PagesWritten);
+        Assert.Equal(0, result.PagesSkipped);
+        Assert.True(bytes.Length <= source.Length + 400,
+            $"empty write grew {source.Length} -> {bytes.Length} bytes (unused font embedded?)");
+        Assert.Equal("", new PdfTextService().ExtractPageText(bytes, 0).Text);
+    }
+
+    [Fact]
+    public void OutOfRangePage_CountsAsSkipped()
+    {
+        var path = TestFixtures.GetTextlessTestPdfPath();
+        var source = File.ReadAllBytes(path);
+        var (_, result) = PdfTextLayerWriter.WriteToBytes(source,
+            new Dictionary<int, OcrPage> { [99] = SamplePage() });
+        Assert.Equal(0, result.PagesWritten);
+        Assert.Equal(1, result.PagesSkipped);
+    }
+
+    [Fact]
+    public void SkewedWordFallback_FollowsTheBaseline()
+    {
+        var path = TestFixtures.GetTextlessTestPdfPath();
+        var source = File.ReadAllBytes(path);
+        float angle = 10f * MathF.PI / 180f;
+        var line = new OcrLine(new BBox(72f, 100f, 320f, 20f), "Hello world foo bar", Angle: angle);
+        var (bytes, result) = PdfTextLayerWriter.WriteToBytes(source,
+            new Dictionary<int, OcrPage> { [0] = new OcrPage([line]) },
+            options: new TextLayerOptions { PerCharacter = false });
+
+        Assert.Equal(1, result.PagesWritten);
+        var extracted = new PdfTextService().ExtractPageText(bytes, 0);
+        Assert.Contains("Hello", extracted.Text);
+        var boxes = extracted.CharBoxes.Where(c => c.Right > c.Left).OrderBy(c => c.Left).ToList();
+        Assert.NotEmpty(boxes);
+        Assert.True(boxes[^1].Top > boxes[0].Top + 15f,
+            $"words did not descend with the baseline: first Top={boxes[0].Top}, last Top={boxes[^1].Top}");
+    }
+
+    [Fact]
     public void LiveOcrPageText_IsFlaggedAsOcr()
     {
         var page = new OcrPage([

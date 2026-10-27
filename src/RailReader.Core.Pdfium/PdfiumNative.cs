@@ -385,13 +385,17 @@ internal static class PdfiumNative
     [DllImport(Lib)] internal static extern IntPtr FPDFPageObj_GetMark(IntPtr pageObject, uint index);
     [DllImport(Lib)] internal static extern IntPtr FPDFPageObj_AddMark(IntPtr pageObject,
         [MarshalAs(UnmanagedType.LPStr)] string name);
+    // buflen/out_buflen are C `unsigned long` (4 bytes on Windows LLP64, 8 on
+    // LP64). nuint is pointer-sized: on Win64 the native side writes only the
+    // low 4 bytes of the zero-initialised out slot, which reads back correctly
+    // on little-endian; a plain uint out would be overflowed by 4 bytes on LP64.
     [DllImport(Lib)] internal static extern bool FPDFPageObjMark_GetName(IntPtr mark,
-        IntPtr buffer, uint buflen, out uint outBuflen);
+        IntPtr buffer, nuint buflen, out nuint outBuflen);
 
     /// <summary>Reads a content-mark name (UTF-16LE). Returns null on failure.</summary>
     internal static string? ReadMarkName(IntPtr mark)
     {
-        if (!FPDFPageObjMark_GetName(mark, IntPtr.Zero, 0, out uint needed) || needed < 2)
+        if (!FPDFPageObjMark_GetName(mark, IntPtr.Zero, 0, out nuint needed) || needed < 2 || needed > 4096)
             return null;
         var buffer = Marshal.AllocHGlobal((int)needed);
         try

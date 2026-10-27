@@ -31,8 +31,10 @@ public sealed record TextLayerOptions
 /// <summary>Outcome of a <see cref="PdfTextLayerWriter"/> run.</summary>
 /// <param name="PagesWritten">Pages that received a (new) OCR text layer.</param>
 /// <param name="PagesSkipped">
-/// Pages left untouched because they already had native text (or an existing OCR
-/// layer with replacement disabled).
+/// Supplied entries that received no layer and were left untouched: pages with
+/// native text, an existing OCR layer with replacement disabled, no writable
+/// OCR content, or a page index outside the document.
+/// <c>PagesWritten + PagesSkipped</c> always equals the supplied entry count.
 /// </param>
 /// <param name="SourceWasSigned">
 /// The source carried at least one digital signature. Saving a copy invalidates
@@ -136,25 +138,34 @@ public static class PdfTextLayerWriter
                     int pageCount = FPDF_GetPageCount(doc);
                     var ordered = pages.Keys.Where(p => p >= 0 && p < pageCount).OrderBy(p => p).ToList();
 
-                    using var font = new FontHandle(doc, pages.Values);
-                    int written = 0, skipped = 0, done = 0;
-                    foreach (int pageIndex in ordered)
+                    // Out-of-range keys are counted as skipped, never silently dropped.
+                    int total = pages.Count;
+                    int written = 0, skipped = total - ordered.Count, done = skipped;
+                    // The font is loaded lazily on the first page that actually
+                    // writes: an all-skipped or empty write must not embed it.
+                    FontHandle? font = null;
+                    FontHandle GetFont() => font ??= new FontHandle(doc, pages.Values);
+                    try
                     {
-                        ct.ThrowIfCancellationRequested();
-                        progress?.Report((done, ordered.Count));
-                        var page = FPDF_LoadPage(doc, pageIndex);
-                        if (page == IntPtr.Zero) { skipped++; done++; continue; }
-                        try
+                        foreach (int pageIndex in ordered)
                         {
-                            if (WritePage(doc, page, pages[pageIndex], font, options))
-                                written++;
-                            else
-                                skipped++;
+                            ct.ThrowIfCancellationRequested();
+                            progress?.Report((done, total));
+                            var page = FPDF_LoadPage(doc, pageIndex);
+                            if (page == IntPtr.Zero) { skipped++; done++; continue; }
+                            try
+                            {
+                                if (WritePage(doc, page, pages[pageIndex], GetFont, options))
+                                    written++;
+                                else
+                                    skipped++;
+                            }
+                            finally { FPDF_ClosePage(page); }
+                            done++;
                         }
-                        finally { FPDF_ClosePage(page); }
-                        done++;
                     }
-                    progress?.Report((done, ordered.Count));
+                    finally { font?.Dispose(); }
+                    progress?.Report((total, total));
 
                     var bytes = PdfAnnotationWriter.SaveDocumentBytes(doc);
                     return (bytes, new TextLayerWriteResult(written, skipped, signed));
@@ -165,63 +176,110 @@ public static class PdfTextLayerWriter
         }
     }
 
-    /// <summary>Returns true when the page received a layer, false when skipped.</summary>
-    private static bool WritePage(IntPtr doc, IntPtr page, OcrPage ocr, FontHandle font, TextLayerOptions options)
+    /// <summary>Returns true when the page received a layer, false when skipped.
+    /// Every skip decision is made before anything is removed, so a skipped page
+    /// is left genuinely untouched — including any OCR layer it already carries.</summary>
+    private static bool WritePage(IntPtr doc, IntPtr page, OcrPage ocr,
+        Func<FontHandle> getFont, TextLayerOptions options)
     {
-        bool hadOcr = PageHasOcrLayer(page);
-        if (hadOcr && options.ReplaceExistingOcrLayer)
-        {
-            RemoveOcrObjects(page);
-            FPDFPage_GenerateContent(page);
-            hadOcr = false;
-        }
-
-        // Remaining chars are either native text, or a previous OCR layer the
-        // caller asked us to keep. Either way: do not stack text on top.
-        if (options.SkipPagesWithNativeText && CountChars(page) > 0) return false;
-        if (hadOcr && !options.ReplaceExistingOcrLayer) return false;
-
-        var tx = GetPageTransform(page);
-        bool any = false;
+        // Materialise the replacement first: an empty or unwritable input must
+        // never destroy the layer already on the page.
+        var units = new List<(TextUnit Unit, float Angle)>();
         foreach (var line in ocr.Lines)
         {
             if (string.IsNullOrEmpty(line.Text)) continue;
             float angle = line.Angle != 0f ? line.Angle : ocr.SkewAngle;
-            foreach (var unit in UnitsOf(line, options.PerCharacter))
-            {
-                if (WriteUnit(doc, page, unit, angle, tx, font)) any = true;
-            }
+            foreach (var unit in UnitsOf(line, angle, options.PerCharacter))
+                units.Add((unit, angle));
         }
-        if (any) FPDFPage_GenerateContent(page);
-        return any;
+        if (units.Count == 0) return false;
+
+        bool hadOcr = PageHasOcrLayer(page);
+        if (hadOcr && !options.ReplaceExistingOcrLayer) return false;
+        if (options.SkipPagesWithNativeText && HasNativeText(page, hadOcr)) return false;
+
+        if (hadOcr) RemoveOcrObjects(page);
+
+        var font = getFont();
+        var tx = GetPageTransform(page);
+        bool any = false;
+        foreach (var (unit, angle) in units)
+        {
+            if (WriteUnit(doc, page, unit, angle, tx, font)) any = true;
+        }
+        // Without a successful regeneration the changes are lost on save, so a
+        // failed one is not a write. (After a removal, skipping regeneration
+        // here also keeps the old layer's stream intact.)
+        if (!any || !FPDFPage_GenerateContent(page)) return false;
+        return true;
     }
 
-    private readonly record struct TextUnit(string Text, float Left, float Top, float Right, float Bottom);
-
-    private static IEnumerable<TextUnit> UnitsOf(OcrLine line, bool perCharacter)
+    /// <summary>
+    /// Native-text detection that does not require removing anything first:
+    /// with no OCR layer the char count decides; with one, a text object that
+    /// is not ours is native (text inside form XObjects is never removed by
+    /// the replacement path, so missing it costs nothing).
+    /// </summary>
+    private static bool HasNativeText(IntPtr page, bool hadOcr)
     {
+        if (!hadOcr) return CountChars(page) > 0;
+        int count = FPDFPage_CountObjects(page);
+        for (int i = 0; i < count; i++)
+        {
+            var obj = FPDFPage_GetObject(page, i);
+            if (obj != IntPtr.Zero && FPDFPageObj_GetType(obj) == FPDF_PAGEOBJ_TEXT
+                && !IsOcrTextObject(obj))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>A text unit already resolved to displayed-frame geometry:
+    /// baseline origin, along-baseline length, and glyph height (all points).</summary>
+    private readonly record struct TextUnit(string Text, float OriginX, float OriginY, float Along, float Height);
+
+    private static IEnumerable<TextUnit> UnitsOf(OcrLine line, float angleRad, bool perCharacter)
+    {
+        var text = line.Text!;
+        double cos = Math.Cos(angleRad), sin = Math.Sin(angleRad);
+
         if (perCharacter && line.Chars is { Count: > 0 })
         {
             bool any = false;
             foreach (var cb in line.Chars.OrderBy(c => c.Index))
             {
-                if (cb.Index < 0 || cb.Index >= line.Text!.Length) continue;
+                if (cb.Index < 0 || cb.Index >= text.Length) continue;
                 if (cb.Right <= cb.Left || cb.Bottom <= cb.Top) continue;
+                // Engines emit one box per UTF-16 code unit; the low-surrogate
+                // box is the same astral glyph as its high-surrogate partner,
+                // which the whole-rune slice below already covers.
+                if (char.IsLowSurrogate(text, cb.Index)) continue;
                 any = true;
-                // Slice the whole rune: a one-code-unit slice splits a surrogate
-                // pair and the astral character is lost before it is written.
-                int len = cb.Index + 1 < line.Text.Length
-                    && char.IsSurrogatePair(line.Text, cb.Index) ? 2 : 1;
-                yield return new TextUnit(line.Text.Substring(cb.Index, len), cb.Left, cb.Top, cb.Right, cb.Bottom);
+                // Slice the whole rune: a one-code-unit slice splits a surrogate pair.
+                int len = cb.Index + 1 < text.Length
+                    && char.IsSurrogatePair(text, cb.Index) ? 2 : 1;
+                yield return FromAabb(text.Substring(cb.Index, len),
+                    cb.Left, cb.Top, cb.Right, cb.Bottom, cos, sin);
             }
             if (any) yield break;
         }
 
-        // Word fallback: split on spaces, distributing the line box by character
-        // position so each word lands over its printed glyphs.
-        var text = line.Text!;
-        float x0 = line.Box.X, totalW = line.Box.W;
-        float top = line.Box.Y, bottom = line.Box.Y + line.EffectiveHeight;
+        // Word fallback: walk the baseline through the line box's centre, so a
+        // slanted line's words descend/rise with it instead of restarting at
+        // the box top. The glyph band is centre-deflated to EffectiveHeight,
+        // matching OcrPageMapper/OcrRecognizer.
+        float ac = (float)Math.Abs(cos), asn = (float)Math.Abs(sin);
+        var box = line.Box;
+        float perp = box.H * ac + box.W * asn;
+        float glyphHeight = line.EffectiveHeight > 0f && perp > 0f
+            ? Math.Min(line.EffectiveHeight, perp) : perp;
+        if (glyphHeight <= 0f) glyphHeight = box.H;
+        float totalAlong = ac > 0.05f
+            ? Math.Max((box.W - glyphHeight * asn) / ac, 0f)
+            : Math.Max((box.H - glyphHeight * ac) / Math.Max(asn, 0.001f), 0f);
+        if (totalAlong <= 0f) totalAlong = box.W;
+
+        float cx = box.X + box.W / 2f, cy = box.Y + box.H / 2f;
         int n = Math.Max(text.Length, 1);
         int i = 0;
         while (i < text.Length)
@@ -230,19 +288,35 @@ public static class PdfTextLayerWriter
             int start = i;
             while (i < text.Length && text[i] != ' ') i++;
             if (i <= start) break;
-            float l = x0 + totalW * start / n;
-            float r = x0 + totalW * i / n;
-            yield return new TextUnit(text[start..i], l, top, r, bottom);
+            float wordAlong = totalAlong * (i - start) / n;
+            double centreOffset = -totalAlong / 2.0 + totalAlong * start / n + wordAlong / 2.0;
+            // Glyph centre = origin + (along/2)·v + (height/2)·up, up=(sin,-cos).
+            double ox = cx + centreOffset * cos - (wordAlong / 2.0) * cos - (glyphHeight / 2.0) * sin;
+            double oy = cy + centreOffset * sin - (wordAlong / 2.0) * sin + (glyphHeight / 2.0) * cos;
+            yield return new TextUnit(text[start..i], (float)ox, (float)oy, wordAlong, glyphHeight);
         }
+    }
+
+    /// <summary>
+    /// Resolves a char box to baseline origin, along-length and height. Char
+    /// boxes in this codebase are upright ink boxes positioned along the
+    /// baseline (tightened OCR boxes, PDFium glyph boxes), not axis-aligned
+    /// bounds of a rotated glyph rectangle — so the origin is the box's
+    /// bottom-left and the along-length is its width projected on the baseline.
+    /// </summary>
+    private static TextUnit FromAabb(string text, float left, float top, float right, float bottom,
+        double cos, double sin)
+    {
+        float w = right - left, ha = bottom - top;
+        double ac = Math.Abs(cos);
+        return new TextUnit(text, left, bottom, ac > 0.01 ? (float)(w / ac) : w, ha);
     }
 
     private static bool WriteUnit(IntPtr doc, IntPtr page, TextUnit unit, float angleRad,
         in PageTransform tx, FontHandle font)
     {
-        float width = unit.Right - unit.Left;
-        float height = unit.Bottom - unit.Top;
-        if (width <= 0f || height <= 0f || string.IsNullOrEmpty(unit.Text)) return false;
-        float fontSize = Math.Max(height, 0.5f);
+        if (unit.Along <= 0f || unit.Height <= 0f || string.IsNullOrEmpty(unit.Text)) return false;
+        float fontSize = Math.Max(unit.Height, 0.5f);
 
         var obj = font.CreateTextObject(doc, fontSize);
         if (obj == IntPtr.Zero) return false;
@@ -250,14 +324,14 @@ public static class PdfTextLayerWriter
         try
         {
             if (!font.SetText(obj, unit.Text)) return false;
-            FPDFTextObj_SetTextRenderMode(obj, FPDF_TEXTRENDERMODE_INVISIBLE);
-            FPDFPageObj_AddMark(obj, OcrMarkName);
+            if (!FPDFTextObj_SetTextRenderMode(obj, FPDF_TEXTRENDERMODE_INVISIBLE)) return false;
+            if (FPDFPageObj_AddMark(obj, OcrMarkName) == IntPtr.Zero) return false;
 
             // Displayed-frame axes (Y-down): baseline direction and glyph-up.
             double cos = Math.Cos(angleRad), sin = Math.Sin(angleRad);
             var (vx, vy) = Linear(tx, cos, sin);
             var (ux, uy) = Linear(tx, sin, -cos);
-            var (ex, ey) = tx.PageToPdf(unit.Left, unit.Bottom);
+            var (ex, ey) = tx.PageToPdf(unit.OriginX, unit.OriginY);
 
             // Glyphless advance is UnitsPerEm per char, so the natural width of
             // the unit at this font size is glyphCount × fontSize; scale X to fit.
@@ -265,8 +339,7 @@ public static class PdfTextLayerWriter
             // UTF-16 length is the glyph count PDFium lays out.
             int glyphs = font.IsCid ? CodepointCount(unit.Text) : unit.Text.Length;
             double natural = Math.Max(glyphs, 1) * (double)fontSize;
-            double along = Math.Abs(cos) > 0.01 ? width / Math.Abs(cos) : width;
-            double sx = along / natural;
+            double sx = unit.Along / natural;
 
             var matrix = new FsMatrix
             {
@@ -274,7 +347,7 @@ public static class PdfTextLayerWriter
                 C = (float)ux, D = (float)uy,
                 E = ex, F = ey,
             };
-            FPDFPageObj_SetMatrix(obj, ref matrix);
+            if (!FPDFPageObj_SetMatrix(obj, ref matrix)) return false;
             FPDFPage_InsertObject(page, obj);
             inserted = true;
             return true;
@@ -404,7 +477,16 @@ public static class PdfTextLayerWriter
         }
 
         internal static int Sanitize(int runeValue)
-            => runeValue is >= 0 and <= 0xFFFF ? runeValue : ReplacementCodepoint;
+        {
+            // Tab is ordinary word-separating whitespace; every other control,
+            // the U+FFFE/U+FFFF noncharacters (which readers do not round-trip),
+            // and anything outside the BMP collapses to U+FFFD.
+            if (runeValue == '\t') return ' ';
+            if (runeValue < 0x20 || runeValue is >= 0x7F and <= 0x9F
+                || runeValue is 0xFFFE or 0xFFFF or > 0xFFFF)
+                return ReplacementCodepoint;
+            return runeValue;
+        }
 
         public IntPtr CreateTextObject(IntPtr doc, float fontSize)
             => IsCid && _font != IntPtr.Zero

@@ -65,10 +65,13 @@ public sealed partial class PdfTextService : IPdfTextService
                 }
                 string text = new string(textChars);
 
-                return new PageText(text, charBoxes)
-                {
-                    FromOcr = PdfTextLayerWriter.PageHasOcrLayer(page),
-                };
+                // Provenance is best-effort: a failure scanning page objects for
+                // the OCR mark must never cost the page its extracted text.
+                bool fromOcr = false;
+                try { fromOcr = PdfTextLayerWriter.PageHasOcrLayer(page); }
+                catch { /* flag defaults to native; text is already built */ }
+
+                return new PageText(text, charBoxes) { FromOcr = fromOcr };
             });
     }
 
