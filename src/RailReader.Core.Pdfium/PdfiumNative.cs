@@ -382,7 +382,8 @@ internal static class PdfiumNative
 
     // Marked content (provenance tag on OCR text objects)
     [DllImport(Lib)] internal static extern int FPDFPageObj_CountMarks(IntPtr pageObject);
-    [DllImport(Lib)] internal static extern IntPtr FPDFPageObj_GetMark(IntPtr pageObject, uint index);
+    // index is C `unsigned long` — nuint, as for GetName below.
+    [DllImport(Lib)] internal static extern IntPtr FPDFPageObj_GetMark(IntPtr pageObject, nuint index);
     [DllImport(Lib)] internal static extern IntPtr FPDFPageObj_AddMark(IntPtr pageObject,
         [MarshalAs(UnmanagedType.LPStr)] string name);
     // buflen/out_buflen are C `unsigned long` (4 bytes on Windows LLP64, 8 on
@@ -406,16 +407,17 @@ internal static class PdfiumNative
         finally { Marshal.FreeHGlobal(buffer); }
     }
 
-    /// <summary>Reads a font's BaseFont name (UTF-8). Returns null on failure.</summary>
+    /// <summary>Reads a font's BaseFont name (UTF-8). Returns null on failure.
+    /// The reported length is capped: callers only substring-check the name, and
+    /// a corrupt font must not be able to force an unbounded allocation.</summary>
     internal static string? ReadFontBaseName(IntPtr font)
     {
         if (font == IntPtr.Zero) return null;
         nuint needed = FPDFFont_GetBaseFontName(font, null, 0);
-        if (needed < 2) return null;
+        if (needed < 2 || needed > 4096) return null;
         var buffer = new byte[needed];
-        FPDFFont_GetBaseFontName(font, buffer, needed);
-        int len = (int)needed - 1;
-        if (len > 0 && buffer[len] == 0) { /* trailing NUL included in count */ }
+        if (FPDFFont_GetBaseFontName(font, buffer, needed) != needed) return null;
+        int len = (int)needed - 1; // trailing NUL included in the count
         return System.Text.Encoding.UTF8.GetString(buffer, 0, Math.Max(0, len));
     }
 }

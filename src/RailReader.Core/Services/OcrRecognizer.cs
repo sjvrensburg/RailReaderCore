@@ -32,6 +32,7 @@ public static class OcrRecognizer
     {
         ArgumentNullException.ThrowIfNull(pdf);
         ArgumentNullException.ThrowIfNull(ocr);
+        if (dpi <= 0) dpi = DefaultDpi;
         if (mode == OcrMode.Off || page < 0 || page >= pdf.PageCount) return OcrPage.Empty;
 
         var (pageW, pageH) = pdf.GetPageSize(page);
@@ -49,9 +50,11 @@ public static class OcrRecognizer
     /// <summary>
     /// Recognises every page of the document, reporting progress as
     /// <c>(completed, total)</c> and honouring cancellation between pages.
-    /// Pages with no recognised lines are omitted from the result — the
-    /// text-layer writer skips native-text pages itself, so callers can hand
-    /// the returned dictionary straight to it.
+    /// Pages with no recognised lines are omitted from the result. In
+    /// <see cref="OcrMode.Full"/> mode the returned dictionary can be handed
+    /// straight to the text-layer writer (it skips native-text pages itself);
+    /// <see cref="OcrMode.Lines"/> pages carry geometry only and are included
+    /// for line-detection consumers — the writer has no text to write for them.
     /// </summary>
     public static Dictionary<int, OcrPage> RecognizeDocument(IPdfService pdf, IOcrService ocr,
         OcrMode mode = OcrMode.Full, int dpi = DefaultDpi,

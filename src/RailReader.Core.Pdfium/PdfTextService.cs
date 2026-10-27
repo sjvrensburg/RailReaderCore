@@ -18,6 +18,30 @@ public sealed partial class PdfTextService : IPdfTextService
     // PdfiumGate.Lock; see CachedPdfDocument for the lifetime contract.
     private readonly CachedPdfDocument _docCache = new();
 
+    // Per-page OCR-provenance results for the cached document, so repeat
+    // extractions (Export and other direct callers bypass DocumentModel's
+    // text cache) do not rescan every page object each time. Keyed by the
+    // same bytes-identity contract as CachedPdfDocument; guarded by the gate.
+    private byte[]? _ocrFlagBytes;
+    private string? _ocrFlagPassword;
+    private readonly Dictionary<int, bool> _ocrFlags = new();
+
+    private bool CachedFromOcr(byte[] pdfBytes, string? password, int pageIndex, IntPtr page)
+    {
+        if (!ReferenceEquals(_ocrFlagBytes, pdfBytes) || _ocrFlagPassword != password)
+        {
+            _ocrFlags.Clear();
+            _ocrFlagBytes = pdfBytes;
+            _ocrFlagPassword = password;
+        }
+        if (_ocrFlags.TryGetValue(pageIndex, out bool cached)) return cached;
+        bool fromOcr = false;
+        try { fromOcr = PdfTextLayerWriter.PageHasOcrLayer(page); }
+        catch { /* provenance is best-effort; never lose the extracted text */ }
+        _ocrFlags[pageIndex] = fromOcr;
+        return fromOcr;
+    }
+
     /// <summary>
     /// Extracts all text and per-character bounding boxes for a given page.
     /// PDFium returns coordinates in PDF user space (origin bottom-left, Y-up).
@@ -65,13 +89,10 @@ public sealed partial class PdfTextService : IPdfTextService
                 }
                 string text = new string(textChars);
 
-                // Provenance is best-effort: a failure scanning page objects for
-                // the OCR mark must never cost the page its extracted text.
-                bool fromOcr = false;
-                try { fromOcr = PdfTextLayerWriter.PageHasOcrLayer(page); }
-                catch { /* flag defaults to native; text is already built */ }
-
-                return new PageText(text, charBoxes) { FromOcr = fromOcr };
+                return new PageText(text, charBoxes)
+                {
+                    FromOcr = CachedFromOcr(pdfBytes, password, pageIndex, page),
+                };
             });
     }
 

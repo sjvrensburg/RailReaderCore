@@ -192,6 +192,11 @@ public sealed partial class PdfTextService : IPdfTextService
         double pageH = page.Height;
         var sb = new StringBuilder(words.Sum(w => w.Letters.Count));
         var boxes = new List<CharBox>(sb.Capacity);
+        // Provenance (#155): letters set in the OCR writer's glyphless font mean
+        // this page's text is a baked-in OCR layer, not a native one. (The font
+        // name is the same signal the PDFium backend's mark scan falls back to;
+        // PdfPig letters expose no marked-content tag.)
+        bool fromOcr = false;
 
         float prevWordRight = float.NaN;
         float prevWordTop = float.NaN;
@@ -253,6 +258,9 @@ public sealed partial class PdfTextService : IPdfTextService
 
             foreach (var letter in word.Letters)
             {
+                if (!fromOcr && letter.FontName is not null
+                    && letter.FontName.Contains("RailReaderGlyphless", StringComparison.Ordinal))
+                    fromOcr = true;
                 var (left, top, right, bottom) = FlippedAabb(letter.BoundingBox, pageH);
                 float angle = DisplayAngle(letter);
 
@@ -279,7 +287,7 @@ public sealed partial class PdfTextService : IPdfTextService
             prevWordBottom = wBottom;
         }
 
-        return new PageText(sb.ToString(), boxes);
+        return new PageText(sb.ToString(), boxes) { FromOcr = fromOcr };
     }
 
     /// <summary>
@@ -301,7 +309,7 @@ public sealed partial class PdfTextService : IPdfTextService
             float angle = (b.Angle + 90 * q) % 360;
             rotated.Add(new CharBox(b.Index, r.Left, r.Top, r.Right, r.Bottom, angle));
         }
-        return new PageText(pageText.Text, rotated);
+        return pageText with { CharBoxes = rotated };
     }
 
     /// <summary>

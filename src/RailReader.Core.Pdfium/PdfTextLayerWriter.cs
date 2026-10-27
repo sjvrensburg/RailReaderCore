@@ -59,7 +59,7 @@ public sealed record TextLayerWriteResult(int PagesWritten, int PagesSkipped, bo
 /// <see cref="PdfAnnotationWriter"/>).</para>
 ///
 /// <para><b>Unicode.</b> A synthesised glyphless CID font
-/// (<see cref="GlyphlessFont"/>) with an identity <c>/ToUnicode</c> carries the
+/// (<see cref="GlyphlessFont"/>) with densely assigned CIDs and a <c>/ToUnicode</c> CMap carries the
 /// text, so non-Latin scripts round-trip; the standard-14 fallback (Helvetica)
 /// is used only if the CID font fails to load, and is WinAnsi-limited.</para>
 ///
@@ -403,7 +403,7 @@ public static class PdfTextLayerWriter
         int marks = FPDFPageObj_CountMarks(obj);
         for (int m = 0; m < marks; m++)
         {
-            var mark = FPDFPageObj_GetMark(obj, (uint)m);
+            var mark = FPDFPageObj_GetMark(obj, (nuint)m);
             if (mark != IntPtr.Zero && ReadMarkName(mark) == OcrMarkName) return true;
         }
         var name = ReadFontBaseName(FPDFTextObj_GetFont(obj));

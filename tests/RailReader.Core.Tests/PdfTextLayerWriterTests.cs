@@ -428,6 +428,20 @@ public class PdfTextLayerWriterTests
     }
 
     [Fact]
+    public void RecognizePage_NonPositiveDpi_FallsBackToDefault()
+    {
+        var path = TestFixtures.GetTextlessTestPdfPath();
+        var factory = TestFixtures.CreatePdfFactory();
+        var svc = factory.CreatePdfService(path);
+        var ocr = new FakeOcr();
+        var page = OcrRecognizer.RecognizePage(svc, ocr, 0, OcrMode.Full, dpi: 0);
+        // Default 300 dpi on a 792pt page => a multi-thousand-pixel raster,
+        // not the 1-pixel clamp an unchecked dpi=0 used to produce.
+        Assert.True(ocr.LastWidth > 1000, $"raster width was {ocr.LastWidth}");
+        Assert.Single(page.Lines);
+    }
+
+    [Fact]
     public void LiveOcrPageText_IsFlaggedAsOcr()
     {
         var page = new OcrPage([
@@ -441,8 +455,11 @@ public class PdfTextLayerWriterTests
 
     private sealed class FakeOcr : IOcrService
     {
+        public int LastWidth { get; private set; }
+
         public OcrPage Recognize(byte[] rgbBytes, int width, int height, OcrMode mode, CancellationToken ct = default)
         {
+            LastWidth = width;
             var chars = new List<CharBox>();
             const string text = "Hi";
             // Pixel space: pixmap is page/72*dpi, helper must scale back to points.
