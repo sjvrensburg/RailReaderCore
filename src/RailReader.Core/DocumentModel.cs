@@ -762,7 +762,6 @@ public sealed class DocumentModel : IDisposable
             if (IsAnalysed(page, pars) || worker.IsInFlight(FilePath, page, pars)) continue;
 
             string filePath = FilePath;
-            double pageW = vp.PageWidth, pageH = vp.PageHeight;
             int viewRotation = _viewRotation;
             var ct = _cts.Token;
             Task.Run(() =>
@@ -770,6 +769,9 @@ public sealed class DocumentModel : IDisposable
                 try
                 {
                     ct.ThrowIfCancellationRequested();
+                    // The page's OWN size, not the view's: the view is on another page, and pages of
+                    // one document can differ (a cover page), which scaled every block off its text.
+                    var (pageW, pageH) = _pdf.GetPageSize(page, viewRotation);
                     var (rgb, pxW, pxH) = _pdf.RenderPagePixmap(page, worker.InputSize, viewRotation);
                     var pageText = _pdfText.ExtractPageText(_pdf.PdfBytes, page, viewRotation, _pdf.Password);
                     var rulings = ExtractRulings(page, viewRotation);
