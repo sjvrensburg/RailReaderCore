@@ -239,6 +239,54 @@ public class BackgroundAnalysisAndCacheTests
         public void Dispose() { }
     }
 
+    [Fact]
+    public void Lookahead_MapsEachPageWithItsOwnSize()
+    {
+        // A JSTOR download starts with a cover page larger than the article pages. Lookahead used
+        // the CURRENT page's size for the page it was analysing, so every block on the article
+        // pages came back scaled by cover/article (×1.4 there), drawn off the text.
+        var path = Path.Combine(Path.GetTempPath(), $"rr_mixed_sizes_{Guid.NewGuid():N}.pdf");
+        using (var stream = File.Create(path))
+        using (var pdfDoc = SkiaSharp.SKDocument.CreatePdf(stream))
+        {
+            pdfDoc.BeginPage(612, 792);
+            pdfDoc.EndPage();
+            pdfDoc.BeginPage(426, 700);
+            pdfDoc.EndPage();
+            pdfDoc.Close();
+        }
+        try
+        {
+            var marshaller = new SynchronousThreadMarshaller();
+            var factory = TestFixtures.CreatePdfFactory();
+            using var doc = new DocumentModel(path, factory.CreatePdfService(path),
+                factory.CreatePdfTextService(), factory.CreatePdfLinkService(), new CoreSettings(), marshaller);
+            doc.LoadPageBitmap(); // the view is on the 612×792 page
+            using var worker = new AnalysisWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+                () => new FakeLayoutAnalyzer(), marshaller);
+
+            doc.QueueLookahead(1);
+            Assert.True(doc.SubmitPendingLookahead(worker));
+
+            AnalysisResult? result = null;
+            var deadline = DateTime.UtcNow.AddSeconds(20);
+            while (result is null && DateTime.UtcNow < deadline)
+            {
+                result = worker.Poll();
+                if (result is null) Thread.Sleep(20);
+            }
+
+            Assert.NotNull(result);
+            Assert.Equal(1, result.Page);
+            Assert.Equal(426, result.Analysis.PageWidth, 1);
+            Assert.Equal(700, result.Analysis.PageHeight, 1);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static DocumentModel NewTextlessDoc(IThreadMarshaller marshaller)
     {
         var factory = TestFixtures.CreatePdfFactory();

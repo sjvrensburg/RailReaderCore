@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.74.1 — Lookahead analysis uses each page's own size (2026-10-28)
+
+- `DocumentModel.SubmitPendingLookahead` mapped a lookahead page's blocks with the size of the page being read
+  rather than its own, so on a document with mixed page sizes (e.g. a JSTOR cover page before smaller article
+  pages) every block on those pages was scaled off its text for the rest of the session. It now asks the PDF for
+  the page's own size, as background read-ahead already did. Present since the Core extraction.
+
 ## 0.74.0 — Precise annotation hit-testing, latched free pan, atomic config writes (2026-10-28)
 
 ### Annotations are hit where they are drawn
