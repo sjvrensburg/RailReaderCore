@@ -108,7 +108,7 @@ public class AuditServicesFixesTests : IDisposable
         _handler.SetAnnotationTool(AnnotationTool.Eraser);
         _handler.SelectedAnnotation = rect; // e.g. host-driven selection
 
-        _handler.HandleAnnotationPointerDown(_doc.Primary, 20, 20); // erases the rect
+        _handler.HandleAnnotationPointerDown(_doc.Primary, 10, 20); // on its outline: erases the rect
 
         Assert.False(_doc.Annotations!.Pages.TryGetValue(0, out var list) && list.Contains(rect));
         Assert.Null(_handler.SelectedAnnotation);

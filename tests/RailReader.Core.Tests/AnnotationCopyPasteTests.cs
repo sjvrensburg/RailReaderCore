@@ -268,13 +268,13 @@ public class AnnotationCopyPasteTests : IDisposable
     {
         var rect = new RectAnnotation { X = 120, Y = 110, W = 20, H = 20 };
         _doc.AddAnnotation(0, rect);
-        // Added later (so topmost) and its union bounds cover the rect.
+        // Added later (so topmost), and its first line runs across the rect's top edge.
         _doc.AddAnnotation(0, new HighlightAnnotation
         {
             Rects = [new HighlightRect(100, 100, 200, 14), new HighlightRect(100, 130, 200, 14)],
         });
 
-        Assert.True(_handler.HandleBrowsePointerDown(Vp, 130, 120));
+        Assert.True(_handler.HandleBrowsePointerDown(Vp, 120, 112)); // on both the outline and the highlight
         Assert.Same(rect, _handler.SelectedAnnotation);
     }
 

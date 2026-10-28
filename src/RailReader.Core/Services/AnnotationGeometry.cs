@@ -61,11 +61,54 @@ public static class AnnotationGeometry
         return new RectF(minX, minY, maxX, maxY);
     }
 
+    /// <summary>
+    /// Whether (<paramref name="pageX"/>, <paramref name="pageY"/>) lies on the visible part of
+    /// <paramref name="annotation"/>, within <paramref name="tolerance"/> page units: a markup's own
+    /// line rects (not their union, which for a highlight wrapping onto the next line covers both whole
+    /// rows), a freehand stroke's path, an unfilled rectangle's outline. Notes, free text, carets and
+    /// filled rectangles are solid, so their bounds.
+    /// </summary>
     public static bool HitTest(Annotation annotation, float pageX, float pageY, float tolerance = 4f)
     {
+        switch (annotation)
+        {
+            case TextMarkupAnnotation m:
+                foreach (var r in m.Rects)
+                    if (new RectF(r.X, r.Y, r.X + r.W, r.Y + r.H).Inflated(tolerance, tolerance).Contains(pageX, pageY))
+                        return true;
+                return false;
+            case FreehandAnnotation f when f.Points.Count > 0:
+                return DistanceToPolyline(f.Points, pageX, pageY) <= f.StrokeWidth / 2 + tolerance;
+            case RectAnnotation { Filled: false } r:
+                var box = new RectF(Math.Min(r.X, r.X + r.W), Math.Min(r.Y, r.Y + r.H),
+                    Math.Max(r.X, r.X + r.W), Math.Max(r.Y, r.Y + r.H));
+                float reach = r.StrokeWidth / 2 + tolerance;
+                if (!box.Inflated(reach, reach).Contains(pageX, pageY)) return false;
+                var hollow = box.Inflated(-reach, -reach);
+                return hollow.Width <= 0 || hollow.Height <= 0 || !hollow.Contains(pageX, pageY);
+        }
         var bounds = GetAnnotationBounds(annotation);
         if (bounds is not { } rect) return false;
         return rect.Inflated(tolerance, tolerance).Contains(pageX, pageY);
+    }
+
+    /// <summary>Distance from a point to the polyline through <paramref name="points"/> (to the point
+    /// itself when there is only one).</summary>
+    public static float DistanceToPolyline(List<PointF> points, float x, float y)
+    {
+        if (points.Count == 1)
+            return MathF.Sqrt((x - points[0].X) * (x - points[0].X) + (y - points[0].Y) * (y - points[0].Y));
+        float best = float.MaxValue;
+        for (int i = 1; i < points.Count; i++)
+        {
+            var (a, b) = (points[i - 1], points[i]);
+            float dx = b.X - a.X, dy = b.Y - a.Y;
+            float lengthSq = dx * dx + dy * dy;
+            float t = lengthSq > 0 ? Math.Clamp(((x - a.X) * dx + (y - a.Y) * dy) / lengthSq, 0f, 1f) : 0f;
+            float px = a.X + t * dx - x, py = a.Y + t * dy - y;
+            best = Math.Min(best, px * px + py * py);
+        }
+        return MathF.Sqrt(best);
     }
 
     public static ResizeHandle HitTestResizeHandle(FreehandAnnotation annotation, float pageX, float pageY, float tolerance = 8f)

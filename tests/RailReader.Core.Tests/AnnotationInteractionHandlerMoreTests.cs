@@ -178,17 +178,51 @@ public class AnnotationInteractionHandlerMoreTests : IDisposable
         var rect = AddRect(100, 100, 50, 40);
         _doc.UndoStack.Clear();
 
-        bool hit = _handler.HandleBrowsePointerDown(_doc.Primary, 120, 120);
+        bool hit = _handler.HandleBrowsePointerDown(_doc.Primary, 100, 120); // on the left edge
         Assert.True(hit);
         Assert.Same(rect, _handler.SelectedAnnotation);
 
-        _handler.HandleBrowsePointerMove(130, 130);
-        _handler.HandleBrowsePointerMove(140, 140);
-        _handler.HandleBrowsePointerUp(_doc.Primary, 140, 140);
+        _handler.HandleBrowsePointerMove(110, 130);
+        _handler.HandleBrowsePointerMove(120, 140);
+        _handler.HandleBrowsePointerUp(_doc.Primary, 120, 140);
 
         Assert.True(rect.X > 100f);
         Assert.True(rect.Y > 100f);
         Assert.NotEmpty(_doc.UndoStack);
+    }
+
+    [Fact]
+    public void BrowsePointerDown_InsideUnselectedOutline_DoesNotSelect()
+    {
+        AddRect(100, 100, 50, 40);
+
+        Assert.False(_handler.HandleBrowsePointerDown(_doc.Primary, 125, 120)); // hollow interior
+        Assert.Null(_handler.SelectedAnnotation);
+    }
+
+    [Fact]
+    public void BrowsePointerDown_InsideSelectedOutline_GrabsIt()
+    {
+        var rect = AddRect(100, 100, 50, 40);
+        Assert.True(_handler.HandleBrowsePointerDown(_doc.Primary, 100, 120)); // select via the edge
+        _handler.HandleBrowsePointerUp(_doc.Primary, 100, 120);
+
+        // Now selected, its selection box is on screen: the interior grabs it for a move.
+        Assert.True(_handler.HandleBrowsePointerDown(_doc.Primary, 125, 120));
+        Assert.Same(rect, _handler.SelectedAnnotation);
+        _handler.HandleBrowsePointerMove(135, 130);
+        _handler.HandleBrowsePointerUp(_doc.Primary, 135, 130);
+        Assert.Equal(110f, rect.X, 3);
+    }
+
+    [Fact]
+    public void BrowsePointerDown_OffAStroke_DoesNotSelectIt()
+    {
+        AddFreehand(100, 100); // a short diagonal from (95,95) to (105,105)
+
+        Assert.False(_handler.HandleBrowsePointerDown(_doc.Primary, 104, 96)); // inside bounds, off the line
+        Assert.Null(_handler.SelectedAnnotation);
+        Assert.True(_handler.HandleBrowsePointerDown(_doc.Primary, 101, 100));
     }
 
     public static TheoryData<Func<TextMarkupAnnotation>> MarkupFactories => new()
