@@ -917,10 +917,25 @@ public sealed partial class DocumentController : IDisposable
         ReanchorIfNeeded(vp, ww, wh);
     }
 
-    private void StartRailPause(Viewport vp)
+    /// <summary>
+    /// Starts a free pan on the focused view without a Ctrl-drag: the rail pauses exactly as it does
+    /// for one (visuals hidden, block/line/zoom kept for <see cref="ResumeRailFromPause"/>), and plain
+    /// drags then pan freely until the host resumes it. For a host's latched free pan, which outlives
+    /// the key that started it. False when no rail is engaged or it is already paused.
+    /// </summary>
+    public bool BeginFreePan()
+    {
+        if (FocusedViewport is not { } vp || !vp.Rail.Active || vp.Rail.Paused) return false;
+        vp.Zoom.Cancel();
+        if (AutoScrollActive) StopAutoScroll();
+        StartRailPause(vp, "Free pan — tap Ctrl to return");
+        return true;
+    }
+
+    private void StartRailPause(Viewport vp, string message = "Free pan — release Ctrl to return")
     {
         vp.Rail.PauseState = new(vp.Rail.CurrentBlock, vp.Rail.CurrentLine, vp.Rail.VerticalBias, vp.Camera.Zoom);
-        StatusMessage?.Invoke("Free pan — release Ctrl to return");
+        StatusMessage?.Invoke(message);
     }
 
     /// <summary>

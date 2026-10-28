@@ -188,14 +188,79 @@ public class AnnotationGeometryTests
     // ── HitTest ──────────────────────────────────────────────────────
 
     [Fact]
-    public void HitTest_InsideBounds_ReturnsTrue()
+    public void HitTest_InsideFilledRect_ReturnsTrue()
     {
-        var rect = new RectAnnotation { X = 10, Y = 20, W = 50, H = 30 };
+        var rect = new RectAnnotation { X = 10, Y = 20, W = 50, H = 30, Filled = true };
 
         // Centre of bounds: (35, 35) — well inside
         bool hit = AnnotationGeometry.HitTest(rect, 35, 35, tolerance: 4f);
 
         Assert.True(hit);
+    }
+
+    [Fact]
+    public void HitTest_UnfilledRect_HitsOutlineNotInterior()
+    {
+        var rect = new RectAnnotation { X = 10, Y = 20, W = 50, H = 30, StrokeWidth = 2f };
+
+        Assert.False(AnnotationGeometry.HitTest(rect, 35, 35, tolerance: 4f)); // hollow centre
+        Assert.True(AnnotationGeometry.HitTest(rect, 10, 35, tolerance: 4f));  // on the left edge
+        Assert.True(AnnotationGeometry.HitTest(rect, 35, 54, tolerance: 4f));  // just below the bottom edge
+        Assert.False(AnnotationGeometry.HitTest(rect, 35, 57, tolerance: 4f)); // beyond stroke + tolerance
+    }
+
+    [Fact]
+    public void HitTest_SmallUnfilledRect_IsAllOutline()
+    {
+        // Narrower than twice the reach: no hollow left, so the whole box hits.
+        var rect = new RectAnnotation { X = 10, Y = 10, W = 6, H = 6, StrokeWidth = 2f };
+
+        Assert.True(AnnotationGeometry.HitTest(rect, 13, 13, tolerance: 4f));
+    }
+
+    [Fact]
+    public void HitTest_WrappedHighlight_MissesTheGapBetweenItsLines()
+    {
+        // A highlight from the end of one line to the start of the next: its union bounds cover
+        // both whole rows, but only the two line rects are drawn.
+        var highlight = new HighlightAnnotation
+        {
+            Rects =
+            [
+                new HighlightRect(400, 100, 100, 12), // last words of line 1
+                new HighlightRect(50, 114, 80, 12),   // first words of line 2
+            ],
+        };
+
+        Assert.True(AnnotationGeometry.HitTest(highlight, 450, 106, tolerance: 4f));
+        Assert.True(AnnotationGeometry.HitTest(highlight, 90, 120, tolerance: 4f));
+        Assert.False(AnnotationGeometry.HitTest(highlight, 200, 106, tolerance: 4f)); // line 1, before the highlight
+        Assert.False(AnnotationGeometry.HitTest(highlight, 300, 120, tolerance: 4f)); // line 2, after it
+    }
+
+    [Fact]
+    public void HitTest_Freehand_HitsNearTheStrokeOnly()
+    {
+        // An L-shaped stroke: its bounds include the empty corner opposite the bend.
+        var freehand = new FreehandAnnotation
+        {
+            StrokeWidth = 2f,
+            Points = [new PointF(0, 0), new PointF(0, 100), new PointF(100, 100)],
+        };
+
+        Assert.True(AnnotationGeometry.HitTest(freehand, 3, 50, tolerance: 4f));   // beside the vertical leg
+        Assert.True(AnnotationGeometry.HitTest(freehand, 50, 104, tolerance: 4f)); // below the horizontal leg
+        Assert.False(AnnotationGeometry.HitTest(freehand, 80, 20, tolerance: 4f)); // inside bounds, off the stroke
+        Assert.False(AnnotationGeometry.HitTest(freehand, 50, 94, tolerance: 4f)); // 6 > 1 + 4 from the leg
+    }
+
+    [Fact]
+    public void DistanceToPolyline_SinglePointAndSegment()
+    {
+        Assert.Equal(5f, AnnotationGeometry.DistanceToPolyline([new PointF(0, 0)], 3, 4), 3);
+        Assert.Equal(2f, AnnotationGeometry.DistanceToPolyline([new PointF(0, 0), new PointF(10, 0)], 5, 2), 3);
+        // Beyond the segment's end: distance to the endpoint, not to the infinite line.
+        Assert.Equal(5f, AnnotationGeometry.DistanceToPolyline([new PointF(0, 0), new PointF(10, 0)], 13, 4), 3);
     }
 
     [Fact]

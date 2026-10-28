@@ -778,8 +778,8 @@ public sealed class AnnotationInteractionHandler
             }
         }
 
-        // Hit-test annotations (top to bottom). Markup hit-tests against its union bounds, so a
-        // multi-line highlight can cover a note or box drawn earlier: movable annotations win over
+        // Hit-test annotations (top to bottom) against what is drawn. A highlight is drawn over the
+        // text, so it can still lie on a note or box drawn earlier: movable annotations win over
         // markup, otherwise a select-only highlight would make them unreachable.
         if (list is not null)
         {
@@ -791,6 +791,12 @@ public sealed class AnnotationInteractionHandler
                 else hitIndex = i;
             }
             if (hitIndex < 0) hitIndex = markupIndex;
+            // A selected movable annotation shows its selection box, so anywhere inside that box grabs
+            // it; otherwise moving a thin stroke or an outline would mean hitting its line exactly.
+            if (hitIndex < 0 && SelectedAnnotation is { } selected and not TextMarkupAnnotation
+                && AnnotationGeometry.GetAnnotationBounds(selected) is { } selectedBounds
+                && selectedBounds.Inflated(4f, 4f).Contains(pageX, pageY))
+                hitIndex = list.IndexOf(selected);
 
             if (hitIndex >= 0)
             {
