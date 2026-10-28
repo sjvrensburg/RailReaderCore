@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.74.0 — Precise annotation hit-testing, latched free pan, atomic config writes (2026-10-28)
+
+### Annotations are hit where they are drawn
+
+- `AnnotationGeometry.HitTest` no longer uses the union bounding box. Text markup hits its own line rects (a
+  highlight wrapping from the end of one line to the start of the next no longer covers both whole rows),
+  freehand within half its stroke width plus the tolerance of its path, and an unfilled `RectAnnotation` only
+  its outline. Notes, free text, carets and filled rectangles keep their bounds. Selection, the eraser and the
+  markup comment double-click all follow.
+- A selected movable annotation is still grabbed anywhere inside its selection box, so moving a thin stroke
+  doesn't need a pixel-exact press.
+- New `AnnotationGeometry.DistanceToPolyline`.
+
+### Free pan without a drag
+
+- `DocumentController.BeginFreePan()` pauses the focused view's rail exactly as a Ctrl-drag does, for a host's
+  latched free pan that outlives the key that started it. Ended by `ResumeRailFromPause`; returns false when no
+  rail is engaged or it is already paused.
+
+### Config
+
+- `AppConfig.Save` writes through a temp file and a move, so a crash mid-write can't truncate `config.json`.
+
 ## 0.73.0 — Invisible OCR text layer written into a PDF copy (2026-10-27)
 
 ### Invisible OCR text layer written into a PDF copy (#155)
