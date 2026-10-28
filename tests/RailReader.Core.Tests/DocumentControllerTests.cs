@@ -426,6 +426,38 @@ public class DocumentControllerTests : IDisposable
     }
 
     [Fact]
+    public void BeginFreePan_PausesWithoutADrag_AndPlainPansKeepItPaused()
+    {
+        var state = CreateAndAddDocument();
+        SetupRailMode(state);
+        int block = state.Rail.CurrentBlock, line = state.Rail.CurrentLine;
+        string? message = null;
+        _controller.StatusMessage = m => message = m;
+
+        Assert.True(_controller.BeginFreePan());
+        Assert.True(_controller.RailPaused);
+        Assert.Contains("tap Ctrl", message);
+        Assert.False(_controller.BeginFreePan()); // already paused
+
+        _controller.HandlePan(30, 30); // a plain drag, no Ctrl
+        Assert.True(_controller.RailPaused);
+
+        _controller.ResumeRailFromPause();
+        Assert.False(_controller.RailPaused);
+        Assert.Equal(block, state.Rail.CurrentBlock);
+        Assert.Equal(line, state.Rail.CurrentLine);
+    }
+
+    [Fact]
+    public void BeginFreePan_WithoutRail_ReturnsFalse()
+    {
+        CreateAndAddDocument();
+
+        Assert.False(_controller.BeginFreePan());
+        Assert.False(_controller.RailPaused);
+    }
+
+    [Fact]
     public void SelectDocument_ClearsRailPause()
     {
         var s1 = _controller.CreateDocument(_pdfPath);
