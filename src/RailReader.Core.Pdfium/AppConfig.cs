@@ -447,7 +447,11 @@ public sealed class AppConfig : IRecentFilesStore
         try
         {
             var json = JsonSerializer.Serialize(this, RailReaderJsonContext.Default.AppConfig);
-            File.WriteAllText(ConfigPath, json);
+            // Temp file then move: hosts save the reading position as the reader goes, so a crash
+            // mid-write must not leave a truncated config.json (which loads as all defaults).
+            var tmp = ConfigPath + ".rrtmp";
+            File.WriteAllText(tmp, json);
+            File.Move(tmp, ConfigPath, overwrite: true);
         }
         catch (Exception ex)
         {
