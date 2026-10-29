@@ -32,9 +32,14 @@ public static class DocumentIdentity
     private static IdentityMap? s_map;
     private static bool s_owner;   // this process has called Resolve, so its map may hold unsaved entries
     private static bool s_loadFailed;   // the map file exists but could not be read: keep it before overwriting
-    // Lookup's hashes of paths the map doesn't know, keyed by (path, size, mtime), so a read-only host's
-    // resolver (called on every sidecar Load/Save/Delete) doesn't re-read a large PDF each time.
-    private static readonly Dictionary<(string Path, long Size, long Mtime), string> s_lookupHashes = [];
+    // Lookup's last hash of each path the map doesn't know (one entry per path, so a file rewritten many
+    // times doesn't grow it), so a read-only host's resolver (called on every sidecar Load/Save/Delete)
+    // doesn't re-read a large PDF each time.
+    private static readonly Dictionary<string, (long Size, long Mtime, string Hash)> s_lookupHashes = [];
+    // Ids Lookup found by content for an unknown path. Kept for the process even if the bytes then change
+    // (e.g. annotations written into the PDF between a Load and a Save), so one session's calls all key
+    // the same sidecar rather than falling back to the path hash half-way through.
+    private static readonly Dictionary<string, string> s_lookupIds = [];
     private static readonly Lock s_lock = new();
 
     /// <summary>
@@ -108,18 +113,26 @@ public static class DocumentIdentity
 
         if (!File.Exists(key)) return null;
         var info = new FileInfo(key);
-        var cacheKey = (key, info.Length, info.LastWriteTimeUtc.Ticks);
-        string? hash;
+        long size = info.Length, mtime = info.LastWriteTimeUtc.Ticks;
+        string? hash = null;
         lock (s_lock)
-            s_lookupHashes.TryGetValue(cacheKey, out hash);
+        {
+            if (s_lookupIds.TryGetValue(key, out var seen)) return seen;
+            if (s_lookupHashes.TryGetValue(key, out var cached) && cached.Size == size && cached.Mtime == mtime)
+                hash = cached.Hash;
+        }
         if (hash is null)
         {
             hash = HashFile(key);
             lock (s_lock)
-                s_lookupHashes[cacheKey] = hash;
+                s_lookupHashes[key] = (size, mtime, hash);
         }
         lock (s_lock)
-            return Map().Aliases.TryGetValue(hash, out var aliased) ? aliased : null;
+        {
+            if (!Map().Aliases.TryGetValue(hash, out var aliased)) return null;
+            s_lookupIds[key] = aliased;
+            return aliased;
+        }
     }
 
     /// <summary>Other paths this document has been opened from, most recent first.</summary>
@@ -170,6 +183,7 @@ public static class DocumentIdentity
             s_owner = false;
             s_loadFailed = false;
             s_lookupHashes.Clear();
+            s_lookupIds.Clear();
         }
     }
 
@@ -205,7 +219,7 @@ public static class DocumentIdentity
     // Callers hold s_lock.
     private static void SaveMap(IdentityMap map)
     {
-        PreserveUnreadableMap();
+        if (!PreserveUnreadableMap()) return;   // retried on the next save; never overwrite the only copy
         JsonSidecar.Save(MapPath, map, RailReaderJsonContext.Default.IdentityMap);
     }
 
@@ -223,12 +237,21 @@ public static class DocumentIdentity
 
     // Callers hold s_lock. The first save after an unreadable map would replace every recorded id with
     // this process's (empty) view of it, orphaning every id-keyed sidecar; keep the old file for recovery.
-    private static void PreserveUnreadableMap()
+    // Returns false when the copy failed, so the caller must not overwrite the original.
+    private static bool PreserveUnreadableMap()
     {
-        if (!s_loadFailed) return;
-        s_loadFailed = false;
-        try { File.Copy(MapPath, MapPath + ".unreadable", overwrite: true); }
-        catch (Exception ex) { RailReaderLogging.Logger.Error("Failed to preserve the unreadable document_ids.json", ex); }
+        if (!s_loadFailed) return true;
+        try
+        {
+            if (File.Exists(MapPath)) File.Copy(MapPath, MapPath + ".unreadable", overwrite: true);
+            s_loadFailed = false;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            RailReaderLogging.Logger.Error("Failed to preserve the unreadable document_ids.json; not overwriting it", ex);
+            return false;
+        }
     }
 
     private static string HashFile(string path)
