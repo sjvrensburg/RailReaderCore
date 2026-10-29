@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.76.0 — Annotation import that skips duplicates (2026-10-29)
 
 - `AnnotationService.MergeInto(target, imported, skipEquivalent)` (#168), an additive overload for
   importing another copy of a document's annotations (railreader2's `.railreading` package). With
