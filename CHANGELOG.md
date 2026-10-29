@@ -11,7 +11,8 @@
   added unthreaded). The rest are added as `RailReader` annotations, so the writer writes an in-PDF
   annotation the target lacks into the target PDF; a colliding `/NM` is cleared, or replaced if an added
   reply points at it. Bookmarks dedupe as before. The two-argument overload is unchanged. An annotation
-  edited on both copies still comes back twice unless the two share a `/NM`.
+  edited on both copies still comes back twice unless the two share a `/NM`, and one deleted from the
+  target but still in the import is added back (the merge has no record of deletions).
 
 ## 0.75.2 — SourceLink security fix and dependency updates (2026-10-29)
 

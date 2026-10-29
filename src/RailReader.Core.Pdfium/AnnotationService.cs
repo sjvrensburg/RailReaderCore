@@ -209,6 +209,8 @@ public sealed class AnnotationService : IAnnotationStore
     /// </list>
     /// Bookmarks are added as in the two-argument overload. An annotation edited in only one copy is
     /// no longer equivalent to its counterpart, so unless the two share a <c>/NM</c> both are kept.
+    /// The merge has no record of deletions: an annotation deleted from the target but still in the
+    /// import is added back.
     /// Annotations are moved from <paramref name="imported"/>, not copied. Returns the number of
     /// annotations and bookmarks added.
     /// </summary>
@@ -279,7 +281,7 @@ public sealed class AnnotationService : IAnnotationStore
                 parent = Decide(p);
                 parentInTarget = parent is not null;
             }
-            else if (!string.IsNullOrEmpty(a.InReplyTo))
+            else if (!string.IsNullOrEmpty(a.InReplyTo) && a.InReplyTo != a.NativeId)
             {
                 targetById.TryGetValue(a.InReplyTo, out parent); // a reply to an annotation only the target has
             }
@@ -308,14 +310,14 @@ public sealed class AnnotationService : IAnnotationStore
         foreach (var (_, a) in toAdd)
             if (ImportedParent(a) is { } p && !match.ContainsKey(p)) newParents.Add(p);
 
-        // Remember each added reply's parent before ids change underneath the lookup.
-        var parentOf = new Dictionary<Annotation, Annotation?>(byRef);
-        foreach (var (_, a) in toAdd) parentOf[a] = ImportedParent(a);
-
         var seenIds = new HashSet<string>(targetById.Keys, StringComparer.Ordinal);
         foreach (var (_, a) in toAdd)
         {
             a.Source = AnnotationSource.RailReader;
+            // A self-reply is a root (AnnotationThreads reads it so). Drop the link before the id
+            // can change, or it would be left pointing at the target annotation that owns the id.
+            if (!string.IsNullOrEmpty(a.InReplyTo) && a.InReplyTo == a.NativeId && ImportedParent(a) is null)
+                a.InReplyTo = null;
             if (string.IsNullOrEmpty(a.NativeId) || seenIds.Add(a.NativeId)) continue;
             // Same reason as the two-argument overload: the writer and CompositeAnnotationStore
             // dedupe by /NM. A parent of an added reply needs an id the reply can point at.
@@ -325,7 +327,8 @@ public sealed class AnnotationService : IAnnotationStore
 
         foreach (var (_, a) in toAdd)
         {
-            if (parentOf[a] is not { } p) continue;
+            // importedById is keyed by the original ids, so the id rewrite above doesn't affect this.
+            if (ImportedParent(a) is not { } p) continue;
             if (!match.TryGetValue(p, out var host))
             {
                 a.InReplyTo = p.NativeId;

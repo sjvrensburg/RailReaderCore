@@ -205,6 +205,23 @@ public class AnnotationMergeTests
     }
 
     [Fact]
+    public void SelfReply_IsTreatedAsARoot_NotAsAReplyToTheTargetsSameId()
+    {
+        var target = AnnotationTestHelpers.OnePage(Highlight(100, "x"));
+        var imported = new AnnotationFile();
+        var selfReply = Highlight(300, "x");
+        selfReply.InReplyTo = "x";
+        imported.Pages[1] = [selfReply];
+
+        Assert.Equal(1, AnnotationService.MergeInto(target, imported, skipEquivalent: true));
+
+        var added = target.Pages[1].Single();
+        Assert.Null(added.NativeId); // collided with the target's "x"
+        Assert.Null(added.InReplyTo);
+        Assert.Equal(2, AnnotationThreads.Build(target).Count);
+    }
+
+    [Fact]
     public void NewThread_SurvivesWriteAndReload()
     {
         var writer = new PdfAnnotationWriter();
