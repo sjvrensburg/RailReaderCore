@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.75.1 — Windows CI and CanonicalPath fixes (2026-10-29)
 
 ### Tests run on Windows, on every PR (#161)
 
