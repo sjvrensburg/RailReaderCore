@@ -7,8 +7,12 @@ namespace RailReader.Core.Tests;
 /// <summary>Content-based document identity, shared by every host keying the annotation sidecar (#159).</summary>
 public sealed class DocumentIdentityTests : IDisposable
 {
-    // Canonical itself, so a temp root reached through a link (macOS's /var) can't make expected paths differ.
-    private readonly string _dir = CanonicalPath.ResolveLinks(Directory.CreateTempSubdirectory("docid").FullName)!;
+    // Canonical itself, so a temp root reached through a link (macOS's /var) or an 8.3 name (Windows runners'
+    // C:\Users\RUNNER~1) can't make expected paths differ.
+    private readonly string _dir = CanonicalDir(Directory.CreateTempSubdirectory("docid").FullName);
+
+    internal static string CanonicalDir(string dir)
+        => (OperatingSystem.IsWindows() ? CanonicalPath.FinalPathName(dir) : CanonicalPath.ResolveLinks(dir))!;
 
     public DocumentIdentityTests() => DocumentIdentity.OverrideMapPathForTesting(Path.Combine(_dir, "ids.json"));
 
@@ -196,13 +200,13 @@ public sealed class DocumentIdentityTests : IDisposable
         Assert.DoesNotContain(Path.GetFullPath(a), DocumentIdentity.KnownPaths(first));
     }
 
-    // Path spelling (railreader2#279). Symlinks stand in for every alternative spelling: CI is Linux, and
-    // the Windows cases (casing, 8.3, subst, mapped drives) go through GetFinalPathNameByHandle instead.
+    // Path spelling (railreader2#279). Unix symlinks; the Windows spellings (casing, 8.3, subst, mapped
+    // drives, junctions) go through GetFinalPathNameByHandle and are in DocumentIdentityWindowsTests.
 
     [Fact]
     public void AFileReachedThroughASymlinkHasOneEntry()
     {
-        if (OperatingSystem.IsWindows()) return;   // creating symlinks needs a privilege there
+        if (OperatingSystem.IsWindows()) return;   // see DocumentIdentityWindowsTests
         string real = Write("real.pdf", "linked");
         string link = Path.Combine(_dir, "link.pdf");
         File.CreateSymbolicLink(link, real);

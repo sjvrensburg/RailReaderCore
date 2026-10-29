@@ -1,0 +1,7 @@
+# LF everywhere, Windows checkouts included: multi-line string literals in the tests would otherwise
+# pick up CRLF and stop matching the "\n" the code under test produces.
+* text=auto eol=lf
+
+*.pdf binary
+*.png binary
+*.onnx binary
