@@ -364,6 +364,8 @@ Tests in `tests/RailReader.Core.Tests/` are xUnit. `TestFixtures.cs` generates s
 
 **Flaky tests**: Use the loop command above to reproduce intermittently-failing tests. If a test fails under concurrency, run `dotnet test ... --no-parallel-level 1` to serialize execution.
 
+**CI**: `.github/workflows/test.yml` runs the suite on `ubuntu-latest` and `windows-latest` for every PR and push to `main` (and via `workflow_dispatch` on any ref, for a release candidate). `build.yml` only publishes, on tags. Windows-only tests use `[WindowsFact]` (`DocumentIdentityWindowsTests`), which skips with a reason when the machine lacks 8.3 names, symlink rights or the `\\localhost\C$` admin share. CI sets `RAILREADER_REQUIRE_ADMIN_SHARE` so the share tests run and fail there instead of skipping.
+
 **Cross-backend isolation**: Do not write in-process tests that mix PDFium and PdfPig — they crash when loaded in the same process. Use golden-file comparisons or test each backend separately instead.
 
 ## Debugging & Profiling

@@ -1,0 +1,71 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  # For a release candidate (e.g. from railreader2): run the suite on any branch, tag or SHA.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or SHA to test (default: the ref this is run from)'
+        required: false
+        default: ''
+      os:
+        description: 'Runners to test on'
+        type: choice
+        options:
+          - all
+          - windows-latest
+          - ubuntu-latest
+        default: all
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  NUGET_XML_DOC_MODE: skip
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ (inputs.os == '' || inputs.os == 'all') && fromJSON('["ubuntu-latest", "windows-latest"]') || fromJSON(format('["{0}"]', inputs.os)) }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    env:
+      # Hosted Windows runners are elevated, so \\localhost\C$ is reachable: the UNC and mapped-drive
+      # identity tests must run there rather than skip.
+      RAILREADER_REQUIRE_ADMIN_SHARE: ${{ matrix.os == 'windows-latest' && '1' || '' }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore RailReaderCore.slnx
+
+      - name: Build
+        run: dotnet build RailReaderCore.slnx -c Release -p:ContinuousIntegrationBuild=true --no-restore
+
+      - name: Test
+        run: dotnet test tests/RailReader.Core.Tests -c Release --no-build --logger "console;verbosity=normal" --logger trx --results-directory TestResults
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ matrix.os }}
+          path: TestResults/*.trx
+          retention-days: 7

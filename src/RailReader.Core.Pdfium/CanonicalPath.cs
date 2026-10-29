@@ -60,11 +60,13 @@ internal static class CanonicalPath
         }
     }
 
-    private static string? FinalPathName(string fullPath)
+    /// <summary>The final path of a file or directory on Windows (<c>GetFinalPathNameByHandleW</c>):
+    /// on-disk casing, long names, with junctions, symlinks and <c>subst</c> drives resolved.</summary>
+    internal static string? FinalPathName(string fullPath)
     {
         // No access rights requested, so a file another process holds open without sharing still resolves;
         // backup semantics would also admit a directory.
-        using SafeFileHandle handle = CreateFileW(fullPath, 0,
+        using SafeFileHandle handle = CreateFileW(ExtendedLengthPath(fullPath), 0,
             FileShare.ReadWrite | FileShare.Delete, IntPtr.Zero, FileMode.Open, FileFlagBackupSemantics, IntPtr.Zero);
         if (handle.IsInvalid) return null;
 
@@ -79,9 +81,33 @@ internal static class CanonicalPath
 
         // FILE_NAME_NORMALIZED | VOLUME_NAME_DOS yields \\?\C:\… or, for a network path, \\?\UNC\server\share\….
         string path = new(buffer, 0, (int)length);
-        if (path.StartsWith(@"\\?\UNC\", StringComparison.Ordinal)) return @"\\" + path[8..];
+        if (path.StartsWith(@"\\?\UNC\", StringComparison.Ordinal)) return LocalAdminShare(@"\\" + path[8..]);
         if (path.StartsWith(@"\\?\", StringComparison.Ordinal)) return path[4..];
         return path;
+    }
+
+    // CreateFileW takes MAX_PATH (260) or more only with the \\?\ prefix, unless the process has opted in to
+    // long paths (manifest and registry both), which a library can't assume. The prefix also turns off the
+    // path normalisation, so it is added only to a full path.
+    private static string ExtendedLengthPath(string path)
+    {
+        if (path.Length < 260 || path.StartsWith(@"\\?\", StringComparison.Ordinal) || path.StartsWith(@"\\.\", StringComparison.Ordinal))
+            return path;
+        path = Path.GetFullPath(path);
+        return path.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + path[2..] : @"\\?\" + path;
+    }
+
+    // A file opened through this machine's own administrative share (\\localhost\C$\…, or a drive mapped to it)
+    // is the same file as C:\…, but its final path is the share's: the handle belongs to the network redirector.
+    private static string LocalAdminShare(string uncPath)
+    {
+        string[] parts = uncPath[2..].Split('\\', 3);
+        if (parts.Length < 2 || parts[1].Length != 2 || parts[1][1] != '$' || !char.IsAsciiLetter(parts[1][0])) return uncPath;
+        string host = parts[0];
+        if (!host.Equals("localhost", StringComparison.OrdinalIgnoreCase) && host != "127.0.0.1"
+            && !host.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase))
+            return uncPath;
+        return $"{char.ToUpperInvariant(parts[1][0])}:\\{(parts.Length == 3 ? parts[2] : "")}";
     }
 
     private const uint FileFlagBackupSemantics = 0x02000000;

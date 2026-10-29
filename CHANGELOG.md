@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Tests run on Windows, on every PR (#161)
+
+- New `.github/workflows/test.yml`: `dotnet test` on `ubuntu-latest` and `windows-latest` for every PR and
+  push to `main`, plus a `workflow_dispatch` that tests any branch, tag or SHA (a release candidate) on either
+  runner. `build.yml` (publish) is unchanged.
+- `DocumentIdentityWindowsTests` covers the Windows spellings behind railreader2#279: casing (the on-disk
+  casing is returned, not the input's), a lower-case drive letter, 8.3 short names, `subst`, the `\\localhost\C$`
+  administrative share and a drive mapped to it, junctions, symlinks, migration of an entry under an old
+  spelling, a file held open without sharing, and a path past 512 characters.
+- `.gitattributes` pins LF line endings, so a Windows checkout doesn't put CRLF into the tests' string literals.
+
+### `CanonicalPath` fixes (Windows)
+
+- A path of 260 characters or more is now opened with the `\\?\` prefix, so canonicalisation no longer depends
+  on the process being long-path aware; such a file used to fall back to its uncanonicalised full path.
+- A file reached through this machine's own administrative share (`\\localhost\C$\…`, `\\<machine>\C$\…`, or a
+  drive mapped to one) now keys as `C:\…`. `GetFinalPathNameByHandle` reports the share's path for such a handle.
+
 ## 0.75.0 — Shared document identity for the annotation sidecar (2026-10-29)
 
 ### `DocumentIdentity` moves into Core.Pdfium (#159)
