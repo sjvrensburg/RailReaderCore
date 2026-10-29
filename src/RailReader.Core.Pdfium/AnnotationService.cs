@@ -185,10 +185,185 @@ public sealed class AnnotationService : IAnnotationStore
             added += annotations.Count;
         }
 
-        // Add bookmarks that don't already exist (by name + page)
+        return added + MergeBookmarks(target, imported);
+    }
+
+    /// <summary>
+    /// Merges imported annotations into an existing annotation file. With
+    /// <paramref name="skipEquivalent"/> false this is <see cref="MergeInto(AnnotationFile, AnnotationFile)"/>.
+    /// With it set, an imported annotation the target already has is skipped, so merging two copies
+    /// of the same document's annotations adds only what one lacks:
+    /// <list type="bullet">
+    /// <item>An imported annotation is a duplicate when an annotation on the <b>same page</b> of the
+    /// target has the same non-empty <c>/NM</c>, or is content-equivalent (same type, contents, style
+    /// and geometry) and replies to the same annotation. Each target annotation matches at most one
+    /// imported annotation, so an import that holds two equal annotations where the target holds one
+    /// adds the second.</item>
+    /// <item>A reply whose parent was skipped is attached to the target annotation that parent
+    /// matched. That annotation gets a <c>/NM</c> if it has none, as
+    /// <see cref="DocumentModel.AddReply"/> does for a thread root — unless it is an in-PDF annotation
+    /// without one, which the writer cannot identify; the reply is then added as a standalone note.</item>
+    /// <item>Everything else is added as an authored annotation (<see cref="AnnotationSource.RailReader"/>),
+    /// so the PDF writer writes it into the target PDF. It keeps its <c>/NM</c> unless that is already
+    /// taken, when the id is cleared, or replaced by a fresh one if an added reply points at it.</item>
+    /// </list>
+    /// Bookmarks are added as in the two-argument overload. An annotation edited in only one copy is
+    /// no longer equivalent to its counterpart, so unless the two share a <c>/NM</c> both are kept.
+    /// Annotations are moved from <paramref name="imported"/>, not copied. Returns the number of
+    /// annotations and bookmarks added.
+    /// </summary>
+    public static int MergeInto(AnnotationFile target, AnnotationFile imported, bool skipEquivalent)
+        => skipEquivalent
+            ? MergeNewAnnotations(target, imported) + MergeBookmarks(target, imported)
+            : MergeInto(target, imported);
+
+    private static int MergeNewAnnotations(AnnotationFile target, AnnotationFile imported)
+    {
+        var byRef = ReferenceEqualityComparer.Instance;
+
+        // The target as it was before the merge: imported annotations never match each other.
+        var targetPages = target.Pages.ToDictionary(kv => kv.Key, kv => kv.Value.ToList());
+        var targetById = new Dictionary<string, Annotation>(StringComparer.Ordinal);
+        foreach (var list in targetPages.Values)
+            foreach (var a in list)
+                if (!string.IsNullOrEmpty(a.NativeId)) targetById.TryAdd(a.NativeId, a);
+
+        var nodes = new List<(int Page, Annotation Ann)>();
+        foreach (var page in imported.Pages.Keys.OrderBy(k => k).ToList())
+            foreach (var a in imported.Pages[page])
+                nodes.Add((page, a));
+        var pageOf = new Dictionary<Annotation, int>(byRef);
+        foreach (var (page, a) in nodes) pageOf.TryAdd(a, page);
+
+        // First annotation wins a duplicated /NM, as in AnnotationThreads.
+        var importedById = new Dictionary<string, Annotation>(StringComparer.Ordinal);
+        foreach (var (_, a) in nodes)
+            if (!string.IsNullOrEmpty(a.NativeId)) importedById.TryAdd(a.NativeId, a);
+
+        Annotation? ImportedParent(Annotation a)
+            => !string.IsNullOrEmpty(a.InReplyTo) && importedById.TryGetValue(a.InReplyTo, out var p)
+               && !ReferenceEquals(p, a) ? p : null;
+
+        Annotation? TargetParent(Annotation e)
+            => !string.IsNullOrEmpty(e.InReplyTo) && targetById.TryGetValue(e.InReplyTo, out var p)
+               && !ReferenceEquals(p, e) ? p : null;
+
+        var match = new Dictionary<Annotation, Annotation>(byRef);   // skipped import → target copy
+        var claimed = new HashSet<Annotation>(byRef);
+
+        // /NM is identity: match on it before content, so a look-alike can't claim the target
+        // annotation an exact id is waiting for.
+        foreach (var (page, a) in nodes)
+        {
+            if (string.IsNullOrEmpty(a.NativeId) || !targetPages.TryGetValue(page, out var list)) continue;
+            var e = list.FirstOrDefault(e => !claimed.Contains(e)
+                && string.Equals(e.NativeId, a.NativeId, StringComparison.Ordinal));
+            if (e is null) continue;
+            match[a] = e;
+            claimed.Add(e);
+        }
+
+        // Content matching needs the parent decided first: a reply only duplicates a target
+        // annotation that replies to the parent's counterpart. A cycle reads as an unmatched parent.
+        var decided = new HashSet<Annotation>(byRef);
+        var deciding = new HashSet<Annotation>(byRef);
+        Annotation? Decide(Annotation a)
+        {
+            if (match.TryGetValue(a, out var found)) return found;
+            if (decided.Contains(a) || !deciding.Add(a)) return null;
+
+            Annotation? parent = null;
+            bool parentInTarget = true;
+            if (ImportedParent(a) is { } p)
+            {
+                parent = Decide(p);
+                parentInTarget = parent is not null;
+            }
+            else if (!string.IsNullOrEmpty(a.InReplyTo))
+            {
+                targetById.TryGetValue(a.InReplyTo, out parent); // a reply to an annotation only the target has
+            }
+
+            if (parentInTarget && targetPages.TryGetValue(pageOf[a], out var list))
+            {
+                var e = list.FirstOrDefault(e => !claimed.Contains(e)
+                    && ReferenceEquals(TargetParent(e), parent)
+                    && AnnotationEquivalence.ContentEquivalent(e, a));
+                if (e is not null)
+                {
+                    match[a] = e;
+                    claimed.Add(e);
+                    found = e;
+                }
+            }
+
+            deciding.Remove(a);
+            decided.Add(a);
+            return found;
+        }
+        foreach (var (_, a) in nodes) Decide(a);
+
+        var toAdd = nodes.Where(n => !match.ContainsKey(n.Ann)).ToList();
+        var newParents = new HashSet<Annotation>(byRef);
+        foreach (var (_, a) in toAdd)
+            if (ImportedParent(a) is { } p && !match.ContainsKey(p)) newParents.Add(p);
+
+        // Remember each added reply's parent before ids change underneath the lookup.
+        var parentOf = new Dictionary<Annotation, Annotation?>(byRef);
+        foreach (var (_, a) in toAdd) parentOf[a] = ImportedParent(a);
+
+        var seenIds = new HashSet<string>(targetById.Keys, StringComparer.Ordinal);
+        foreach (var (_, a) in toAdd)
+        {
+            a.Source = AnnotationSource.RailReader;
+            if (string.IsNullOrEmpty(a.NativeId) || seenIds.Add(a.NativeId)) continue;
+            // Same reason as the two-argument overload: the writer and CompositeAnnotationStore
+            // dedupe by /NM. A parent of an added reply needs an id the reply can point at.
+            a.NativeId = newParents.Contains(a) ? Guid.NewGuid().ToString() : null;
+            if (a.NativeId is not null) seenIds.Add(a.NativeId);
+        }
+
+        foreach (var (_, a) in toAdd)
+        {
+            if (parentOf[a] is not { } p) continue;
+            if (!match.TryGetValue(p, out var host))
+            {
+                a.InReplyTo = p.NativeId;
+                continue;
+            }
+            if (string.IsNullOrEmpty(host.NativeId))
+            {
+                if (host.Source == AnnotationSource.InPdf)
+                {
+                    // Minting would make the writer treat it as missing and write it a second time.
+                    RailReaderLogging.Logger.Debug("[Annotations] Merge: reply's parent matches an in-PDF annotation with no /NM; adding it unthreaded");
+                    a.InReplyTo = null;
+                    continue;
+                }
+                host.NativeId = Guid.NewGuid().ToString();
+            }
+            a.InReplyTo = host.NativeId;
+        }
+
+        foreach (var (page, a) in toAdd)
+        {
+            if (!target.Pages.TryGetValue(page, out var list))
+            {
+                list = [];
+                target.Pages[page] = list;
+            }
+            list.Add(a);
+        }
+        return toAdd.Count;
+    }
+
+    /// <summary>Adds bookmarks that don't already exist (by name + page). Returns the number added.</summary>
+    private static int MergeBookmarks(AnnotationFile target, AnnotationFile imported)
+    {
+        int added = 0;
         var existingBookmarks = new HashSet<(string, int)>(
             target.Bookmarks.Select(b => (b.Name, b.Page)));
-        foreach (var bm in imported.Bookmarks)
+        foreach (var bm in imported.Bookmarks.ToList())
         {
             if (existingBookmarks.Add((bm.Name, bm.Page)))
             {
@@ -196,7 +371,6 @@ public sealed class AnnotationService : IAnnotationStore
                 added++;
             }
         }
-
         return added;
     }
 
