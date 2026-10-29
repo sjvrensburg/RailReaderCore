@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- `AnnotationService.MergeInto(target, imported, skipEquivalent)` (#168), an additive overload for
+  importing another copy of a document's annotations (railreader2's `.railreading` package). With
+  `skipEquivalent` set, an imported annotation the target already has on the same page — same non-empty
+  `/NM`, or content-equivalent with the same parent, review state and (where both record one) author —
+  is skipped, each target annotation matching at most
+  one import. A reply whose parent was skipped is attached to the target's counterpart, which gets a
+  `/NM` minted if it has none (an in-PDF annotation without one can't take an id, so the reply is then
+  added unthreaded). The rest are added as `RailReader` annotations, so the writer writes an in-PDF
+  annotation the target lacks into the target PDF; a colliding `/NM` is cleared, or replaced if an added
+  reply points at it. Bookmarks dedupe as before. The two-argument overload is unchanged. An annotation
+  edited on both copies still comes back twice unless the two share a `/NM`, and one deleted from the
+  target but still in the import is added back (the merge has no record of deletions).
+
 ## 0.75.2 — SourceLink security fix and dependency updates (2026-10-29)
 
 - Build: `Microsoft.SourceLink.GitHub` 8.* → 10.0.* (resolves 10.0.403). 8.0.0's `Microsoft.Build.Tasks.Git`
