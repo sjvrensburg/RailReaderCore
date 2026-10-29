@@ -126,6 +126,8 @@ public sealed class DocumentIdentityWindowsTests : IDisposable
         string junction = Path.Combine(_dir, "Linked");
         // mklink is a cmd built-in; a single argument string keeps cmd's own quoting rules out of the way.
         RunRaw("cmd.exe", $"/c mklink /J \"{junction}\" \"{Path.Combine(_dir, "Docs")}\"");
+        // A recursive delete takes a junction for a volume mount point and fails; a plain one removes the link.
+        _undo.Add(() => Directory.Delete(junction));
         AssertOneIdentity(real, Path.Combine(junction, "A.pdf"));
     }
 
