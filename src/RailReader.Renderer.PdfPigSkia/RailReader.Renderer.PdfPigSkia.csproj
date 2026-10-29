@@ -21,7 +21,7 @@
 
   <ItemGroup>
     <!-- Pinned in lockstep with PdfPig in RailReader.Core.PdfPig — bump both together (see note there). -->
-    <PackageReference Include="PdfPig.Rendering.Skia" Version="[0.1.16.4,0.1.17)" />
+    <PackageReference Include="PdfPig.Rendering.Skia" Version="[0.1.16.7,0.1.17)" />
   </ItemGroup>
 
   <ItemGroup>

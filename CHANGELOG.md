@@ -6,6 +6,13 @@
   carries GHSA-23fw-v26w-5fgq (CVE-2026-62900, information disclosure), which upstream will not patch in 8.x.
   It is a build-time dependency only (`PrivateAssets="All"`), so no package's dependencies change, and Source
   Link still embeds the GitHub mapping.
+- Dependencies:
+  - `Microsoft.ML.OnnxRuntime` 1.24.* → 1.29.* (Core.Analysis). RapidOcrNet already requires ≥ 1.29.0, so any
+    host with OCR resolved 1.29 anyway; Core.Analysis now builds against the version it runs on.
+  - `RapidOcrNet` 4.0.* → 4.2.* (Core.Ocr.RapidOcr). Same ONNX Runtime and SkiaSharp requirements.
+  - `PdfPig.Rendering.Skia` floor 0.1.16.4 → 0.1.16.7 (Renderer.PdfPigSkia). NuGet takes a range's lowest
+    version, so the newer image-filter packages were never picked up. Still PdfPig 0.1.16 and SkiaSharp 3.119.4.
+  - `OpenAI` 2.10.0 → 2.14.0 (Core.Vlm.OpenAI).
 
 ## 0.75.1 — Windows CI and CanonicalPath fixes (2026-10-29)
 
