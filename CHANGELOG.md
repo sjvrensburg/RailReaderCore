@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Build: `Microsoft.SourceLink.GitHub` 8.* → 10.0.* (resolves 10.0.403). 8.0.0's `Microsoft.Build.Tasks.Git`
+  carries GHSA-23fw-v26w-5fgq (CVE-2026-62900, information disclosure), which upstream will not patch in 8.x.
+  It is a build-time dependency only (`PrivateAssets="All"`), so no package's dependencies change, and Source
+  Link still embeds the GitHub mapping.
+
 ## 0.75.1 — Windows CI and CanonicalPath fixes (2026-10-29)
 
 ### Tests run on Windows, on every PR (#161)
