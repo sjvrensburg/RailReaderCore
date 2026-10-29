@@ -175,6 +175,27 @@ public sealed class DocumentIdentityTests : IDisposable
     }
 
     [Fact]
+    public void AnUnreadableMapIsKeptBeforeTheFirstSaveOverwritesIt()
+    {
+        File.WriteAllText(DocumentIdentity.MapPath, "{ not json");
+        DocumentIdentity.Resolve(Write("a.pdf", "after corruption"));
+        Assert.Equal("{ not json", File.ReadAllText(DocumentIdentity.MapPath + ".unreadable"));
+    }
+
+    [Fact]
+    public void APathHoldingADifferentDocumentLeavesTheOldIdsKnownPaths()
+    {
+        string a = Write("a.pdf", "first doc");
+        string first = DocumentIdentity.Resolve(a);
+        string b = Write("b.pdf", "second doc");
+        string second = DocumentIdentity.Resolve(b);
+        File.Copy(b, a, overwrite: true);
+        File.SetLastWriteTimeUtc(a, DateTime.UtcNow.AddMinutes(5));
+        Assert.Equal(second, DocumentIdentity.Resolve(a));
+        Assert.DoesNotContain(Path.GetFullPath(a), DocumentIdentity.KnownPaths(first));
+    }
+
+    [Fact]
     public void SidecarAnnotationsOfAMovedFileResolveToTheSameStorage()
     {
         // The app keys the sidecar by Peek after resolving at open; any other host by ReadOnlyResolver.

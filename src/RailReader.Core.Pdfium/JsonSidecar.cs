@@ -13,17 +13,31 @@ public static class JsonSidecar
     /// <summary>Load <typeparamref name="T"/> from <paramref name="path"/>, returning
     /// <paramref name="fallback"/>() when the file is absent, empty, or unreadable.</summary>
     public static T Load<T>(string path, JsonTypeInfo<T> typeInfo, Func<T> fallback) where T : class
+        => TryLoad(path, typeInfo, fallback, out var value) ? value : fallback();
+
+    /// <summary>Like <see cref="Load{T}"/>, but tells an absent file (true, <paramref name="fallback"/>())
+    /// apart from one that exists and could not be read or parsed (false, logged).</summary>
+    public static bool TryLoad<T>(string path, JsonTypeInfo<T> typeInfo, Func<T> fallback, out T value) where T : class
     {
         try
         {
-            if (File.Exists(path))
-                return JsonSerializer.Deserialize(ReadShared(path), typeInfo) ?? fallback();
+            if (!File.Exists(path))
+            {
+                value = fallback();
+                return true;
+            }
+            if (JsonSerializer.Deserialize(ReadShared(path), typeInfo) is { } loaded)
+            {
+                value = loaded;
+                return true;
+            }
         }
         catch (Exception ex)
         {
             RailReaderLogging.Logger.Error($"Failed to load {Path.GetFileName(path)}", ex);
         }
-        return fallback();
+        value = fallback();
+        return false;
     }
 
     /// <summary>Reads the whole file without blocking another process's <see cref="Save{T}"/>: on Windows,
@@ -40,7 +54,8 @@ public static class JsonSidecar
     /// a truncated/empty file in place.</summary>
     public static void Save<T>(string path, T value, JsonTypeInfo<T> typeInfo)
     {
-        var tmpPath = path + ".tmp";
+        // Unique per writer, so two processes saving at once can't clobber each other's temp file.
+        var tmpPath = $"{path}.{Guid.NewGuid():N}.tmp";
         try
         {
             var dir = Path.GetDirectoryName(path);

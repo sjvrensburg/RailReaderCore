@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using System.Text.Json;
 
 namespace RailReader.Core.Services;
 
@@ -28,6 +27,10 @@ public static class DocumentIdentity
     private static string? s_mapPathOverride;
     private static IdentityMap? s_map;
     private static bool s_owner;   // this process has called Resolve, so its map may hold unsaved entries
+    private static bool s_loadFailed;   // the map file exists but could not be read: keep it before overwriting
+    // Lookup's hashes of paths the map doesn't know, keyed by (path, size, mtime), so a read-only host's
+    // resolver (called on every sidecar Load/Save/Delete) doesn't re-read a large PDF each time.
+    private static readonly Dictionary<(string Path, long Size, long Mtime), string> s_lookupHashes = [];
     private static readonly Lock s_lock = new();
 
     /// <summary>
@@ -60,12 +63,15 @@ public static class DocumentIdentity
             var map = Map();
             map.Files.TryGetValue(full, out var known);
             string id = map.Aliases.TryGetValue(hash, out var aliased) ? aliased : known?.Id ?? hash;
+            if (known is not null && known.Id != id && map.Paths.TryGetValue(known.Id, out var oldPaths))
+                oldPaths.Remove(full);   // this path now holds a different document
             map.Aliases[hash] = id;
             map.Files[full] = new FileEntry { Size = size, MtimeTicks = mtime, Id = id };
             if (!map.Paths.TryGetValue(id, out var paths)) map.Paths[id] = paths = [];
             paths.Remove(full);
             paths.Insert(0, full);
             if (paths.Count > MaxPathsPerId) paths.RemoveRange(MaxPathsPerId, paths.Count - MaxPathsPerId);
+            PreserveUnreadableMap();
             JsonSidecar.Save(MapPath, map, RailReaderJsonContext.Default.IdentityMap);
             return id;
         }
@@ -89,7 +95,17 @@ public static class DocumentIdentity
         if (Peek(pdfPath) is { } id) return id;
         string full = Path.GetFullPath(pdfPath);
         if (!File.Exists(full)) return null;
-        string hash = HashFile(full);
+        var info = new FileInfo(full);
+        var key = (full, info.Length, info.LastWriteTimeUtc.Ticks);
+        string? hash;
+        lock (s_lock)
+            s_lookupHashes.TryGetValue(key, out hash);
+        if (hash is null)
+        {
+            hash = HashFile(full);
+            lock (s_lock)
+                s_lookupHashes[key] = hash;
+        }
         lock (s_lock)
             return Map().Aliases.TryGetValue(hash, out var aliased) ? aliased : null;
     }
@@ -115,25 +131,17 @@ public static class DocumentIdentity
             if (s_owner)
                 throw new InvalidOperationException("DocumentIdentity.Refresh is for read-only hosts; this process owns the map (it called Resolve).");
 
-        string path = MapPath;
-        IdentityMap? fresh;
-        try
+        if (!JsonSidecar.TryLoad(MapPath, RailReaderJsonContext.Default.IdentityMap, static () => new IdentityMap(), out var fresh))
         {
-            fresh = File.Exists(path)
-                ? JsonSerializer.Deserialize(JsonSidecar.ReadShared(path), RailReaderJsonContext.Default.IdentityMap)
-                : new IdentityMap();
-        }
-        catch (Exception ex)
-        {
-            RailReaderLogging.Logger.Error($"Failed to refresh {Path.GetFileName(path)}; keeping the loaded map", ex);
+            RailReaderLogging.Logger.Warn("DocumentIdentity.Refresh: keeping the loaded map");
             return false;
         }
-        if (fresh is null) return false;
 
         lock (s_lock)
         {
             if (s_owner) return false;   // Resolve ran while we were reading
             s_map = fresh;
+            s_loadFailed = false;
         }
         return true;
     }
@@ -148,15 +156,36 @@ public static class DocumentIdentity
             s_mapPathOverride = path;
             s_map = null;
             s_owner = false;
+            s_loadFailed = false;
+            s_lookupHashes.Clear();
         }
     }
 
+    // Callers hold s_lock.
     private static IdentityMap Map()
-        => s_map ??= JsonSidecar.Load(MapPath, RailReaderJsonContext.Default.IdentityMap, static () => new IdentityMap());
+    {
+        if (s_map is null)
+        {
+            s_loadFailed = !JsonSidecar.TryLoad(MapPath, RailReaderJsonContext.Default.IdentityMap,
+                static () => new IdentityMap(), out var loaded);
+            s_map = loaded;
+        }
+        return s_map;
+    }
+
+    // Callers hold s_lock. The first save after an unreadable map would replace every recorded id with
+    // this process's (empty) view of it, orphaning every id-keyed sidecar; keep the old file for recovery.
+    private static void PreserveUnreadableMap()
+    {
+        if (!s_loadFailed) return;
+        s_loadFailed = false;
+        try { File.Copy(MapPath, MapPath + ".unreadable", overwrite: true); }
+        catch (Exception ex) { RailReaderLogging.Logger.Error("Failed to preserve the unreadable document_ids.json", ex); }
+    }
 
     private static string HashFile(string path)
     {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16);
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16);
         return Convert.ToHexStringLower(SHA256.HashData(stream));
     }
 }
