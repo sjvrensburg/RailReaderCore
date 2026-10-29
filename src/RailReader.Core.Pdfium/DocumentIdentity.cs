@@ -13,6 +13,10 @@ namespace RailReader.Core.Services;
 /// id, so a later copy of the rewritten file is still recognised. Two unrelated files never share an id:
 /// an unknown hash at an unknown path always starts a fresh id.
 ///
+/// Paths are keyed by their canonical spelling (casing, 8.3 names, junctions, <c>subst</c> and mapped
+/// drives on Windows; symlinks elsewhere), so a file reached another way still finds its entry — even
+/// after its bytes changed outside the app, when the content alias can't recognise it.
+///
 /// Every host sharing the config directory must key <see cref="AnnotationService.DocumentKeyResolver"/>
 /// the same way to find the same sidecar. Only the app that owns the map calls <see cref="Resolve"/>
 /// (it mutates and saves the map, UI-thread); any other host uses <see cref="ReadOnlyResolver"/>, and
@@ -44,46 +48,51 @@ public static class DocumentIdentity
     /// Only for the host that owns the map; others use <see cref="Lookup"/>.</summary>
     public static string Resolve(string pdfPath)
     {
-        string full = Path.GetFullPath(pdfPath);
-        var info = new FileInfo(full);
+        var (key, full) = Keys(pdfPath);
+        var info = new FileInfo(key);
         long size = info.Length, mtime = info.LastWriteTimeUtc.Ticks;
 
         lock (s_lock)
         {
             var map = Map();
-            if (map.Files.TryGetValue(full, out var known) && known.Size == size && known.MtimeTicks == mtime)
+            if (Find(map, key, full, out bool canonical) is { } known && known.Size == size && known.MtimeTicks == mtime)
+            {
+                if (canonical) return known.Id;
+                s_owner = true;   // entry written under another spelling: move it to the canonical one
+                Record(map, key, full, known.Id, size, mtime);
+                SaveMap(map);
                 return known.Id;
+            }
         }
 
-        string hash = HashFile(full);   // outside the lock: this is the slow part
+        string hash = HashFile(key);   // outside the lock: this is the slow part
 
         lock (s_lock)
         {
             s_owner = true;
             var map = Map();
-            map.Files.TryGetValue(full, out var known);
+            var known = Find(map, key, full, out _);
             string id = map.Aliases.TryGetValue(hash, out var aliased) ? aliased : known?.Id ?? hash;
             if (known is not null && known.Id != id && map.Paths.TryGetValue(known.Id, out var oldPaths))
-                oldPaths.Remove(full);   // this path now holds a different document
+            {
+                oldPaths.Remove(key);   // this path now holds a different document
+                oldPaths.Remove(full);
+            }
             map.Aliases[hash] = id;
-            map.Files[full] = new FileEntry { Size = size, MtimeTicks = mtime, Id = id };
-            if (!map.Paths.TryGetValue(id, out var paths)) map.Paths[id] = paths = [];
-            paths.Remove(full);
-            paths.Insert(0, full);
-            if (paths.Count > MaxPathsPerId) paths.RemoveRange(MaxPathsPerId, paths.Count - MaxPathsPerId);
-            PreserveUnreadableMap();
-            JsonSidecar.Save(MapPath, map, RailReaderJsonContext.Default.IdentityMap);
+            Record(map, key, full, id, size, mtime);
+            SaveMap(map);
             return id;
         }
     }
 
-    /// <summary>The id last resolved for this path, with no file access (null when never resolved).
-    /// Safe after the file has changed or gone.</summary>
+    /// <summary>The id last resolved for this path, without hashing it (null when never resolved).
+    /// Safe after the file has changed or gone. Touches the file system only to find the path's
+    /// canonical spelling.</summary>
     public static string? Peek(string pdfPath)
     {
-        string full = Path.GetFullPath(pdfPath);
+        var (key, full) = Keys(pdfPath);
         lock (s_lock)
-            return Map().Files.TryGetValue(full, out var e) ? e.Id : null;
+            return Find(Map(), key, full, out _)?.Id;
     }
 
     /// <summary>Read-only <see cref="Resolve"/>: the id last resolved for this path, else the id an
@@ -92,19 +101,22 @@ public static class DocumentIdentity
     /// the app holds the map in memory.</summary>
     public static string? Lookup(string pdfPath)
     {
-        if (Peek(pdfPath) is { } id) return id;
-        string full = Path.GetFullPath(pdfPath);
-        if (!File.Exists(full)) return null;
-        var info = new FileInfo(full);
-        var key = (full, info.Length, info.LastWriteTimeUtc.Ticks);
+        var (key, full) = Keys(pdfPath);
+        lock (s_lock)
+            if (Find(Map(), key, full, out _) is { } known)
+                return known.Id;
+
+        if (!File.Exists(key)) return null;
+        var info = new FileInfo(key);
+        var cacheKey = (key, info.Length, info.LastWriteTimeUtc.Ticks);
         string? hash;
         lock (s_lock)
-            s_lookupHashes.TryGetValue(key, out hash);
+            s_lookupHashes.TryGetValue(cacheKey, out hash);
         if (hash is null)
         {
-            hash = HashFile(full);
+            hash = HashFile(key);
             lock (s_lock)
-                s_lookupHashes[key] = hash;
+                s_lookupHashes[cacheKey] = hash;
         }
         lock (s_lock)
             return Map().Aliases.TryGetValue(hash, out var aliased) ? aliased : null;
@@ -159,6 +171,42 @@ public static class DocumentIdentity
             s_loadFailed = false;
             s_lookupHashes.Clear();
         }
+    }
+
+    // The map key for a path is its canonical spelling (CanonicalPath), so one file has one entry however
+    // it is reached; a file that is gone or can't be resolved falls back to its full path. Full is the
+    // spelling entries were keyed by before canonicalisation, still consulted so they keep their ids.
+    private static (string Key, string Full) Keys(string pdfPath)
+    {
+        string full = Path.GetFullPath(pdfPath);
+        return (CanonicalPath.Of(full) ?? full, full);
+    }
+
+    // Callers hold s_lock.
+    private static FileEntry? Find(IdentityMap map, string key, string full, out bool canonical)
+    {
+        canonical = map.Files.TryGetValue(key, out var entry);
+        if (canonical || key == full) return entry;
+        return map.Files.TryGetValue(full, out entry) ? entry : null;
+    }
+
+    // Callers hold s_lock. Records the path under its canonical key, dropping the old spelling's entry.
+    private static void Record(IdentityMap map, string key, string full, string id, long size, long mtime)
+    {
+        if (key != full) map.Files.Remove(full);
+        map.Files[key] = new FileEntry { Size = size, MtimeTicks = mtime, Id = id };
+        if (!map.Paths.TryGetValue(id, out var paths)) map.Paths[id] = paths = [];
+        paths.Remove(key);
+        paths.Remove(full);
+        paths.Insert(0, key);
+        if (paths.Count > MaxPathsPerId) paths.RemoveRange(MaxPathsPerId, paths.Count - MaxPathsPerId);
+    }
+
+    // Callers hold s_lock.
+    private static void SaveMap(IdentityMap map)
+    {
+        PreserveUnreadableMap();
+        JsonSidecar.Save(MapPath, map, RailReaderJsonContext.Default.IdentityMap);
     }
 
     // Callers hold s_lock.

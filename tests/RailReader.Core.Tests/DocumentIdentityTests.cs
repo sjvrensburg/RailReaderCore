@@ -7,7 +7,8 @@ namespace RailReader.Core.Tests;
 /// <summary>Content-based document identity, shared by every host keying the annotation sidecar (#159).</summary>
 public sealed class DocumentIdentityTests : IDisposable
 {
-    private readonly string _dir = Directory.CreateTempSubdirectory("docid").FullName;
+    // Canonical itself, so a temp root reached through a link (macOS's /var) can't make expected paths differ.
+    private readonly string _dir = CanonicalPath.ResolveLinks(Directory.CreateTempSubdirectory("docid").FullName)!;
 
     public DocumentIdentityTests() => DocumentIdentity.OverrideMapPathForTesting(Path.Combine(_dir, "ids.json"));
 
@@ -193,6 +194,112 @@ public sealed class DocumentIdentityTests : IDisposable
         File.SetLastWriteTimeUtc(a, DateTime.UtcNow.AddMinutes(5));
         Assert.Equal(second, DocumentIdentity.Resolve(a));
         Assert.DoesNotContain(Path.GetFullPath(a), DocumentIdentity.KnownPaths(first));
+    }
+
+    // Path spelling (railreader2#279). Symlinks stand in for every alternative spelling: CI is Linux, and
+    // the Windows cases (casing, 8.3, subst, mapped drives) go through GetFinalPathNameByHandle instead.
+
+    [Fact]
+    public void AFileReachedThroughASymlinkHasOneEntry()
+    {
+        if (OperatingSystem.IsWindows()) return;   // creating symlinks needs a privilege there
+        string real = Write("real.pdf", "linked");
+        string link = Path.Combine(_dir, "link.pdf");
+        File.CreateSymbolicLink(link, real);
+
+        string id = DocumentIdentity.Resolve(real);
+        Assert.Equal(id, DocumentIdentity.Peek(link));
+        Assert.Equal(id, DocumentIdentity.Resolve(link));
+        Assert.Equal([Path.GetFullPath(real)], DocumentIdentity.KnownPaths(id));
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(DocumentIdentity.MapPath));
+        Assert.Single(doc.RootElement.GetProperty("files").EnumerateObject());
+    }
+
+    [Fact]
+    public void ASymlinkedPathKeepsItsIdAfterTheBytesChangedOutsideTheApp()
+    {
+        // The case that minted a fresh id: neither the path nor the new hash was known.
+        if (OperatingSystem.IsWindows()) return;
+        string real = Write("real.pdf", "before");
+        string link = Path.Combine(_dir, "link.pdf");
+        File.CreateSymbolicLink(link, real);
+        string id = DocumentIdentity.Resolve(real);
+
+        File.WriteAllText(real, "after another tool wrote annotations into it");
+        File.SetLastWriteTimeUtc(real, DateTime.UtcNow.AddMinutes(5));
+        Assert.Equal(id, DocumentIdentity.Lookup(link));
+        Assert.Equal(id, DocumentIdentity.Resolve(link));
+    }
+
+    [Fact]
+    public void AFileInASymlinkedDirectoryResolvesToItsRealPath()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        Directory.CreateDirectory(Path.Combine(_dir, "docs"));
+        string real = Write(Path.Combine("docs", "a.pdf"), "in a linked dir");
+        Directory.CreateSymbolicLink(Path.Combine(_dir, "shortcut"), Path.Combine(_dir, "docs"));
+
+        string id = DocumentIdentity.Resolve(real);
+        Assert.Equal(id, DocumentIdentity.Peek(Path.Combine(_dir, "shortcut", "a.pdf")));
+    }
+
+    [Fact]
+    public void RelativeAndChainedLinksResolveAgainstTheRealParent()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        string real = Write("a.pdf", "chained");
+        Directory.CreateDirectory(Path.Combine(_dir, "sub"));
+        string relative = Path.Combine(_dir, "sub", "rel.pdf");
+        File.CreateSymbolicLink(relative, Path.Combine("..", "a.pdf"));
+        string chained = Path.Combine(_dir, "chain.pdf");
+        File.CreateSymbolicLink(chained, relative);
+
+        // sub is a link to a deeper directory, so its ".." is that directory's parent, not _dir.
+        Directory.CreateDirectory(Path.Combine(_dir, "deep", "inner"));
+        string deepReal = Write(Path.Combine("deep", "b.pdf"), "deep");
+        Directory.CreateSymbolicLink(Path.Combine(_dir, "hop"), Path.Combine(_dir, "deep", "inner"));
+        File.CreateSymbolicLink(Path.Combine(_dir, "deep", "inner", "up.pdf"), Path.Combine("..", "b.pdf"));
+
+        string full = Path.GetFullPath(real);
+        Assert.Equal(full, CanonicalPath.Of(relative));
+        Assert.Equal(full, CanonicalPath.Of(chained));
+        Assert.Equal(Path.GetFullPath(deepReal), CanonicalPath.Of(Path.Combine(_dir, "hop", "up.pdf")));
+    }
+
+    [Fact]
+    public void ALinkCycleGivesUpRatherThanSpinning()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        string a = Path.Combine(_dir, "a"), b = Path.Combine(_dir, "b");
+        File.CreateSymbolicLink(a, b);
+        File.CreateSymbolicLink(b, a);
+        Assert.Null(CanonicalPath.ResolveLinks(Path.Combine(a, "x.pdf")));
+        Assert.Null(DocumentIdentity.Peek(a));               // falls back to the full path, unknown
+    }
+
+    [Fact]
+    public void AnEntryUnderAnOlderSpellingMovesToTheCanonicalKey()
+    {
+        // Maps written before canonicalisation keyed whatever spelling the file was opened by.
+        if (OperatingSystem.IsWindows()) return;
+        string real = Write("real.pdf", "legacy");
+        string link = Path.Combine(_dir, "link.pdf");
+        File.CreateSymbolicLink(link, real);
+        var info = new FileInfo(real);
+        var map = new IdentityMap();
+        map.Files[link] = new FileEntry { Size = info.Length, MtimeTicks = info.LastWriteTimeUtc.Ticks, Id = "oldid" };
+        map.Paths["oldid"] = [link];
+        JsonSidecar.Save(DocumentIdentity.MapPath, map, RailReaderJsonContext.Default.IdentityMap);
+        DocumentIdentity.OverrideMapPathForTesting(DocumentIdentity.MapPath);
+
+        Assert.Equal("oldid", DocumentIdentity.Peek(link));
+        Assert.Equal("oldid", DocumentIdentity.Resolve(link));
+        Assert.Equal([Path.GetFullPath(real)], DocumentIdentity.KnownPaths("oldid"));
+        using var doc = JsonDocument.Parse(File.ReadAllText(DocumentIdentity.MapPath));
+        var files = doc.RootElement.GetProperty("files");
+        Assert.Single(files.EnumerateObject());
+        Assert.Equal("oldid", files.GetProperty(Path.GetFullPath(real)).GetProperty("id").GetString());
     }
 
     [Fact]
