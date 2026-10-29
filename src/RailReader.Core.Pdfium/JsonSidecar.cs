@@ -1,0 +1,52 @@
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
+
+namespace RailReader.Core.Services;
+
+/// <summary>
+/// Shared load/save for small config-dir-resident JSON files (source-gen serialised): the
+/// "read → deserialize-or-default" / "create dir → write" boilerplate plus try/catch logging.
+/// Used by <see cref="DocumentIdentity"/>; public so hosts can keep their own preference files the same way.
+/// </summary>
+public static class JsonSidecar
+{
+    /// <summary>Load <typeparamref name="T"/> from <paramref name="path"/>, returning
+    /// <paramref name="fallback"/>() when the file is absent, empty, or unreadable.</summary>
+    public static T Load<T>(string path, JsonTypeInfo<T> typeInfo, Func<T> fallback) where T : class
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                var json = File.ReadAllText(path);
+                return JsonSerializer.Deserialize(json, typeInfo) ?? fallback();
+            }
+        }
+        catch (Exception ex)
+        {
+            RailReaderLogging.Logger.Error($"Failed to load {Path.GetFileName(path)}", ex);
+        }
+        return fallback();
+    }
+
+    /// <summary>Serialise <paramref name="value"/> to <paramref name="path"/>, creating its directory.
+    /// Writes to a temp file and renames over the target so a crash or IO error mid-write can't leave
+    /// a truncated/empty file in place.</summary>
+    public static void Save<T>(string path, T value, JsonTypeInfo<T> typeInfo)
+    {
+        var tmpPath = path + ".tmp";
+        try
+        {
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
+            File.WriteAllText(tmpPath, JsonSerializer.Serialize(value, typeInfo));
+            File.Move(tmpPath, path, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            RailReaderLogging.Logger.Error($"Failed to save {Path.GetFileName(path)}", ex);
+            try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { /* best effort */ }
+        }
+    }
+}

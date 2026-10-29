@@ -26,4 +26,5 @@ namespace RailReader.Core.Services;
 [JsonSerializable(typeof(RectAnnotation))]
 [JsonSerializable(typeof(CaretAnnotation))]
 [JsonSerializable(typeof(FreeTextAnnotation))]
+[JsonSerializable(typeof(IdentityMap))]
 internal partial class RailReaderJsonContext : JsonSerializerContext;
