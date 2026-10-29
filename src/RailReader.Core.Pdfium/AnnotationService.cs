@@ -254,7 +254,9 @@ public sealed class AnnotationService : IAnnotationStore
         var claimed = new HashSet<Annotation>(byRef);
 
         // /NM is identity: match on it before content, so a look-alike can't claim the target
-        // annotation an exact id is waiting for.
+        // annotation an exact id is waiting for. Unlike CompositeAnnotationStore.MergeSidecarInto,
+        // an annotation that has a /NM may still match by content: two machines give the same
+        // annotation different ids. Keep that difference in mind when changing either rule.
         foreach (var (page, a) in nodes)
         {
             if (string.IsNullOrEmpty(a.NativeId) || !targetPages.TryGetValue(page, out var list)) continue;

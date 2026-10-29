@@ -285,7 +285,9 @@ public sealed class CompositeAnnotationStore : IAnnotationStore
                 // candidate: dedup it by value, so once it has been baked into the PDF (with a
                 // fresh /NM) its still-present sidecar copy is suppressed even if cleanup was
                 // missed — keeping lazy migration idempotent without over-suppressing distinct
-                // annotations that merely look alike.
+                // annotations that merely look alike. AnnotationService.MergeInto(…, skipEquivalent)
+                // deliberately differs: it content-matches annotations that have a /NM too (another
+                // machine's copy has its own ids), one-to-one and only under the same parent.
                 bool duplicate = ann.NativeId is not null
                     ? target.Any(e => string.Equals(e.NativeId, ann.NativeId, StringComparison.Ordinal))
                     : target.Any(e => AnnotationEquivalence.ContentEquivalent(e, ann));
