@@ -17,16 +17,22 @@ public static class JsonSidecar
         try
         {
             if (File.Exists(path))
-            {
-                var json = File.ReadAllText(path);
-                return JsonSerializer.Deserialize(json, typeInfo) ?? fallback();
-            }
+                return JsonSerializer.Deserialize(ReadShared(path), typeInfo) ?? fallback();
         }
         catch (Exception ex)
         {
             RailReaderLogging.Logger.Error($"Failed to load {Path.GetFileName(path)}", ex);
         }
         return fallback();
+    }
+
+    /// <summary>Reads the whole file without blocking another process's <see cref="Save{T}"/>: on Windows,
+    /// a reader opened without delete sharing makes the writer's rename over the file fail.</summary>
+    internal static string ReadShared(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
     }
 
     /// <summary>Serialise <paramref name="value"/> to <paramref name="path"/>, creating its directory.

@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace RailReader.Core.Services;
 
@@ -15,7 +16,8 @@ namespace RailReader.Core.Services;
 ///
 /// Every host sharing the config directory must key <see cref="AnnotationService.DocumentKeyResolver"/>
 /// the same way to find the same sidecar. Only the app that owns the map calls <see cref="Resolve"/>
-/// (it mutates and saves the map, UI-thread); any other host uses <see cref="ReadOnlyResolver"/>.
+/// (it mutates and saves the map, UI-thread); any other host uses <see cref="ReadOnlyResolver"/>, and
+/// if it outlives a single command, calls <see cref="Refresh"/> to see documents the app opened since.
 /// </summary>
 public static class DocumentIdentity
 {
@@ -25,6 +27,7 @@ public static class DocumentIdentity
 
     private static string? s_mapPathOverride;
     private static IdentityMap? s_map;
+    private static bool s_owner;   // this process has called Resolve, so its map may hold unsaved entries
     private static readonly Lock s_lock = new();
 
     /// <summary>
@@ -53,6 +56,7 @@ public static class DocumentIdentity
 
         lock (s_lock)
         {
+            s_owner = true;
             var map = Map();
             map.Files.TryGetValue(full, out var known);
             string id = map.Aliases.TryGetValue(hash, out var aliased) ? aliased : known?.Id ?? hash;
@@ -97,15 +101,53 @@ public static class DocumentIdentity
             return Map().Paths.TryGetValue(id, out var p) ? [.. p] : [];
     }
 
+    /// <summary>
+    /// Re-reads the map from disk, for a long-lived read-only host: the map is otherwise read once per
+    /// process, so documents the app opens later stay unknown to <see cref="Lookup"/>. Returns false and
+    /// keeps the current map when the file can't be read — an empty map would send
+    /// <see cref="AnnotationService"/> back to the path-hash sidecar. A missing file reads as empty.
+    /// Throws in a process that has called <see cref="Resolve"/>: its map is the newer copy (a failed
+    /// save leaves entries only in memory), and reloading would lose them.
+    /// </summary>
+    public static bool Refresh()
+    {
+        lock (s_lock)
+            if (s_owner)
+                throw new InvalidOperationException("DocumentIdentity.Refresh is for read-only hosts; this process owns the map (it called Resolve).");
+
+        string path = MapPath;
+        IdentityMap? fresh;
+        try
+        {
+            fresh = File.Exists(path)
+                ? JsonSerializer.Deserialize(JsonSidecar.ReadShared(path), RailReaderJsonContext.Default.IdentityMap)
+                : new IdentityMap();
+        }
+        catch (Exception ex)
+        {
+            RailReaderLogging.Logger.Error($"Failed to refresh {Path.GetFileName(path)}; keeping the loaded map", ex);
+            return false;
+        }
+        if (fresh is null) return false;
+
+        lock (s_lock)
+        {
+            if (s_owner) return false;   // Resolve ran while we were reading
+            s_map = fresh;
+        }
+        return true;
+    }
+
     /// <summary>Test hook: redirects <see cref="MapPath"/> (null restores the default) and drops the
     /// in-memory map, so the next call reads it from disk — calling it again with the same path
-    /// simulates a restart.</summary>
+    /// simulates a restart. Also forgets that this process called <see cref="Resolve"/>.</summary>
     public static void OverrideMapPathForTesting(string? path)
     {
         lock (s_lock)
         {
             s_mapPathOverride = path;
             s_map = null;
+            s_owner = false;
         }
     }
 

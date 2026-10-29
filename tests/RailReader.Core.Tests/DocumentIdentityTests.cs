@@ -117,6 +117,63 @@ public sealed class DocumentIdentityTests : IDisposable
         Assert.Equal(full, root.GetProperty("paths").GetProperty(id)[0].GetString());
     }
 
+    // Stands in for the app, in another process, recording a document in the map.
+    private void AppRecords(string pdfPath, string id)
+    {
+        string full = Path.GetFullPath(pdfPath);
+        var map = new IdentityMap();
+        map.Files[full] = new FileEntry { Size = new FileInfo(full).Length, MtimeTicks = 1, Id = id };
+        map.Aliases[id] = id;
+        map.Paths[id] = [full];
+        JsonSidecar.Save(DocumentIdentity.MapPath, map, RailReaderJsonContext.Default.IdentityMap);
+    }
+
+    [Fact]
+    public void RefreshSeesDocumentsTheAppRecordedSinceTheMapWasRead()
+    {
+        string a = Write("a.pdf", "opened later");
+        Assert.Null(DocumentIdentity.Lookup(a));             // map read (absent) and cached
+
+        AppRecords(a, "appid");
+        Assert.Null(DocumentIdentity.Lookup(a));             // still the cached map
+        Assert.True(DocumentIdentity.Refresh());
+        Assert.Equal("appid", DocumentIdentity.Lookup(a));
+    }
+
+    [Fact]
+    public void RefreshKeepsTheLoadedMapWhenTheFileIsUnreadable()
+    {
+        string a = Write("a.pdf", "known");
+        AppRecords(a, "appid");
+        Assert.True(DocumentIdentity.Refresh());
+
+        File.WriteAllText(DocumentIdentity.MapPath, "{ not json");
+        Assert.False(DocumentIdentity.Refresh());
+        Assert.Equal("appid", DocumentIdentity.Lookup(a));
+    }
+
+    [Fact]
+    public void RefreshTreatsAMissingMapAsEmpty()
+    {
+        string a = Write("a.pdf", "known");
+        AppRecords(a, "appid");
+        Assert.True(DocumentIdentity.Refresh());
+
+        File.Delete(DocumentIdentity.MapPath);
+        Assert.True(DocumentIdentity.Refresh());
+        Assert.Null(DocumentIdentity.Peek(a));
+    }
+
+    [Fact]
+    public void RefreshRefusesInTheProcessThatOwnsTheMap()
+    {
+        string a = Write("a.pdf", "owned");
+        string id = DocumentIdentity.Resolve(a);
+        File.WriteAllText(DocumentIdentity.MapPath, "{}");   // whatever is on disk must not replace memory
+        Assert.Throws<InvalidOperationException>(() => DocumentIdentity.Refresh());
+        Assert.Equal(id, DocumentIdentity.Peek(a));
+    }
+
     [Fact]
     public void SidecarAnnotationsOfAMovedFileResolveToTheSameStorage()
     {
