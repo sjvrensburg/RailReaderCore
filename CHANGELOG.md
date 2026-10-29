@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.75.0 — Shared document identity for the annotation sidecar (2026-10-29)
+
+### `DocumentIdentity` moves into Core.Pdfium (#159)
+
+- `RailReader.Core.Services.DocumentIdentity` is the content-based document id railreader2 has keyed the
+  sidecar by since 0.72 (until now a private copy in `RailReader2.Shared`), so every host sharing the config
+  directory finds the same `annotations/<id>.json`. The id is the SHA-256 of the PDF's bytes when first seen;
+  a path's (size, mtime) → id is cached in `ConfigDir/document_ids.json`, and an in-place rewrite keeps its id
+  and records the new hash as an alias. **The file format is unchanged** (snake_case, `version` 1), so existing
+  maps load as they are.
+- **Exactly one process owns the map:** the app calls `Resolve(path)` at open (it writes the map) and uses
+  `Peek` as its `DocumentKeyResolver`. Every other host sets
+  `AnnotationService.Default.DocumentKeyResolver = DocumentIdentity.ReadOnlyResolver` (= `Lookup`, which never
+  writes) and never calls `Resolve`. `Lookup` remembers each hash per path, and an id it found by content for
+  the rest of the process, so one session's calls key one sidecar even if the PDF's bytes change between a load
+  and a save.
+- `DocumentIdentity.Refresh()` re-reads the map for a long-lived read-only host (it is otherwise read once per
+  process). It returns false and keeps the loaded map if the file can't be read, and throws in a process that
+  has called `Resolve`.
+- `KnownPaths(id)` lists the paths a document was opened from, most recent first.
+- Test hook: `OverrideMapPathForTesting(path)` (null restores the default; it also drops the cached map, so
+  calling it again with the same path simulates a restart).
+
+### Map keys are canonical paths (railreader2#279)
+
+- A file reached by another spelling — Windows casing, 8.3 names, junctions, `subst`, a mapped drive vs its
+  UNC path; a symlink elsewhere — used to get its own entry, and if its bytes had changed outside the app it
+  was given a **fresh id**, orphaning its sidecar, portals and rotation. Keys are now the file's real path
+  (`GetFinalPathNameByHandle` on Windows, a symlink walk elsewhere; `GetFullPath` when the file is gone).
+  Entries written under another spelling are still found, and the next `Resolve` moves them to the canonical
+  key. `Peek` now touches the file system to canonicalise (no hashing).
+
+### `JsonSidecar` is public
+
+- `JsonSidecar.Load/TryLoad/Save` — load-or-default and atomic save for small config-dir JSON files.
+  `TryLoad` tells an absent file (true) from an unreadable one (false). `Save` writes a per-writer
+  `<path>.<guid>.tmp` and renames it over the target; reads open with delete sharing so they can't make
+  another process's rename fail on Windows. Signatures match railreader2's copy.
+- An unreadable `document_ids.json` is copied to `document_ids.json.unreadable` before the first save
+  replaces it; if that copy fails, the save is skipped.
+
+### Migrating
+
+- **railreader2 and RailMark must delete their own `DocumentIdentity` (and railreader2 its `JsonSidecar`)
+  when they move to 0.75.0**: a file importing both `RailReader.Core.Services` and their own namespace
+  otherwise fails with an ambiguous reference. `MapPathOverride` + `ResetForTests` become
+  `OverrideMapPathForTesting`. Otherwise purely additive.
+
 ## 0.74.1 — Lookahead analysis uses each page's own size (2026-10-28)
 
 - `DocumentModel.SubmitPendingLookahead` mapped a lookahead page's blocks with the size of the page being read
