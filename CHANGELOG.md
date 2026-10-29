@@ -5,7 +5,8 @@
 - `AnnotationService.MergeInto(target, imported, skipEquivalent)` (#168), an additive overload for
   importing another copy of a document's annotations (railreader2's `.railreading` package). With
   `skipEquivalent` set, an imported annotation the target already has on the same page — same non-empty
-  `/NM`, or content-equivalent with the same parent — is skipped, each target annotation matching at most
+  `/NM`, or content-equivalent with the same parent, review state and (where both record one) author —
+  is skipped, each target annotation matching at most
   one import. A reply whose parent was skipped is attached to the target's counterpart, which gets a
   `/NM` minted if it has none (an in-PDF annotation without one can't take an id, so the reply is then
   added unthreaded). The rest are added as `RailReader` annotations, so the writer writes an in-PDF

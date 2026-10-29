@@ -195,8 +195,9 @@ public sealed class AnnotationService : IAnnotationStore
     /// of the same document's annotations adds only what one lacks:
     /// <list type="bullet">
     /// <item>An imported annotation is a duplicate when an annotation on the <b>same page</b> of the
-    /// target has the same non-empty <c>/NM</c>, or is content-equivalent (same type, contents, style
-    /// and geometry) and replies to the same annotation. Each target annotation matches at most one
+    /// target has the same non-empty <c>/NM</c>, or is content-equivalent (same type, contents, style,
+    /// geometry and review state, and the same author where both copies record one) and replies to
+    /// the same annotation. Each target annotation matches at most one
     /// imported annotation, so an import that holds two equal annotations where the target holds one
     /// adds the second.</item>
     /// <item>A reply whose parent was skipped is attached to the target annotation that parent
@@ -288,10 +289,21 @@ public sealed class AnnotationService : IAnnotationStore
                 targetById.TryGetValue(a.InReplyTo, out parent); // a reply to an annotation only the target has
             }
 
+            // An in-PDF parent with no /NM can't be replied to: a reply under it was added unthreaded
+            // by an earlier merge, so look for it among the roots or every re-merge adds it again.
+            if (parent is { Source: AnnotationSource.InPdf } && string.IsNullOrEmpty(parent.NativeId))
+                parent = null;
+
             if (parentInTarget && targetPages.TryGetValue(pageOf[a], out var list))
             {
+                // ContentEquivalent ignores /State and /T: replies that differ only in review state
+                // are different decisions, and two reviewers' identical "+1"s are two replies. An
+                // author missing on either side still matches, so a copy that lost its /T is found.
                 var e = list.FirstOrDefault(e => !claimed.Contains(e)
                     && ReferenceEquals(TargetParent(e), parent)
+                    && e.State == a.State
+                    && (string.IsNullOrEmpty(e.Author) || string.IsNullOrEmpty(a.Author)
+                        || string.Equals(e.Author, a.Author, StringComparison.Ordinal))
                     && AnnotationEquivalence.ContentEquivalent(e, a));
                 if (e is not null)
                 {

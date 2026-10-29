@@ -159,6 +159,38 @@ public class AnnotationMergeTests
 
         Assert.Null(target.Pages[0][0].NativeId);
         Assert.Null(target.Pages[0][1].InReplyTo);
+
+        // Merging the same import again finds the unthreaded copy instead of adding a second one.
+        var again = AnnotationTestHelpers.OnePage(Highlight(100, "import-root"), Note("agreed", inReplyTo: "import-root"));
+        Assert.Equal(0, AnnotationService.MergeInto(target, again, skipEquivalent: true));
+        Assert.Equal(2, target.Pages[0].Count);
+    }
+
+    [Fact]
+    public void ReplyDifferingOnlyInReviewState_IsNotADuplicate()
+    {
+        var target = AnnotationTestHelpers.OnePage(Highlight(100, "root"), Note("", inReplyTo: "root"));
+        target.Pages[0][1].State = ReviewState.Accepted;
+        var imported = Clone(target);
+        imported.Pages[0][1].State = ReviewState.Rejected;
+
+        Assert.Equal(1, AnnotationService.MergeInto(target, imported, skipEquivalent: true));
+        Assert.Equal(3, target.Pages[0].Count);
+    }
+
+    [Fact]
+    public void EqualRepliesByDifferentAuthors_AreBothKept_ButAMissingAuthorStillMatches()
+    {
+        var target = AnnotationTestHelpers.OnePage(Highlight(100, "root"), Note("+1", inReplyTo: "root"),
+            Note("noted", inReplyTo: "root"));
+        target.Pages[0][1].Author = "Alice";
+        target.Pages[0][2].Author = "Alice";
+        var imported = Clone(target);
+        imported.Pages[0][1].Author = "Bob";  // Bob's own "+1"
+        imported.Pages[0][2].Author = null;   // Alice's reply, its /T lost on the way
+
+        Assert.Equal(1, AnnotationService.MergeInto(target, imported, skipEquivalent: true));
+        Assert.Equal(["Alice", "Alice", "Bob"], target.Pages[0].Skip(1).Select(a => a.Author!).Order());
     }
 
     [Fact]
