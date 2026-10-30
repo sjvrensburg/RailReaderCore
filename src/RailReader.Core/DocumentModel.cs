@@ -1372,10 +1372,11 @@ public sealed class DocumentModel : IDisposable
         if (_textCache.TryGetValue(pageIndex, out var cached))
             return cached;
         var text = _pdfText.ExtractPageText(_pdf.PdfBytes, pageIndex, _viewRotation, _pdf.Password);
-        // No cached entry, so this always installs `text` — the guard inside only bites when
-        // an OCR entry is already there.
+        // The guard inside only bites when an OCR entry landed while we extracted (SetOcrText
+        // from a result callback, which a headless marshaller runs on the worker thread) —
+        // return whatever won, so a caller never sees an empty extraction over cached OCR text.
         CacheExtractedText(pageIndex, text);
-        return text;
+        return _textCache.GetValueOrDefault(pageIndex, text);
     }
 
     /// <summary>
@@ -1596,7 +1597,7 @@ public sealed class DocumentModel : IDisposable
         // before or fully after this pass, never half-dropped.
         lock (_textCacheGate)
         {
-            if (_textlessPages.Count == 0) return [];
+            if (_textlessPages.IsEmpty) return [];
             foreach (int page in _textlessPages.Keys)
             {
                 if (_analysisCache.Remove(page)) affected.Add(page);

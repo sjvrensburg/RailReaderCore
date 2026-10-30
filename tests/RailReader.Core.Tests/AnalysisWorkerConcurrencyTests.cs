@@ -74,7 +74,6 @@ public class AnalysisWorkerConcurrencyTests
         // Let the poller finish (it self-caps at 30 s) before asserting/disposing, so a
         // timeout failure is deterministic rather than racing a live poller.
         await Task.WhenAny(poller, Task.Delay(TimeSpan.FromSeconds(35)));
-        await Task.WhenAny(poller, Task.Delay(TimeSpan.FromSeconds(5)));
 
         Assert.Empty(failures);
         Assert.Equal(pageCount, Volatile.Read(ref accepted));   // distinct keys: none suppressed
@@ -86,8 +85,9 @@ public class AnalysisWorkerConcurrencyTests
     public void Submit_SameKeyWhileInFlight_IsSuppressedUntilResultPolled()
     {
         // The in-flight key is single-owner: a duplicate (file, page, params) is refused while
-        // the first request runs, and the key frees only when its result is polled — a stale
-        // release can therefore never delete a successor's key (review of the #167 fix).
+        // the first request runs, and on the success path the key frees only when its result
+        // is polled. The failure path (a direct release from the worker thread) is covered by
+        // FailedRequest_ReleasesKeyFromWorkerThread_SuccessorAdmitted.
         using var entered = new ManualResetEventSlim(false);
         using var release = new ManualResetEventSlim(false);
         using var worker = new AnalysisWorker(
@@ -128,6 +128,54 @@ public class AnalysisWorkerConcurrencyTests
         {
             // Never dispose the events under a layout thread still parked in release.Wait
             // when an assert above throws before release.Set().
+            release.Set();
+        }
+    }
+
+    [Fact]
+    public void FailedRequest_ReleasesKeyFromWorkerThread_SuccessorAdmitted()
+    {
+        // ReleaseInFlight no longer marshals: a request the analyzer fails frees its key straight
+        // from the layout thread, with no result and no Poll. The duplicate stays refused until
+        // then, and the successor admitted afterwards keeps its key until its own result is polled.
+        using var entered = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        int calls = 0;
+        using var worker = new AnalysisWorker(
+            FakeLayoutAnalyzer.DefaultCapabilities,
+            () => new FakeLayoutAnalyzer(() =>
+            {
+                if (Interlocked.Increment(ref calls) > 1) return OneBlock();
+                entered.Set();
+                release.Wait(TimeSpan.FromSeconds(10));
+                throw new InvalidOperationException("analyzer failure");
+            }),
+            new SynchronousThreadMarshaller());
+
+        try
+        {
+            Assert.True(worker.Submit(Request(page: 3)));
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(10)), "analyzer never entered");
+            Assert.False(worker.Submit(Request(page: 3)));      // same key still in flight
+
+            release.Set();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (worker.IsInFlight("/tmp/doc.pdf", 3, new AnalysisParams()) && sw.ElapsedMilliseconds < 10000)
+                Thread.Sleep(5);
+            Assert.False(worker.IsInFlight("/tmp/doc.pdf", 3, new AnalysisParams())); // released, unpolled
+            Assert.Null(worker.Poll());                         // the failure published nothing
+
+            Assert.True(worker.Submit(Request(page: 3)));       // successor admitted under same key
+            AnalysisResult? result = null;
+            sw.Restart();
+            while ((result = worker.Poll()) is null && sw.ElapsedMilliseconds < 10000)
+                Thread.Sleep(5);
+            Assert.NotNull(result);
+            Assert.Equal(2, Volatile.Read(ref calls));
+            Assert.True(worker.IsIdle);
+        }
+        finally
+        {
             release.Set();
         }
     }

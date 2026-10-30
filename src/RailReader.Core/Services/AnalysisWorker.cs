@@ -81,13 +81,15 @@ public sealed class AnalysisWorker : IDisposable
     private readonly Channel<AnalysisRequest> _ocrChannel;
     private readonly Channel<LayoutJob> _layoutChannel;
     private readonly Channel<AnalysisResult> _resultChannel;
-    // Thread-safe by construction, NOT UI-thread-only: with SynchronousThreadMarshaller
-    // (headless hosts) the marshalled callbacks that reach Submit (analysis-prep tasks) and
-    // ReleaseInFlight (worker stage threads) run inline on pool threads, genuinely concurrent
-    // with the host thread's Poll/IsInFlight — a plain HashSet corrupts under that and the
-    // resulting exception was swallowed by the prep task, silently dropping the page's
-    // analysis (issue #167). Keyed by params too (railreader2#180 #3) so the same page can
-    // be in flight under two different post-processing variants.
+    // Thread-safe by construction, NOT UI-thread-only: the worker stage threads release keys
+    // directly (ReleaseInFlight), and with SynchronousThreadMarshaller (headless hosts) the
+    // marshalled prep callbacks that reach Submit run inline on pool threads, genuinely
+    // concurrent with the host thread's Poll/IsInFlight — a plain HashSet corrupts under that
+    // and the resulting exception was swallowed by the prep task, silently dropping the page's
+    // analysis (issue #167). The "call on the UI thread" contract on Submit/Poll/IsInFlight/
+    // IsIdle still stands; this only keeps a headless host that can't honour it safe. Keyed by
+    // params too (railreader2#180 #3) so the same page can be in flight under two different
+    // post-processing variants.
     private readonly ConcurrentDictionary<(string FilePath, int Page, AnalysisParams Params), byte> _inFlight = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _layoutTask;
