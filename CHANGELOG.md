@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.76.1 — Headless analysis race fix (2026-10-30)
 
 - Fix (#167): headless hosts (`SynchronousThreadMarshaller`) could intermittently lose a page's analysis.
   Marshalled callbacks run inline on pool threads there, so two analysis-prep tasks called
