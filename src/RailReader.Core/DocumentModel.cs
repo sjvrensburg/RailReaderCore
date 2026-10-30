@@ -159,6 +159,7 @@ public sealed class DocumentModel : IDisposable
         _rulingCache.Clear();
         _linkCache.Clear();
         _analysisCache.Clear();
+        _analysisFailures.Clear();
         DocumentContentFraction = null;
         BackgroundQueue.Reset(Primary.CurrentPage);
         // Only rebuild eagerly if a layout already existed (i.e. continuous scroll has actually
@@ -230,6 +231,13 @@ public sealed class DocumentModel : IDisposable
     // page (railreader2#180 #3). Look up a variant with TryGetAnalysis(page, params, …); document-wide
     // consumers use the canonical TryGetAnalysis(page, …) overload (top-level blocks are param-invariant).
     private readonly Dictionary<int, Dictionary<AnalysisParams, PageAnalysis>> _analysisCache = [];
+    // Worker failures per (page, params) since that variant last analysed successfully — what
+    // OnAnalysisFailed uses to tell a transient failure (retry) from one that will recur (give
+    // up). UI-thread only, like the analysis cache it shadows.
+    private readonly Dictionary<(int Page, AnalysisParams Params), int> _analysisFailures = [];
+    // Automatic resubmissions of a failed foreground page before its waiting views give up.
+    // Navigating back to the page always tries again; this bounds only the retries nobody asked for.
+    private const int MaxAnalysisRetries = 1;
     // The text-cache family is concurrent: analysis-prep tasks mutate it inside their marshalled
     // callback (CacheExtractedText), which under SynchronousThreadMarshaller runs inline on a
     // pool thread, genuinely concurrent with direct host-thread access (SetOcrText via Poll,
@@ -733,15 +741,27 @@ public sealed class DocumentModel : IDisposable
                         || viewRotation != _viewRotation) return;
                     CacheExtractedText(page, pageText);
                     var (charBoxes, skew) = AnalysisInputFor(page, pageText);
-                    worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH,
-                        charBoxes, pars, rulings, viewRotation, skew, ct));
+                    // False with the key in flight is a duplicate, and that request's result seats
+                    // this view. False with nothing in flight is a refusal (the worker's stages
+                    // stopped after a fatal startup failure) and nothing ever will (issue #172).
+                    if (!worker.Submit(new AnalysisRequest(filePath, page, rgb, pxW, pxH, pageW, pageH,
+                            charBoxes, pars, rulings, viewRotation, skew, ct))
+                        && !worker.IsInFlight(filePath, page, pars))
+                        AbandonRailSetup(vp);
                 });
             }
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
                 _logger.Error($"Failed to prepare analysis input: {ex.Message}", ex);
-                _marshaller.Post(() => { if (!IsDisposed && !vp.IsDisposed) vp.PendingRailSetup = false; });
+                // Only for the page this task prepared, and only if no other request for it got
+                // through: the view may have moved on, or a retry's prep may have succeeded.
+                _marshaller.Post(() =>
+                {
+                    if (!IsDisposed && !vp.IsDisposed && vp.CurrentPage == page
+                        && !worker.IsInFlight(filePath, page, pars))
+                        AbandonRailSetup(vp);
+                });
             }
         }, ct);
     }
@@ -762,6 +782,62 @@ public sealed class DocumentModel : IDisposable
     {
         vp.Rail.SetAnalysis(analysis, navigableRoles, vp.PreserveRailOnSeat, vp.CurrentFocusBlockIndex);
         vp.PendingRailSetup = false;
+    }
+
+    /// <summary>
+    /// Handles a request the worker gave up on (issue #172). Each view of this document waiting on
+    /// that page and params is resubmitted the first time, since most failures are transient, and
+    /// after that stops waiting (<see cref="AbandonRailSetup"/>). A view whose page already has a
+    /// newer request in flight is left alone, because that request's result seats it. Returns true
+    /// if any view stopped waiting, so the caller repaints. UI-thread only.
+    /// </summary>
+    internal bool OnAnalysisFailed(AnalysisFailure failure, AnalysisWorker worker,
+        IReadOnlySet<BlockRole> navigableRoles)
+    {
+        _marshaller.AssertUIThread();
+        var key = (failure.Page, failure.Params);
+        int failures = _analysisFailures.GetValueOrDefault(key) + 1;
+        _analysisFailures[key] = failures;
+
+        bool abandoned = false;
+        foreach (var vp in _viewports)
+        {
+            if (vp.CurrentPage != failure.Page || !vp.PendingRailSetup
+                || vp.AnalysisParams != failure.Params) continue;
+            if (worker.IsInFlight(FilePath, failure.Page, failure.Params)) continue;
+
+            if (failures <= MaxAnalysisRetries)
+            {
+                _logger.Debug($"[Analysis] Page {failure.Page}: analysis failed, retrying");
+                SubmitAnalysis(vp, worker, navigableRoles);
+            }
+            else
+            {
+                _logger.Warn($"[Analysis] Page {failure.Page}: analysis failed {failures} times; no rail for this page");
+                AbandonRailSetup(vp);
+                abandoned = true;
+            }
+        }
+        return abandoned;
+    }
+
+    /// <summary>
+    /// Stops <paramref name="vp"/> waiting on an analysis that is never coming, so it no longer
+    /// holds off lookahead and background analysis. The deferred skip and history seat waiting on
+    /// that analysis go with it. So does the rail, unless it already holds a cached variant of this
+    /// page: during the wait it usually still holds the previous page's (or old rotation's)
+    /// geometry, which the pending flag was what kept from being navigated.
+    /// </summary>
+    internal void AbandonRailSetup(Viewport vp)
+    {
+        if (!vp.PendingRailSetup) return;
+        vp.PendingRailSetup = false;
+        vp.PendingSkip = null;
+        vp.PendingHistorySeat = null;
+        bool railOnThisPage = vp.Rail.Analysis is { } held
+            && _analysisCache.TryGetValue(vp.CurrentPage, out var byParams)
+            && byParams.Values.Any(a => ReferenceEquals(a, held));
+        if (!railOnThisPage) vp.Rail.ClearAnalysis();
     }
 
     public void QueueLookahead(Viewport vp, int count)
@@ -1420,6 +1496,7 @@ public sealed class DocumentModel : IDisposable
         if (!_analysisCache.TryGetValue(page, out var byParams))
             _analysisCache[page] = byParams = [];
         byParams[pars] = analysis;
+        _analysisFailures.Remove((page, pars));
 
         // Content fraction is param-invariant (top-level blocks don't change with row/cell splitting),
         // so accumulate from whatever variant lands; the union only grows.

@@ -403,6 +403,17 @@ public sealed partial class DocumentController
             if (matchedLiveDoc)
                 AnalysisPageReady?.Invoke(result.Page);
         }
+
+        // A request that died in the worker publishes no result, so without this its waiting
+        // views keep PendingRailSetup forever and background analysis stalls document-wide (#172).
+        while (_worker.PollFailure() is { } failure)
+        {
+            foreach (var doc in Documents)
+            {
+                if (doc.IsDisposed || doc.FilePath != failure.FilePath) continue;
+                got |= doc.OnAnalysisFailed(failure, _worker, _config.NavigableRoles);
+            }
+        }
         return (got, needsAnim, pageChanged);
     }
 

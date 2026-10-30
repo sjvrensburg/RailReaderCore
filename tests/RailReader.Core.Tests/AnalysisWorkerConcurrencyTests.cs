@@ -163,7 +163,12 @@ public class AnalysisWorkerConcurrencyTests
             while (worker.IsInFlight("/tmp/doc.pdf", 3, new AnalysisParams()) && sw.ElapsedMilliseconds < 10000)
                 Thread.Sleep(5);
             Assert.False(worker.IsInFlight("/tmp/doc.pdf", 3, new AnalysisParams())); // released, unpolled
-            Assert.Null(worker.Poll());                         // the failure published nothing
+            Assert.Null(worker.Poll());                         // the failure published no result
+            var failure = worker.PollFailure();                 // but it was reported (#172)
+            Assert.NotNull(failure);
+            Assert.Equal(3, failure.Page);
+            Assert.IsType<InvalidOperationException>(failure.Error);
+            Assert.Null(worker.PollFailure());
 
             Assert.True(worker.Submit(Request(page: 3)));       // successor admitted under same key
             AnalysisResult? result = null;

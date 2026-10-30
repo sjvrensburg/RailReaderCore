@@ -57,8 +57,11 @@ public class AnalysisWorkerResultSignalTests
     }
 
     [Fact]
-    public void DoesNotFireForARequestThatFailedAnalysis()
+    public void FiresOnceForARequestThatFailedAnalysis()
     {
+        // A failure publishes no result but is reported through PollFailure (#172), and a host
+        // that pumps only on this signal must be woken to drain it, or its waiting view stays
+        // pending until something else happens to tick.
         int notifications = 0;
         using var worker = new AnalysisWorker(
             FakeLayoutAnalyzer.DefaultCapabilities,
@@ -68,11 +71,12 @@ public class AnalysisWorkerResultSignalTests
 
         Assert.True(worker.Submit(Request()));
 
-        WaitUntil(() => worker.IsIdle, "worker never released the failed request's in-flight key");
-
-        // No result was ever published, so the callback must never have run.
-        Assert.Equal(0, Volatile.Read(ref notifications));
+        WaitUntil(() => Volatile.Read(ref notifications) == 1, "the failure never signalled the host");
+        Assert.True(worker.IsIdle);
         Assert.Null(worker.Poll());
+        Assert.NotNull(worker.PollFailure());
+        Thread.Sleep(50);
+        Assert.Equal(1, Volatile.Read(ref notifications));
     }
 
     [Fact]
