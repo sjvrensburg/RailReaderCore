@@ -148,10 +148,14 @@ public sealed class DocumentModel : IDisposable
     /// </summary>
     private void OnViewRotationChanged()
     {
-        _textCache.Clear();
-        _ocrPages.Clear();
-        _ocrSkew.Clear();
-        _textlessPages.Clear();
+        // Gated so a prep install cannot interleave between the text-cache clears.
+        lock (_textCacheGate)
+        {
+            _textCache.Clear();
+            _ocrPages.Clear();
+            _ocrSkew.Clear();
+            _textlessPages.Clear();
+        }
         _rulingCache.Clear();
         _linkCache.Clear();
         _analysisCache.Clear();
@@ -226,20 +230,29 @@ public sealed class DocumentModel : IDisposable
     // page (railreader2#180 #3). Look up a variant with TryGetAnalysis(page, params, …); document-wide
     // consumers use the canonical TryGetAnalysis(page, …) overload (top-level blocks are param-invariant).
     private readonly Dictionary<int, Dictionary<AnalysisParams, PageAnalysis>> _analysisCache = [];
-    private readonly Dictionary<int, PageText> _textCache = [];
+    // The text-cache family is concurrent: analysis-prep tasks mutate it inside their marshalled
+    // callback (CacheExtractedText), which under SynchronousThreadMarshaller runs inline on a
+    // pool thread, genuinely concurrent with direct host-thread access (SetOcrText via Poll,
+    // GetOrExtractText, eviction) — plain collections corrupt under that (issue #167, the same
+    // family as the worker's _inFlight). Compound sequences across these collections
+    // (CacheExtractedText / SetOcrText / AnalysisInputFor installs and reads, and the
+    // eviction / invalidate / rotation-clear passes) additionally hold _textCacheGate so
+    // the "a real text layer always wins over OCR" guard and pin-vs-evict stay atomic.
+    private readonly object _textCacheGate = new();
+    private readonly ConcurrentDictionary<int, PageText> _textCache = new();
     private readonly Dictionary<int, List<PdfLink>> _linkCache = [];
     // Pages whose cached text came from OCR rather than from a text layer. Pinned against
     // eviction (see EvictDistantPageCaches) and the exact set whose analysis depends on the OCR
-    // mode (see InvalidateOcrDependentAnalysis).
-    private readonly HashSet<int> _ocrPages = [];
+    // mode (see InvalidateOcrDependentAnalysis). A byte-valued dictionary stands in for a set.
+    private readonly ConcurrentDictionary<int, byte> _ocrPages = new();
     // Page skew in radians as OCR measured it (raw, before the DeskewOcrLines gate), for the
     // pages in _ocrPages. Kept beside the recovered text because it is the other half of what a
     // re-analysis needs: hand both back on the request and the page keeps its deskewed line
     // grouping without a second recognition pass, which is the whole cost in issue #100.
-    private readonly Dictionary<int, float> _ocrSkew = [];
+    private readonly ConcurrentDictionary<int, float> _ocrSkew = new();
     // Pages the extractor found to have no text layer of their own — the pages where turning OCR
     // on or off changes the answer. Recorded even when an OCR entry is what stays cached.
-    private readonly HashSet<int> _textlessPages = [];
+    private readonly ConcurrentDictionary<int, byte> _textlessPages = new();
     // Vector rulings by (page, view rotation). Extraction re-opens and re-parses the whole
     // document on the PdfPig backend — a second full parse per page, under the same gate that
     // serialises rendering — and all three submission paths ask for the same pages, so this is
@@ -470,15 +483,32 @@ public sealed class DocumentModel : IDisposable
             _rulingCache.TryRemove(key, out _);
     }
 
-    private void EvictUnneeded<TValue>(Dictionary<int, TValue> cache, HashSet<int>? pinned = null)
+    private void EvictUnneeded<TValue>(Dictionary<int, TValue> cache)
     {
         List<int>? stale = null;
         foreach (var page in cache.Keys)
-            if (!AnyViewportNeeds(page) && pinned?.Contains(page) != true)
+            if (!AnyViewportNeeds(page))
                 (stale ??= []).Add(page);
         if (stale is null) return;
         foreach (var page in stale)
             cache.Remove(page);
+    }
+
+    private void EvictUnneeded<TValue>(ConcurrentDictionary<int, TValue> cache, ConcurrentDictionary<int, byte> pinned)
+    {
+        // Gated so the pin scan and the removals are atomic against gated installs
+        // (CacheExtractedText / SetOcrText): a page pinned after the scan must not be
+        // removed by it (pinned OCR text is never re-recovered).
+        lock (_textCacheGate)
+        {
+            List<int>? stale = null;
+            foreach (var page in cache.Keys)
+                if (!AnyViewportNeeds(page) && !pinned.ContainsKey(page))
+                    (stale ??= []).Add(page);
+            if (stale is null) return;
+            foreach (var page in stale)
+                cache.TryRemove(page, out _);
+        }
     }
 
     private bool AnyViewportNeeds(int page)
@@ -851,7 +881,7 @@ public sealed class DocumentModel : IDisposable
 
             // Cheapest rejection first: a page already known to have no text layer of its own, and
             // no OCR output cached to stand in for one, needs no extraction to be ruled out.
-            if (ocrOn && _textlessPages.Contains(page) && !_ocrPages.Contains(page)) continue;
+            if (ocrOn && _textlessPages.ContainsKey(page) && !_ocrPages.ContainsKey(page)) continue;
 
             try
             {
@@ -1342,10 +1372,11 @@ public sealed class DocumentModel : IDisposable
         if (_textCache.TryGetValue(pageIndex, out var cached))
             return cached;
         var text = _pdfText.ExtractPageText(_pdf.PdfBytes, pageIndex, _viewRotation, _pdf.Password);
-        // No cached entry, so this always installs `text` — the guard inside only bites when
-        // an OCR entry is already there.
+        // The guard inside only bites when an OCR entry landed while we extracted (SetOcrText
+        // from a result callback, which a headless marshaller runs on the worker thread) —
+        // return whatever won, so a caller never sees an empty extraction over cached OCR text.
         CacheExtractedText(pageIndex, text);
-        return text;
+        return _textCache.GetValueOrDefault(pageIndex, text);
     }
 
     /// <summary>
@@ -1423,18 +1454,21 @@ public sealed class DocumentModel : IDisposable
     /// </summary>
     private void CacheExtractedText(int page, PageText text)
     {
-        if (text.CharBoxes.Count == 0)
+        lock (_textCacheGate)
         {
-            _textlessPages.Add(page);
-            if (_textCache.TryGetValue(page, out var existing) && existing.CharBoxes.Count > 0) return;
+            if (text.CharBoxes.Count == 0)
+            {
+                _textlessPages.TryAdd(page, 0);
+                if (_textCache.TryGetValue(page, out var existing) && existing.CharBoxes.Count > 0) return;
+            }
+            else
+            {
+                _textlessPages.TryRemove(page, out _);
+                _ocrPages.TryRemove(page, out _);
+                _ocrSkew.TryRemove(page, out _);
+            }
+            _textCache[page] = text;
         }
-        else
-        {
-            _textlessPages.Remove(page);
-            _ocrPages.Remove(page);
-            _ocrSkew.Remove(page);
-        }
-        _textCache[page] = text;
     }
 
     /// <summary>
@@ -1450,8 +1484,9 @@ public sealed class DocumentModel : IDisposable
     /// the one in force when it was measured — that is what makes toggling deskew cheap.
     /// </para>
     /// <para>
-    /// UI thread only: it reads the text caches. All three submission paths resolve their input
-    /// on the UI thread (the two prep tasks inside their marshalled callback) for that reason.
+    /// Reads the text caches under <see cref="_textCacheGate"/> so the (pin, text, skew) triple
+    /// is consistent: all three submission paths resolve their input in their marshalled
+    /// callback, which a synchronous (headless) marshaller runs on a pool thread.
     /// </para>
     /// </summary>
     private (IReadOnlyList<CharBox> CharBoxes, float Skew) AnalysisInputFor(int page, PageText extracted)
@@ -1460,10 +1495,13 @@ public sealed class DocumentModel : IDisposable
         // real extraction produces char boxes, CacheExtractedText drops the page from the set. So
         // this needs no comparison against `extracted` — which on the background path is often the
         // recovered text already, since it comes from the same cache.
-        if (_ocrPages.Contains(page)
-            && _textCache.TryGetValue(page, out var recovered)
-            && recovered.CharBoxes.Count > 0)
-            return (recovered.DedupedCharBoxes, _ocrSkew.GetValueOrDefault(page));
+        lock (_textCacheGate)
+        {
+            if (_ocrPages.ContainsKey(page)
+                && _textCache.TryGetValue(page, out var recovered)
+                && recovered.CharBoxes.Count > 0)
+                return (recovered.DedupedCharBoxes, _ocrSkew.GetValueOrDefault(page));
+        }
 
         return (extracted.DedupedCharBoxes, 0f);
     }
@@ -1518,13 +1556,16 @@ public sealed class DocumentModel : IDisposable
     internal void SetOcrText(int page, PageText text, float skew = 0f)
     {
         _marshaller.AssertUIThread();
-        if (_textCache.TryGetValue(page, out var existing) && existing.CharBoxes.Count > 0) return;
-        _textCache[page] = text;
-        _textlessPages.Add(page);
-        if (text.CharBoxes.Count > 0)
+        lock (_textCacheGate)
         {
-            _ocrPages.Add(page);
-            _ocrSkew[page] = skew;
+            if (_textCache.TryGetValue(page, out var existing) && existing.CharBoxes.Count > 0) return;
+            _textCache[page] = text;
+            _textlessPages.TryAdd(page, 0);
+            if (text.CharBoxes.Count > 0)
+            {
+                _ocrPages.TryAdd(page, 0);
+                _ocrSkew[page] = skew;
+            }
         }
     }
 
@@ -1550,17 +1591,22 @@ public sealed class DocumentModel : IDisposable
     internal IReadOnlyList<int> InvalidateOcrDependentAnalysis(bool dropRecoveredText = true)
     {
         _marshaller.AssertUIThread();
-        if (_textlessPages.Count == 0) return [];
-
         var affected = new List<int>();
-        foreach (int page in _textlessPages)
+        // Gated so the textless snapshot and the per-page drops are atomic against gated
+        // installs/reads: a page a prep marks textless mid-invalidate is either fully
+        // before or fully after this pass, never half-dropped.
+        lock (_textCacheGate)
         {
-            if (_analysisCache.Remove(page)) affected.Add(page);
-            if (!dropRecoveredText) continue;
-            if (_ocrPages.Remove(page))
+            if (_textlessPages.IsEmpty) return [];
+            foreach (int page in _textlessPages.Keys)
             {
-                _ocrSkew.Remove(page);
-                _textCache.Remove(page);
+                if (_analysisCache.Remove(page)) affected.Add(page);
+                if (!dropRecoveredText) continue;
+                if (_ocrPages.TryRemove(page, out _))
+                {
+                    _ocrSkew.TryRemove(page, out _);
+                    _textCache.TryRemove(page, out _);
+                }
             }
         }
         if (affected.Count > 0) BackgroundQueue.Reset(Primary.CurrentPage);

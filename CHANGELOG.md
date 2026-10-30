@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Fix (#167): headless hosts (`SynchronousThreadMarshaller`) could intermittently lose a page's analysis.
+  Marshalled callbacks run inline on pool threads there, so two analysis-prep tasks called
+  `AnalysisWorker.Submit` at once and corrupted its in-flight set; the exception was swallowed by the prep
+  task, leaving the view with no rail. The worker's in-flight set and `DocumentModel`'s text caches are now
+  thread-safe, and a failed worker request releases its key directly from the worker thread instead of
+  posting the release. Desktop hosts with a real UI-thread marshaller see no behaviour change.
+- **Behaviour change:** `SynchronousThreadMarshaller.Post` now serializes posts under a lock, so callbacks
+  from different threads never overlap (as on a real UI thread). A callback must not block waiting on
+  another thread that also posts. That would now deadlock. In particular, don't synchronously hand off
+  to a UI thread from the worker's result-available callback.
+
 ## 0.76.0 — Annotation import that skips duplicates (2026-10-29)
 
 - `AnnotationService.MergeInto(target, imported, skipEquivalent)` (#168), an additive overload for

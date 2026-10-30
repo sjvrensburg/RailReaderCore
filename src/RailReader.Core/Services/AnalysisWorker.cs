@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Threading.Channels;
 using RailReader.Core;
 using RailReader.Core.Models;
@@ -80,10 +81,16 @@ public sealed class AnalysisWorker : IDisposable
     private readonly Channel<AnalysisRequest> _ocrChannel;
     private readonly Channel<LayoutJob> _layoutChannel;
     private readonly Channel<AnalysisResult> _resultChannel;
-    // UI-thread-only: accessed exclusively from Submit/Poll/IsInFlight/IsIdle on the UI thread.
-    // Keyed by params too (railreader2#180 #3) so the same page can be in flight under two
-    // different post-processing variants (e.g. cell-nav on for one view, off for another).
-    private readonly HashSet<(string FilePath, int Page, AnalysisParams Params)> _inFlight = [];
+    // Thread-safe by construction, NOT UI-thread-only: the worker stage threads release keys
+    // directly (ReleaseInFlight), and with SynchronousThreadMarshaller (headless hosts) the
+    // marshalled prep callbacks that reach Submit run inline on pool threads, genuinely
+    // concurrent with the host thread's Poll/IsInFlight — a plain HashSet corrupts under that
+    // and the resulting exception was swallowed by the prep task, silently dropping the page's
+    // analysis (issue #167). The "call on the UI thread" contract on Submit/Poll/IsInFlight/
+    // IsIdle still stands; this only keeps a headless host that can't honour it safe. Keyed by
+    // params too (railreader2#180 #3) so the same page can be in flight under two different
+    // post-processing variants.
+    private readonly ConcurrentDictionary<(string FilePath, int Page, AnalysisParams Params), byte> _inFlight = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _layoutTask;
     // Null when no OCR service was supplied: nothing is ever routed to the OCR stage, so
@@ -224,17 +231,15 @@ public sealed class AnalysisWorker : IDisposable
         request.PxH > 0 ? (float)(request.PageH / request.PxH) : 1f);
 
     /// <summary>
-    /// Releases a request's in-flight key on the UI thread, its owner. Every path that ends a
-    /// request without publishing a result must call this: <see cref="Poll"/> is what normally
-    /// clears the key, so a dropped request would otherwise leave <see cref="IsInFlight"/> true
-    /// for its page forever (blocking resubmission) and <see cref="IsIdle"/> false (blocking
-    /// lookahead and background analysis document-wide).
+    /// Releases a request's in-flight key. Every path that ends a request without publishing
+    /// a result must call this: <see cref="Poll"/> is what normally clears the key, so a
+    /// dropped request would otherwise leave <see cref="IsInFlight"/> true for its page
+    /// forever (blocking resubmission) and <see cref="IsIdle"/> false (blocking lookahead
+    /// and background analysis document-wide). The set is concurrent, so a worker stage
+    /// thread releases directly — no marshalling to the key's former UI-thread owner.
     /// </summary>
     private void ReleaseInFlight(AnalysisRequest request)
-    {
-        var key = (request.FilePath, request.Page, request.Params);
-        _marshaller.Post(() => _inFlight.Remove(key));
-    }
+        => _inFlight.TryRemove((request.FilePath, request.Page, request.Params), out _);
 
     /// <summary>
     /// True when nobody will consume this request any more (see
@@ -368,8 +373,8 @@ public sealed class AnalysisWorker : IDisposable
                 // resolver, …) must not fault the loop: that would silently kill analysis for the
                 // rest of the session AND strand the request's _inFlight key, so IsInFlight stays
                 // true forever (blocking resubmission for its page) and IsIdle stays false
-                // (blocking lookahead/background analysis document-wide). Log, release the key on
-                // the UI thread (its owner), and keep serving requests.
+                // (blocking lookahead/background analysis document-wide). Log, release the key,
+                // and keep serving requests.
                 using var linked = Link(request, ct);
                 try
                 {
@@ -503,7 +508,7 @@ public sealed class AnalysisWorker : IDisposable
         if (request.Cancellation.IsCancellationRequested) return false;
 
         var key = (request.FilePath, request.Page, request.Params);
-        if (!_inFlight.Add(key))
+        if (!_inFlight.TryAdd(key, 0))
             return false;
 
         // Routed on the page alone — whether it arrives with char boxes — never on the current
@@ -521,7 +526,7 @@ public sealed class AnalysisWorker : IDisposable
 
         if (!written)
         {
-            _inFlight.Remove(key);
+            _inFlight.TryRemove(key, out _);
             return false;
         }
         return true;
@@ -534,7 +539,7 @@ public sealed class AnalysisWorker : IDisposable
         if (!_resultChannel.Reader.TryRead(out var result))
             return null;
 
-        _inFlight.Remove((result.FilePath, result.Page, result.Params));
+        _inFlight.TryRemove((result.FilePath, result.Page, result.Params), out _);
         return result;
     }
 
@@ -543,7 +548,7 @@ public sealed class AnalysisWorker : IDisposable
     public bool IsInFlight(string filePath, int page, AnalysisParams pars)
     {
         _marshaller.AssertUIThread();
-        return _inFlight.Contains((filePath, page, pars));
+        return _inFlight.ContainsKey((filePath, page, pars));
     }
 
     /// <summary>Check if no analysis requests are in flight. Must be called on the UI thread.</summary>
@@ -552,7 +557,7 @@ public sealed class AnalysisWorker : IDisposable
         get
         {
             _marshaller.AssertUIThread();
-            return _inFlight.Count == 0;
+            return _inFlight.IsEmpty;
         }
     }
 

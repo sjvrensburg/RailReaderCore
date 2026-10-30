@@ -166,6 +166,37 @@ public class BackgroundAnalysisAndCacheTests
     }
 
     [Fact]
+    public void Caches_ConcurrentPrepAndHostAccess_NoCorruption()
+    {
+        // Issue #167 (surviving review finding): prep tasks cache extracted text inside their
+        // marshalled callback, which under SynchronousThreadMarshaller runs on a pool thread,
+        // while the host thread installs OCR text and reads the cache directly. The plain
+        // collections corrupted under that; hammer both sides at once and require every page
+        // to end up cached with no exception.
+        var state = NewDoc(new CoreSettings());
+        const int pages = 20;
+
+        var ex = Record.Exception(() => Parallel.For(0, 400, new ParallelOptions { MaxDegreeOfParallelism = 8 }, i =>
+        {
+            int page = i % pages;
+            if (i % 3 == 0) state.SetOcrText(page, FakeText(page), skew: 0.01f);
+            else if (i % 3 == 1) state.SetText(page, new PageText("", []));
+            else _ = state.TextCache.Keys.ToList(); // public snapshot read, as hosts do
+        }));
+
+        Assert.Null(ex);
+        Assert.Equal(Enumerable.Range(0, pages), state.TextCache.Keys.OrderBy(x => x));
+        // Every page saw the OCR branch, and empty re-extractions must never have overwritten
+        // what it installed (the gated guard under concurrency, not just key presence)…
+        for (int p = 0; p < pages; p++)
+            Assert.Equal($"page {p}", state.TextCache[p].Text);
+        // …and every page stayed OCR-pinned: invalidating drops recovered text for all of them.
+        state.InvalidateOcrDependentAnalysis();
+        Assert.Empty(state.TextCache);
+        state.Dispose();
+    }
+
+    [Fact]
     public void Caches_RealTextLayerStillWinsOverOcrText()
     {
         var state = NewDoc(new CoreSettings());

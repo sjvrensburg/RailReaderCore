@@ -18,8 +18,25 @@ public interface IThreadMarshaller
 /// <summary>
 /// Executes actions synchronously on the calling thread.
 /// Used for headless contexts (tests, CLI agent) where no UI thread exists.
+/// Posts are serialized across threads — never overlapping each other — because that is
+/// part of the guarantee a real UI thread gives and the one Core's marshalled callbacks
+/// are written against (they mutate caches and per-view state). Without it, callbacks
+/// posted from concurrent background tasks (e.g. two analysis-prep tasks) run truly in
+/// parallel and corrupt that state (issue #167). Note the limit: this serializes posts
+/// against OTHER POSTS only, not against direct calls the host makes on its own thread —
+/// state touched from both sides (e.g. DocumentModel's text caches, the worker's
+/// in-flight set) must still be thread-safe in its own right. The lock is reentrant,
+/// so a post that posts again on the same thread proceeds — but a callback must not block
+/// waiting on another thread that itself posts (e.g. a synchronous hand-off to a real UI
+/// thread from <see cref="Services.AnalysisWorker"/>'s result-available callback, which runs
+/// inside a post): that thread waits on this lock and the two deadlock.
 /// </summary>
 public sealed class SynchronousThreadMarshaller : IThreadMarshaller
 {
-    public void Post(Action action) => action();
+    private readonly object _gate = new();
+
+    public void Post(Action action)
+    {
+        lock (_gate) action();
+    }
 }
