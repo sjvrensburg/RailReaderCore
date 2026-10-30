@@ -16,13 +16,37 @@ public class MultiViewportTests : IDisposable
     private readonly string _pdfPath;
     private readonly DocumentController _controller;
     private readonly AppConfig _appConfig;
+    private readonly CapturingLogger _logger = new();
+
+    // Captures Error log lines so a failed async seat can report the prep/worker exception
+    // that the default NullLogger would swallow (issue #167).
+    private sealed class CapturingLogger : ILogger
+    {
+        private readonly System.Collections.Concurrent.ConcurrentQueue<string> _errors = new();
+        public void Debug(string message) { }
+        public void Info(string message) { }
+        public void Warn(string message) { }
+        public void Error(string message, Exception? ex = null)
+            => _errors.Enqueue(ex is null ? message
+                : $"{message}: {ex.GetType().Name}: {ex.Message} @ {FirstFrames(ex)}");
+
+        private static string FirstFrames(Exception ex)
+        {
+            var st = ex.StackTrace;
+            if (st is null) return "(no stack)";
+            var lines = st.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            return string.Join(" <- ", lines.Take(4));
+        }
+        public string ErrorsText => _errors.IsEmpty ? "(none)" : string.Join(" | ", _errors);
+        public void Clear() => _errors.Clear();
+    }
 
     public MultiViewportTests()
     {
         _pdfPath = TestFixtures.GetTestPdfPath(); // 3-page synthetic PDF
         _appConfig = new AppConfig();
         _controller = new DocumentController(_appConfig.ToCoreSettings(), _appConfig, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory(), _logger);
         // No analysis worker — these tests exercise rendering + camera ticking, not analysis.
     }
 
@@ -691,7 +715,7 @@ public class MultiViewportTests : IDisposable
         // wrongly torn down. Drive a non-focused pane to its final line on the last page.
         var cfg = new AppConfig { PixelSnapping = false, SnapDurationMs = 1, ScrollSpeedMax = 100000.0 };
         using var controller = new DocumentController(cfg.ToCoreSettings(), cfg, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory(), _logger);
         controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
             () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
 
@@ -737,7 +761,7 @@ public class MultiViewportTests : IDisposable
         // focused view, so a non-focused pane's advance announced the focused view's position instead.
         var cfg = new AppConfig { PixelSnapping = false, SnapDurationMs = 1, ScrollSpeedMax = 100000.0 };
         using var controller = new DocumentController(cfg.ToCoreSettings(), cfg, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory(), _logger);
         controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
             () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
 
@@ -832,7 +856,7 @@ public class MultiViewportTests : IDisposable
         // sat at low zoom. Each AutoScrollController now acts on ITS OWN view's rail.
         var cfg = new AppConfig { PixelSnapping = false, SnapDurationMs = 1 };
         using var controller = new DocumentController(cfg.ToCoreSettings(), cfg, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory(), _logger);
         controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
             () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
 
@@ -862,7 +886,7 @@ public class MultiViewportTests : IDisposable
         // block indices are param-invariant) — not bounce to block 0. Affects single-viewport users too.
         var cfg = new AppConfig { PixelSnapping = false, SnapDurationMs = 1 };
         using var controller = new DocumentController(cfg.ToCoreSettings(), cfg, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory(), _logger);
         controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
             () => new FakeLayoutAnalyzer(MakeMultiBlockAnalysis));
 
@@ -1179,8 +1203,9 @@ public class MultiViewportTests : IDisposable
 
     // Seats a viewport's analysis (cache-miss → real worker pipeline with the fake analyzer) and activates
     // its rail by zooming above the rail threshold, so auto-scroll / reading-position paths are exercisable.
-    private static void SeatAndActivate(DocumentController controller, DocumentModel doc, Viewport vp, int page)
+    private void SeatAndActivate(DocumentController controller, DocumentModel doc, Viewport vp, int page)
     {
+        _logger.Clear();   // so a failure dump shows this seat's errors, not an earlier seat's
         vp.CurrentPage = page;
         vp.LoadPageBitmap();
         vp.Camera.Zoom = 6.0;                         // above RailZoomThreshold (3.0)
@@ -1192,6 +1217,16 @@ public class MultiViewportTests : IDisposable
             Thread.Sleep(10);
         }
         vp.UpdateRailZoom(vp.Width, vp.Height);       // activate the rail at the current zoom (cache-hit seat skips this)
+        Assert.True(vp.Rail.Active,
+            $"SeatAndActivate: rail not active after seat (page {page}): " +
+            $"PendingRailSetup={vp.PendingRailSetup} (wait {sw.ElapsedMilliseconds} ms), " +
+            $"HasAnalysis={vp.Rail.HasAnalysis}, NavigableCount={vp.Rail.NavigableCount}, " +
+            $"Blocks={vp.Rail.Analysis?.Blocks.Count.ToString() ?? "null"}, " +
+            $"Zoom={vp.Camera.Zoom} vs RailZoomThreshold={controller.Config.RailZoomThreshold}, " +
+            $"Size={vp.Width}x{vp.Height}, CurrentPage={vp.CurrentPage}, " +
+            $"IsPageAnalysed={doc.IsPageAnalysed(page)}, " +
+            $"InFlight={controller.Worker?.IsInFlight(doc.FilePath, page, vp.AnalysisParams)}, " +
+            $"WorkerIdle={controller.Worker?.IsIdle}, Errors=[{_logger.ErrorsText}]");
     }
 
     // A one-block (3-line) navigable Text analysis so a seated rail reports HasAnalysis.
