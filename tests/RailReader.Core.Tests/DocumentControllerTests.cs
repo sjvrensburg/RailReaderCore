@@ -9,12 +9,14 @@ public class DocumentControllerTests : IDisposable
 {
     private readonly string _pdfPath;
     private readonly DocumentController _controller;
+    // Posted callbacks run only when the test pumps, on the test thread (#174).
+    private readonly QueuedThreadMarshaller _marshaller = new();
 
     public DocumentControllerTests()
     {
         _pdfPath = TestFixtures.GetTestPdfPath();
         var config = new AppConfig { ScrollSpeedZoomReference = 0 };   // raw page-unit speeds: zoom normalisation has its own tests (ScrollSpeedZoomTests)
-        _controller = new DocumentController(config.ToCoreSettings(), config, AnnotationService.Default, new SynchronousThreadMarshaller(),
+        _controller = new DocumentController(config.ToCoreSettings(), config, AnnotationService.Default, _marshaller,
             TestFixtures.CreatePdfFactory());
         // Don't initialize worker (requires ONNX model) — test navigation without analysis
     }
@@ -1333,9 +1335,14 @@ public class DocumentControllerTests : IDisposable
 
         CreateAndAddDocument(); // submits page-0 analysis on a background thread
 
+        // Pumping runs the prep task's posted Submit and then the worker's posted notification,
+        // without draining the result: only PollAnalysisResults does that.
         var sw = System.Diagnostics.Stopwatch.StartNew();
         while (System.Threading.Volatile.Read(ref notifications) == 0 && sw.ElapsedMilliseconds < 5000)
+        {
+            _marshaller.Pump();
             System.Threading.Thread.Sleep(5);
+        }
 
         Assert.True(notifications >= 1, "ResultAvailable never fired for the worker's result");
 
@@ -1634,7 +1641,7 @@ public class DocumentControllerTests : IDisposable
             [AnnotationTool.Rectangle] = 3,
         });
         using var controller = new DocumentController(config.ToCoreSettings(), config,
-            AnnotationService.Default, new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            AnnotationService.Default, new QueuedThreadMarshaller(), TestFixtures.CreatePdfFactory());
 
         Assert.Equal(3, controller.Annotations.GetAnnotationColorIndex(AnnotationTool.Rectangle));
     }
@@ -1666,7 +1673,7 @@ public class DocumentControllerTests : IDisposable
         // restoredPage gate only covers which PAGE loads, not the camera).
         var appConfig = new AppConfig();
         using (var c1 = new DocumentController(appConfig.ToCoreSettings(), appConfig, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory()))
+            new QueuedThreadMarshaller(), TestFixtures.CreatePdfFactory()))
         {
             var doc1 = c1.CreateDocument(_pdfPath);
             doc1.LoadPageBitmap();
@@ -1681,7 +1688,7 @@ public class DocumentControllerTests : IDisposable
         }
 
         using var c2 = new DocumentController(appConfig.ToCoreSettings(), appConfig, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            new QueuedThreadMarshaller(), TestFixtures.CreatePdfFactory());
         var doc2 = c2.CreateDocument(_pdfPath);
         doc2.LoadPageBitmap();
         c2.AddDocument(doc2);
@@ -1702,7 +1709,7 @@ public class DocumentControllerTests : IDisposable
         // reopening must NOT stomp CenterPage's fit with an arbitrary top-left/1.0x camera.
         var appConfig = new AppConfig();
         using (var c1 = new DocumentController(appConfig.ToCoreSettings(), appConfig, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory()))
+            new QueuedThreadMarshaller(), TestFixtures.CreatePdfFactory()))
         {
             var doc1 = c1.CreateDocument(_pdfPath);
             doc1.LoadPageBitmap();
@@ -1710,7 +1717,7 @@ public class DocumentControllerTests : IDisposable
         }
 
         using var c2 = new DocumentController(appConfig.ToCoreSettings(), appConfig, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            new QueuedThreadMarshaller(), TestFixtures.CreatePdfFactory());
         var doc2 = c2.CreateDocument(_pdfPath);
         doc2.LoadPageBitmap();
         c2.AddDocument(doc2);
@@ -1720,7 +1727,7 @@ public class DocumentControllerTests : IDisposable
         // through a controller whose recent-files store never saw this path at all. Same basis, no
         // polluted recents entry — isolates whether AddRecentFile's placeholder forced anything.
         using var c3 = new DocumentController(new AppConfig().ToCoreSettings(), new AppConfig(),
-            AnnotationService.Default, new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            AnnotationService.Default, new QueuedThreadMarshaller(), TestFixtures.CreatePdfFactory());
         var fitOnly = c3.CreateDocument(_pdfPath);
         fitOnly.LoadPageBitmap();
         c3.AddDocument(fitOnly);

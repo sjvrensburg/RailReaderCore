@@ -18,13 +18,15 @@ public class ControllerConcurrencyAuditTests : IDisposable
     private readonly string _pdfPath;
     private readonly DocumentController _controller;
     private readonly AppConfig _appConfig;
+    // Posted callbacks run only when the test pumps, on the test thread (#174).
+    private readonly QueuedThreadMarshaller _marshaller = new();
 
     public ControllerConcurrencyAuditTests()
     {
         _pdfPath = TestFixtures.GetTestPdfPath(); // 3-page synthetic PDF
         _appConfig = new AppConfig();
         _controller = new DocumentController(_appConfig.ToCoreSettings(), _appConfig, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            _marshaller, TestFixtures.CreatePdfFactory());
     }
 
     public void Dispose() => _controller.Dispose();
@@ -38,13 +40,8 @@ public class ControllerConcurrencyAuditTests : IDisposable
         return doc;
     }
 
-    private static void WaitUntil(Func<bool> condition, int timeoutMs = 5000)
-    {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (!condition() && sw.ElapsedMilliseconds < timeoutMs)
-            Thread.Sleep(10);
-        Assert.True(condition(), "condition not met within timeout");
-    }
+    private void WaitUntil(Func<bool> condition, int timeoutMs = 5000)
+        => Assert.True(TestWait.Until(condition, _marshaller, timeoutMs: timeoutMs), "condition not met within timeout");
 
     // --- Finding: ViewportRemoved must be a real event, not a clobberable single-slot callback ---
 
@@ -175,7 +172,7 @@ public class ControllerConcurrencyAuditTests : IDisposable
         var pdf = new FailingRenderPdfService(factory.CreatePdfService(_pdfPath), failPage: 1);
         var config = _appConfig.ToCoreSettings();
         using var doc = new DocumentModel(_pdfPath, pdf, factory.CreatePdfTextService(),
-            factory.CreatePdfLinkService(), config, new SynchronousThreadMarshaller());
+            factory.CreatePdfLinkService(), config, new QueuedThreadMarshaller());
         var vp = doc.Primary;
         vp.SetSize(800, 600);
         Assert.True(doc.LoadPageBitmap()); // page 0 renders fine

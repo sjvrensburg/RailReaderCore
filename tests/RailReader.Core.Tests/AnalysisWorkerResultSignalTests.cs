@@ -20,11 +20,14 @@ public class AnalysisWorkerResultSignalTests
         Blocks = [new LayoutBlock { BBox = new BBox(0f, 0f, 400f, 400f), Role = BlockRole.Text }],
     };
 
-    private static void WaitUntil(Func<bool> condition, string failureMessage)
+    // The notification is posted, so on a QueuedThreadMarshaller it only runs when pumped (#174).
+    private static void WaitUntil(Func<bool> condition, string failureMessage,
+        QueuedThreadMarshaller? marshaller = null)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         while (sw.ElapsedMilliseconds < 5000)
         {
+            marshaller?.Pump();
             if (condition()) return;
             Thread.Sleep(5);
         }
@@ -35,19 +38,21 @@ public class AnalysisWorkerResultSignalTests
     public void FiresOnceForEachResultPublished()
     {
         int notifications = 0;
+        var marshaller = new QueuedThreadMarshaller();
         using var worker = new AnalysisWorker(
             FakeLayoutAnalyzer.DefaultCapabilities,
             () => new FakeLayoutAnalyzer(OneBlock),
-            new SynchronousThreadMarshaller(),
+            marshaller,
             onResultAvailable: () => Interlocked.Increment(ref notifications));
 
         Assert.True(worker.Submit(Request(page: 0)));
         Assert.True(worker.Submit(Request(page: 1)));
 
         WaitUntil(() => Volatile.Read(ref notifications) >= 2,
-            "onResultAvailable did not fire for both submitted pages");
+            "onResultAvailable did not fire for both submitted pages", marshaller);
 
         // Exactly once each — not a speculative fire, not a double-fire from both stage paths.
+        marshaller.Pump();
         Assert.Equal(2, notifications);
 
         // The results are still sitting in the channel: the notification precedes draining.
@@ -63,19 +68,21 @@ public class AnalysisWorkerResultSignalTests
         // that pumps only on this signal must be woken to drain it, or its waiting view stays
         // pending until something else happens to tick.
         int notifications = 0;
+        var marshaller = new QueuedThreadMarshaller();
         using var worker = new AnalysisWorker(
             FakeLayoutAnalyzer.DefaultCapabilities,
             () => new FakeLayoutAnalyzer(() => throw new InvalidOperationException("synthetic failure")),
-            new SynchronousThreadMarshaller(),
+            marshaller,
             onResultAvailable: () => Interlocked.Increment(ref notifications));
 
         Assert.True(worker.Submit(Request()));
 
-        WaitUntil(() => Volatile.Read(ref notifications) == 1, "the failure never signalled the host");
+        WaitUntil(() => Volatile.Read(ref notifications) == 1, "the failure never signalled the host", marshaller);
         Assert.True(worker.IsIdle);
         Assert.Null(worker.Poll());
         Assert.NotNull(worker.PollFailure());
         Thread.Sleep(50);
+        marshaller.Pump();
         Assert.Equal(1, Volatile.Read(ref notifications));
     }
 
@@ -89,7 +96,7 @@ public class AnalysisWorkerResultSignalTests
         using var worker = new AnalysisWorker(
             FakeLayoutAnalyzer.DefaultCapabilities,
             () => new FakeLayoutAnalyzer(OneBlock),
-            new SynchronousThreadMarshaller(),
+            new QueuedThreadMarshaller(),
             onResultAvailable: () => Interlocked.Increment(ref notifications));
 
         // Cancelled at submission time — Submit itself refuses it.
@@ -104,7 +111,7 @@ public class AnalysisWorkerResultSignalTests
         using var worker = new AnalysisWorker(
             FakeLayoutAnalyzer.DefaultCapabilities,
             () => new FakeLayoutAnalyzer(OneBlock),
-            new SynchronousThreadMarshaller());
+            new QueuedThreadMarshaller());
 
         Assert.True(worker.Submit(Request()));
 

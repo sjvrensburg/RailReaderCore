@@ -19,7 +19,7 @@ public class ContinuousScrollTests : IDisposable
     public ContinuousScrollTests()
     {
         var config = new AppConfig();
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
         _state = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
@@ -66,7 +66,7 @@ public class ContinuousScrollTests : IDisposable
     [Fact]
     public void EnsurePageLayout_UsesConfiguredGap()
     {
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
         var config = new AppConfig().ToCoreSettings() with { ContinuousPageGapPts = 40.0 };
@@ -99,13 +99,21 @@ public class ContinuousScrollRenderWindowTests : IDisposable
     {
         long deadline = Environment.TickCount64 + timeoutMs;
         while (vp.HasPendingWindowRenders && Environment.TickCount64 < deadline)
+        {
+            Pump(vp);
             Thread.Sleep(5);
+        }
+        Pump(vp);   // the last completion's posted install
     }
+
+    /// <summary>Runs the view's posted render completions: on a <see cref="QueuedThreadMarshaller"/>
+    /// they land only when the test pumps, on the test thread (#174).</summary>
+    private static void Pump(Viewport vp) => (vp.Owner.Marshaller as QueuedThreadMarshaller)?.Pump();
 
     public ContinuousScrollRenderWindowTests()
     {
         var config = new AppConfig().ToCoreSettings() with { ContinuousScroll = true };
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
         _state = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
@@ -124,7 +132,7 @@ public class ContinuousScrollRenderWindowTests : IDisposable
     public void SinglePageMode_VisiblePages_HasExactlyOneEntry()
     {
         var offConfig = new AppConfig().ToCoreSettings(); // ContinuousScroll = false
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
         using var state = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
@@ -143,7 +151,7 @@ public class ContinuousScrollRenderWindowTests : IDisposable
     public void ResolvePoint_SinglePageMode_MatchesLegacyFormula()
     {
         var offConfig = new AppConfig().ToCoreSettings();
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
         using var state = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
@@ -203,7 +211,7 @@ public class ContinuousScrollRenderWindowTests : IDisposable
     {
         // Needs enough pages that "near page 1" and "near the last page" are disjoint windows.
         var config = new AppConfig().ToCoreSettings() with { ContinuousScroll = true };
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var path = Path.Combine(Path.GetTempPath(), $"railreader_test_{Guid.NewGuid():N}.pdf");
         try
@@ -346,7 +354,7 @@ public class ContinuousScrollRenderWindowTests : IDisposable
     public void ModeSwitch_OnEnteringContinuous_SeedsWindow_AndOnLeaving_DisposesExtras()
     {
         var config = new AppConfig().ToCoreSettings(); // starts off
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
         using var state = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
@@ -449,7 +457,10 @@ public class ContinuousScrollRenderWindowTests : IDisposable
         // still be resolving on the background task it scheduled; wait for it to land.
         long deadline = Environment.TickCount64 + 3000;
         while (vp.CachedDpi < anchorDpi && Environment.TickCount64 < deadline)
+        {
+            Pump(vp);
             Thread.Sleep(5);
+        }
 
         Assert.Equal(anchorDpi, vp.CachedDpi);
     }
