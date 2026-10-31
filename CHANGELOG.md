@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.77.0 — Analysis failure recovery (2026-10-31)
 
 - Fix (#172): if the analysis worker failed a page that a view was waiting on (the analyzer threw), the
   view kept `PendingRailSetup` with nothing in flight. The page never got a rail, and background analysis
