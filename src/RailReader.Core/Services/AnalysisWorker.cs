@@ -110,6 +110,14 @@ public sealed class AnalysisWorker : IDisposable
     // post-processing variants.
     private readonly ConcurrentDictionary<(string FilePath, int Page, AnalysisParams Params), byte> _inFlight = new();
     private readonly CancellationTokenSource _cts = new();
+    // Cancelled, and the cause recorded, when the layout analyzer fails to load. Nothing the OCR
+    // stage recognises after that has a consumer, so the stage aborts the recognition in progress
+    // (the token is joined into its per-request token) and fails the requests still queued
+    // without running them, instead of paying up to a minute a page on a heavy tier (#177).
+    // Never disposed: it has no timer, and nothing reads its WaitHandle, so it holds nothing to
+    // release, while disposing it would race the OCR thread linking a request to it.
+    private readonly CancellationTokenSource _layoutStopped = new();
+    private volatile Exception? _layoutStartupFailure;
     private readonly Task _layoutTask;
     // Null when no OCR service was supplied: nothing is ever routed to the OCR stage, so
     // starting a thread to drain it would be a thread parked forever.
@@ -288,13 +296,15 @@ public sealed class AnalysisWorker : IDisposable
     }
 
     /// <summary>
-    /// Joins the worker's lifetime token to the request's own, so a stage stops at its next
-    /// checkpoint for either. The two are distinguished at the catch site — the worker's ends
-    /// the loop, the request's drops one request — by testing the worker's token, since
+    /// Joins the worker's lifetime token to the request's own (and, for the OCR stage, the
+    /// layout-stopped token), so a stage stops at its next checkpoint for any of them. They are
+    /// distinguished at the catch site — the worker's ends the loop, a stopped layout stage fails
+    /// the request, the request's drops one request — by testing each source in turn, since
     /// <see cref="OperationCanceledException"/> alone does not say which fired.
     /// </summary>
-    private static CancellationTokenSource Link(AnalysisRequest request, CancellationToken workerToken)
-        => CancellationTokenSource.CreateLinkedTokenSource(workerToken, request.Cancellation);
+    private static CancellationTokenSource Link(AnalysisRequest request, CancellationToken workerToken,
+        CancellationToken extra = default)
+        => CancellationTokenSource.CreateLinkedTokenSource(workerToken, request.Cancellation, extra);
 
     /// <summary>
     /// The OCR stage. Recovers what a missing text layer would have given us and hands the
@@ -325,9 +335,14 @@ public sealed class AnalysisWorker : IDisposable
                 // Cheapest possible win, and the one the queue exists for: a scanned page whose
                 // document closed while it waited costs nothing at all.
                 if (Abandoned(request)) continue;
+                if (_layoutStartupFailure is { } dead)
+                {
+                    Fail(request, dead);
+                    continue;
+                }
 
                 LayoutJob job;
-                using var linked = Link(request, ct);
+                using var linked = Link(request, ct, _layoutStopped.Token);
                 try
                 {
                     var (sx, sy) = MapScale(request);
@@ -340,6 +355,14 @@ public sealed class AnalysisWorker : IDisposable
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
                     throw; // Dispose path — let the loop end
+                }
+                catch (OperationCanceledException) when (_layoutStartupFailure is { } stopped
+                                                          && !request.Cancellation.IsCancellationRequested)
+                {
+                    // Interrupted because the layout stage is gone, not because anyone left:
+                    // the request is a failure the host has to hear about (#172, #177).
+                    Fail(request, stopped);
+                    continue;
                 }
                 catch (OperationCanceledException)
                 {
@@ -361,7 +384,7 @@ public sealed class AnalysisWorker : IDisposable
                 {
                     // The layout stage is gone (fatal analyzer failure, or disposal): fail the
                     // request so IsInFlight/IsIdle don't stay stuck on a request nobody will finish.
-                    Fail(request, null);
+                    Fail(request, _layoutStartupFailure);
                 }
             }
         }
@@ -383,9 +406,14 @@ public sealed class AnalysisWorker : IDisposable
         catch (Exception ex)
         {
             StartupError = ex.Message;
+            // Before the channels complete, so the OCR stage sees the cause on the requests the
+            // completion strands, and stops recognising for a stage that will never read them.
+            _layoutStartupFailure = ex;
+            _layoutStopped.Cancel();
             _logger.Error("[Worker] FATAL: Failed to create layout analyzer", ex);
-            // Nothing downstream of here can run, so close both intake channels too — otherwise
-            // the OCR stage would go on paying for recognition whose results have no consumer.
+            // Nothing downstream of here can run, so close both intake channels too: Submit refuses
+            // from now on. Requests already in the OCR queue are failed unrecognised by that stage
+            // (it checks _layoutStartupFailure), and ones queued for this stage are failed below.
             _ocrChannel.Writer.TryComplete();
             _layoutChannel.Writer.TryComplete();
             _resultChannel.Writer.TryComplete();

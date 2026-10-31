@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Fix (#177): when the layout analyzer failed to load, the OCR stage still ran full recognition on every
+  scanned page already queued for it (about 65 s a page with PP-OCRv6 Medium), and only then reported
+  each request as an `AnalysisFailure`. Recognition already in progress is now interrupted, and requests
+  still queued fail without reaching the engine. All of them carry the analyzer's startup exception as
+  `AnalysisFailure.Error`.
+
 ## 0.77.0 — Analysis failure recovery (2026-10-31)
 
 - Fix (#172): if the analysis worker failed a page that a view was waiting on (the analyzer threw), the
