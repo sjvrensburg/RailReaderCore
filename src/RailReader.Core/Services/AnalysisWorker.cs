@@ -296,13 +296,15 @@ public sealed class AnalysisWorker : IDisposable
     }
 
     /// <summary>
-    /// Joins the worker's lifetime token to the request's own, so a stage stops at its next
-    /// checkpoint for either. The two are distinguished at the catch site — the worker's ends
-    /// the loop, the request's drops one request — by testing the worker's token, since
+    /// Joins the worker's lifetime token to the request's own (and, for the OCR stage, the
+    /// layout-stopped token), so a stage stops at its next checkpoint for any of them. They are
+    /// distinguished at the catch site — the worker's ends the loop, a stopped layout stage fails
+    /// the request, the request's drops one request — by testing each source in turn, since
     /// <see cref="OperationCanceledException"/> alone does not say which fired.
     /// </summary>
-    private static CancellationTokenSource Link(AnalysisRequest request, CancellationToken workerToken)
-        => CancellationTokenSource.CreateLinkedTokenSource(workerToken, request.Cancellation);
+    private static CancellationTokenSource Link(AnalysisRequest request, CancellationToken workerToken,
+        CancellationToken extra = default)
+        => CancellationTokenSource.CreateLinkedTokenSource(workerToken, request.Cancellation, extra);
 
     /// <summary>
     /// The OCR stage. Recovers what a missing text layer would have given us and hands the
@@ -340,8 +342,7 @@ public sealed class AnalysisWorker : IDisposable
                 }
 
                 LayoutJob job;
-                using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-                    ct, request.Cancellation, _layoutStopped.Token);
+                using var linked = Link(request, ct, _layoutStopped.Token);
                 try
                 {
                     var (sx, sy) = MapScale(request);
@@ -355,7 +356,8 @@ public sealed class AnalysisWorker : IDisposable
                 {
                     throw; // Dispose path — let the loop end
                 }
-                catch (OperationCanceledException) when (_layoutStartupFailure is { } stopped)
+                catch (OperationCanceledException) when (_layoutStartupFailure is { } stopped
+                                                          && !request.Cancellation.IsCancellationRequested)
                 {
                     // Interrupted because the layout stage is gone, not because anyone left:
                     // the request is a failure the host has to hear about (#172, #177).
