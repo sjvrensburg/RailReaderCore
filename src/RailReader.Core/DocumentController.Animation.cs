@@ -342,10 +342,13 @@ public sealed partial class DocumentController
 
     /// <summary>
     /// Poll the analysis worker for completed results. Can also be called
-    /// from a low-frequency timer when not animating.
+    /// from a low-frequency timer when not animating. With a <see cref="QueuedThreadMarshaller"/>
+    /// it first runs the callbacks posted since the last call (analysis-prep submissions, render
+    /// completions), so a headless host gets them on its own thread with no extra wiring (#174).
     /// </summary>
     public (bool GotResults, bool NeedsAnimation, bool PageChanged) PollAnalysisResults()
     {
+        (_marshaller as QueuedThreadMarshaller)?.Pump();
         bool got = false;
         bool needsAnim = false;
         bool pageChanged = false;

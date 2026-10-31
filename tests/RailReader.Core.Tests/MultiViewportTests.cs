@@ -17,6 +17,9 @@ public class MultiViewportTests : IDisposable
     private readonly DocumentController _controller;
     private readonly AppConfig _appConfig;
     private readonly CapturingLogger _logger = new();
+    // Posted callbacks run only when a test pumps, on the test thread, as on a real UI thread
+    // (#174). PollAnalysisResults (and so TickViewport) pumps them; TestWait.Until also pumps.
+    private readonly QueuedThreadMarshaller _marshaller = new();
 
     // Captures Error log lines so a failed async seat can report the prep/worker exception
     // that the default NullLogger would swallow (issue #167).
@@ -46,7 +49,7 @@ public class MultiViewportTests : IDisposable
         _pdfPath = TestFixtures.GetTestPdfPath(); // 3-page synthetic PDF
         _appConfig = new AppConfig();
         _controller = new DocumentController(_appConfig.ToCoreSettings(), _appConfig, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory(), _logger);
+            _marshaller, TestFixtures.CreatePdfFactory(), _logger);
         // No analysis worker — these tests exercise rendering + camera ticking, not analysis.
     }
 
@@ -194,12 +197,7 @@ public class MultiViewportTests : IDisposable
         doc.SubmitAnalysis(vp2, _controller.Worker, _controller.Config.NavigableRoles);
         Assert.True(vp2.PendingRailSetup);
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (vp2.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
-        {
-            _controller.PollAnalysisResults();
-            Thread.Sleep(10);
-        }
+        TestWait.Until(() => !vp2.PendingRailSetup, _marshaller, () => _controller.PollAnalysisResults(), timeoutMs: 5000);
 
         Assert.False(vp2.PendingRailSetup);                 // the fan-out cleared it
         Assert.True(vp2.Rail.HasAnalysis);                  // vp2's OWN rail got seated
@@ -243,12 +241,7 @@ public class MultiViewportTests : IDisposable
 
         doc.SubmitAnalysis(vp2, _controller.Worker, _controller.Config.NavigableRoles);
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (vp2.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
-        {
-            _controller.PollAnalysisResults();
-            Thread.Sleep(10);
-        }
+        TestWait.Until(() => !vp2.PendingRailSetup, _marshaller, () => _controller.PollAnalysisResults(), timeoutMs: 5000);
 
         Assert.True(vp2.Rail.Active);        // seated + activated
         Assert.NotNull(vp2Pos);              // the live, non-focused view fired its OWN event
@@ -341,12 +334,8 @@ public class MultiViewportTests : IDisposable
         doc.SubmitAnalysis(vp2, _controller.Worker, _controller.Config.NavigableRoles);
         Assert.True(vp2.PendingRailSetup);
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (vp2.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
-        {
-            _controller.TickViewport(vp1, 0.016, pumpAnalysis: true); // only vp1 is ticked
-            Thread.Sleep(10);
-        }
+        TestWait.Until(() => !vp2.PendingRailSetup, _marshaller,
+            () => _controller.TickViewport(vp1, 0.016, pumpAnalysis: true), timeoutMs: 5000); // only vp1 is ticked
 
         Assert.False(vp2.PendingRailSetup);   // vp1's pump fanned out to the un-ticked vp2
         Assert.True(vp2.Rail.HasAnalysis);
@@ -411,12 +400,8 @@ public class MultiViewportTests : IDisposable
         doc.QueueLookahead(vp2, 2);            // enqueue pages 1,2 into vp2's own queue
         Assert.Equal(2, vp2.PendingAnalysis.Count);
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (vp2.PendingAnalysis.Count == 2 && sw.ElapsedMilliseconds < 5000)
-        {
-            _controller.TickViewport(doc.Primary, 0.016, pumpAnalysis: true); // only the primary ticks
-            Thread.Sleep(10);
-        }
+        TestWait.Until(() => vp2.PendingAnalysis.Count != 2, _marshaller,
+            () => _controller.TickViewport(doc.Primary, 0.016, pumpAnalysis: true), timeoutMs: 5000); // only the primary ticks
 
         Assert.True(vp2.PendingAnalysis.Count < 2);  // the pump drained the non-focused view's queue
     }
@@ -512,12 +497,7 @@ public class MultiViewportTests : IDisposable
         vp2.ReadingPositionChanged += p => pos = p;
 
         doc.SubmitAnalysis(vp2, _controller.Worker, _controller.Config.NavigableRoles);
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (vp2.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
-        {
-            _controller.PollAnalysisResults();
-            Thread.Sleep(10);
-        }
+        TestWait.Until(() => !vp2.PendingRailSetup, _marshaller, () => _controller.PollAnalysisResults(), timeoutMs: 5000);
 
         Assert.NotNull(pos);
         // The emitted fraction matches the one computed against vp2's OWN width — not the ambient 800.
@@ -601,7 +581,7 @@ public class MultiViewportTests : IDisposable
         // offsets; before the fix the shared ambient size landed them identically.
         var cfg = new AppConfig { PixelSnapping = false, SnapDurationMs = 1 };
         using var controller = new DocumentController(cfg.ToCoreSettings(), cfg, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            _marshaller, TestFixtures.CreatePdfFactory());
         controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
             () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
 
@@ -624,12 +604,7 @@ public class MultiViewportTests : IDisposable
         doc.SubmitAnalysis(narrow, controller.Worker, controller.Config.NavigableRoles);
         doc.SubmitAnalysis(wide, controller.Worker, controller.Config.NavigableRoles);
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while ((narrow.PendingRailSetup || wide.PendingRailSetup) && sw.ElapsedMilliseconds < 5000)
-        {
-            controller.PollAnalysisResults();
-            Thread.Sleep(10);
-        }
+        TestWait.Until(() => !(narrow.PendingRailSetup || wide.PendingRailSetup), _marshaller, () => controller.PollAnalysisResults(), timeoutMs: 5000);
         Assert.True(narrow.Rail.Active && wide.Rail.Active);
 
         // Sanity: the frame for this block genuinely depends on window width, so the two per-view targets
@@ -697,12 +672,7 @@ public class MultiViewportTests : IDisposable
         Assert.True(newParams.CellNavigation);
         Assert.Equal(newParams, vp.AnalysisParams);   // every view adopted the new params
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (vp.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
-        {
-            _controller.PollAnalysisResults();
-            Thread.Sleep(10);
-        }
+        TestWait.Until(() => !vp.PendingRailSetup, _marshaller, () => _controller.PollAnalysisResults(), timeoutMs: 5000);
         Assert.True(doc.IsAnalysed(0, newParams));    // the current page re-analysed under the new variant (the fix)
     }
 
@@ -715,7 +685,7 @@ public class MultiViewportTests : IDisposable
         // wrongly torn down. Drive a non-focused pane to its final line on the last page.
         var cfg = new AppConfig { PixelSnapping = false, SnapDurationMs = 1, ScrollSpeedMax = 100000.0 };
         using var controller = new DocumentController(cfg.ToCoreSettings(), cfg, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory(), _logger);
+            _marshaller, TestFixtures.CreatePdfFactory(), _logger);
         controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
             () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
 
@@ -761,7 +731,7 @@ public class MultiViewportTests : IDisposable
         // focused view, so a non-focused pane's advance announced the focused view's position instead.
         var cfg = new AppConfig { PixelSnapping = false, SnapDurationMs = 1, ScrollSpeedMax = 100000.0 };
         using var controller = new DocumentController(cfg.ToCoreSettings(), cfg, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory(), _logger);
+            _marshaller, TestFixtures.CreatePdfFactory(), _logger);
         controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
             () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
 
@@ -856,7 +826,7 @@ public class MultiViewportTests : IDisposable
         // sat at low zoom. Each AutoScrollController now acts on ITS OWN view's rail.
         var cfg = new AppConfig { PixelSnapping = false, SnapDurationMs = 1 };
         using var controller = new DocumentController(cfg.ToCoreSettings(), cfg, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory(), _logger);
+            _marshaller, TestFixtures.CreatePdfFactory(), _logger);
         controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
             () => new FakeLayoutAnalyzer(MakeNavigableAnalysis));
 
@@ -886,7 +856,7 @@ public class MultiViewportTests : IDisposable
         // block indices are param-invariant) — not bounce to block 0. Affects single-viewport users too.
         var cfg = new AppConfig { PixelSnapping = false, SnapDurationMs = 1 };
         using var controller = new DocumentController(cfg.ToCoreSettings(), cfg, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory(), _logger);
+            _marshaller, TestFixtures.CreatePdfFactory(), _logger);
         controller.InitializeWorker(FakeLayoutAnalyzer.DefaultCapabilities,
             () => new FakeLayoutAnalyzer(MakeMultiBlockAnalysis));
 
@@ -903,12 +873,7 @@ public class MultiViewportTests : IDisposable
         vp.Rail.CurrentBlock = 2;
 
         controller.OnConfigChanged(controller.Config with { CellNavigation = true });
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (vp.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
-        {
-            controller.PollAnalysisResults();
-            Thread.Sleep(10);
-        }
+        TestWait.Until(() => !vp.PendingRailSetup, _marshaller, () => controller.PollAnalysisResults(), timeoutMs: 5000);
 
         // Block preserved across the variant reseat — not reset to 0 (the regression). The exact
         // line-clamp semantics are covered by RailNavTests.SetAnalysis_PreservePosition_KeepsBlockAndClampsLine.
@@ -1000,7 +965,7 @@ public class MultiViewportTests : IDisposable
         // Phase 4 #2: a parked (IsLive=false) viewport must not pin its frozen page's caches.
         var cfg = new AppConfig { PageCacheRadius = 1 };
         using var controller = new DocumentController(cfg.ToCoreSettings(), cfg, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            _marshaller, TestFixtures.CreatePdfFactory());
         var doc = controller.CreateDocument(_pdfPath);
         doc.LoadPageBitmap();
         controller.AddDocument(doc);
@@ -1210,12 +1175,8 @@ public class MultiViewportTests : IDisposable
         vp.LoadPageBitmap();
         vp.Camera.Zoom = 6.0;                         // above RailZoomThreshold (3.0)
         doc.SubmitAnalysis(vp, controller.Worker, controller.Config.NavigableRoles);
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (vp.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
-        {
-            controller.PollAnalysisResults();
-            Thread.Sleep(10);
-        }
+        var sw = System.Diagnostics.Stopwatch.StartNew();   // reported by the diagnostic below
+        TestWait.Until(() => !vp.PendingRailSetup, _marshaller, () => controller.PollAnalysisResults(), timeoutMs: 5000);
         vp.UpdateRailZoom(vp.Width, vp.Height);       // activate the rail at the current zoom (cache-hit seat skips this)
         Assert.True(vp.Rail.Active,
             $"SeatAndActivate: rail not active after seat (page {page}): " +

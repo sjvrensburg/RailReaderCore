@@ -84,9 +84,11 @@ public class BackgroundAnalysisAndCacheTests
         Assert.All(DrainAll(queue), p => Assert.InRange(p, 78, 82));
     }
 
-    private static DocumentModel NewDoc(CoreSettings settings)
+    // A queued marshaller by default, so these tests run under the real UI-thread contract (#174);
+    // pass a synchronous one to exercise the inline-callback concurrency headless hosts can still hit.
+    private static DocumentModel NewDoc(CoreSettings settings, IThreadMarshaller? marshaller = null)
     {
-        var marshaller = new SynchronousThreadMarshaller();
+        marshaller ??= new QueuedThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
         return new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
@@ -173,7 +175,7 @@ public class BackgroundAnalysisAndCacheTests
         // while the host thread installs OCR text and reads the cache directly. The plain
         // collections corrupted under that; hammer both sides at once and require every page
         // to end up cached with no exception.
-        var state = NewDoc(new CoreSettings());
+        var state = NewDoc(new CoreSettings(), new SynchronousThreadMarshaller());
         const int pages = 20;
 
         var ex = Record.Exception(() => Parallel.For(0, 400, new ParallelOptions { MaxDegreeOfParallelism = 8 }, i =>
@@ -288,7 +290,7 @@ public class BackgroundAnalysisAndCacheTests
         }
         try
         {
-            var marshaller = new SynchronousThreadMarshaller();
+            var marshaller = new QueuedThreadMarshaller();
             var factory = TestFixtures.CreatePdfFactory();
             using var doc = new DocumentModel(path, factory.CreatePdfService(path),
                 factory.CreatePdfTextService(), factory.CreatePdfLinkService(), new CoreSettings(), marshaller);
@@ -303,6 +305,7 @@ public class BackgroundAnalysisAndCacheTests
             var deadline = DateTime.UtcNow.AddSeconds(20);
             while (result is null && DateTime.UtcNow < deadline)
             {
+                marshaller.Pump();   // runs the prep task's posted Submit on this thread
                 result = worker.Poll();
                 if (result is null) Thread.Sleep(20);
             }
@@ -335,7 +338,7 @@ public class BackgroundAnalysisAndCacheTests
     {
         // Read-ahead is speculative; recognition is not a speculative-sized cost. One scanned page
         // can hold the OCR stage for tens of seconds, and the window is a dozen pages either side.
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         using var doc = NewTextlessDoc(marshaller);
         var ocr = new CountingOcrService();
         using var worker = NewWorker(marshaller, ocr, OcrMode.Full);
@@ -350,7 +353,7 @@ public class BackgroundAnalysisAndCacheTests
     {
         // The paired half: with no OCR to trigger, a page with no text layer is the cheap
         // pixel-projection case it always was, and read-ahead behaves exactly as it did before.
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         using var doc = NewTextlessDoc(marshaller);
         var ocr = new CountingOcrService();
         using var worker = NewWorker(marshaller, ocr, OcrMode.Off);
@@ -364,7 +367,7 @@ public class BackgroundAnalysisAndCacheTests
     {
         // Nothing is skipped for its own sake: once the text exists, the page is as cheap to
         // analyse as a digital one, because the request carries the char boxes and OCR is skipped.
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         using var doc = NewTextlessDoc(marshaller);
         var ocr = new CountingOcrService();
         using var worker = NewWorker(marshaller, ocr, OcrMode.Full);

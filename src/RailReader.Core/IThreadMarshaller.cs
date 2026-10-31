@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace RailReader.Core;
 
 /// <summary>
@@ -30,6 +32,8 @@ public interface IThreadMarshaller
 /// waiting on another thread that itself posts (e.g. a synchronous hand-off to a real UI
 /// thread from <see cref="Services.AnalysisWorker"/>'s result-available callback, which runs
 /// inside a post): that thread waits on this lock and the two deadlock.
+/// For a host that can run its own loop, <see cref="QueuedThreadMarshaller"/> gives the real
+/// guarantee instead: callbacks run only on the host's thread, between its own calls (#174).
 /// </summary>
 public sealed class SynchronousThreadMarshaller : IThreadMarshaller
 {
@@ -38,5 +42,78 @@ public sealed class SynchronousThreadMarshaller : IThreadMarshaller
     public void Post(Action action)
     {
         lock (_gate) action();
+    }
+}
+
+/// <summary>
+/// A stand-in UI thread for headless hosts (tests, CLI) that can pump: <see cref="Post"/> only
+/// queues, and <see cref="Pump"/> runs the queued callbacks on the thread that constructed the
+/// marshaller. That is the guarantee a desktop dispatcher gives and the one Core's marshalled
+/// callbacks are written against: a callback never runs concurrently with the host's own calls,
+/// so nothing it touches has to be thread-safe in its own right. <see cref="SynchronousThreadMarshaller"/>
+/// cannot give it, because it runs each callback inline on the posting thread (issue #174).
+///
+/// <para>
+/// Semantics: callbacks run in FIFO order; <see cref="Pump"/> drains until the queue is empty,
+/// so a callback that posts during a pump runs in the same pump, and once <see cref="Pump"/>
+/// returns nothing posted before or during it is still pending. There is no lock, so no deadlock
+/// hazard. A <see cref="Pump"/> called from inside a running callback (say a
+/// <c>ResultAvailable</c> handler that ticks a frame) returns 0 at once: the outer pump runs the
+/// rest, after that callback finishes, as a dispatcher would.
+/// <see cref="DocumentController.PollAnalysisResults"/> (and so <see cref="DocumentController.PumpAnalysis"/>
+/// and <see cref="DocumentController.TickViewport(Viewport, double)"/>) pumps it automatically, so a
+/// controller host needs no extra wiring; a host that drives the worker directly calls
+/// <see cref="Pump"/> itself.
+/// </para>
+/// <para>
+/// <see cref="AssertUIThread"/> throws off the owning thread, where the desktop marshaller only
+/// debug-asserts: the point of this type is to surface contract violations that the synchronous
+/// marshaller hides. An async test that resumes on another thread should keep using
+/// <see cref="SynchronousThreadMarshaller"/>.
+/// </para>
+/// </summary>
+public sealed class QueuedThreadMarshaller : IThreadMarshaller
+{
+    private readonly ConcurrentQueue<Action> _queue = new();
+    private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
+    private bool _pumping;   // owner-thread only
+
+    /// <summary>Queues <paramref name="action"/> for the next <see cref="Pump"/>. Safe from any thread.</summary>
+    public void Post(Action action) => _queue.Enqueue(action);
+
+    /// <summary>Number of callbacks waiting for <see cref="Pump"/>.</summary>
+    public int Pending => _queue.Count;
+
+    /// <summary>
+    /// Runs every queued callback, including any posted while it runs, on the owning thread.
+    /// Returns how many ran. Throws when called from any other thread.
+    /// </summary>
+    public int Pump()
+    {
+        AssertUIThread();
+        if (_pumping) return 0;   // re-entered from a callback: the outer pump drains the rest
+        _pumping = true;
+        try
+        {
+            int ran = 0;
+            while (_queue.TryDequeue(out var action))
+            {
+                action();
+                ran++;
+            }
+            return ran;
+        }
+        finally
+        {
+            _pumping = false;
+        }
+    }
+
+    public void AssertUIThread()
+    {
+        if (Environment.CurrentManagedThreadId != _ownerThreadId)
+            throw new InvalidOperationException(
+                $"Called from thread {Environment.CurrentManagedThreadId}, not the marshaller's " +
+                $"thread {_ownerThreadId}: UI-thread-only Core state was touched off the UI thread.");
     }
 }
