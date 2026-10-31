@@ -14,7 +14,7 @@ public class MarginCroppingTests : IDisposable
     {
         _pdfPath = TestFixtures.GetTestPdfPath();
         _controller = new DocumentController(new AppConfig().ToCoreSettings(), new AppConfig(), AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            new QueuedThreadMarshaller(), TestFixtures.CreatePdfFactory());
     }
 
     public void Dispose()

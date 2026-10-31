@@ -10,7 +10,7 @@ public class PdfLinkTests
     public void HitTestLink_ReturnsCachedLink()
     {
         var config = new AppConfig();
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
 
@@ -60,7 +60,7 @@ public class PdfLinkTests
     public void GetOrExtractLinks_CachesResult()
     {
         var config = new AppConfig();
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
 

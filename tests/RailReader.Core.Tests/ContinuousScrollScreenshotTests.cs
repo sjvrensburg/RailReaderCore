@@ -23,7 +23,7 @@ public class ContinuousScrollScreenshotTests : IDisposable
         var config = new AppConfig().ToCoreSettings() with { ContinuousScroll = true };
         var appConfig = new AppConfig();
         _controller = new DocumentController(config, appConfig, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            new QueuedThreadMarshaller(), TestFixtures.CreatePdfFactory());
     }
 
     public void Dispose()

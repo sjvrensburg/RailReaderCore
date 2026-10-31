@@ -226,7 +226,7 @@ public class SidewaysBlockTests
     {
         var config = new AppConfig();
         using var controller = new DocumentController(config.ToCoreSettings(), config,
-            AnnotationService.Default, new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            AnnotationService.Default, new QueuedThreadMarshaller(), TestFixtures.CreatePdfFactory());
         var doc = controller.CreateDocument(FixturePath("sideways-table.pdf"));
         doc.LoadPageBitmap();
         controller.AddDocument(doc);
@@ -261,7 +261,7 @@ public class SidewaysBlockTests
     {
         var config = new AppConfig();
         using var controller = new DocumentController(config.ToCoreSettings(), config,
-            AnnotationService.Default, new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            AnnotationService.Default, new QueuedThreadMarshaller(), TestFixtures.CreatePdfFactory());
         var doc = controller.CreateDocument(FixturePath("sideways-table.pdf"));
         doc.LoadPageBitmap();
         controller.AddDocument(doc);

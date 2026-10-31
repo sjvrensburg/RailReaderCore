@@ -30,7 +30,7 @@ public class AnalysisFailureRecoveryTests : IDisposable
     {
         var appConfig = new AppConfig();
         _controller = new DocumentController(appConfig.ToCoreSettings(), appConfig, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory(), _logger);
+            new QueuedThreadMarshaller(), TestFixtures.CreatePdfFactory(), _logger);
         _controller.SetViewportSize(800, 600);
     }
 
@@ -149,7 +149,7 @@ public class AnalysisFailureRecoveryTests : IDisposable
                 loading.Wait(TimeSpan.FromSeconds(10));
                 throw new InvalidOperationException("model missing");
             },
-            new SynchronousThreadMarshaller());
+            new QueuedThreadMarshaller());
 
         try
         {
@@ -212,7 +212,7 @@ public class AnalysisFailureRecoveryTests : IDisposable
                 loading.Wait(TimeSpan.FromSeconds(10));
                 throw startupError;
             },
-            new SynchronousThreadMarshaller(),
+            new QueuedThreadMarshaller(),
             ocrServiceFactory: () => ocr,
             ocrMode: OcrMode.Full);
 

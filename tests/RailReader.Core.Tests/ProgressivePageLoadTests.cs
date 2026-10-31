@@ -14,12 +14,14 @@ public class ProgressivePageLoadTests : IDisposable
 {
     private readonly DocumentController _controller;
     private readonly DocumentModel _doc;
+    // Render completions are posted, so they land only when a test pumps, on the test thread (#174).
+    private readonly QueuedThreadMarshaller _marshaller = new();
 
     public ProgressivePageLoadTests()
     {
         var config = new AppConfig();
         _controller = new DocumentController(config.ToCoreSettings(), config, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            _marshaller, TestFixtures.CreatePdfFactory());
         _doc = _controller.CreateDocument(TestFixtures.GetTestPdfPath());
         _doc.LoadPageBitmap();
         _controller.AddDocument(_doc);
@@ -31,11 +33,12 @@ public class ProgressivePageLoadTests : IDisposable
     private int FullDpi(Viewport vp) =>
         DocumentModel.CalculateRenderDpi(vp.Camera.Zoom, vp.PageWidth, vp.PageHeight, vp.RenderDpi);
 
-    private static void WaitForDpi(Viewport vp, int dpi)
+    private void WaitForDpi(Viewport vp, int dpi)
     {
         long deadline = Environment.TickCount64 + 5000;
         while ((vp.CachedDpi != dpi || vp.DpiRenderPending) && Environment.TickCount64 < deadline)
         {
+            _marshaller.Pump();
             vp.UpdateRenderDpiIfNeeded();
             Thread.Sleep(5);
         }
@@ -127,11 +130,14 @@ public class ProgressivePageLoadTests : IDisposable
         Assert.Equal(full, vp.CachedDpi);
     }
 
-    private static void WaitForMinimap(Viewport vp)
+    private void WaitForMinimap(Viewport vp)
     {
         long deadline = Environment.TickCount64 + 5000;
         while (vp.MinimapPage is null && Environment.TickCount64 < deadline)
+        {
+            _marshaller.Pump();
             Thread.Sleep(5);
+        }
     }
 
     [Fact]
@@ -160,6 +166,7 @@ public class ProgressivePageLoadTests : IDisposable
         // A superseded thumbnail (page 1's) must not replace page 2's after the fact.
         var installed = vp.MinimapPage;
         Thread.Sleep(200);
+        _marshaller.Pump();   // let any late completion land before checking it didn't win
         Assert.Same(installed, vp.MinimapPage);
     }
 }

@@ -14,7 +14,7 @@ public class AnnotationAuthorStampTests : IDisposable
     public AnnotationAuthorStampTests()
     {
         var config = new AppConfig();
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
         _doc = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
@@ -163,7 +163,7 @@ public class AnnotationAuthorStampTests : IDisposable
         Assert.Null(new AppConfig().ToCoreSettings().AnnotationAuthor);
 
         using var controller = new DocumentController(cfg.ToCoreSettings(), cfg, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            new QueuedThreadMarshaller(), TestFixtures.CreatePdfFactory());
         Assert.Equal("Ada", controller.Annotations.Author);
 
         controller.OnConfigChanged(new AppConfig { AnnotationAuthor = "Grace" }.ToCoreSettings());

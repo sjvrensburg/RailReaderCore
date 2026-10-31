@@ -32,7 +32,7 @@ public class CameraTests
         var pdfPath = TestFixtures.GetTestPdfPath();
         var factory = TestFixtures.CreatePdfFactory();
         var state = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
-            factory.CreatePdfTextService(), factory.CreatePdfLinkService(), config.ToCoreSettings(), new SynchronousThreadMarshaller());
+            factory.CreatePdfTextService(), factory.CreatePdfLinkService(), config.ToCoreSettings(), new QueuedThreadMarshaller());
         state.LoadPageBitmap();
 
         // Set viewport much larger than page
@@ -55,7 +55,7 @@ public class CameraTests
         var pdfPath = TestFixtures.GetTestPdfPath();
         var factory = TestFixtures.CreatePdfFactory();
         var state = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
-            factory.CreatePdfTextService(), factory.CreatePdfLinkService(), config.ToCoreSettings(), new SynchronousThreadMarshaller());
+            factory.CreatePdfTextService(), factory.CreatePdfLinkService(), config.ToCoreSettings(), new QueuedThreadMarshaller());
         state.LoadPageBitmap();
 
         state.CenterPage(800, 600);

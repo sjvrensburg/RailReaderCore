@@ -12,7 +12,7 @@ public class AnnotationTests : IDisposable
     public AnnotationTests()
     {
         var config = new AppConfig();
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
         _state = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
@@ -116,7 +116,7 @@ public class AnnotationTests : IDisposable
     public void SharedAnnotationFile_TwoTabsSameFile()
     {
         var config = new AppConfig();
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
 

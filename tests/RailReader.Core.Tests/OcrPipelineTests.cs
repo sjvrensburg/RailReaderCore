@@ -289,7 +289,7 @@ public class OcrPipelineTests
     private static AnalysisWorker MakeWorker(IOcrService ocr, OcrMode mode) =>
         new(FakeLayoutAnalyzer.DefaultCapabilities,
             () => new FakeLayoutAnalyzer(OneFullPageBlock),
-            new SynchronousThreadMarshaller(),
+            new QueuedThreadMarshaller(),
             ocrServiceFactory: () => ocr,
             ocrMode: mode);
 
@@ -395,7 +395,7 @@ public class OcrPipelineTests
     {
         using var worker = new AnalysisWorker(FakeLayoutAnalyzer.DefaultCapabilities,
             () => new FakeLayoutAnalyzer(OneFullPageBlock),
-            new SynchronousThreadMarshaller());
+            new QueuedThreadMarshaller());
 
         Assert.Equal(OcrMode.Off, worker.OcrMode);
         Assert.True(worker.Submit(Request(charBoxes: null)));
@@ -410,7 +410,7 @@ public class OcrPipelineTests
     {
         using var worker = new AnalysisWorker(FakeLayoutAnalyzer.DefaultCapabilities,
             () => new FakeLayoutAnalyzer(OneFullPageBlock),
-            new SynchronousThreadMarshaller(),
+            new QueuedThreadMarshaller(),
             ocrServiceFactory: () => throw new FileNotFoundException("no models here"),
             ocrMode: OcrMode.Full);
 

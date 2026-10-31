@@ -128,7 +128,7 @@ public class FocusBlockTests
         var pdfPath = TestFixtures.GetTestPdfPath();
         var doc = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
             factory.CreatePdfTextService(), factory.CreatePdfLinkService(),
-            new AppConfig().ToCoreSettings(), new SynchronousThreadMarshaller());
+            new AppConfig().ToCoreSettings(), new QueuedThreadMarshaller());
         doc.LoadPageBitmap();
         // Seed a dummy 8-block analysis for page 0 under the primary's params, so CurrentFocusBlockIndex
         // (which range-checks the focus index against the seated analysis) resolves for indices 0..7. The
@@ -207,7 +207,7 @@ public class FocusBlockTests
         var pdfPath = TestFixtures.GetTestPdfPath();
         var doc = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
             factory.CreatePdfTextService(), factory.CreatePdfLinkService(),
-            new AppConfig().ToCoreSettings(), new SynchronousThreadMarshaller());
+            new AppConfig().ToCoreSettings(), new QueuedThreadMarshaller());
         doc.LoadPageBitmap();   // page 0, NO analysis seeded
 
         // Analysis absent → page-match defaults to CONFINED.
@@ -601,7 +601,7 @@ public class FocusBlockTests
         var config = new AppConfig().ToCoreSettings() with { ContinuousScroll = true };
         var doc = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),
             factory.CreatePdfTextService(), factory.CreatePdfLinkService(),
-            config, new SynchronousThreadMarshaller());
+            config, new QueuedThreadMarshaller());
         doc.LoadPageBitmap();
         var blocks = new List<LayoutBlock>();
         for (int i = 0; i < 8; i++)

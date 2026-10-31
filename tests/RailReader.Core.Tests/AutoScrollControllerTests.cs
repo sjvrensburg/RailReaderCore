@@ -17,7 +17,7 @@ public class AutoScrollControllerTests : IDisposable
         _config = new AppConfig();
         var factory = TestFixtures.CreatePdfFactory();
         _doc = new DocumentModel(_pdfPath, factory.CreatePdfService(_pdfPath),
-            factory.CreatePdfTextService(), factory.CreatePdfLinkService(), _config.ToCoreSettings(), new SynchronousThreadMarshaller());
+            factory.CreatePdfTextService(), factory.CreatePdfLinkService(), _config.ToCoreSettings(), new QueuedThreadMarshaller());
         _doc.LoadPageBitmap();
         _doc.CenterPage(800, 600);
         _autoScroll = new AutoScrollController(_config.ToCoreSettings(), _doc.Primary);
