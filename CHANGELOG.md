@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — annotation metadata edits; indirect `/Annots` entries
+
+- **Re-attributing an annotation is now written** (RailMark #54). `WriteReconciled` decided whether a matched
+  annotation had changed from its content, style and geometry only, so an edit to the author (`/T`), subject
+  (`/Subj`) or review state alone looked unchanged and was skipped; and the in-place path for sticky notes,
+  carets and FreeText rewrote `/Rect`, colour, `/Contents` and `/M` but never `/T` or `/Subj`, so a note kept
+  its old author even when its comment changed in the same save. The reconciler now also compares author,
+  subject and state (`AnnotationEquivalence.MetadataEquivalent`, a missing value equal to an empty one), and
+  the in-place edit writes `/T` and `/Subj`. A cleared author, subject or state blanks the key, since PDFium
+  cannot remove one; it reads back as null/`None`. The sidecar merge is unchanged.
+- **Written annotations are indirect objects** (RailMark #55). PDFium's `FPDFPage_CreateAnnot` appends a
+  *direct* dictionary to `/Annots`; ISO 32000-1 (Table 30) requires indirect references there, and MuPDF (so
+  PyMuPDF) does not see direct ones at all. `PdfReplyLinker`, which already promoted a direct reply *parent*,
+  now promotes every annotation the save created, recreated or edited in place (`ReplyLinkPlan.Promote`), in
+  the same incremental-update post-pass. So the post-pass runs on any save that writes something, not only
+  when replies are involved; an unchanged re-save is still a plain PDFium rewrite. Under RC4/AES-128
+  encryption the annotations stay direct, as reply parents already did. Annotations an earlier version wrote
+  stay direct until they are next edited.
+- The linker can now rewrite an annotation inside an indirect `/Annots` *array* object (other producers often
+  write one); it used to back off there, losing the reply links of such a page.
+- Fix: a promoted dictionary is replaced by a space-padded reference. PDFium writes neighbouring dictionaries
+  with no separator (`<<…>><<…>>`), so promoting two adjacent ones produced `[17 0 R16 0 R]`, which MuPDF
+  rejects and a PDFium rewrite reduces to `[ 17 0]`. Promotion of reply parents only could already hit this.
+
 ## 0.79.0 — ONNX Runtime 1.31 with WebGPU plugin 0.5 (2026-10-31)
 
 - ONNX Runtime 1.31 (#165): `RailReader.Core.Analysis` moves from `Microsoft.ML.OnnxRuntime` 1.29.* to 1.31.* (resolves
