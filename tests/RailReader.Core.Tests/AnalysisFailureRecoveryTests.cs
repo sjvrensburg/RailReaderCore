@@ -172,4 +172,77 @@ public class AnalysisFailureRecoveryTests : IDisposable
         Assert.True(worker.IsIdle);                  // the stranded key was released
         Assert.Null(worker.Poll());
     }
+
+    /// <summary>An OCR engine whose recognition runs until it is cancelled, as a slow tier would.</summary>
+    private sealed class BlockingOcrService : IOcrService
+    {
+        public readonly ManualResetEventSlim Entered = new(false);
+        private int _calls, _sawCancellation;
+        public int Calls => Volatile.Read(ref _calls);
+        public bool SawCancellation => Volatile.Read(ref _sawCancellation) != 0;
+
+        public OcrPage Recognize(byte[] rgbBytes, int width, int height, OcrMode mode, CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref _calls);
+            Entered.Set();
+            if (ct.WaitHandle.WaitOne(TimeSpan.FromSeconds(10)))
+            {
+                Volatile.Write(ref _sawCancellation, 1);
+                ct.ThrowIfCancellationRequested();
+            }
+            return OcrPage.Empty;
+        }
+
+        public void Dispose() => Entered.Dispose();
+    }
+
+    [Fact]
+    public void Worker_FatalStartup_AbortsRecognitionAndFailsQueuedOcrWorkUnrecognised()
+    {
+        // Issue #177: requests already queued in the OCR stage when the analyzer fails to load used
+        // to be recognised in full (a minute a page on a heavy tier) before being reported. The one
+        // being recognised is now interrupted and the rest fail without reaching the engine.
+        using var loading = new ManualResetEventSlim(false);
+        var startupError = new InvalidOperationException("model missing");
+        var ocr = new BlockingOcrService();
+        var rgb = new byte[800 * 800 * 3];
+        using var worker = new AnalysisWorker(FakeLayoutAnalyzer.DefaultCapabilities,
+            () =>
+            {
+                loading.Wait(TimeSpan.FromSeconds(10));
+                throw startupError;
+            },
+            new SynchronousThreadMarshaller(),
+            ocrServiceFactory: () => ocr,
+            ocrMode: OcrMode.Full);
+
+        var failures = new List<AnalysisFailure>();
+        try
+        {
+            // No char boxes: both requests are routed through the OCR stage.
+            Assert.True(worker.Submit(new AnalysisRequest("/tmp/scan.pdf", 1, rgb, 800, 800, 400d, 400d,
+                null, new AnalysisParams())));
+            Assert.True(worker.Submit(new AnalysisRequest("/tmp/scan.pdf", 2, rgb, 800, 800, 400d, 400d,
+                null, new AnalysisParams())));
+            Assert.True(ocr.Entered.Wait(TimeSpan.FromSeconds(10)), "recognition never started");
+        }
+        finally
+        {
+            loading.Set();
+        }
+
+        // Well inside the 10 s the blocked recognition would otherwise take.
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (failures.Count < 2 && sw.ElapsedMilliseconds < 5000)
+        {
+            while (worker.PollFailure() is { } f) failures.Add(f);
+            Thread.Sleep(5);
+        }
+
+        Assert.Equal([1, 2], failures.Select(f => f.Page).OrderBy(p => p));
+        Assert.All(failures, f => Assert.Same(startupError, f.Error));
+        Assert.True(ocr.SawCancellation);            // the running recognition was interrupted
+        Assert.Equal(1, ocr.Calls);                  // the queued one never reached the engine
+        Assert.True(worker.IsIdle);
+    }
 }
