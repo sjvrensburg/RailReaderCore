@@ -6,8 +6,8 @@ namespace RailReader.Core.Services;
 
 /// <summary>
 /// Which annotations <see cref="PdfReplyLinker"/> must touch. <see cref="PdfAnnotationWriter"/> tags
-/// every annotation involved (child or parent) with a throw-away marker key before saving, then
-/// hands the saved bytes and this plan to the linker.
+/// every annotation involved (child, parent, or one to promote) with a throw-away marker key before
+/// saving, then hands the saved bytes and this plan to the linker.
 /// </summary>
 internal sealed class ReplyLinkPlan
 {
@@ -18,7 +18,11 @@ internal sealed class ReplyLinkPlan
     /// <summary>(child marker, parent marker or -1 to just clear a stale link).</summary>
     public List<(int Child, int Parent)> Links { get; } = [];
 
-    public bool IsEmpty => Links.Count == 0;
+    /// <summary>Markers whose annotation must become an indirect object if it is a direct dictionary,
+    /// whether or not it takes part in a link (ISO 32000 requires <c>/Annots</c> to hold references).</summary>
+    public List<int> Promote { get; } = [];
+
+    public bool IsEmpty => Links.Count == 0 && Promote.Count == 0;
 
     public string KeyFor(int marker) => $"RRM{_salt}x{marker}";
 
@@ -36,7 +40,8 @@ internal sealed class ReplyLinkPlan
 }
 
 /// <summary>
-/// Writes reply linkage (<c>/IRT</c> + <c>/RT</c>) into a PDF that PDFium has just saved.
+/// Writes reply linkage (<c>/IRT</c> + <c>/RT</c>) into a PDF that PDFium has just saved, and moves the
+/// annotations PDFium wrote as direct <c>/Annots</c> dictionaries into indirect objects.
 ///
 /// <para>PDFium can create and edit annotation dictionaries but exposes no way to store an
 /// <i>indirect reference</i> in them, which is what <c>/IRT</c> is — and the annotations it creates
@@ -54,6 +59,11 @@ internal sealed class ReplyLinkPlan
 /// RC4/AES-128 (<c>/V</c> &lt; 5) each object's strings are keyed by its number, so promotion is
 /// skipped there and the reply is left unlinked. AES-256 (<c>/V</c> 5) uses one key for the whole
 /// file, so promotion is safe.</para>
+///
+/// <para><b>Promotion</b> is not only for parents. ISO 32000-1 (Table 30) says <c>/Annots</c> "shall
+/// contain indirect references", and MuPDF (so PyMuPDF) does not see a direct dictionary at all, so every
+/// annotation in <see cref="ReplyLinkPlan.Promote"/> that is direct is promoted too. Under RC4/AES-128
+/// it stays direct, as above.</para>
 ///
 /// <para>The input is PDFium's own full rewrite (classic table, no object streams, not linearised).
 /// Anything outside that — an unrecognised trailer, an annotation inside a stream — makes the linker back off: it returns
@@ -171,6 +181,12 @@ internal static class PdfReplyLinker
             }
         }
 
+        //    Then give every annotation that was written its own object (ISO 32000 Table 30).
+        if (canPromote)
+            foreach (var m in plan.Promote)
+                if (ownerOfMarker.TryGetValue(m, out var o) && !o.IsIndirect && o.PromotedAs < 0)
+                    o.PromotedAs = nextNumber++;
+
         // 3. Build the replacement text of every touched container and every promoted dictionary.
         var rewritten = new SortedDictionary<int, (int Generation, string Body)>();
         var added = new SortedDictionary<int, string>();
@@ -184,7 +200,9 @@ internal static class PdfReplyLinker
                 if (o.PromotedAs >= 0)
                 {
                     added[o.PromotedAs] = "\n" + ApplyEdits(text, o.Dict.Start, o.Dict.End, inner) + "\nendobj\n";
-                    outer.Add(new Edit(o.Dict.Start, o.Dict.End, $"{o.PromotedAs} 0 R"));
+                    // Padded: PDFium writes neighbouring dictionaries with no separator (<<…>><<…>>),
+                    // and "17 0 R16 0 R" is not two references.
+                    outer.Add(new Edit(o.Dict.Start, o.Dict.End, $" {o.PromotedAs} 0 R "));
                 }
                 else
                 {
@@ -285,13 +303,19 @@ internal static class PdfReplyLinker
         try
         {
             c.Tokens = Tokenize(text, l.BodyStart, l.BodyEnd);
-            // A stream's body is binary; only a plain dictionary object can be rewritten safely.
-            if (c.Tokens.Count == 0 || c.Tokens[0].Kind != K.DictOpen
+            // A stream's body is binary; only a plain dictionary object, or an array (an indirect /Annots,
+            // whose direct annotations are its elements), can be rewritten safely.
+            if (c.Tokens.Count == 0 || c.Tokens[0].Kind is not (K.DictOpen or K.ArrOpen)
                 || c.Tokens.Any(t => t.Kind == K.Word && text.AsSpan(t.Start, t.End - t.Start).SequenceEqual("stream")))
                 return null;
             int i = 0;
-            c.Top = ParseDict(text, c, ref i, null);
-            return c;
+            if (c.Tokens[0].Kind == K.DictOpen)
+            {
+                c.Top = ParseDict(text, c, ref i, null);
+                return c;
+            }
+            SkipValue(text, c, ref i, null); // no Top: every dictionary in the array is direct
+            return i == c.Tokens.Count ? c : null;
         }
         catch (FormatException)
         {
@@ -412,7 +436,7 @@ internal static class PdfReplyLinker
         return node;
     }
 
-    private static void SkipValue(string text, Container c, ref int i, DictNode owner)
+    private static void SkipValue(string text, Container c, ref int i, DictNode? owner)
     {
         var toks = c.Tokens;
         if (i >= toks.Count) throw new FormatException("missing value");

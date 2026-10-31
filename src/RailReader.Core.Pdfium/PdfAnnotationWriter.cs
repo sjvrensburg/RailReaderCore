@@ -146,13 +146,14 @@ public sealed class PdfAnnotationWriter
                 {
                     int pageCount = FPDF_GetPageCount(doc);
                     var recreated = new HashSet<string>(StringComparer.Ordinal);
+                    var written = new HashSet<string>(StringComparer.Ordinal);
                     foreach (var pageIndex in file.Pages.Keys.Where(k => k >= 0 && k < pageCount).OrderBy(k => k))
                     {
                         var page = FPDF_LoadPage(doc, pageIndex);
                         if (page == IntPtr.Zero) continue;
                         try
                         {
-                            ReconcilePage(page, file.Pages[pageIndex], recreated);
+                            ReconcilePage(page, file.Pages[pageIndex], recreated, written);
                         }
                         finally
                         {
@@ -161,9 +162,10 @@ public sealed class PdfAnnotationWriter
                     }
 
                     // Links only matter when a reply exists in the model, or the file carries an /IRT that
-                    // might now be stale. Otherwise skip the extra passes over every annotated page.
-                    var links = withLinks && MayNeedLinks(pdfBytes, file)
-                        ? PlanReplyLinks(doc, pageCount, file, recreated)
+                    // might now be stale; promotion only when something was written. Otherwise skip the
+                    // extra passes over every annotated page.
+                    var links = withLinks
+                        ? PlanPostPass(doc, pageCount, file, recreated, written, MayNeedLinks(pdfBytes, file))
                         : new ReplyLinkPlan();
                     var saved = SaveDocumentBytes(doc);
                     return links.IsEmpty ? saved : LinkApplier(saved, links);
@@ -180,7 +182,10 @@ public sealed class PdfAnnotationWriter
         }
     }
 
-    private static void ReconcilePage(IntPtr page, List<Annotation> desired, HashSet<string> recreated)
+    /// <param name="written">Receives the /NM of every annotation this pass created, recreated or edited,
+    /// so <see cref="PlanPostPass"/> can have the ones PDFium left as direct dictionaries promoted.</param>
+    private static void ReconcilePage(IntPtr page, List<Annotation> desired, HashSet<string> recreated,
+        HashSet<string> written)
     {
         var tx = GetPageTransform(page);
 
@@ -217,7 +222,8 @@ public sealed class PdfAnnotationWriter
 
                 matched.Add(nm!);
                 var current = PdfAnnotationReader.ReadSingle(annot, tx);
-                if (current is not null && AnnotationEquivalence.ContentEquivalent(current, want))
+                if (current is not null && AnnotationEquivalence.ContentEquivalent(current, want)
+                    && AnnotationEquivalence.MetadataEquivalent(current, want))
                     continue; // unchanged → leave the original annotation untouched
 
                 if (want is TextMarkupAnnotation or FreehandAnnotation or RectAnnotation)
@@ -253,6 +259,7 @@ public sealed class PdfAnnotationWriter
             if (annot == IntPtr.Zero) continue;
             try { EditRectBasedInPlace(annot, ann, tx); }
             finally { FPDFPage_CloseAnnot(annot); }
+            written.Add(ann.NativeId!);
         }
 
         // …then deletions, descending so earlier indices stay valid…
@@ -271,7 +278,10 @@ public sealed class PdfAnnotationWriter
             // annots (0 rects / <2 ink points) and Carets write nothing, and must NOT be
             // flagged InPdf or they'd be lost from both the PDF and the sidecar.
             if (WriteAnnotationToPage(page, ann, tx))
+            {
                 ann.Source = AnnotationSource.InPdf;
+                written.Add(ann.NativeId);
+            }
             else
                 ann.NativeId = null;
         }
@@ -282,7 +292,10 @@ public sealed class PdfAnnotationWriter
             // but no PDF counterpart (migrated from the sidecar, or given an id by AddReply). A write
             // that produces nothing (empty geometry) must not be flagged, or it would be lost.
             if (WriteAnnotationToPage(page, ann, tx))
+            {
                 ann.Source = AnnotationSource.InPdf;
+                if (!string.IsNullOrEmpty(ann.NativeId)) written.Add(ann.NativeId!);
+            }
         }
     }
 
@@ -296,14 +309,24 @@ public sealed class PdfAnnotationWriter
            || pdfBytes.AsSpan().IndexOf(IrtKey) >= 0;
 
     /// <summary>
-    /// Works out which annotations need their <c>/IRT</c> set, changed or cleared, and tags each with
-    /// a throw-away marker key so <see cref="PdfReplyLinker"/> can find its object in the saved bytes
-    /// (PDFium exposes no object numbers). Annotations whose link already matches are not tagged, so
-    /// an ordinary re-save appends nothing.
+    /// Works out what <see cref="PdfReplyLinker"/> must do to the saved bytes, and tags each annotation
+    /// involved with a throw-away marker key so the linker can find its object (PDFium exposes no object
+    /// numbers). Two jobs:
+    /// <list type="bullet">
+    /// <item><b>Links</b> (when <paramref name="needLinks"/>) — annotations whose <c>/IRT</c> must be set,
+    /// changed or cleared. Ones whose link already matches are not tagged.</item>
+    /// <item><b>Promotion</b> — every annotation this save wrote (<paramref name="written"/>). PDFium puts
+    /// what it creates into <c>/Annots</c> as a direct dictionary, but ISO 32000 requires indirect
+    /// references there, and some readers (PyMuPDF/MuPDF) don't see direct ones at all. The linker moves
+    /// any that are direct into objects of their own.</item>
+    /// </list>
+    /// An ordinary re-save that writes nothing therefore appends nothing.
     /// </summary>
-    private static ReplyLinkPlan PlanReplyLinks(IntPtr doc, int pageCount, AnnotationFile file, HashSet<string> recreated)
+    private static ReplyLinkPlan PlanPostPass(IntPtr doc, int pageCount, AnnotationFile file,
+        HashSet<string> recreated, HashSet<string> written, bool needLinks)
     {
         var plan = new ReplyLinkPlan();
+        if (!needLinks && written.Count == 0) return plan;
         var byNm = new Dictionary<string, Annotation>(StringComparer.Ordinal);
         foreach (var a in file.Pages.Values.SelectMany(l => l))
             if (!string.IsNullOrEmpty(a.NativeId)) byNm.TryAdd(a.NativeId!, a);
@@ -316,7 +339,7 @@ public sealed class PdfAnnotationWriter
         ForEachManagedAnnot(doc, pages, (annot, nm) =>
         {
             present.Add(nm);
-            if (!byNm.TryGetValue(nm, out var ann)) return;
+            if (!needLinks || !byNm.TryGetValue(nm, out var ann)) return;
 
             string? desired = !string.IsNullOrEmpty(ann.InReplyTo) && ann.InReplyTo != nm && byNm.ContainsKey(ann.InReplyTo)
                 ? ann.InReplyTo : null;
@@ -343,6 +366,9 @@ public sealed class PdfAnnotationWriter
             if (target is null && !hasLink) continue;
             plan.Links.Add((plan.MarkerFor(child), target is null ? -1 : plan.MarkerFor(target)));
         }
+        // Sorted so the promoted objects are numbered the same way on every run.
+        foreach (var nm in written.Where(present.Contains).Order(StringComparer.Ordinal))
+            plan.Promote.Add(plan.MarkerFor(nm));
         if (plan.IsEmpty) return plan;
 
         ForEachManagedAnnot(doc, pages, (annot, nm) =>
@@ -420,8 +446,21 @@ public sealed class PdfAnnotationWriter
         }
 
         SetString(annot, "Contents", AnnotationEquivalence.EffectiveContents(ann));
+        // Author and subject are rewritten too, or re-attributing a note would be silently dropped. A
+        // cleared value blanks the key, since PDFium has no way to remove one (it reads back as null).
+        SetOrBlank(annot, "T", ann.Author);
+        SetOrBlank(annot, "Subj", ann.Subject);
         SetString(annot, "M", FormatPdfDate(DateTimeOffset.Now));
-        WriteReviewState(annot, ann.State);
+        if (ann.State == ReviewState.None)
+            SetOrBlank(annot, "State", null); // reads back as None; a stale state would never clear
+        else
+            WriteReviewState(annot, ann.State);
+    }
+
+    private static void SetOrBlank(IntPtr annot, string key, string? value)
+    {
+        if (!string.IsNullOrEmpty(value)) SetString(annot, key, value);
+        else if (FPDFAnnot_HasKey(annot, key)) SetString(annot, key, "");
     }
 
     // The sticky-note icon is anchored at its page-point (X, Y) and occupies a

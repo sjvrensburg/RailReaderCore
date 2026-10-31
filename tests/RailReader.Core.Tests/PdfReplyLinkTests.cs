@@ -57,8 +57,11 @@ public class PdfReplyLinkTests
 
         // The incremental update leaves PDFium's superseded revision as it was (marker included); the
         // next PDFium save rewrites only live objects, so a marker still present would be a live one.
+        // The edit is itself tagged (for promotion), so it leaves a superseded revision too; a further
+        // save that writes nothing is a plain PDFium rewrite, which keeps live objects only.
         file.Pages[0][1].Contents = "touch";
-        var rewritten = writer.WriteReconciled(linked, file);
+        var edited = writer.WriteReconciled(linked, file);
+        var rewritten = writer.WriteReconciled(edited, file);
 
         Assert.DoesNotContain("RRM", Encoding.Latin1.GetString(rewritten));
         Assert.Equal("parent-1", ById(ReadBack(rewritten), "reply-1").InReplyTo);
@@ -305,8 +308,10 @@ public class PdfReplyLinkTests
     }
 
     [Fact]
-    public void FileWithoutReplies_SkipsTheLinkerEntirely()
+    public void FileWithoutReplies_RunsThePostPass_OnlyWhenSomethingWasWritten()
     {
+        // The first save writes both annotations, which the post-pass promotes to indirect objects;
+        // the unchanged re-save writes nothing and has no links to check, so it skips the post-pass.
         var calls = 0;
         var writer = new PdfAnnotationWriter { LinkApplier = (b, _) => { calls++; return b; } };
         var file = AnnotationTestHelpers.OnePage(
@@ -314,9 +319,10 @@ public class PdfReplyLinkTests
             new TextNoteAnnotation { X = 200, Y = 100, Text = "n", NativeId = "b" });
 
         var bytes = writer.WriteReconciled(Plain(), file);
+        Assert.Equal(1, calls);
         writer.WriteReconciled(bytes, file);
 
-        Assert.Equal(0, calls);
+        Assert.Equal(1, calls);
     }
 
     private static (int ExitCode, string Output)? Tool(string exe, string args)

@@ -32,6 +32,18 @@ internal static class AnnotationEquivalence
         return true;
     }
 
+    /// <summary>
+    /// True when two annotations share author (<c>/T</c>), subject (<c>/Subj</c>) and review state —
+    /// the metadata <see cref="ContentEquivalent"/> leaves out. The reconciling writer needs both, or an
+    /// edit that only re-attributes an annotation would be taken for "unchanged" and never written.
+    /// The sidecar merge does not use it: it compares state itself and deliberately ignores author.
+    /// A missing value and an empty one are the same, since PDFium can blank a key but not remove it.
+    /// </summary>
+    internal static bool MetadataEquivalent(Annotation a, Annotation b)
+        => string.Equals(a.Author ?? "", b.Author ?? "", StringComparison.Ordinal)
+           && string.Equals(a.Subject ?? "", b.Subject ?? "", StringComparison.Ordinal)
+           && a.State == b.State;
+
     /// <summary>True when two annotations of the same type have equal content, style, and geometry.</summary>
     internal static bool ContentEquivalent(Annotation a, Annotation b)
     {
