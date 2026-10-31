@@ -36,7 +36,10 @@ using RailReader.Renderer.Skia;
 // diagnoses) and re-run this tool's numbers before trusting any older ones.
 //
 // Usage:
-//   GpuThresholdProbe <pdfDir> <heron|v3> <cpuModelPath> <gpuModelPath> [pagesPerPdf=2] [minThr=0.10] [maxThr=0.60] [step=0.05] [--diagnose[=thr]]
+//   GpuThresholdProbe <pdfDir> <heron|v3> <cpuModelPath> <gpuModelPath> [pagesPerPdf=2] [minThr=0.10] [maxThr=0.60] [step=0.05] [--diagnose[=thr]] [--device=N]
+//
+// --device=N picks the WebGPU adapter by index (WebGpuAccelerator.AvailableDevices); default 0.
+// On a hybrid laptop device 0 is usually the integrated GPU, so pass the discrete one explicitly.
 //
 // --diagnose[=thr] switches to a per-page box-level breakdown at a fixed
 // threshold (default: production LayoutConstants.ConfidenceThreshold),
@@ -45,6 +48,8 @@ using RailReader.Renderer.Skia;
 // "GPU box moved/shrank" from "GPU box never detected" from "GPU produced a
 // duplicate that ate the match slot".
 bool diagnose = args.Any(a => a.StartsWith("--diagnose", StringComparison.Ordinal));
+int deviceIndex = args.FirstOrDefault(a => a.StartsWith("--device=", StringComparison.Ordinal)) is { } devArg
+    ? int.Parse(devArg["--device=".Length..]) : 0;
 float diagnoseThr = LayoutConstants.ConfidenceThreshold;
 {
     var diagArg = args.FirstOrDefault(a => a.StartsWith("--diagnose=", StringComparison.Ordinal));
@@ -79,7 +84,7 @@ if (!WebGpuAccelerator.IsAvailable)
     Console.Error.WriteLine("No WebGPU device found. Aborting.");
     return 1;
 }
-Console.Error.WriteLine($"WebGPU device: {WebGpuAccelerator.DeviceDescription}");
+Console.Error.WriteLine($"WebGPU device {deviceIndex}: {(deviceIndex < WebGpuAccelerator.AvailableDevices.Count ? WebGpuAccelerator.AvailableDevices[deviceIndex].Description : "(none)")}");
 
 // CPU reference: production tuning (LayoutDetectionTuning.Default), exactly
 // what a real CPU-backed AnalysisWorker would produce.
@@ -93,7 +98,8 @@ ILayoutAnalyzer cpuAnalyzer = arch switch
 ILayoutAnalyzer MakeGpuAnalyzer(float confidenceThreshold)
 {
     var tuning = LayoutDetectionTuning.Default with { ConfidenceThreshold = confidenceThreshold };
-    WebGpuAccelerator.TryEnable(arch);
+    if (!WebGpuAccelerator.TryEnable(arch, deviceIndex))
+        throw new InvalidOperationException($"WebGPU device {deviceIndex} unavailable");
     ILayoutAnalyzer a = arch switch
     {
         LayoutModelArchitecture.Heron => new HeronLayoutAnalyzer(gpuModelPath, tuning: tuning),

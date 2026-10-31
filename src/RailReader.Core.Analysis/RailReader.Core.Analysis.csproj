@@ -23,7 +23,7 @@
   <ItemGroup>
     <!-- No lower than RapidOcrNet's own floor: a host with OCR resolves that version anyway, so building
          against an older one would ship a package tested against something else. -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.29.*" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.31.*" />
     <PackageReference Include="NetTopologySuite" Version="2.6.*" />
   </ItemGroup>
 

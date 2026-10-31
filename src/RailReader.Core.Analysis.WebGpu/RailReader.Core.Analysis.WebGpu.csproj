@@ -25,7 +25,7 @@
          separate shared library registered at runtime only when GPU mode is selected —
          see WebGpuAccelerator. Requires core ORT >=1.24.4 (Core.Analysis's "1.24.*"
          floating pin already resolves to 1.24.4+). -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.EP.WebGpu" Version="0.3.*" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.EP.WebGpu" Version="0.5.*" />
   </ItemGroup>
 
   <ItemGroup>
