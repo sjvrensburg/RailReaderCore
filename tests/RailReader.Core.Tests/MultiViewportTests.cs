@@ -18,8 +18,7 @@ public class MultiViewportTests : IDisposable
     private readonly AppConfig _appConfig;
     private readonly CapturingLogger _logger = new();
     // Posted callbacks run only when a test pumps, on the test thread, as on a real UI thread
-    // (#174). TickViewport pumps through PumpAnalysis; loops that only PollAnalysisResults pump
-    // explicitly.
+    // (#174). PollAnalysisResults (and so TickViewport) pumps them; TestWait.Until also pumps.
     private readonly QueuedThreadMarshaller _marshaller = new();
 
     // Captures Error log lines so a failed async seat can report the prep/worker exception
@@ -335,12 +334,8 @@ public class MultiViewportTests : IDisposable
         doc.SubmitAnalysis(vp2, _controller.Worker, _controller.Config.NavigableRoles);
         Assert.True(vp2.PendingRailSetup);
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (vp2.PendingRailSetup && sw.ElapsedMilliseconds < 5000)
-        {
-            _controller.TickViewport(vp1, 0.016, pumpAnalysis: true); // only vp1 is ticked
-            Thread.Sleep(10);
-        }
+        TestWait.Until(() => !vp2.PendingRailSetup, _marshaller,
+            () => _controller.TickViewport(vp1, 0.016, pumpAnalysis: true), timeoutMs: 5000); // only vp1 is ticked
 
         Assert.False(vp2.PendingRailSetup);   // vp1's pump fanned out to the un-ticked vp2
         Assert.True(vp2.Rail.HasAnalysis);
@@ -405,12 +400,8 @@ public class MultiViewportTests : IDisposable
         doc.QueueLookahead(vp2, 2);            // enqueue pages 1,2 into vp2's own queue
         Assert.Equal(2, vp2.PendingAnalysis.Count);
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (vp2.PendingAnalysis.Count == 2 && sw.ElapsedMilliseconds < 5000)
-        {
-            _controller.TickViewport(doc.Primary, 0.016, pumpAnalysis: true); // only the primary ticks
-            Thread.Sleep(10);
-        }
+        TestWait.Until(() => vp2.PendingAnalysis.Count != 2, _marshaller,
+            () => _controller.TickViewport(doc.Primary, 0.016, pumpAnalysis: true), timeoutMs: 5000); // only the primary ticks
 
         Assert.True(vp2.PendingAnalysis.Count < 2);  // the pump drained the non-focused view's queue
     }

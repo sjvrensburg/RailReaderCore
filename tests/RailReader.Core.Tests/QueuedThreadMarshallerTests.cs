@@ -77,16 +77,45 @@ public class QueuedThreadMarshallerTests
     }
 
     [Fact]
+    public void PumpFromInsideACallback_DefersToTheOuterPump()
+    {
+        var marshaller = new QueuedThreadMarshaller();
+        var order = new List<string>();
+        int nested = -1;
+        marshaller.Post(() =>
+        {
+            nested = marshaller.Pump();              // e.g. a ResultAvailable handler ticking a frame
+            order.Add("first");
+        });
+        marshaller.Post(() => order.Add("second"));
+
+        Assert.Equal(2, marshaller.Pump());
+        Assert.Equal(0, nested);
+        Assert.Equal(["first", "second"], order);    // the second never ran inside the first
+    }
+
+    [Fact]
     public void PumpAndAssertUIThread_ThrowOffTheOwnerThread()
     {
         var marshaller = new QueuedThreadMarshaller();
         marshaller.AssertUIThread();                 // the owner may
 
-        var pump = Record.Exception(() => Task.Run(() => marshaller.Pump()).GetAwaiter().GetResult());
-        var assert = Record.Exception(() => Task.Run(marshaller.AssertUIThread).GetAwaiter().GetResult());
+        // A dedicated thread, not Task.Run: waiting on a queued task can inline it onto this,
+        // the owner thread, where nothing throws.
+        var pump = OnOtherThread(() => marshaller.Pump());
+        var assert = OnOtherThread(marshaller.AssertUIThread);
 
         Assert.IsType<InvalidOperationException>(pump);
         Assert.IsType<InvalidOperationException>(assert);
+    }
+
+    private static Exception? OnOtherThread(Action action)
+    {
+        Exception? caught = null;
+        var thread = new Thread(() => caught = Record.Exception(action));
+        thread.Start();
+        thread.Join();
+        return caught;
     }
 
     [Fact]
@@ -94,8 +123,10 @@ public class QueuedThreadMarshallerTests
     {
         // End to end: open a document, let the prep task and the worker run on their own threads,
         // and drive frames from this one. Each view state change must happen here. Viewport's
-        // SetField asserts the UI thread, and this marshaller throws when that assert fails, so an
-        // off-thread write would also have thrown out of the pump.
+        // SetField asserts the UI thread before it raises StateChanged, and this marshaller throws
+        // there, so an off-thread write never reaches the handler below: it throws on the
+        // background thread (and is logged there), not out of the pump. What this test proves is
+        // that the rail seats and every write that landed did so on this thread.
         var marshaller = new QueuedThreadMarshaller();
         var appConfig = new AppConfig();
         using var controller = new DocumentController(appConfig.ToCoreSettings(), appConfig,

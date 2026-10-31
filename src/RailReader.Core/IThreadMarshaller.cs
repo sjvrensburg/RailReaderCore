@@ -57,10 +57,13 @@ public sealed class SynchronousThreadMarshaller : IThreadMarshaller
 /// Semantics: callbacks run in FIFO order; <see cref="Pump"/> drains until the queue is empty,
 /// so a callback that posts during a pump runs in the same pump, and once <see cref="Pump"/>
 /// returns nothing posted before or during it is still pending. There is no lock, so no deadlock
-/// hazard. <see cref="DocumentController.PumpAnalysis"/> pumps it automatically, so a host that
-/// drives <see cref="DocumentController.TickViewport(Viewport, double)"/> needs no extra wiring; a
-/// host that drives the worker or <see cref="DocumentController.PollAnalysisResults"/> directly
-/// calls <see cref="Pump"/> itself.
+/// hazard. A <see cref="Pump"/> called from inside a running callback (say a
+/// <c>ResultAvailable</c> handler that ticks a frame) returns 0 at once: the outer pump runs the
+/// rest, after that callback finishes, as a dispatcher would.
+/// <see cref="DocumentController.PollAnalysisResults"/> (and so <see cref="DocumentController.PumpAnalysis"/>
+/// and <see cref="DocumentController.TickViewport(Viewport, double)"/>) pumps it automatically, so a
+/// controller host needs no extra wiring; a host that drives the worker directly calls
+/// <see cref="Pump"/> itself.
 /// </para>
 /// <para>
 /// <see cref="AssertUIThread"/> throws off the owning thread, where the desktop marshaller only
@@ -73,6 +76,7 @@ public sealed class QueuedThreadMarshaller : IThreadMarshaller
 {
     private readonly ConcurrentQueue<Action> _queue = new();
     private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
+    private bool _pumping;   // owner-thread only
 
     /// <summary>Queues <paramref name="action"/> for the next <see cref="Pump"/>. Safe from any thread.</summary>
     public void Post(Action action) => _queue.Enqueue(action);
@@ -87,13 +91,22 @@ public sealed class QueuedThreadMarshaller : IThreadMarshaller
     public int Pump()
     {
         AssertUIThread();
-        int ran = 0;
-        while (_queue.TryDequeue(out var action))
+        if (_pumping) return 0;   // re-entered from a callback: the outer pump drains the rest
+        _pumping = true;
+        try
         {
-            action();
-            ran++;
+            int ran = 0;
+            while (_queue.TryDequeue(out var action))
+            {
+                action();
+                ran++;
+            }
+            return ran;
         }
-        return ran;
+        finally
+        {
+            _pumping = false;
+        }
     }
 
     public void AssertUIThread()
