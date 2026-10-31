@@ -109,51 +109,43 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// happens to report first, not necessarily the one a user wants. Read
 /// <see cref="AvailableDevices"/> to list them (vendor, device ID, a ready-to-display
 /// string) and pass the chosen index to <c>TryEnable(architecture, deviceIndex)</c> /
-/// <c>TryBuildSessionHook(deviceIndex)</c> to target it.
+/// <c>TryBuildSessionHook(deviceIndex)</c> to target it. <b>⚠ That selection does not
+/// currently take effect (issue #182):</b> on this repo's dev box (Intel Iris Xe + NVIDIA RTX
+/// A2000) every session runs on the NVIDIA card whichever index is passed, as measured from
+/// the process's own counters (NVIDIA memory per PID; zero i915 engine time). Treat
+/// <c>deviceIndex</c> as advisory until #182 is fixed (likely via the 0.5.0 plugin's
+/// <c>adapterIndex</c> provider option).
 /// </para>
 ///
 /// <para>
-/// <b>⚠ Different models on different GPUs — construction is safe, CONCURRENT INFERENCE
-/// IS NOT (confirmed 2026-09-11, issue #121 follow-up).</b> Each <c>deviceIndex</c>
-/// argument is independent per call, so nothing stops a multi-GPU host from constructing
-/// a layout analyzer against one device and a <c>RapidOcrService</c> against another —
-/// <c>WebGpuAccelerator.TryEnable(LayoutModelArchitecture.PPDocLayoutV3, deviceIndex: 0)</c>
-/// alongside <c>new RapidOcrService(modelSet,
-/// configureSession: WebGpuAccelerator.TryBuildSessionHook(deviceIndex: 1))</c> — and doing
-/// so <i>sequentially</i> (construct both, run one, then the other) works cleanly, verified
-/// on this repo's own dev box (an NVIDIA GPU + an Intel iGPU, both visible over Vulkan).
-/// <b>But calling <c>Session.Run()</c> on two WebGPU-backed sessions from two threads at
-/// the same time segfaults the process (exit 139) — measured on this hardware for both a
-/// cross-device pair (layout on the NVIDIA device, OCR on the Intel device) and two
-/// sessions on the <i>same</i> device.</b> This is a plugin-EP concurrency limitation
-/// (likely the shared Dawn/WebGPU native instance is not reentrant across sessions), not
-/// something under this assembly's control, and it is NOT hypothetical: this codebase's
-/// own <c>AnalysisWorker</c> runs OCR and layout inference on two independent, chained
-/// threads that are documented to "progress independently" — i.e. exactly the two
-/// concurrent-<c>Run()</c> shape that crashes. <b>Do not route both the OCR stage and the
-/// layout stage through WebGPU in that pipeline until this is fixed</b> — either upstream
-/// (ORT WebGPU EP), or here via a process-wide lock serializing every WebGPU-backed
-/// <c>Run()</c> call (not yet implemented; would need to touch <c>LayoutAnalyzer</c>,
-/// <c>PPDocLayoutSLayoutAnalyzer</c>, <c>HeronLayoutAnalyzer</c>, and
-/// <c>RapidOcrService</c>, none of which currently know whether their session is
-/// GPU-backed). Single-GPU-only use (layout OR OCR on GPU, never both at once) is
-/// unaffected — that's the one configuration this crash cannot reach. Filed upstream as
-/// <see href="https://github.com/microsoft/onnxruntime/issues/32561">microsoft/onnxruntime#32561</see>,
-/// with a minimal self-contained repro and a gdb backtrace pointing at a race inside
-/// <c>libonnxruntime_providers_webgpu.so</c>'s <c>Run()</c> dispatch (a mutex lock through
-/// what looks like a corrupted pointer) — likely the same root cause as the still-open
-/// <see href="https://github.com/microsoft/onnxruntime/issues/31627">#31627</see>
-/// ("WebGPU EP crashes on macOS when running concurrent multi threaded inference," last
-/// confirmed on ORT 1.28), which this repro extends to Linux/Vulkan and to two separate
-/// physical GPUs. Re-check #32561/#31627 before revisiting this limitation.
+/// <b>Concurrent inference across WebGPU sessions (issue #165, re-measured 2026-10-31).</b>
+/// Up to ORT 1.29 with WebGPU plugin EP 0.3, calling <c>Session.Run()</c> on two
+/// WebGPU-backed sessions from two threads at once crashed the process (SIGSEGV/SIGABRT,
+/// <see href="https://github.com/microsoft/onnxruntime/issues/32561">microsoft/onnxruntime#32561</see>).
+/// Plugin 0.5.0 adds concurrent independent-session execution
+/// (<see href="https://github.com/microsoft/onnxruntime/pull/32587">#32587</see>), but only
+/// on ORT 1.31+ (or 1.28.3+ / 1.30.1+): on other hosts, 1.29.x included, the plugin falls
+/// back to a serialized mode it does not enforce, so the caller must still serialize every
+/// WebGPU operation on a device. That is why core and plugin are bumped as a matched pair.
+/// On 1.31.1 + 0.5.0, two PP-DocLayoutV3 or Heron sessions ran up to 1,000 concurrent
+/// <c>Run()</c> calls without a crash; on 1.29 + 0.3 the same repro crashed every time.
+/// <b>Scope of that result:</b> both sessions were on the same physical GPU (see #182 above:
+/// device selection doesn't take effect), so concurrent inference on two <i>different</i>
+/// GPUs is untested; upstream also describes multi-GPU WebGPU as unsupported. Concurrent
+/// mode does not allow I/O binding to overlap <c>Run()</c> on the same session; each
+/// analyzer here owns its own session, so that does not arise. <c>AnalysisWorker</c> still
+/// does not route both its OCR and layout stages through WebGPU: enabling that is a
+/// separate change, to be made with its own validation. (An earlier version of this comment
+/// said cross-device use was verified on the dev box; given #182, that check almost
+/// certainly ran both sessions on the NVIDIA card.)
 /// </para>
 ///
 /// <para>
 /// <b>OCR spot-check (issue #121, 2026-09-11).</b> Unlike the layout analyzers above,
 /// PP-OCR's detector (DBNet) and recognizer (CRNN) are plain CNN/RNN graphs with no
 /// deformable-attention TopK step, so they were never expected to hit the FP16 tie-break
-/// bug documented above — and a one-page spot-check on an Intel Iris Xe iGPU
-/// (<c>tools/ocr-cost-probe</c> + a throwaway CPU-vs-GPU text diff) bears that out:
+/// bug documented above — and a one-page spot-check on what was labelled the Intel Iris Xe
+/// iGPU (given #182, it most likely ran on the NVIDIA card) (<c>tools/ocr-cost-probe</c> + a throwaway CPU-vs-GPU text diff) bears that out:
 /// v5-latin, PP-OCRv6 Small and PP-OCRv6 Medium all produced byte-for-byte identical
 /// recognized text, line count, and line order on GPU vs CPU. Speed scales with model
 /// size the opposite way it does on CPU — GPU is where the expensive tiers pay off: on

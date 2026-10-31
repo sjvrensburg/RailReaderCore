@@ -26,6 +26,9 @@
          works with no extra download. SkiaSharp comes in transitively and is pinned to the
          same 3.119.* the Skia renderer uses so one native binary serves both. -->
     <PackageReference Include="RapidOcrNet" Version="4.2.*" />
+    <!-- Pinned to Core.Analysis's ONNX Runtime rather than left at RapidOcrNet's floor (1.29.0), so an
+         OCR-only host runs the version this package is tested against; a host with both resolves one. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.31.*" />
     <PackageReference Include="SkiaSharp" Version="3.119.*" />
   </ItemGroup>
 
