@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.78.0 — Queued marshaller for headless hosts (2026-10-31)
 
 - `QueuedThreadMarshaller` (#174), an additive `IThreadMarshaller` for headless hosts and tests that can
   run their own loop. `Post` only queues, and `Pump()` runs the queued callbacks, FIFO, on the thread
