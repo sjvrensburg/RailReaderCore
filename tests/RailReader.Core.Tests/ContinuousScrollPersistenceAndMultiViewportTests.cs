@@ -28,7 +28,7 @@ public class ContinuousScrollPersistenceAndMultiViewportTests : IDisposable
         _controller?.Dispose();
         var config = _appConfig.ToCoreSettings() with { ContinuousScroll = true };
         _controller = new DocumentController(config, _appConfig, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            new QueuedThreadMarshaller(), TestFixtures.CreatePdfFactory());
         return _controller;
     }
 
@@ -111,7 +111,7 @@ public class ContinuousScrollPersistenceAndMultiViewportTests : IDisposable
         // just the Primary's. Needs enough pages, and a tight enough radius, that "near vp1-only",
         // "near vp2-only" and "near neither" are three genuinely disjoint sets.
         var config = _appConfig.ToCoreSettings() with { ContinuousScroll = true, PageCacheRadius = 1 };
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var path = Path.Combine(Path.GetTempPath(), $"railreader_test_{Guid.NewGuid():N}.pdf");
         try

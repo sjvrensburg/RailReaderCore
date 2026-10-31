@@ -19,7 +19,7 @@ public class RailSteerControllerTests : IDisposable
     public RailSteerControllerTests()
     {
         _controller = new DocumentController(_appConfig.ToCoreSettings(), _appConfig, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            new QueuedThreadMarshaller(), TestFixtures.CreatePdfFactory());
     }
 
     public void Dispose() => _controller.Dispose();

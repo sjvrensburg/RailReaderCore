@@ -29,7 +29,7 @@ public class NavigationHistoryLinkTests : IDisposable
             PixelSnapping = false, // exact assertions
         };
         _controller = new DocumentController(_config.ToCoreSettings(), _config,
-            AnnotationService.Default, new SynchronousThreadMarshaller(),
+            AnnotationService.Default, new QueuedThreadMarshaller(),
             TestFixtures.CreatePdfFactory());
     }
 
@@ -41,7 +41,7 @@ public class NavigationHistoryLinkTests : IDisposable
     {
         _controller.Dispose();
         _controller = new DocumentController(config.ToCoreSettings(), config,
-            AnnotationService.Default, new SynchronousThreadMarshaller(),
+            AnnotationService.Default, new QueuedThreadMarshaller(),
             factory ?? TestFixtures.CreatePdfFactory());
     }
 

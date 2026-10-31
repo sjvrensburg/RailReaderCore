@@ -122,7 +122,7 @@ public class TiledRenderTests : IDisposable
     {
         var config = new AppConfig();
         using var controller = new DocumentController(config.ToCoreSettings(), config, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            new QueuedThreadMarshaller(), TestFixtures.CreatePdfFactory());
         var doc = controller.CreateDocument(TestFixtures.GetTestPdfPath());
         doc.LoadPageBitmap();
         controller.AddDocument(doc);

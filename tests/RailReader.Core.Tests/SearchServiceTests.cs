@@ -17,7 +17,7 @@ public class SearchServiceTests : IDisposable
         var factory = TestFixtures.CreatePdfFactory();
         _pdfPath = TestFixtures.GetTestPdfPath();
         _state = new DocumentModel(_pdfPath, factory.CreatePdfService(_pdfPath),
-            factory.CreatePdfTextService(), factory.CreatePdfLinkService(), config.ToCoreSettings(), new SynchronousThreadMarshaller());
+            factory.CreatePdfTextService(), factory.CreatePdfLinkService(), config.ToCoreSettings(), new QueuedThreadMarshaller());
         _state.LoadPageBitmap();
 
         _search = new SearchService(
@@ -213,7 +213,7 @@ public class SearchServiceTests : IDisposable
             factory.CreatePdfTextService(),
             factory.CreatePdfLinkService(),
             new AppConfig().ToCoreSettings(),
-            new SynchronousThreadMarshaller());
+            new QueuedThreadMarshaller());
         try
         {
             DocumentModel? activeDoc = _state;

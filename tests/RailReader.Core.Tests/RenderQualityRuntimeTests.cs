@@ -22,7 +22,7 @@ public class RenderQualityRuntimeTests : IDisposable
         var pdfPath = TestFixtures.GetTestPdfPath();
         var config = new AppConfig();
         _controller = new DocumentController(config.ToCoreSettings(), config, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            new QueuedThreadMarshaller(), TestFixtures.CreatePdfFactory());
         _doc = _controller.CreateDocument(pdfPath);
         _doc.LoadPageBitmap();
         _controller.AddDocument(_doc);

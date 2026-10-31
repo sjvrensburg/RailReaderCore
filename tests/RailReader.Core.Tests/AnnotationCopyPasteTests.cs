@@ -14,7 +14,7 @@ public class AnnotationCopyPasteTests : IDisposable
     public AnnotationCopyPasteTests()
     {
         var config = new AppConfig();
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var pdfPath = TestFixtures.GetTestPdfPath();
         _doc = new DocumentModel(pdfPath, factory.CreatePdfService(pdfPath),

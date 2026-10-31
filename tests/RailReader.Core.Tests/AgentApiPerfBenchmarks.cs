@@ -28,7 +28,7 @@ public class AgentApiPerfBenchmarks : IDisposable
         _pdfPath = TestFixtures.GetTestPdfPath();
         var config = new AppConfig();
         _controller = new DocumentController(config.ToCoreSettings(), config, AnnotationService.Default,
-            new SynchronousThreadMarshaller(), TestFixtures.CreatePdfFactory());
+            new QueuedThreadMarshaller(), TestFixtures.CreatePdfFactory());
     }
 
     public void Dispose() => _controller.Dispose();

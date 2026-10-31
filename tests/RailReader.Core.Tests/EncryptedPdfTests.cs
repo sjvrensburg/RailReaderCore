@@ -53,7 +53,7 @@ public class EncryptedPdfTests
     public void DocumentModel_WithPassword_RendersAndExtractsWithoutThrowing()
     {
         var config = new AppConfig();
-        var marshaller = new SynchronousThreadMarshaller();
+        var marshaller = new QueuedThreadMarshaller();
         var factory = TestFixtures.CreatePdfFactory();
         var path = TestFixtures.GetEncryptedTestPdfPath();
 

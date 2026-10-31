@@ -31,7 +31,7 @@ public class SmoothFrameTests : IDisposable
             PixelSnapping = false, // exact assertions
         };
         _controller = new DocumentController(_config.ToCoreSettings(), _config,
-            AnnotationService.Default, new SynchronousThreadMarshaller(),
+            AnnotationService.Default, new QueuedThreadMarshaller(),
             TestFixtures.CreatePdfFactory());
     }
 
