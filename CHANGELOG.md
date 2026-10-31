@@ -5,7 +5,7 @@
 - Fix (#172): if the analysis worker failed a page that a view was waiting on (the analyzer threw), the
   view kept `PendingRailSetup` with nothing in flight. The page never got a rail, and background analysis
   stopped for the whole document until the reader turned the page. The worker now reports such requests:
-  `AnalysisWorker.PollFailure()` returns an `AnalysisFailure` (file, page, params, exception) for each
+  `AnalysisWorker.PollFailure()` returns an `AnalysisFailure` (file, page, params, view rotation, exception) for each
   request that ended without a result other than by cancellation. That covers an analyzer exception, and
   requests stranded or refused after a fatal analyzer startup failure, which previously also left their
   in-flight keys set for good. `PumpAnalysis` drains these failures. A waiting view is resubmitted once,

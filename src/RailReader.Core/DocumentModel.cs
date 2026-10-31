@@ -756,9 +756,12 @@ public sealed class DocumentModel : IDisposable
                 _logger.Error($"Failed to prepare analysis input: {ex.Message}", ex);
                 // Only for the page this task prepared, and only if no other request for it got
                 // through: the view may have moved on, or a retry's prep may have succeeded.
+                // Same staleness test as the success path: after a rotation or a params change the
+                // view is waiting on a newer prep, which this failure says nothing about.
                 _marshaller.Post(() =>
                 {
                     if (!IsDisposed && !vp.IsDisposed && vp.CurrentPage == page
+                        && viewRotation == _viewRotation && vp.AnalysisParams == pars
                         && !worker.IsInFlight(filePath, page, pars))
                         AbandonRailSetup(vp);
                 });
@@ -795,9 +798,12 @@ public sealed class DocumentModel : IDisposable
         IReadOnlySet<BlockRole> navigableRoles)
     {
         _marshaller.AssertUIThread();
+        // A failure from a frame this document has rotated away from says nothing about the
+        // current frame: like a stale-frame result, it only frees the key, so resubmit any view
+        // whose new-frame submission it suppressed, without spending that view's retry.
+        bool staleFrame = failure.ViewRotation != _viewRotation;
         var key = (failure.Page, failure.Params);
-        int failures = _analysisFailures.GetValueOrDefault(key) + 1;
-        _analysisFailures[key] = failures;
+        int failures = 0;   // counted once, and only when a view was actually waiting on it
 
         bool abandoned = false;
         foreach (var vp in _viewports)
@@ -805,6 +811,14 @@ public sealed class DocumentModel : IDisposable
             if (vp.CurrentPage != failure.Page || !vp.PendingRailSetup
                 || vp.AnalysisParams != failure.Params) continue;
             if (worker.IsInFlight(FilePath, failure.Page, failure.Params)) continue;
+
+            if (staleFrame)
+            {
+                SubmitAnalysis(vp, worker, navigableRoles);
+                continue;
+            }
+            if (failures == 0)
+                _analysisFailures[key] = failures = _analysisFailures.GetValueOrDefault(key) + 1;
 
             if (failures <= MaxAnalysisRetries)
             {

@@ -57,10 +57,11 @@ public sealed record AnalysisResult(
 /// request's in-flight key is already released by the time this is readable, so a consumer may
 /// resubmit the same (file, page, params) straight away. <paramref name="Error"/> is the
 /// exception that ended the request, or null when it was dropped because the layout stage had
-/// stopped.
+/// stopped. <paramref name="ViewRotation"/> is the request's, as on <see cref="AnalysisResult"/>,
+/// so a consumer can tell a failure from a frame it has since rotated away from.
 /// </summary>
 public sealed record AnalysisFailure(
-    string FilePath, int Page, AnalysisParams Params, Exception? Error = null);
+    string FilePath, int Page, AnalysisParams Params, int ViewRotation = 0, Exception? Error = null);
 
 /// <summary>
 /// Runs layout analysis — and, for a page with no text layer, the OCR that has to precede it —
@@ -269,7 +270,7 @@ public sealed class AnalysisWorker : IDisposable
     private void Fail(AnalysisRequest request, Exception? error)
     {
         ReleaseInFlight(request);
-        _failureChannel.Writer.TryWrite(new AnalysisFailure(request.FilePath, request.Page, request.Params, error));
+        _failureChannel.Writer.TryWrite(new AnalysisFailure(request.FilePath, request.Page, request.Params, request.ViewRotation, error));
         NotifyResultAvailable();
     }
 
@@ -390,8 +391,10 @@ public sealed class AnalysisWorker : IDisposable
             _resultChannel.Writer.TryComplete();
             // Requests submitted while the analyzer was loading are queued behind a stage that
             // will never read them; fail them so their keys don't stay in flight forever.
+            // (An abandoned one is dropped silently, as everywhere else: nobody is waiting on it.)
             while (_layoutChannel.Reader.TryRead(out var stranded))
-                Fail(stranded.Request, ex);
+                if (!Abandoned(stranded.Request))
+                    Fail(stranded.Request, ex);
             return;
         }
 
