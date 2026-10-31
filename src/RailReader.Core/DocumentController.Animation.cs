@@ -309,10 +309,13 @@ public sealed partial class DocumentController
     /// suppressed unless quiescent and no freshly-arrived result needs animating (so a
     /// PDFium re-render can't jump the gate mid-scroll). Returns the same flags as
     /// <see cref="PollAnalysisResults"/> so the caller's <see cref="TickViewport(Viewport,double,bool)"/>
-    /// frame can fold them in.
+    /// frame can fold them in. With a <see cref="QueuedThreadMarshaller"/> it first runs the
+    /// callbacks posted since the last frame (analysis-prep submissions, render completions), so a
+    /// headless host gets them on its own thread with no extra wiring (#174).
     /// </summary>
     public (bool GotResults, bool NeedsAnimation, bool PageChanged) PumpAnalysis(bool quiescent = true)
     {
+        (_marshaller as QueuedThreadMarshaller)?.Pump();
         var (gotResults, needsAnim, gotPageChange) = PollAnalysisResults();
 
         if (quiescent && !needsAnim && ActiveDocument is { } doc && FocusedViewport is { } focus)

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `QueuedThreadMarshaller` (#174), an additive `IThreadMarshaller` for headless hosts and tests that can
+  run their own loop. `Post` only queues, and `Pump()` runs the queued callbacks, FIFO, on the thread
+  that constructed the marshaller, draining any that are posted during the pump too. Callbacks then never
+  run concurrently with the host's own calls, which is the guarantee a desktop dispatcher gives and that
+  `SynchronousThreadMarshaller` (callbacks run inline on the posting thread) cannot. `AssertUIThread()`
+  throws off the owning thread, so contract violations surface instead of hiding. Use it for new headless
+  code and tests. `SynchronousThreadMarshaller` is unchanged and stays supported.
+- `DocumentController.PumpAnalysis` pumps a `QueuedThreadMarshaller` before draining the worker, so a
+  host that drives `TickViewport` needs no extra wiring. A host that calls `PollAnalysisResults` or the
+  worker directly calls `Pump()` itself.
 - Fix (#177): when the layout analyzer failed to load, the OCR stage still ran full recognition on every
   scanned page already queued for it (about 65 s a page with PP-OCRv6 Medium), and only then reported
   each request as an `AnalysisFailure`. Recognition already in progress is now interrupted, and requests
