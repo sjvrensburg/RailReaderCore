@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- ONNX Runtime 1.31 (#165): `RailReader.Core.Analysis` moves from `Microsoft.ML.OnnxRuntime` 1.29.* to 1.31.* (resolves
+  1.31.1), and `RailReader.Core.Analysis.WebGpu` moves from `Microsoft.ML.OnnxRuntime.EP.WebGpu` 0.3.* to 0.5.*, as the
+  matched pair ORT 1.31 requires (core and plugin must share contributed-operator schemas). `RailReader.Core.Ocr.RapidOcr`
+  now pins the same ONNX Runtime instead of RapidOcrNet's 1.29.0 floor, so an OCR-only host runs the version the
+  package is tested against. Layout detections are unchanged: identical output on CPU for PP-DocLayoutV3, Docling Heron
+  and PP-DocLayout-S across a 53-page mixed corpus, and no GPU-versus-CPU misses or extras on the FP32 GPU path.
+- With plugin 0.5.0 on ORT 1.31, two WebGPU sessions can run inference at the same time on one GPU; on 1.29 + 0.3 that
+  crashed the process (microsoft/onnxruntime#32561). `AnalysisWorker` still doesn't put both its OCR and layout
+  stages on WebGPU. Known issue: `WebGpuAccelerator`'s `deviceIndex` doesn't select the GPU (#182). On a hybrid laptop,
+  every session runs on the discrete card.
+
 ## 0.78.0 — Queued marshaller for headless hosts (2026-10-31)
 
 - `QueuedThreadMarshaller` (#174), an additive `IThreadMarshaller` for headless hosts and tests that can
