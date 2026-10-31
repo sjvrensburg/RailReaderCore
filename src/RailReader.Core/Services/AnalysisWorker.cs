@@ -51,6 +51,19 @@ public sealed record AnalysisResult(
     float OcrSkew = 0f);
 
 /// <summary>
+/// A request the worker ended without publishing a result, other than by cancellation: the
+/// analyzer threw on the page, or the layout stage was gone (a fatal analyzer startup failure)
+/// before the request reached it. Read with <see cref="AnalysisWorker.PollFailure"/>. The
+/// request's in-flight key is already released by the time this is readable, so a consumer may
+/// resubmit the same (file, page, params) straight away. <paramref name="Error"/> is the
+/// exception that ended the request, or null when it was dropped because the layout stage had
+/// stopped. <paramref name="ViewRotation"/> is the request's, as on <see cref="AnalysisResult"/>,
+/// so a consumer can tell a failure from a frame it has since rotated away from.
+/// </summary>
+public sealed record AnalysisFailure(
+    string FilePath, int Page, AnalysisParams Params, int ViewRotation = 0, Exception? Error = null);
+
+/// <summary>
 /// Runs layout analysis — and, for a page with no text layer, the OCR that has to precede it —
 /// off the UI thread, taking requests on one channel and publishing results on another.
 ///
@@ -81,6 +94,11 @@ public sealed class AnalysisWorker : IDisposable
     private readonly Channel<AnalysisRequest> _ocrChannel;
     private readonly Channel<LayoutJob> _layoutChannel;
     private readonly Channel<AnalysisResult> _resultChannel;
+    // Bounded, dropping the oldest: a host that drains Poll but predates PollFailure never reads
+    // this, and must not accumulate one entry per failed page for the session. A host that does
+    // read it drains every frame, so it never comes near the cap.
+    private readonly Channel<AnalysisFailure> _failureChannel = Channel.CreateBounded<AnalysisFailure>(
+        new BoundedChannelOptions(64) { FullMode = BoundedChannelFullMode.DropOldest });
     // Thread-safe by construction, NOT UI-thread-only: the worker stage threads release keys
     // directly (ReleaseInFlight), and with SynchronousThreadMarshaller (headless hosts) the
     // marshalled prep callbacks that reach Submit run inline on pool threads, genuinely
@@ -176,8 +194,9 @@ public sealed class AnalysisWorker : IDisposable
     /// those on the instance <paramref name="analyzerFactory"/> builds.
     /// </param>
     /// <param name="onResultAvailable">
-    /// Optional callback invoked once per result written to the result channel, so the host can
-    /// drive <see cref="Poll"/> off arrival instead of polling on a timer (issue #118). Invoked
+    /// Optional callback invoked once per result written to the result channel, and once per
+    /// failure written for <see cref="PollFailure"/>, so the host can drive <see cref="Poll"/> off
+    /// arrival instead of polling on a timer (issue #118). Invoked
     /// via <paramref name="marshaller"/>'s <see cref="IThreadMarshaller.Post"/>, so it always
     /// runs on the UI thread like the rest of the worker's host-facing surface, and is a no-op
     /// once <see cref="Dispose"/> has run.
@@ -240,6 +259,20 @@ public sealed class AnalysisWorker : IDisposable
     /// </summary>
     private void ReleaseInFlight(AnalysisRequest request)
         => _inFlight.TryRemove((request.FilePath, request.Page, request.Params), out _);
+
+    /// <summary>
+    /// Ends a request that will never produce a result and tells the host (issue #172). Without
+    /// the report, a view waiting on the page keeps its pending rail setup with nothing in
+    /// flight, which also holds off background analysis for the whole document. The key is
+    /// released <b>before</b> the failure is published, so a consumer that resubmits on reading
+    /// it is admitted rather than refused as a duplicate of the request that just died.
+    /// </summary>
+    private void Fail(AnalysisRequest request, Exception? error)
+    {
+        ReleaseInFlight(request);
+        _failureChannel.Writer.TryWrite(new AnalysisFailure(request.FilePath, request.Page, request.Params, request.ViewRotation, error));
+        NotifyResultAvailable();
+    }
 
     /// <summary>
     /// True when nobody will consume this request any more (see
@@ -326,9 +359,9 @@ public sealed class AnalysisWorker : IDisposable
 
                 if (!_layoutChannel.Writer.TryWrite(job))
                 {
-                    // The layout stage is gone (fatal analyzer failure, or disposal): release the
-                    // key so IsInFlight/IsIdle don't stay stuck on a request nobody will finish.
-                    ReleaseInFlight(request);
+                    // The layout stage is gone (fatal analyzer failure, or disposal): fail the
+                    // request so IsInFlight/IsIdle don't stay stuck on a request nobody will finish.
+                    Fail(request, null);
                 }
             }
         }
@@ -356,6 +389,12 @@ public sealed class AnalysisWorker : IDisposable
             _ocrChannel.Writer.TryComplete();
             _layoutChannel.Writer.TryComplete();
             _resultChannel.Writer.TryComplete();
+            // Requests submitted while the analyzer was loading are queued behind a stage that
+            // will never read them; fail them so their keys don't stay in flight forever.
+            // (An abandoned one is dropped silently, as everywhere else: nobody is waiting on it.)
+            while (_layoutChannel.Reader.TryRead(out var stranded))
+                if (!Abandoned(stranded.Request))
+                    Fail(stranded.Request, ex);
             return;
         }
 
@@ -373,8 +412,8 @@ public sealed class AnalysisWorker : IDisposable
                 // resolver, …) must not fault the loop: that would silently kill analysis for the
                 // rest of the session AND strand the request's _inFlight key, so IsInFlight stays
                 // true forever (blocking resubmission for its page) and IsIdle stays false
-                // (blocking lookahead/background analysis document-wide). Log, release the key,
-                // and keep serving requests.
+                // (blocking lookahead/background analysis document-wide). Log, fail the request
+                // (releasing its key), and keep serving requests.
                 using var linked = Link(request, ct);
                 try
                 {
@@ -426,7 +465,7 @@ public sealed class AnalysisWorker : IDisposable
                 catch (Exception ex)
                 {
                     _logger.Error($"[Worker] Analysis failed for {Path.GetFileName(request.FilePath)} page {request.Page}; worker continues", ex);
-                    ReleaseInFlight(request);
+                    Fail(request, ex);
                 }
             }
         }
@@ -479,9 +518,9 @@ public sealed class AnalysisWorker : IDisposable
     }
 
     /// <summary>
-    /// Tells the host a new result is sitting in the channel, on the UI thread. Called from the
-    /// layout stage thread right after a successful write, so it fires exactly once per result
-    /// — never speculatively, never for a result that failed or was abandoned.
+    /// Tells the host a new result or failure is waiting, on the UI thread. Called from a stage
+    /// thread right after the write, so it fires exactly once per result and once per
+    /// <see cref="AnalysisFailure"/> — never speculatively, never for an abandoned request.
     /// </summary>
     private void NotifyResultAvailable()
     {
@@ -541,6 +580,17 @@ public sealed class AnalysisWorker : IDisposable
 
         _inFlight.TryRemove((result.FilePath, result.Page, result.Params), out _);
         return result;
+    }
+
+    /// <summary>
+    /// Poll for requests the worker gave up on (see <see cref="AnalysisFailure"/>). Must be called
+    /// on the UI thread. Hosts that wait on a page's result should drain this alongside
+    /// <see cref="Poll"/>, or a failed page leaves them waiting forever (issue #172).
+    /// </summary>
+    public AnalysisFailure? PollFailure()
+    {
+        _marshaller.AssertUIThread();
+        return _failureChannel.Reader.TryRead(out var failure) ? failure : null;
     }
 
     /// <summary>Check if a page is currently being analyzed under the given post-processing params.

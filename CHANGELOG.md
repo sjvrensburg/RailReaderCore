@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Fix (#172): if the analysis worker failed a page that a view was waiting on (the analyzer threw), the
+  view kept `PendingRailSetup` with nothing in flight. The page never got a rail, and background analysis
+  stopped for the whole document until the reader turned the page. The worker now reports such requests:
+  `AnalysisWorker.PollFailure()` returns an `AnalysisFailure` (file, page, params, view rotation, exception) for each
+  request that ended without a result other than by cancellation. That covers an analyzer exception, and
+  requests stranded or refused after a fatal analyzer startup failure, which previously also left their
+  in-flight keys set for good. `PumpAnalysis` drains these failures. A waiting view is resubmitted once,
+  and if the retry also fails it stops waiting. Its rail is cleared unless it already holds this page's
+  analysis, so it can't navigate the previous page's blocks. Navigating back to the page tries again. The
+  same give-up now also applies when analysis-prep fails or `Submit` refuses the request, and a failed
+  prep no longer clears the flag of a view that has since moved to another page.
+- **Behaviour change:** the worker's `onResultAvailable` callback (`DocumentController.ResultAvailable`)
+  now also fires once per reported failure, so a host that pumps only on that signal still drains it.
+  `Poll()` may then return null. A host that calls `AnalysisWorker` directly and waits on a page's result
+  should drain `PollFailure()` too.
+
 ## 0.76.1 — Headless analysis race fix (2026-10-30)
 
 - Fix (#167): headless hosts (`SynchronousThreadMarshaller`) could intermittently lose a page's analysis.
