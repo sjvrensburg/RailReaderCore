@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.79.0 — ONNX Runtime 1.31 with WebGPU plugin 0.5 (2026-10-31)
 
 - ONNX Runtime 1.31 (#165): `RailReader.Core.Analysis` moves from `Microsoft.ML.OnnxRuntime` 1.29.* to 1.31.* (resolves
   1.31.1), and `RailReader.Core.Analysis.WebGpu` moves from `Microsoft.ML.OnnxRuntime.EP.WebGpu` 0.3.* to 0.5.*, as the
