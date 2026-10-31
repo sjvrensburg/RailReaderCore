@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — annotation metadata edits; indirect `/Annots` entries
+## 0.79.1 — Annotation metadata edits; indirect `/Annots` entries (2026-10-31)
 
 - **Re-attributing an annotation is now written** (RailMark #54). `WriteReconciled` decided whether a matched
   annotation had changed from its content, style and geometry only, so an edit to the author (`/T`), subject
