@@ -1,7 +1,16 @@
 # Changelog
 
-## Unreleased — Caret creation; `/RT /Group`
+## 0.81.0 — Carets; `/RT /Group`; replies to unmodelled annotations keep their links (2026-11-01)
 
+- **Fix: replies to annotations the reader doesn't model lost their link on every save.** A reply
+  (or any annotation with `/IRT`) whose parent is a Circle, Stamp, Line, Polygon, FileAttachment or other
+  subtype `PdfAnnotationReader` doesn't model had its `/IRT` and `/RT` stripped by `WriteReconciled`, even
+  on an unchanged save, because its parent wasn't in the model.
+  - Now a link is cleared only when it points at an annotation the model owns that was deleted, or when
+    the reply was unlinked.
+  - A link to an unmodelled subtype, or to an annotation with no `/NM`, is left as it is.
+  - When such a reply is recreated by an edit (which drops `/IRT`), the link is restored to the parent
+    found on its page.
 - **Carets can be written** (`CaretAnnotation`). PDFium cannot create a `/Caret`, so `WriteReconciled`
   creates a `/Square` placeholder carrying the caret's `/Rect`, colour and metadata, and the raw-PDF
   post-pass (`PdfReplyLinker`) retypes it: `/Subtype /Caret`, `/Sy /None`, the square-only keys (`/IC`,
