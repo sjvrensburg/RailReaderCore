@@ -359,32 +359,64 @@ public sealed class PdfAnnotationWriter
             present.Add(nm);
             if (!needLinks || !byNm.TryGetValue(nm, out var ann)) return;
 
-            string? desired = !string.IsNullOrEmpty(ann.InReplyTo) && ann.InReplyTo != nm && byNm.ContainsKey(ann.InReplyTo)
-                ? ann.InReplyTo : null;
+            string? parent = !string.IsNullOrEmpty(ann.InReplyTo) && ann.InReplyTo != nm ? ann.InReplyTo : null;
             bool has = FPDFAnnot_HasKey(annot, "IRT");
             string? actual = null;
+            bool linkedManaged = false, linkedFound = false;
             if (has)
             {
                 var linked = FPDFAnnot_GetLinkedAnnot(annot, "IRT");
                 if (linked != IntPtr.Zero)
                 {
-                    try { actual = ReadAnnotString(linked, "NM"); }
+                    linkedFound = true;
+                    try
+                    {
+                        actual = ReadAnnotString(linked, "NM");
+                        linkedManaged = IsManagedSubtype(FPDFAnnot_GetSubtype(linked));
+                    }
                     finally { FPDFPage_CloseAnnot(linked); }
                 }
             }
             var type = ann.ReplyType;
             bool sameType = (type == AnnotationReplyType.Group)
                 == string.Equals(ReadAnnotString(annot, "RT"), "Group", StringComparison.Ordinal);
-            bool consistent = desired is null ? !has : actual == desired && sameType && !recreated.Contains(desired);
-            if (!consistent) needs.Add((nm, desired, has, type));
+
+            bool consistent;
+            if (parent is not null && byNm.ContainsKey(parent))
+                consistent = actual == parent && sameType && !recreated.Contains(parent);
+            else if (parent is not null && linkedFound && linkedManaged)
+            {
+                // The link points at an annotation of a subtype the model holds, yet the model doesn't
+                // hold it: it was deleted. The link is stale.
+                needs.Add((nm, null, has, type));
+                return;
+            }
+            else if (parent is not null)
+                // The parent is in the PDF but not in the model — a subtype the reader doesn't model
+                // (Circle, Stamp, Line, …). A link already there is right; a missing one (the child was
+                // just recreated, which drops /IRT) is restored against the parent found on the page.
+                consistent = has && actual == parent && sameType;
+            else
+                // No parent in the model. Only a link to an annotation the model owns is stale (that
+                // parent was deleted or the reply unlinked); one to something the model can't see — an
+                // unmodelled subtype, or an annotation with no /NM to name it by — is left alone.
+                consistent = !has || (linkedFound && (!linkedManaged || string.IsNullOrEmpty(actual)));
+            if (!consistent) needs.Add((nm, parent, has, type));
         });
+
+        // Parents the model names but does not hold, looked up among every annotation on the pages.
+        var unmodelled = new HashSet<string>(StringComparer.Ordinal);
+        var wanted = needs.Where(n => n.Parent is not null && !byNm.ContainsKey(n.Parent)).Select(n => n.Parent!).ToHashSet();
+        if (wanted.Count > 0)
+            ForEachManagedAnnot(doc, pages, (_, nm) => { if (wanted.Contains(nm)) unmodelled.Add(nm); }, managedOnly: false);
 
         foreach (var (child, parent, hasLink, type) in needs)
         {
             // A parent that was never written (empty geometry, a caret with no post-pass) is an orphan.
-            string? target = parent is not null && present.Contains(parent) ? parent : null;
-            // Nothing to clear and nowhere to point: leave the child alone.
-            if (target is null && !hasLink) continue;
+            string? target = parent is not null && (present.Contains(parent) || unmodelled.Contains(parent)) ? parent : null;
+            // Nothing to clear and nowhere to point: leave the child alone. Nor is a link cleared for want
+            // of an unmodelled parent that just isn't on these pages — it may well be elsewhere.
+            if (target is null && (!hasLink || (parent is not null && !byNm.ContainsKey(parent)))) continue;
             plan.Links.Add((plan.MarkerFor(child), target is null ? -1 : plan.MarkerFor(target), type));
         }
         foreach (var (nm, retype) in (carets ?? []).OrderBy(c => c.Key, StringComparer.Ordinal))
@@ -394,15 +426,18 @@ public sealed class PdfAnnotationWriter
             plan.Promote.Add(plan.MarkerFor(nm));
         if (plan.IsEmpty) return plan;
 
+        // Every subtype: a parent the model doesn't hold may need a marker too.
         ForEachManagedAnnot(doc, pages, (annot, nm) =>
         {
             int marker = plan.TryGetMarker(nm);
             if (marker >= 0) SetString(annot, plan.KeyFor(marker), "1");
-        });
+        }, managedOnly: false);
         return plan;
     }
 
-    private static void ForEachManagedAnnot(IntPtr doc, List<int> pages, Action<IntPtr, string> visit)
+    /// <param name="managedOnly">Visit only the subtypes the reconciler manages (default); false visits
+    /// every annotation that has an /NM.</param>
+    private static void ForEachManagedAnnot(IntPtr doc, List<int> pages, Action<IntPtr, string> visit, bool managedOnly = true)
     {
         foreach (var pageIndex in pages)
         {
@@ -417,7 +452,7 @@ public sealed class PdfAnnotationWriter
                     if (annot == IntPtr.Zero) continue;
                     try
                     {
-                        if (!IsManagedSubtype(FPDFAnnot_GetSubtype(annot))) continue;
+                        if (managedOnly && !IsManagedSubtype(FPDFAnnot_GetSubtype(annot))) continue;
                         var nm = ReadAnnotString(annot, "NM");
                         if (!string.IsNullOrEmpty(nm)) visit(annot, nm!);
                     }
