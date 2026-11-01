@@ -106,6 +106,11 @@ internal static class PdfiumNative
         out int hasXVal, out int hasYVal, out int hasZoomVal,
         out float x, out float y, out float zoom);
 
+    // Named destinations. buflen is a C `long*` (32-bit on Windows, 64-bit on Linux) — hence CLong.
+    [DllImport(Lib)] internal static extern uint FPDF_CountNamedDests(IntPtr document);
+    [DllImport(Lib)] internal static extern IntPtr FPDF_GetNamedDest(IntPtr document, int index,
+        IntPtr buffer, ref CLong buflen);
+
     // PDFium action types
     internal const uint PDFACTION_GOTO = 1;      // Internal "go to destination"
     internal const uint PDFACTION_REMOTEGOTO = 2; // Remote "go to destination" (another PDF)

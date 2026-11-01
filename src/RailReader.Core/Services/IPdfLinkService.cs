@@ -17,4 +17,12 @@ public interface IPdfLinkService
     /// </summary>
     List<PdfLink> ExtractPageLinks(byte[] pdfBytes, int pageIndex, int viewRotation, string? password = null)
         => ExtractPageLinks(pdfBytes, pageIndex, password);
+
+    /// <summary>
+    /// The document's named destinations, in the backend's enumeration order. Positions are
+    /// resolved into the target page's page-point space (top-left origin, Y-down, /Rotate-aware)
+    /// in <see cref="PageDestination.PageX"/>/<see cref="PageDestination.PageY"/>. Entries whose
+    /// target page cannot be resolved are skipped. Default: none (a backend that cannot read them).
+    /// </summary>
+    List<NamedDestination> ExtractNamedDestinations(byte[] pdfBytes, string? password = null) => [];
 }

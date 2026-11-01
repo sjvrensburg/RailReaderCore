@@ -37,3 +37,15 @@ public sealed class UriDestination : PdfLinkDestination
 {
     public required string Uri { get; init; }
 }
+
+/// <summary>
+/// An entry of the document's named-destination table (the catalog's <c>/Dests</c> dictionary or
+/// the <c>/Names /Dests</c> name tree) — a stable, invisible anchor a producer placed at a position
+/// on a page. Word/LibreOffice export bookmarks this way, which is what lets a converter recover
+/// exactly where a source-document position landed in the PDF.
+/// </summary>
+public sealed class NamedDestination
+{
+    public required string Name { get; init; }
+    public required PageDestination Destination { get; init; }
+}
