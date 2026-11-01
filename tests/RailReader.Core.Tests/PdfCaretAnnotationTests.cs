@@ -163,6 +163,142 @@ public class PdfCaretAnnotationTests
         Assert.NotEqual(AnnotationSource.InPdf, caret.Source);
     }
 
+    /// <summary>
+    /// A one-page PDF holding an Acrobat-style caret: rich text, /RD, /Sy /P, a pop-up and its own
+    /// appearance stream (tagged <c>%ACROAP</c> so its survival can be seen). Hand-built, classic xref.
+    /// </summary>
+    private const string Ap = "0 0 1 rg 0 0 m 4 7 l 8 0 l f %ACROAP";
+
+    private static byte[] AcrobatCaretPdf()
+    {
+        var objects = new[]
+        {
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 6 0 R /Annots [4 0 R 7 0 R] >>",
+            "<< /Type /Annot /Subtype /Caret /Rect [100 130 108 137] /C [0 0 1] /NM (acro-caret) /T (Acro) "
+                + "/Contents (old words) /RC (<body><p>old words</p></body>) /RD [1 1 1 1] /Sy /P /F 4 /P 3 0 R "
+                + "/Popup 7 0 R /AP << /N 5 0 R >> >>",
+            $"<< /Type /XObject /Subtype /Form /BBox [0 0 8 7] /Length {Ap.Length} >>\nstream\n{Ap}\nendstream",
+            "<< /Length 0 >>\nstream\n\nendstream",
+            "<< /Type /Annot /Subtype /Popup /Rect [120 100 220 160] /Parent 4 0 R /F 28 >>",
+        };
+        var sb = new StringBuilder("%PDF-1.7\n");
+        var offsets = new List<int>();
+        for (int i = 0; i < objects.Length; i++)
+        {
+            offsets.Add(sb.Length);
+            sb.Append($"{i + 1} 0 obj\n{objects[i]}\nendobj\n");
+        }
+        int xref = sb.Length;
+        sb.Append($"xref\n0 {objects.Length + 1}\n0000000000 65535 f \n");
+        foreach (var o in offsets) sb.Append($"{o:D10} 00000 n \n");
+        sb.Append($"trailer\n<< /Size {objects.Length + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n");
+        return Encoding.Latin1.GetBytes(sb.ToString());
+    }
+
+    private static byte[] Latin1Bytes(string s) => Encoding.Latin1.GetBytes(s);
+
+    /// <summary>Every stream's content, inflated where it is Flate-compressed (PDFium compresses on save).</summary>
+    private static string StreamText(byte[] pdf)
+    {
+        var text = Latin1(pdf);
+        var sb = new StringBuilder();
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+                     text, @"stream\r?\n(.*?)\r?\n?endstream", System.Text.RegularExpressions.RegexOptions.Singleline))
+        {
+            var raw = Latin1Bytes(m.Groups[1].Value);
+            try
+            {
+                using var z = new System.IO.Compression.ZLibStream(new MemoryStream(raw), System.IO.Compression.CompressionMode.Decompress);
+                using var r = new StreamReader(z, Encoding.Latin1);
+                sb.Append(r.ReadToEnd());
+            }
+            catch (InvalidDataException)
+            {
+                sb.Append(m.Groups[1].Value);   // not compressed
+            }
+            sb.Append('\n');
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>The PDF as a reader sees it: a plain re-save keeps only the live objects.</summary>
+    private static string Live(byte[] pdf)
+    {
+        var model = new PdfAnnotationReader().Read(pdf);
+        return Latin1(new PdfAnnotationWriter().WriteReconciled(pdf, model));
+    }
+
+    [Fact]
+    public void Editing_Another_Producers_Caret_Keeps_Everything_It_Carries()
+    {
+        var source = AcrobatCaretPdf();
+        var model = new PdfAnnotationReader().Read(source);
+        var caret = Assert.IsType<CaretAnnotation>(Assert.Single(model.Pages[0]));
+        caret.Author = "Someone else";
+        caret.Contents = "new words";
+
+        var saved = new PdfAnnotationWriter().WriteReconciled(source, model);
+
+        var back = Assert.IsType<CaretAnnotation>(Assert.Single(ReadBack(saved)));
+        Assert.Equal("Someone else", back.Author);
+        Assert.Equal("new words", back.Contents);
+        var live = Live(saved);
+        static bool Has(string pdf, string pattern) => System.Text.RegularExpressions.Regex.IsMatch(pdf, pattern);
+        Assert.True(Has(live, @"/RD\s*\["), "/RD lost");
+        Assert.True(Has(live, @"/RC\s*\("), "/RC lost");
+        Assert.True(Has(live, @"/Sy\s*/P\b"), "/Sy /P lost");
+        Assert.True(Has(live, @"/Popup\s*\d+\s+0\s+R"), "/Popup lost");
+        Assert.Contains("%ACROAP", StreamText(saved));   // its own appearance, not a generated one
+    }
+
+    [Fact]
+    public void Recolouring_Another_Producers_Caret_Does_Not_Recreate_It()
+    {
+        // Its colour can't be changed in place (PDFium won't set /C over an /AP), but that is better
+        // than recreating it and dropping its rich text, padding, symbol and pop-up.
+        var source = AcrobatCaretPdf();
+        var model = new PdfAnnotationReader().Read(source);
+        ((CaretAnnotation)model.Pages[0][0]).Color = "#FF0000";
+
+        var live = Live(new PdfAnnotationWriter().WriteReconciled(source, model));
+
+        Assert.Contains("%ACROAP", StreamText(Latin1Bytes(live)));
+        Assert.Matches(@"/RD\s*\[", live);
+    }
+
+    [Fact]
+    public void No_Caret_Is_Created_In_An_Encrypted_File()
+    {
+        // The post-pass can't add an appearance stream there (Poppler would draw nothing) or, under
+        // RC4/AES-128, promote the caret (MuPDF would see nothing), so it is not written at all.
+        var source = File.ReadAllBytes(TestFixtures.GetEncryptedTestPdfPath());
+        var caret = Caret();
+        var file = AnnotationTestHelpers.OnePage(caret, new HighlightAnnotation { Rects = [new HighlightRect(72, 100, 80, 16)] });
+
+        var bytes = new PdfAnnotationWriter().WriteReconciled(source, file, TestFixtures.EncryptedPdfPassword);
+
+        var back = new PdfAnnotationReader().Read(bytes, TestFixtures.EncryptedPdfPassword).Pages[0];
+        Assert.DoesNotContain(back, a => a is CaretAnnotation or RectAnnotation);
+        Assert.Single(back.OfType<HighlightAnnotation>());
+        Assert.NotEqual(AnnotationSource.InPdf, caret.Source);
+    }
+
+    [Fact]
+    public void Without_The_Post_Pass_A_Content_Edit_Of_A_Caret_Still_Lands()
+    {
+        var first = new PdfAnnotationWriter().WriteReconciled(Plain(), AnnotationTestHelpers.OnePage(Caret()));
+        var edited = Caret();
+        edited.Contents = "edited without the post-pass";
+
+        var bytes = new PdfAnnotationWriter { LinkApplier = (_, _) => null }
+            .WriteReconciled(first, AnnotationTestHelpers.OnePage(edited));
+
+        var caret = Assert.IsType<CaretAnnotation>(Assert.Single(ReadBack(bytes)));
+        Assert.Equal("edited without the post-pass", caret.Contents);
+    }
+
     [Fact]
     public void A_Grouped_Annotation_Is_Not_A_Reply_But_Is_Deleted_With_Its_Group()
     {

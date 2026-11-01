@@ -112,8 +112,8 @@ public sealed class PdfAnnotationWriter
     /// deleted or recreated) are rewritten; a parent absent from the document drops the link rather
     /// than leave it dangling.</para>
     /// <b>Mutates</b> <paramref name="file"/> by back-filling /NM and Source on newly persisted
-    /// annotations. Caret annotations can be edited in place but never created
-    /// (<see cref="CaretAnnotation"/>). Only pages present in <paramref name="file"/> are
+    /// annotations. Caret annotations are created only when the post-pass runs and the document is not
+    /// encrypted (<see cref="CaretAnnotation"/>). Only pages present in <paramref name="file"/> are
     /// visited.
     /// </summary>
     public byte[] WriteReconciled(byte[] pdfBytes, AnnotationFile file, string? password = null)
@@ -152,8 +152,11 @@ public sealed class PdfAnnotationWriter
                     int pageCount = FPDF_GetPageCount(doc);
                     var recreated = new HashSet<string>(StringComparer.Ordinal);
                     var written = new HashSet<string>(StringComparer.Ordinal);
-                    // Carets need the post-pass (see CaretAnnotation); without it none are created.
-                    var carets = withLinks ? new Dictionary<string, CaretRetype>(StringComparer.Ordinal) : null;
+                    // Carets need the post-pass (see CaretAnnotation); without it none are created. Nor in
+                    // an encrypted file: the post-pass can't add an appearance stream there (Poppler then
+                    // draws nothing) and, under RC4/AES-128, can't promote the caret (MuPDF then sees nothing).
+                    bool encrypted = FPDF_GetSecurityHandlerRevision(doc) != -1;
+                    var carets = withLinks && !encrypted ? new Dictionary<string, CaretRetype>(StringComparer.Ordinal) : null;
                     foreach (var pageIndex in file.Pages.Keys.Where(k => k >= 0 && k < pageCount).OrderBy(k => k))
                     {
                         var page = FPDF_LoadPage(doc, pageIndex);
@@ -172,7 +175,7 @@ public sealed class PdfAnnotationWriter
                     // might now be stale; promotion only when something was written. Otherwise skip the
                     // extra passes over every annotated page.
                     var links = withLinks
-                        ? PlanPostPass(doc, pageCount, file, recreated, written, MayNeedLinks(pdfBytes, file), carets!)
+                        ? PlanPostPass(doc, pageCount, file, recreated, written, MayNeedLinks(pdfBytes, file), carets)
                         : new ReplyLinkPlan();
                     var saved = SaveDocumentBytes(doc);
                     return links.IsEmpty ? saved : LinkApplier(saved, links);
@@ -235,10 +238,13 @@ public sealed class PdfAnnotationWriter
                     && AnnotationEquivalence.MetadataEquivalent(current, want))
                     continue; // unchanged → leave the original annotation untouched
 
-                // A caret is recreated too when a post-pass will run: it carries its own appearance
-                // stream, which an in-place colour or size change would leave stale.
+                // A caret whose colour or box changed is recreated, so its appearance stream is redrawn
+                // — but only when that loses nothing: a post-pass will run (it writes the appearance), and
+                // the caret carries nothing a recreation would drop (another producer's /RD, /RC, /Popup,
+                // /Sy /P). Anything else is edited in place, which keeps every other key.
                 if (want is TextMarkupAnnotation or FreehandAnnotation or RectAnnotation
-                    || (want is CaretAnnotation && carets is not null))
+                    || (want is CaretAnnotation wc && carets is not null && current is CaretAnnotation cc
+                        && CaretAppearanceChanged(cc, wc) && CaretIsPlain(annot)))
                 {
                     // Quad/ink geometry, and Rect fill — which can't be cleared in place since
                     // PDFium can't remove /IC — are handled by delete + recreate (same /NM).
@@ -335,7 +341,7 @@ public sealed class PdfAnnotationWriter
     /// An ordinary re-save that writes nothing therefore appends nothing.
     /// </summary>
     private static ReplyLinkPlan PlanPostPass(IntPtr doc, int pageCount, AnnotationFile file,
-        HashSet<string> recreated, HashSet<string> written, bool needLinks, Dictionary<string, CaretRetype> carets)
+        HashSet<string> recreated, HashSet<string> written, bool needLinks, Dictionary<string, CaretRetype>? carets)
     {
         var plan = new ReplyLinkPlan();
         if (!needLinks && written.Count == 0) return plan;
@@ -381,7 +387,7 @@ public sealed class PdfAnnotationWriter
             if (target is null && !hasLink) continue;
             plan.Links.Add((plan.MarkerFor(child), target is null ? -1 : plan.MarkerFor(target), type));
         }
-        foreach (var (nm, retype) in carets.OrderBy(c => c.Key, StringComparer.Ordinal))
+        foreach (var (nm, retype) in (carets ?? []).OrderBy(c => c.Key, StringComparer.Ordinal))
             if (present.Contains(nm)) plan.Retype[plan.MarkerFor(nm)] = retype;
         // Sorted so the promoted objects are numbered the same way on every run.
         foreach (var nm in written.Where(present.Contains).Order(StringComparer.Ordinal))
@@ -428,6 +434,23 @@ public sealed class PdfAnnotationWriter
         }
     }
 
+    /// <summary>The colour, opacity or box differ — what a caret's appearance stream depends on.</summary>
+    private static bool CaretAppearanceChanged(CaretAnnotation current, CaretAnnotation want)
+    {
+        static bool Near(float a, float b) => MathF.Abs(a - b) <= 0.75f;
+        return !string.Equals(current.Color, want.Color, StringComparison.OrdinalIgnoreCase)
+               || MathF.Abs(current.Opacity - want.Opacity) > 0.01f
+               || !Near(current.X, want.X) || !Near(current.Y, want.Y) || !Near(current.W, want.W) || !Near(current.H, want.H);
+    }
+
+    /// <summary>
+    /// A caret with nothing a delete + recreate would lose: no /RD, /RC or /Popup and no symbol other
+    /// than /None — the shape RailReader writes. Acrobat's carets typically fail this.
+    /// </summary>
+    private static bool CaretIsPlain(IntPtr annot)
+        => !FPDFAnnot_HasKey(annot, "RD") && !FPDFAnnot_HasKey(annot, "RC") && !FPDFAnnot_HasKey(annot, "Popup")
+           && ReadAnnotString(annot, "Sy") is null or "None";
+
     private static bool IsManagedSubtype(int subtype) => subtype is
         FPDF_ANNOT_TEXT or FPDF_ANNOT_FREETEXT or FPDF_ANNOT_SQUARE or
         FPDF_ANNOT_HIGHLIGHT or FPDF_ANNOT_UNDERLINE or FPDF_ANNOT_SQUIGGLY or
@@ -435,7 +458,7 @@ public sealed class PdfAnnotationWriter
 
     /// <summary>
     /// In-place edit for rect-based annotations that PDFium can't (or shouldn't) recreate —
-    /// Text (sticky), Caret (uncreatable), and FreeText — preserving their other keys.
+    /// Text (sticky), Caret (another producer's, or any in a file without the post-pass), and FreeText — preserving their other keys.
     /// Rect/markup/ink changes go through delete+recreate instead.
     /// </summary>
     private static void EditRectBasedInPlace(IntPtr annot, Annotation ann, in PageTransform tx)

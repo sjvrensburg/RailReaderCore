@@ -8,7 +8,7 @@ public abstract partial class Annotation
     /// <summary>
     /// True for the types that can be copied and pasted: position-anchored annotations
     /// (TextNote, FreeText, Rect, Freehand). Text markup only means something on the text it
-    /// was made over, and PDFium cannot create carets.
+    /// was made over, and a caret marks a point in it.
     /// </summary>
     public static bool IsCopyable(Annotation? a)
         => a is TextNoteAnnotation or FreeTextAnnotation or RectAnnotation
