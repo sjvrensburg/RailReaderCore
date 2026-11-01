@@ -35,6 +35,20 @@ public enum AnnotationSource
 /// Acrobat review state (/State under the "Review" /StateModel). <see cref="None"/>
 /// means no explicit review state has been set.
 /// </summary>
+/// <summary>The relationship an /IRT link expresses (PDF /RT, ISO 32000-1 Table 170).</summary>
+public enum AnnotationReplyType
+{
+    /// <summary><c>/RT /R</c> — a reply in the parent's comment thread (the default).</summary>
+    Reply,
+
+    /// <summary>
+    /// <c>/RT /Group</c> — not a reply: the annotation is grouped with its parent and the two act as
+    /// one, the parent carrying the shared comment. Acrobat's "Replace Text" is a caret (the inserted
+    /// text) with a strikeout grouped to it (the text it replaces).
+    /// </summary>
+    Group,
+}
+
 public enum ReviewState
 {
     None,
@@ -86,6 +100,12 @@ public abstract partial class Annotation
 
     /// <summary>Parent annotation's <see cref="NativeId"/> for replies — PDF /IRT.</summary>
     public string? InReplyTo { get; set; }
+
+    /// <summary>
+    /// How <see cref="InReplyTo"/> relates this annotation to its parent — PDF /RT. Ignored when
+    /// <see cref="InReplyTo"/> is empty.
+    /// </summary>
+    public AnnotationReplyType ReplyType { get; set; } = AnnotationReplyType.Reply;
 
     /// <summary>Provenance of this annotation (in-PDF vs RailReader-authored).</summary>
     public AnnotationSource Source { get; set; } = AnnotationSource.RailReader;
@@ -167,10 +187,12 @@ public class RectAnnotation : Annotation
 
 /// <summary>
 /// Caret ("inserted text") markup — a small insertion marker. PDF /Caret.
-/// The note text (if any) lives in <see cref="Annotation.Contents"/>.
-/// <para>Read-only: PDFium can surface and preserve existing carets but cannot
-/// <i>create</i> them (Caret is not in its supported-subtype whitelist), and
-/// RailReader has no caret-authoring tool.</para>
+/// The note text (if any) lives in <see cref="Annotation.Contents"/>; for Acrobat's "Inserted Text"
+/// that is the text to insert. The box is the caret glyph's own extent, typically about half a line
+/// high and sitting on the baseline at the insertion point.
+/// <para>PDFium cannot create a caret (it is not in its supported-subtype whitelist), so the native
+/// writer creates a placeholder and its raw-PDF post-pass turns it into a caret with an appearance
+/// stream of its own. Where that post-pass cannot run the caret is not written.</para>
 /// </summary>
 public class CaretAnnotation : Annotation
 {

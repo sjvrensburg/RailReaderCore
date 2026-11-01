@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased — Caret creation; `/RT /Group`
+
+- **Carets can be written** (`CaretAnnotation`). PDFium cannot create a `/Caret`, so `WriteReconciled`
+  creates a `/Square` placeholder carrying the caret's `/Rect`, colour and metadata, and the raw-PDF
+  post-pass (`PdfReplyLinker`) retypes it: `/Subtype /Caret`, `/Sy /None`, the square-only keys (`/IC`,
+  `/BS`, PDFium's `/AP`) removed, and an appearance stream of its own — a filled caret shape, no font.
+  The appearance matters: Poppler draws no caret without one (MuPDF synthesises one from `/C`).
+  - **Encrypted files:** the appearance is skipped, since a new stream would need encrypting; viewers
+    that synthesise still draw the caret.
+  - **No post-pass:** when there is none (the no-links retry, `AnnotationExportService`), carets are not
+    written, and `WriteReconciled` restores their `Source`/`NativeId`.
+  - **Edits:** a changed caret is recreated, so its appearance is redrawn.
+  - Verified rendering in MuPDF and Poppler; `qpdf --check` clean.
+- **Caret colour reads back.** PDFium never reports `/C` for an annotation with an appearance stream, so the
+  reader takes a caret's colour from the stream's first fill (`r g b rg` / `g g`). Before this, carets other
+  producers wrote read back in the default colour.
+- **`Annotation.ReplyType`** (`Reply` | `Group`) is read from and written as `/RT`; it was always written
+  `/R` before. Acrobat's "Replace Text" is a caret with a strikeout `/RT /Group`-linked to it.
+  - The writer treats a change of type alone as a link to rewrite.
+  - `AnnotationThreads.Build` does not thread a grouped annotation (it is part of its parent, not a reply),
+    but `Descendants` still includes it, so it is deleted with its group.
+- `PdfAnnotationFixesTests`: the "caret is never written" case is gone, since that premise no longer holds.
+
 ## 0.80.0 — Named destinations (2026-11-01)
 
 - **`IPdfLinkService.ExtractNamedDestinations`** — the document's named-destination table (catalog `/Dests`
