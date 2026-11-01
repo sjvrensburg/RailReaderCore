@@ -260,6 +260,13 @@ public sealed class PdfAnnotationReader
             a.ColorComponents = [r / 255f, g / 255f, b / 255f];
             a.Color = ColorUtils.ToHexColor(r / 255f, g / 255f, b / 255f);
         }
+        else if (a is CaretAnnotation && FillColorOfAppearance(annot) is { } fill)
+        {
+            // A caret is all fill, so its appearance's first fill colour is its colour — the way to
+            // read back a caret RailReader wrote (it always carries its own /AP) and most others.
+            a.ColorComponents = fill;
+            a.Color = ColorUtils.ToHexColor(fill[0], fill[1], fill[2]);
+        }
         else
         {
             // No /C (e.g. a baked /AP stream hides it) — fall back to a per-subtype default.
@@ -272,7 +279,42 @@ public sealed class PdfAnnotationReader
         {
             try { a.InReplyTo = ReadAnnotString(parent, "NM"); }
             finally { FPDFPage_CloseAnnot(parent); }
+            a.ReplyType = string.Equals(ReadAnnotString(annot, "RT"), "Group", StringComparison.Ordinal)
+                ? AnnotationReplyType.Group : AnnotationReplyType.Reply;
         }
+    }
+
+    /// <summary>The first DeviceRGB/Gray fill colour (<c>r g b rg</c> / <c>g g</c>) in the normal appearance, or null.</summary>
+    internal static float[]? FillColorOfAppearance(IntPtr annot)
+    {
+        uint len = FPDFAnnot_GetAP(annot, FPDF_ANNOT_APPEARANCEMODE_NORMAL, IntPtr.Zero, 0);
+        if (len <= 2 || len > 1 << 20) return null;
+        var buffer = Marshal.AllocHGlobal((int)len);
+        string content;
+        try
+        {
+            FPDFAnnot_GetAP(annot, FPDF_ANNOT_APPEARANCEMODE_NORMAL, buffer, len);
+            content = Marshal.PtrToStringUni(buffer, (int)(len / 2) - 1);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+        return FillColorOfContent(content);
+    }
+
+    internal static float[]? FillColorOfContent(string content)
+    {
+        var t = content.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        static bool F(string s, out float v) => float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+        for (int i = 0; i < t.Length; i++)
+        {
+            if (t[i] == "rg" && i >= 3 && F(t[i - 3], out var r) && F(t[i - 2], out var g) && F(t[i - 1], out var b))
+                return [Math.Clamp(r, 0, 1), Math.Clamp(g, 0, 1), Math.Clamp(b, 0, 1)];
+            if (t[i] == "g" && i >= 1 && F(t[i - 1], out var gray))
+                return [Math.Clamp(gray, 0, 1), Math.Clamp(gray, 0, 1), Math.Clamp(gray, 0, 1)];
+        }
+        return null;
     }
 
     /// <summary>

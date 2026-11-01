@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using RailReader.Core.Models;
 
 namespace RailReader.Core.Services;
 
@@ -15,14 +16,21 @@ internal sealed class ReplyLinkPlan
     private readonly string _salt = Guid.NewGuid().ToString("N")[..8];
     private readonly Dictionary<string, int> _markerByNm = new(StringComparer.Ordinal);
 
-    /// <summary>(child marker, parent marker or -1 to just clear a stale link).</summary>
-    public List<(int Child, int Parent)> Links { get; } = [];
+    /// <summary>(child marker, parent marker or -1 to just clear a stale link, the /RT to write).</summary>
+    public List<(int Child, int Parent, AnnotationReplyType Type)> Links { get; } = [];
+
+    /// <summary>
+    /// Placeholders to turn into carets, by marker. PDFium cannot create a /Caret, so the writer
+    /// creates a /Square carrying the caret's /Rect, colour and metadata; the linker changes its
+    /// subtype, drops what only a square has, and gives it an appearance stream.
+    /// </summary>
+    public Dictionary<int, CaretRetype> Retype { get; } = [];
 
     /// <summary>Markers whose annotation must become an indirect object if it is a direct dictionary,
     /// whether or not it takes part in a link (ISO 32000 requires <c>/Annots</c> to hold references).</summary>
     public List<int> Promote { get; } = [];
 
-    public bool IsEmpty => Links.Count == 0 && Promote.Count == 0;
+    public bool IsEmpty => Links.Count == 0 && Promote.Count == 0 && Retype.Count == 0;
 
     public string KeyFor(int marker) => $"RRM{_salt}x{marker}";
 
@@ -38,6 +46,9 @@ internal sealed class ReplyLinkPlan
 
     public int MarkerCount => _markerByNm.Count;
 }
+
+/// <summary>A caret's appearance: its box size in PDF units and its fill colour (each 0..1).</summary>
+internal readonly record struct CaretRetype(float Width, float Height, float R, float G, float B);
 
 /// <summary>
 /// Writes reply linkage (<c>/IRT</c> + <c>/RT</c>) into a PDF that PDFium has just saved, and moves the
@@ -113,7 +124,11 @@ internal static class PdfReplyLinker
         public List<string> MarkerKeys { get; } = [];
         public bool Touched { get; set; }
         public string? ParentRef { get; set; }
+        public AnnotationReplyType ReplyType { get; set; }
         public int PromotedAs { get; set; } = -1;
+        public CaretRetype? Retype { get; set; }
+        /// <summary>Object number of the caret's appearance stream, or -1 for none.</summary>
+        public int AppearanceAs { get; set; } = -1;
     }
 
     private static byte[]? ApplyCore(byte[] pdf, ReplyLinkPlan plan)
@@ -159,11 +174,12 @@ internal static class PdfReplyLinker
         // 2. Resolve links. A parent that is missing, or direct and unpromotable, is an orphan: the
         //    child's stale link is cleared and nothing dangling is emitted.
         int nextNumber = trailer.Size;
-        foreach (var (child, parent) in plan.Links)
+        foreach (var (child, parent, type) in plan.Links)
         {
             if (!ownerOfMarker.TryGetValue(child, out var childOwner)) continue;
             childOwner.Touched = true;
             childOwner.ParentRef = null;
+            childOwner.ReplyType = type;
             if (parent < 0 || !ownerOfMarker.TryGetValue(parent, out var parentOwner)) continue;
 
             if (parentOwner.IsIndirect)
@@ -187,6 +203,16 @@ internal static class PdfReplyLinker
                 if (ownerOfMarker.TryGetValue(m, out var o) && !o.IsIndirect && o.PromotedAs < 0)
                     o.PromotedAs = nextNumber++;
 
+        //    Carets. The retype itself is an edit of the dictionary wherever it lives; the appearance
+        //    is a new stream object, written only into an unencrypted file — a stream added to an
+        //    encrypted one would have to be encrypted with a key this pass does not have.
+        foreach (var (m, retype) in plan.Retype)
+        {
+            if (!ownerOfMarker.TryGetValue(m, out var o)) continue;
+            o.Retype = retype;
+            if (trailer.Encrypt is null) o.AppearanceAs = nextNumber++;
+        }
+
         // 3. Build the replacement text of every touched container and every promoted dictionary.
         var rewritten = new SortedDictionary<int, (int Generation, string Body)>();
         var added = new SortedDictionary<int, string>();
@@ -197,6 +223,7 @@ internal static class PdfReplyLinker
             foreach (var o in byContainer)
             {
                 var inner = EditsFor(text, o);
+                if (o.AppearanceAs >= 0) added[o.AppearanceAs] = CaretAppearance(o.Retype!.Value);
                 if (o.PromotedAs >= 0)
                 {
                     added[o.PromotedAs] = "\n" + ApplyEdits(text, o.Dict.Start, o.Dict.End, inner) + "\nendobj\n";
@@ -253,10 +280,32 @@ internal static class PdfReplyLinker
             var name = TokenText(text, toks[e.Name]);
             if (o.MarkerKeys.Any(k => name == "/" + k) || (o.Touched && name is "/IRT" or "/RT"))
                 edits.Add(Remove(e));
+            else if (o.Retype is not null && name == "/Subtype")
+                edits.Add(new Edit(toks[e.ValStart].Start, toks[e.ValEnd - 1].End, "/Caret"));
+            // What only the square placeholder has: its fill, border style and PDFium's appearance.
+            else if (o.Retype is not null && name is "/IC" or "/BS" or "/BE" or "/Border" or "/AP" or "/AS")
+                edits.Add(Remove(e));
         }
+        var close = toks[o.Dict.CloseTok].Start;
         if (o.Touched && o.ParentRef is { } parent)
-            edits.Add(new Edit(toks[o.Dict.CloseTok].Start, toks[o.Dict.CloseTok].Start, $" /IRT {parent} /RT /R "));
+            edits.Add(new Edit(close, close, $" /IRT {parent} /RT /{(o.ReplyType == AnnotationReplyType.Group ? "Group" : "R")} "));
+        if (o.Retype is not null)
+            edits.Add(new Edit(close, close, o.AppearanceAs >= 0 ? $" /Sy /None /AP << /N {o.AppearanceAs} 0 R >> " : " /Sy /None "));
         return edits;
+    }
+
+    /// <summary>
+    /// A caret's normal appearance: a filled "^" with a notch, filling its box, in its colour. Needs no
+    /// font, so it renders the same in every viewer — and viewers that synthesise a caret from /C
+    /// (most do not) are not relied on.
+    /// </summary>
+    internal static string CaretAppearance(CaretRetype c)
+    {
+        static string F(float v) => v.ToString("0.###", CultureInfo.InvariantCulture);
+        float w = MathF.Max(c.Width, 1f), h = MathF.Max(c.Height, 1f);
+        var content = $"{F(c.R)} {F(c.G)} {F(c.B)} rg 0 0 m {F(w / 2)} {F(h)} l {F(w)} 0 l {F(w / 2)} {F(h * 0.35f)} l h f";
+        return $"\n<< /Type /XObject /Subtype /Form /BBox [0 0 {F(w)} {F(h)}] /Resources << >> /Length {content.Length} >>\n"
+               + $"stream\n{content}\nendstream\nendobj\n";
     }
 
     /// <summary>Applies <paramref name="edits"/> (absolute offsets, non-overlapping) to text[start..end).</summary>

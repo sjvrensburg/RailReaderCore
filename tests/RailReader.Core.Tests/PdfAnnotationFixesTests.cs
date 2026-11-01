@@ -45,18 +45,18 @@ public class PdfAnnotationFixesTests
         Assert.Equal(AnnotationSource.InPdf, file.Pages[0][0].Source);
     }
 
-    // #10 — empty-geometry annots write nothing and must NOT be flagged persisted.
+    // #10 — empty-geometry annots write nothing and must NOT be flagged persisted. (Carets were a
+    // case here while PDFium could not create them; they now can, and the remaining way one goes
+    // unwritten — no post-pass — is PdfCaretAnnotationTests.Without_The_Post_Pass_A_Caret_Is_Not_Written_At_All.)
     [Theory]
     [InlineData("highlight")]
     [InlineData("ink")]
-    [InlineData("caret")]
     public void Reconcile_DoesNotMarkPersisted_WhenNothingWasWritten(string kind)
     {
         Annotation ann = kind switch
         {
             "highlight" => new HighlightAnnotation { Rects = [] },               // 0 rects
-            "ink" => new FreehandAnnotation { Points = [new PointF(10, 10)] },   // < 2 points
-            _ => new CaretAnnotation { X = 50, Y = 50, W = 6, H = 8 },           // PDFium can't create
+            _ => new FreehandAnnotation { Points = [new PointF(10, 10)] },       // < 2 points
         };
         var file = OnePage(ann);
 

@@ -81,7 +81,8 @@ public static class AnnotationThreads
 
     /// <summary>
     /// Every annotation that replies to <paramref name="root"/>, directly or through other replies —
-    /// the set deleted along with it. Follows <see cref="Annotation.InReplyTo"/> by id until nothing new
+    /// the set deleted along with it. Annotations grouped with it (<c>/RT /Group</c>) are included: a
+    /// group goes as one. Follows <see cref="Annotation.InReplyTo"/> by id until nothing new
     /// turns up, so cycles and self-replies terminate; <paramref name="root"/> itself is never included.
     /// </summary>
     internal static HashSet<Annotation> Descendants(AnnotationFile file, Annotation root)
@@ -127,7 +128,9 @@ public static class AnnotationThreads
             Parent = new int[Nodes.Count];
             for (int i = 0; i < Nodes.Count; i++)
             {
-                var irt = Nodes[i].Ann.InReplyTo;
+                // A grouped annotation (/RT /Group) is part of its parent, not a reply to it, so it
+                // is not threaded — though it is still deleted with it (see Descendants).
+                var irt = Nodes[i].Ann.ReplyType == AnnotationReplyType.Group ? null : Nodes[i].Ann.InReplyTo;
                 Parent[i] = !string.IsNullOrEmpty(irt) && byId.TryGetValue(irt, out var p) && p != i ? p : -1;
             }
 

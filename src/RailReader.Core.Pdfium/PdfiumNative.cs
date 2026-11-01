@@ -199,6 +199,13 @@ internal static class PdfiumNative
     [DllImport(Lib)] internal static extern int FPDFAnnot_GetSubtype(IntPtr annot);
     [DllImport(Lib)] internal static extern int FPDFAnnot_GetFlags(IntPtr annot);
     [DllImport(Lib)] internal static extern bool FPDFAnnot_GetRect(IntPtr annot, out FsRectF rect);
+    // -1 when the document has no security handler (not encrypted).
+    [DllImport(Lib)] internal static extern int FPDF_GetSecurityHandlerRevision(IntPtr document);
+
+    // The appearance stream's content (UTF-16LE, length in bytes incl. terminator); mode 0 = /N.
+    [DllImport(Lib)] internal static extern uint FPDFAnnot_GetAP(IntPtr annot, int appearanceMode, IntPtr buffer, uint buflen);
+    internal const int FPDF_ANNOT_APPEARANCEMODE_NORMAL = 0;
+
     [DllImport(Lib)] internal static extern bool FPDFAnnot_GetColor(IntPtr annot, int colorType,
         out uint r, out uint g, out uint b, out uint a);
     [DllImport(Lib)] internal static extern bool FPDFAnnot_GetBorder(IntPtr annot,

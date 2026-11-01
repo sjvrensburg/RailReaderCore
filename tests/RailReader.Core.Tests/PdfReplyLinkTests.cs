@@ -298,7 +298,7 @@ public class PdfReplyLinkTests
     public void LinkerRejectsInputItCannotExtend_WithoutClaimingSuccess()
     {
         var plan = new ReplyLinkPlan();
-        plan.Links.Add((plan.MarkerFor("c"), plan.MarkerFor("p")));
+        plan.Links.Add((plan.MarkerFor("c"), plan.MarkerFor("p"), AnnotationReplyType.Reply));
 
         Assert.Null(PdfReplyLinker.Apply(Encoding.Latin1.GetBytes("%PDF-1.4\n1 0 obj\n<< >>\nendobj\n"), plan));
         // Markers present in the plan but absent from the bytes can't be stripped either.

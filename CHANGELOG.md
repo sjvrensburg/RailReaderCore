@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased — Caret creation; `/RT /Group`
+
+- **Carets can be written** (`CaretAnnotation`). PDFium cannot create a `/Caret`, so `WriteReconciled`
+  creates a `/Square` placeholder carrying the caret's `/Rect`, colour and metadata, and the raw-PDF
+  post-pass (`PdfReplyLinker`) retypes it: `/Subtype /Caret`, `/Sy /None`, the square-only keys (`/IC`,
+  `/BS`, PDFium's `/AP`) removed, and an appearance stream of its own — a filled caret shape, no font.
+  The appearance matters: Poppler draws no caret without one (MuPDF synthesises one from `/C`).
+  - **When carets are not created:** in an **encrypted** file (the post-pass could neither add the
+    appearance — Poppler would draw nothing — nor, under RC4/AES-128, promote the caret, which MuPDF would
+    then not see), or when there is no post-pass at all (the no-links retry, `AnnotationExportService`).
+    Either way `WriteReconciled` restores their `Source`/`NativeId`.
+  - **Edits:** a caret is recreated, so its appearance is redrawn, only when its colour or box changed, a
+    post-pass runs, and it carries nothing a recreation would lose (no `/RD`, `/RC` or `/Popup`, and `/Sy`
+    none — the shape RailReader writes). Every other edit is in place and keeps all other keys, as before.
+    So a colour change to another producer's caret (e.g. Acrobat's) does not reach its appearance, since
+    PDFium won't set `/C` over an `/AP`; that is deliberate, because recreating it would drop its rich
+    text, padding, symbol and pop-up.
+  - Verified rendering in MuPDF and Poppler; `qpdf --check` clean.
+  - Known limitation: on a `/Rotate`d page the caret is drawn in unrotated page space, so it points sideways.
+- **Caret colour reads back.** PDFium never reports `/C` for an annotation with an appearance stream, so the
+  reader takes a caret's colour from the stream's first fill (`r g b rg` / `g g`). Before this, carets other
+  producers wrote read back in the default colour.
+- **`Annotation.ReplyType`** (`Reply` | `Group`) is read from and written as `/RT`; it was always written
+  `/R` before. Acrobat's "Replace Text" is a caret with a strikeout `/RT /Group`-linked to it.
+  - The writer treats a change of type alone as a link to rewrite.
+  - `AnnotationThreads.Build` does not thread a grouped annotation (it is part of its parent, not a reply),
+    but `Descendants` still includes it, so it is deleted with its group.
+- `PdfAnnotationFixesTests`: the "caret is never written" case is gone, since that premise no longer holds.
+
 ## 0.80.0 — Named destinations (2026-11-01)
 
 - **`IPdfLinkService.ExtractNamedDestinations`** — the document's named-destination table (catalog `/Dests`

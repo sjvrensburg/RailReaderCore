@@ -112,14 +112,19 @@ public sealed class PdfAnnotationWriter
     /// deleted or recreated) are rewritten; a parent absent from the document drops the link rather
     /// than leave it dangling.</para>
     /// <b>Mutates</b> <paramref name="file"/> by back-filling /NM and Source on newly persisted
-    /// annotations. Caret annotations can be edited in place but never created
-    /// (<see cref="CaretAnnotation"/>). Only pages present in <paramref name="file"/> are
+    /// annotations. Caret annotations are created only when the post-pass runs and the document is not
+    /// encrypted (<see cref="CaretAnnotation"/>). Only pages present in <paramref name="file"/> are
     /// visited.
     /// </summary>
     public byte[] WriteReconciled(byte[] pdfBytes, AnnotationFile file, string? password = null)
     {
+        // A caret is only written when the post-pass runs, so if it backs off, a caret the first
+        // attempt marked persisted is not in the retry's output: put back how it stood.
+        var carets = file.Pages.Values.SelectMany(l => l).OfType<CaretAnnotation>()
+            .Select(c => (Caret: c, c.Source, c.NativeId)).ToList();
         var linked = WriteReconciledCore(pdfBytes, file, password, withLinks: true);
         if (linked is not null) return linked;
+        foreach (var (caret, source, id) in carets) (caret.Source, caret.NativeId) = (source, id);
         // The linker could not finish (and so could not strip its marker keys). PDFium can't remove a
         // key, so redo the save from the original bytes without tagging anything: no links this time,
         // but no junk in the user's PDF either. `file` already carries the minted /NM values, so the
@@ -147,13 +152,18 @@ public sealed class PdfAnnotationWriter
                     int pageCount = FPDF_GetPageCount(doc);
                     var recreated = new HashSet<string>(StringComparer.Ordinal);
                     var written = new HashSet<string>(StringComparer.Ordinal);
+                    // Carets need the post-pass (see CaretAnnotation); without it none are created. Nor in
+                    // an encrypted file: the post-pass can't add an appearance stream there (Poppler then
+                    // draws nothing) and, under RC4/AES-128, can't promote the caret (MuPDF then sees nothing).
+                    bool encrypted = FPDF_GetSecurityHandlerRevision(doc) != -1;
+                    var carets = withLinks && !encrypted ? new Dictionary<string, CaretRetype>(StringComparer.Ordinal) : null;
                     foreach (var pageIndex in file.Pages.Keys.Where(k => k >= 0 && k < pageCount).OrderBy(k => k))
                     {
                         var page = FPDF_LoadPage(doc, pageIndex);
                         if (page == IntPtr.Zero) continue;
                         try
                         {
-                            ReconcilePage(page, file.Pages[pageIndex], recreated, written);
+                            ReconcilePage(page, file.Pages[pageIndex], recreated, written, carets);
                         }
                         finally
                         {
@@ -165,7 +175,7 @@ public sealed class PdfAnnotationWriter
                     // might now be stale; promotion only when something was written. Otherwise skip the
                     // extra passes over every annotated page.
                     var links = withLinks
-                        ? PlanPostPass(doc, pageCount, file, recreated, written, MayNeedLinks(pdfBytes, file))
+                        ? PlanPostPass(doc, pageCount, file, recreated, written, MayNeedLinks(pdfBytes, file), carets)
                         : new ReplyLinkPlan();
                     var saved = SaveDocumentBytes(doc);
                     return links.IsEmpty ? saved : LinkApplier(saved, links);
@@ -184,8 +194,10 @@ public sealed class PdfAnnotationWriter
 
     /// <param name="written">Receives the /NM of every annotation this pass created, recreated or edited,
     /// so <see cref="PlanPostPass"/> can have the ones PDFium left as direct dictionaries promoted.</param>
+    /// <param name="carets">Receives the caret placeholders written, by /NM, for the post-pass to retype;
+    /// null when there will be no post-pass, in which case carets are not created.</param>
     private static void ReconcilePage(IntPtr page, List<Annotation> desired, HashSet<string> recreated,
-        HashSet<string> written)
+        HashSet<string> written, Dictionary<string, CaretRetype>? carets)
     {
         var tx = GetPageTransform(page);
 
@@ -226,7 +238,13 @@ public sealed class PdfAnnotationWriter
                     && AnnotationEquivalence.MetadataEquivalent(current, want))
                     continue; // unchanged → leave the original annotation untouched
 
-                if (want is TextMarkupAnnotation or FreehandAnnotation or RectAnnotation)
+                // A caret whose colour or box changed is recreated, so its appearance stream is redrawn
+                // — but only when that loses nothing: a post-pass will run (it writes the appearance), and
+                // the caret carries nothing a recreation would drop (another producer's /RD, /RC, /Popup,
+                // /Sy /P). Anything else is edited in place, which keeps every other key.
+                if (want is TextMarkupAnnotation or FreehandAnnotation or RectAnnotation
+                    || (want is CaretAnnotation wc && carets is not null && current is CaretAnnotation cc
+                        && CaretAppearanceChanged(cc, wc) && CaretIsPlain(annot)))
                 {
                     // Quad/ink geometry, and Rect fill — which can't be cleared in place since
                     // PDFium can't remove /IC — are handled by delete + recreate (same /NM).
@@ -277,7 +295,7 @@ public sealed class PdfAnnotationWriter
             // Only mark it persisted if an annotation was actually written — empty-geometry
             // annots (0 rects / <2 ink points) and Carets write nothing, and must NOT be
             // flagged InPdf or they'd be lost from both the PDF and the sidecar.
-            if (WriteAnnotationToPage(page, ann, tx))
+            if (WriteAnnotationToPage(page, ann, tx, carets))
             {
                 ann.Source = AnnotationSource.InPdf;
                 written.Add(ann.NativeId);
@@ -291,7 +309,7 @@ public sealed class PdfAnnotationWriter
             // annotation already in the PDF are InPdf anyway; this covers one that arrived with an id
             // but no PDF counterpart (migrated from the sidecar, or given an id by AddReply). A write
             // that produces nothing (empty geometry) must not be flagged, or it would be lost.
-            if (WriteAnnotationToPage(page, ann, tx))
+            if (WriteAnnotationToPage(page, ann, tx, carets))
             {
                 ann.Source = AnnotationSource.InPdf;
                 if (!string.IsNullOrEmpty(ann.NativeId)) written.Add(ann.NativeId!);
@@ -323,7 +341,7 @@ public sealed class PdfAnnotationWriter
     /// An ordinary re-save that writes nothing therefore appends nothing.
     /// </summary>
     private static ReplyLinkPlan PlanPostPass(IntPtr doc, int pageCount, AnnotationFile file,
-        HashSet<string> recreated, HashSet<string> written, bool needLinks)
+        HashSet<string> recreated, HashSet<string> written, bool needLinks, Dictionary<string, CaretRetype>? carets)
     {
         var plan = new ReplyLinkPlan();
         if (!needLinks && written.Count == 0) return plan;
@@ -334,7 +352,7 @@ public sealed class PdfAnnotationWriter
 
         var pages = file.Pages.Keys.Where(k => k >= 0 && k < pageCount).OrderBy(k => k).ToList();
         var present = new HashSet<string>(StringComparer.Ordinal);
-        var needs = new List<(string Child, string? Parent, bool HasLink)>();
+        var needs = new List<(string Child, string? Parent, bool HasLink, AnnotationReplyType Type)>();
 
         ForEachManagedAnnot(doc, pages, (annot, nm) =>
         {
@@ -354,18 +372,23 @@ public sealed class PdfAnnotationWriter
                     finally { FPDFPage_CloseAnnot(linked); }
                 }
             }
-            bool consistent = desired is null ? !has : actual == desired && !recreated.Contains(desired);
-            if (!consistent) needs.Add((nm, desired, has));
+            var type = ann.ReplyType;
+            bool sameType = (type == AnnotationReplyType.Group)
+                == string.Equals(ReadAnnotString(annot, "RT"), "Group", StringComparison.Ordinal);
+            bool consistent = desired is null ? !has : actual == desired && sameType && !recreated.Contains(desired);
+            if (!consistent) needs.Add((nm, desired, has, type));
         });
 
-        foreach (var (child, parent, hasLink) in needs)
+        foreach (var (child, parent, hasLink, type) in needs)
         {
-            // A parent that was never written (empty geometry, uncreatable caret) is an orphan.
+            // A parent that was never written (empty geometry, a caret with no post-pass) is an orphan.
             string? target = parent is not null && present.Contains(parent) ? parent : null;
             // Nothing to clear and nowhere to point: leave the child alone.
             if (target is null && !hasLink) continue;
-            plan.Links.Add((plan.MarkerFor(child), target is null ? -1 : plan.MarkerFor(target)));
+            plan.Links.Add((plan.MarkerFor(child), target is null ? -1 : plan.MarkerFor(target), type));
         }
+        foreach (var (nm, retype) in (carets ?? []).OrderBy(c => c.Key, StringComparer.Ordinal))
+            if (present.Contains(nm)) plan.Retype[plan.MarkerFor(nm)] = retype;
         // Sorted so the promoted objects are numbered the same way on every run.
         foreach (var nm in written.Where(present.Contains).Order(StringComparer.Ordinal))
             plan.Promote.Add(plan.MarkerFor(nm));
@@ -411,6 +434,23 @@ public sealed class PdfAnnotationWriter
         }
     }
 
+    /// <summary>The colour, opacity or box differ — what a caret's appearance stream depends on.</summary>
+    private static bool CaretAppearanceChanged(CaretAnnotation current, CaretAnnotation want)
+    {
+        static bool Near(float a, float b) => MathF.Abs(a - b) <= 0.75f;
+        return !string.Equals(current.Color, want.Color, StringComparison.OrdinalIgnoreCase)
+               || MathF.Abs(current.Opacity - want.Opacity) > 0.01f
+               || !Near(current.X, want.X) || !Near(current.Y, want.Y) || !Near(current.W, want.W) || !Near(current.H, want.H);
+    }
+
+    /// <summary>
+    /// A caret with nothing a delete + recreate would lose: no /RD, /RC or /Popup and no symbol other
+    /// than /None — the shape RailReader writes. Acrobat's carets typically fail this.
+    /// </summary>
+    private static bool CaretIsPlain(IntPtr annot)
+        => !FPDFAnnot_HasKey(annot, "RD") && !FPDFAnnot_HasKey(annot, "RC") && !FPDFAnnot_HasKey(annot, "Popup")
+           && ReadAnnotString(annot, "Sy") is null or "None";
+
     private static bool IsManagedSubtype(int subtype) => subtype is
         FPDF_ANNOT_TEXT or FPDF_ANNOT_FREETEXT or FPDF_ANNOT_SQUARE or
         FPDF_ANNOT_HIGHLIGHT or FPDF_ANNOT_UNDERLINE or FPDF_ANNOT_SQUIGGLY or
@@ -418,7 +458,7 @@ public sealed class PdfAnnotationWriter
 
     /// <summary>
     /// In-place edit for rect-based annotations that PDFium can't (or shouldn't) recreate —
-    /// Text (sticky), Caret (uncreatable), and FreeText — preserving their other keys.
+    /// Text (sticky), Caret (another producer's, or any in a file without the post-pass), and FreeText — preserving their other keys.
     /// Rect/markup/ink changes go through delete+recreate instead.
     /// </summary>
     private static void EditRectBasedInPlace(IntPtr annot, Annotation ann, in PageTransform tx)
@@ -482,7 +522,10 @@ public sealed class PdfAnnotationWriter
     /// </summary>
     /// <summary>Returns true iff a PDF annotation was actually created (false for an
     /// unsupported subtype or empty geometry, so the caller can avoid marking it persisted).</summary>
-    internal static bool WriteAnnotationToPage(IntPtr page, Annotation ann, in PageTransform tx)
+    /// <param name="carets">Where caret placeholders are recorded for the post-pass to retype; null when
+    /// no post-pass will run (export, or the writer's no-links retry), and then carets are skipped.</param>
+    internal static bool WriteAnnotationToPage(IntPtr page, Annotation ann, in PageTransform tx,
+        Dictionary<string, CaretRetype>? carets = null)
     {
         switch (ann)
         {
@@ -494,12 +537,13 @@ public sealed class PdfAnnotationWriter
                 return WriteRect(page, r, tx);
             case TextNoteAnnotation tn:
                 return WriteTextNote(page, tn, tx);
+            case CaretAnnotation c when carets is not null:
+                return WriteCaretPlaceholder(page, c, tx, carets);
             case CaretAnnotation:
                 // PDFium's FPDFPage_CreateAnnot cannot create Caret annotations (not in its
-                // supported-subtype whitelist). Carets are read-only: we surface existing ones
-                // (PdfAnnotationReader) and preserve them on save, but never author new ones.
-                // RailReader has no caret-authoring tool, so this only matters defensively.
-                RailReaderLogging.Logger.Debug("[PdfAnnotationWriter] Skipping Caret: PDFium cannot create caret annotations");
+                // supported-subtype whitelist), and without the post-pass no placeholder can be
+                // turned into one.
+                RailReaderLogging.Logger.Debug("[PdfAnnotationWriter] Skipping Caret: no post-pass to create it");
                 return false;
             case FreeTextAnnotation ft:
                 return WriteFreeText(page, ft, tx);
@@ -596,6 +640,34 @@ public sealed class PdfAnnotationWriter
             var rect = new FsRectF { Left = lx, Bottom = by, Right = rx, Top = ty };
             FPDFAnnot_SetRect(annot, ref rect);
             ApplyCommonMetadata(annot, ra);
+            return true;
+        }
+        finally
+        {
+            FPDFPage_CloseAnnot(annot);
+        }
+    }
+
+    /// <summary>
+    /// Writes a /Square standing in for <paramref name="c"/> — its /Rect, /C and metadata are exactly a
+    /// caret's — and records it for <see cref="PdfReplyLinker"/>, which retypes it to /Caret. The /NM
+    /// must already be set (both callers set it before writing), since it is how the two find each other.
+    /// </summary>
+    private static bool WriteCaretPlaceholder(IntPtr page, CaretAnnotation c, in PageTransform tx,
+        Dictionary<string, CaretRetype> carets)
+    {
+        if (string.IsNullOrEmpty(c.NativeId)) return false;
+        var annot = FPDFPage_CreateAnnot(page, FPDF_ANNOT_SQUARE);
+        if (annot == IntPtr.Zero) return false;
+        try
+        {
+            var color = ResolveColor(c);
+            FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE_COLOR, color.R, color.G, color.B, color.A);
+            var rect = BoxRect(c.X, c.Y, c.W, c.H, tx);
+            FPDFAnnot_SetRect(annot, ref rect);
+            ApplyCommonMetadata(annot, c);
+            carets[c.NativeId!] = new CaretRetype(rect.Right - rect.Left, rect.Top - rect.Bottom,
+                color.R / 255f, color.G / 255f, color.B / 255f);
             return true;
         }
         finally
