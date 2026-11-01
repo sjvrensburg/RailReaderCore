@@ -68,4 +68,9 @@ internal sealed class GatedPdfPigLinkService(IPdfLinkService inner) : IPdfLinkSe
     {
         lock (PdfPigGate.Lock) return inner.ExtractPageLinks(pdfBytes, pageIndex, viewRotation, password);
     }
+
+    public List<NamedDestination> ExtractNamedDestinations(byte[] pdfBytes, string? password = null)
+    {
+        lock (PdfPigGate.Lock) return inner.ExtractNamedDestinations(pdfBytes, password);
+    }
 }

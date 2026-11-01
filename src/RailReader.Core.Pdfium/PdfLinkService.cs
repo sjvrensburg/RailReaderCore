@@ -76,6 +76,60 @@ public sealed class PdfLinkService : IPdfLinkService
         }
     }
 
+    public List<NamedDestination> ExtractNamedDestinations(byte[] pdfBytes, string? password = null)
+    {
+        lock (PdfiumGate.Lock)
+        {
+            PdfiumResolver.EnsureLibraryInitialized();
+            try
+            {
+                IntPtr doc = _docCache.GetOrLoad(pdfBytes, password);
+                if (doc == IntPtr.Zero) return [];
+
+                uint count = FPDF_CountNamedDests(doc);
+                var result = new List<NamedDestination>((int)Math.Min(count, 4096));
+                var transforms = new Dictionary<int, PageTransform>();
+                for (int i = 0; i < count; i++)
+                {
+                    // First call sizes the buffer (bytes, UTF-16LE incl. terminator); the second
+                    // fills it. PDFium sets buflen to -1 if the entry can't be read.
+                    var len = new CLong(0);
+                    IntPtr dest = FPDF_GetNamedDest(doc, i, IntPtr.Zero, ref len);
+                    long size = (long)len.Value;
+                    if (dest == IntPtr.Zero || size <= 2 || size > 1 << 20) continue;
+
+                    IntPtr buf = Marshal.AllocHGlobal((int)size);
+                    string name;
+                    try
+                    {
+                        len = new CLong((nint)size);
+                        dest = FPDF_GetNamedDest(doc, i, buf, ref len);
+                        if (dest == IntPtr.Zero || (long)len.Value <= 2) continue;
+                        name = Marshal.PtrToStringUni(buf, (int)((long)len.Value / 2 - 1));
+                    }
+                    finally
+                    {
+                        Marshal.FreeHGlobal(buf);
+                    }
+
+                    int pageIdx = FPDFDest_GetDestPageIndex(doc, dest);
+                    if (pageIdx < 0) continue;
+                    result.Add(new NamedDestination
+                    {
+                        Name = name,
+                        Destination = MakePageDestination(doc, dest, pageIdx, transforms, 0),
+                    });
+                }
+                return result;
+            }
+            catch (Exception ex)
+            {
+                RailReaderLogging.Logger.Error("[PdfLink] Failed to extract named destinations", ex);
+                return [];
+            }
+        }
+    }
+
     private static PdfLinkDestination? ResolveDestination(IntPtr doc, IntPtr link,
         Dictionary<int, PageTransform> destTransforms, int viewRotation)
     {

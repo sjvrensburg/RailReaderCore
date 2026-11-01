@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.80.0 — Named destinations (unreleased)
+
+- **`IPdfLinkService.ExtractNamedDestinations`** — the document's named-destination table (catalog `/Dests`
+  and the `/Names /Dests` tree) as `NamedDestination { Name, Destination }`, each position resolved into the
+  target page's page-point space like a link destination (`PageX`/`PageY`, top-left origin, `/Rotate`-aware;
+  raw `PdfX`/`PdfY` alongside). Implemented on the PDFium backend (`FPDF_CountNamedDests`/`FPDF_GetNamedDest`);
+  the interface default returns none, so other backends and decorators compile unchanged, and
+  `GatedPdfPigLinkService` forwards it. Use: LibreOffice exports Word bookmarks as named destinations
+  (`ExportBookmarksToPDFDestination`), which gives a converter the exact page position of any point in the
+  source document without disturbing layout — RailMark's DOCX review import anchors comments and tracked
+  changes this way. Additive; no breaking change.
+
 ## 0.79.1 — Annotation metadata edits; indirect `/Annots` entries (2026-10-31)
 
 - **Re-attributing an annotation is now written** (RailMark #54). `WriteReconciled` decided whether a matched
