@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.80.0 — Named destinations (unreleased)
+## 0.80.0 — Named destinations (2026-11-01)
 
 - **`IPdfLinkService.ExtractNamedDestinations`** — the document's named-destination table (catalog `/Dests`
   and the `/Names /Dests` tree) as `NamedDestination { Name, Destination }`, each position resolved into the
