@@ -181,6 +181,7 @@ public sealed class PdfAnnotationWriter
                     var links = plan is not null
                         ? PlanPostPass(plan, doc, pageCount, file, recreated, written, MayNeedLinks(pdfBytes, file), carets)
                         : new ReplyLinkPlan();
+                    ExtraPagesSearched = links.ExtraPagesSearched;
                     var saved = SaveDocumentBytes(doc);
                     return links.IsEmpty ? saved : LinkApplier(saved, links);
                 }
@@ -374,6 +375,9 @@ public sealed class PdfAnnotationWriter
             color.R / 255f, color.G / 255f, color.B / 255f, rotation, Alpha: color.A / 255f);
     }
 
+    /// <summary>How many pages outside the model the last save loaded to find a reply's parent; for tests.</summary>
+    internal int ExtraPagesSearched { get; private set; }
+
     /// <summary>The post-pass that writes the links; a seam so tests can force its back-off path.</summary>
     internal Func<byte[], ReplyLinkPlan, byte[]?> LinkApplier { get; set; } = PdfReplyLinker.Apply;
 
@@ -468,24 +472,30 @@ public sealed class PdfAnnotationWriter
 
         // Parents the model names but does not hold, looked up among every annotation on the pages — then,
         // for any still missing, on the document's other pages (a page with no annotation the model holds
-        // is not in the model at all).
+        // is not in the model at all). That wider search is only for a reply this save recreated, which
+        // has just lost its link: a reply naming a parent that is gone for good would otherwise have
+        // every page of the document loaded on every save, looking for it.
         var unmodelled = new HashSet<string>(StringComparer.Ordinal);
         var markPages = new List<int>(pages);
         var wanted = needs.Where(n => n.Parent is not null && !byNm.ContainsKey(n.Parent)).Select(n => n.Parent!).ToHashSet();
         if (wanted.Count > 0)
             ForEachManagedAnnot(doc, pages, (_, nm) => { if (wanted.Contains(nm)) unmodelled.Add(nm); }, managedOnly: false);
-        if (wanted.Count > unmodelled.Count)
+        var farWanted = needs.Where(n => n.Parent is not null && wanted.Contains(n.Parent) && !unmodelled.Contains(n.Parent)
+                                         && recreated.Contains(n.Child))
+            .Select(n => n.Parent!).ToHashSet();
+        if (farWanted.Count > 0)
         {
             var modelPages = pages.ToHashSet();
             foreach (var other in Enumerable.Range(0, pageCount).Where(p => !modelPages.Contains(p)))
             {
                 bool found = false;
+                plan.ExtraPagesSearched++;
                 ForEachManagedAnnot(doc, [other], (_, nm) =>
                 {
-                    if (wanted.Contains(nm) && unmodelled.Add(nm)) found = true;
+                    if (farWanted.Remove(nm) && unmodelled.Add(nm)) found = true;
                 }, managedOnly: false);
                 if (found) markPages.Add(other);
-                if (wanted.Count == unmodelled.Count) break;
+                if (farWanted.Count == 0) break;
             }
         }
 

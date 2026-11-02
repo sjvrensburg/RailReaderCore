@@ -37,7 +37,9 @@
   - A reply whose parent has **no `/NM`** (so the model can't name it) lost its `/IRT` when an edit
     recreated it. The link is now carried over from the old reply before it is deleted.
   - A reply to an unmodelled parent on a page the model does not hold (one with no annotation the reader
-    models) lost its link the same way; the parent is now looked for on the document's other pages too.
+    models) lost its link the same way; the parent is now looked for on the document's other pages too —
+    only for a reply that save recreated, so a reply naming a parent that is gone for good doesn't
+    cost a pass over every page on every save.
 
 ## 0.81.0 — Carets; `/RT /Group`; replies to unmodelled annotations keep their links (2026-11-01)
 

@@ -59,6 +59,9 @@ internal sealed class ReplyLinkPlan
     public int TryGetMarker(string nm) => _markerByNm.TryGetValue(nm, out var i) ? i : -1;
 
     public int MarkerCount => _markerByNm.Count;
+
+    /// <summary>Pages outside the model that planning loaded to find a reply's parent (diagnostics).</summary>
+    public int ExtraPagesSearched { get; set; }
 }
 
 /// <summary>

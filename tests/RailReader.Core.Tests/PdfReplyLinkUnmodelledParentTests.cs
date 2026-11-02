@@ -203,9 +203,38 @@ public class PdfReplyLinkUnmodelledParentTests
         Assert.Equal("circle-1", ById(model, "hl-1").InReplyTo);
         ById(model, "hl-1").Color = "#00FF00";
 
-        var saved = new PdfAnnotationWriter().WriteReconciled(source, model);
+        var writer = new PdfAnnotationWriter();
+        var saved = writer.WriteReconciled(source, model);
 
+        Assert.Equal(1, writer.ExtraPagesSearched);
         Assert.Equal("circle-1", ById(new PdfAnnotationReader().Read(saved), "hl-1").InReplyTo);
         Assert.DoesNotContain("RRM", Live(saved));
+    }
+
+    [Fact]
+    public void A_Save_Does_Not_Search_Other_Pages_For_A_Parent_That_Is_Gone()
+    {
+        // The reply wasn't recreated, so it hasn't just lost a link; its parent is gone for good. Searching
+        // every page for it on every save would cost a full pass over a large document each time.
+        var pages = Enumerable.Range(0, 20).Select(i => $"{i + 3} 0 R").ToList();
+        var objects = new List<string>
+        {
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            $"<< /Type /Pages /Kids [{string.Join(' ', pages)}] /Count 20 >>",
+        };
+        for (int i = 0; i < 20; i++)
+            objects.Add(i == 0
+                ? "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 24 0 R /Annots [23 0 R] >>"
+                : "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 24 0 R >>");
+        objects.Add("<< /Type /Annot /Subtype /Text /Rect [90 60 114 84] /C [1 1 0] /NM (reply-1) /Contents (orphan) /F 4 >>");
+        objects.Add("<< /Length 0 >>\nstream\n\nendstream");
+        var source = Build([.. objects]);
+        var model = new PdfAnnotationReader().Read(source);
+        ById(model, "reply-1").InReplyTo = "gone";
+
+        var writer = new PdfAnnotationWriter();
+        writer.WriteReconciled(source, model);
+
+        Assert.Equal(0, writer.ExtraPagesSearched);
     }
 }
