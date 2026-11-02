@@ -666,9 +666,9 @@ internal static class PdfReplyLinker
     }
 
     /// <summary>What the linker needs of the encryption dictionary. <see cref="V"/> 0 when it could not be read.</summary>
-    private sealed record Encryption(int V, int R, string? StmF, byte[] O, byte[] U, byte[] OE, byte[] UE);
+    internal sealed record Encryption(int V, int R, string? StmF, string? StmCfm, byte[] O, byte[] U, byte[] OE, byte[] UE);
 
-    private delegate byte[] StreamCipher(byte[] data);
+    internal delegate byte[] StreamCipher(byte[] data);
 
     /// <summary>
     /// Reads the encryption dictionary the trailer points at. Its version decides whether a direct
@@ -676,9 +676,9 @@ internal static class PdfReplyLinker
     /// for an encrypted one only when the whole file shares one key (/V 5, AES-256) — earlier handlers
     /// key each object's strings by its number, which we cannot redo.
     /// </summary>
-    private static Encryption EncryptionOf(string text, string encryptRef)
+    internal static Encryption EncryptionOf(string text, string encryptRef)
     {
-        var none = new Encryption(0, 0, null, [], [], [], []);
+        var none = new Encryption(0, 0, null, null, [], [], [], []);
         var r = Regex.Match(encryptRef, @"(\d+)\s+(\d+)\s+R");
         var header = new Regex($@"(?<![0-9]){r.Groups[1].Value}[ \t\r\n]+{r.Groups[2].Value}[ \t\r\n]+obj\b");
         Match? last = null;
@@ -700,14 +700,21 @@ internal static class PdfReplyLinker
         {
             return none;
         }
-        string? Value(string key)
-        {
-            var e = c.Top.Entries.FirstOrDefault(x => TokenText(text, c.Tokens[x.Name]) == key);
-            return e.ValEnd > e.ValStart ? TokenText(text, c.Tokens[e.ValStart]) : null;
-        }
+        (int Name, int ValStart, int ValEnd) Entry(DictNode d, string key)
+            => d.Entries.FirstOrDefault(x => TokenText(text, c.Tokens[x.Name]) == key);
+        string? ValueIn(DictNode d, string key)
+            => Entry(d, key) is var e && e.ValEnd > e.ValStart ? TokenText(text, c.Tokens[e.ValStart]) : null;
+        DictNode? DictIn(DictNode? d, string key)
+            => d is not null && Entry(d, key) is var e && e.ValEnd > e.ValStart
+                ? c.Dicts.FirstOrDefault(x => x.OpenTok == e.ValStart) : null;
+        string? Value(string key) => ValueIn(c.Top, key);
         int Int(string key) => int.TryParse(Value(key), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : 0;
         byte[] Str(string key) => Value(key) is { } v && v.Length > 0 && v[0] is '(' or '<' ? DecodeString(v) : [];
-        return new Encryption(Int("/V"), Int("/R"), Value("/StmF"), Str("/O"), Str("/U"), Str("/OE"), Str("/UE"));
+        // The stream crypt filter's method: /CF << /StdCF << /CFM /AESV3 … >> >>, keyed by /StmF's name.
+        var stmF = Value("/StmF");
+        var filter = stmF is { Length: > 1 } && stmF[0] == '/' ? DictIn(DictIn(c.Top, "/CF"), stmF) : null;
+        var cfm = filter is null ? null : ValueIn(filter, "/CFM");
+        return new Encryption(Int("/V"), Int("/R"), stmF, cfm, Str("/O"), Str("/U"), Str("/OE"), Str("/UE"));
     }
 
     /// <summary>
@@ -715,10 +722,11 @@ internal static class PdfReplyLinker
     /// AES-256, or a password that recovers no key. A stream crypt filter of /Identity — also the
     /// default when /StmF is absent (ISO 32000-1 Table 20) — means streams are stored in the clear.
     /// </summary>
-    private static StreamCipher? CipherFor(Encryption e, string? password)
+    internal static StreamCipher? CipherFor(Encryption e, string? password)
     {
         if (e.V < 5) return null;
-        if (e.StmF is null or "/Identity") return data => data;
+        // So does a crypt filter whose method is /None.
+        if (e.StmF is null or "/Identity" || e.StmCfm == "/None") return data => data;
         if (PdfAes256Security.FileKey(e.R, e.O, e.U, e.OE, e.UE, password) is not { } key) return null;
         return data => PdfAes256Security.EncryptStream(key, data);
     }
@@ -737,6 +745,13 @@ internal static class PdfReplyLinker
         for (int i = 1; i < token.Length - 1; i++)
         {
             char ch = token[i];
+            // An unescaped end-of-line (CR, LF or CRLF) in a literal string is one LF (ISO 32000 7.3.4.2).
+            if (ch == '\r')
+            {
+                if (i + 1 < token.Length - 1 && token[i + 1] == '\n') i++;
+                bytes.Add(10);
+                continue;
+            }
             if (ch != '\\') { bytes.Add((byte)ch); continue; }
             if (++i >= token.Length - 1) break;
             ch = token[i];

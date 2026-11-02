@@ -332,8 +332,42 @@ public class PdfCaretAnnotationTests
     [Theory]
     [InlineData("(a\\(b\\)\\\\\\101\\n)", new byte[] { (byte)'a', (byte)'(', (byte)'b', (byte)')', (byte)'\\', 0x41, 10 })]
     [InlineData("<41 42 4>", new byte[] { 0x41, 0x42, 0x40 })]
+    [InlineData("(a\rb\r\nc\nd)", new byte[] { (byte)'a', 10, (byte)'b', 10, (byte)'c', 10, (byte)'d' })]   // raw EOLs are one LF
     public void Pdf_Strings_Decode(string token, byte[] expected)
         => Assert.Equal(expected, PdfReplyLinker.DecodeString(token));
+
+    [Fact]
+    public void The_File_Key_Is_Recovered_From_A_Password_That_Normalisation_Would_Change()
+    {
+        // PDFium checks the raw UTF-8 of the password; hashing only its NFKC form ("secret") would
+        // recover no key, and the save would lose its carets.
+        var source = File.ReadAllBytes(TestFixtures.GetFullWidthPasswordPdfPath());
+
+        var bytes = new PdfAnnotationWriter().WriteReconciled(source, AnnotationTestHelpers.OnePage(Caret()), TestFixtures.FullWidthPassword);
+
+        var back = Assert.IsType<CaretAnnotation>(Assert.Single(new PdfAnnotationReader().Read(bytes, TestFixtures.FullWidthPassword).Pages[0]));
+        Assert.Equal("#0066FF", back.Color, ignoreCase: true);
+    }
+
+    [Theory]
+    [InlineData("/StmF /StdCF /CF << /StdCF << /CFM /None /Length 32 >> >>", true)]    // crypt filter of method /None
+    [InlineData("/StmF /Identity", true)]
+    [InlineData("", true)]                                                              // no /StmF: Identity by default
+    [InlineData("/StmF /StdCF /CF << /StdCF << /CFM /AESV3 /Length 32 >> >>", false)]
+    public void Streams_Are_Written_In_The_Clear_Only_Where_The_Stream_Filter_Says_So(string filter, bool clear)
+    {
+        var o = new string('0', 96);
+        var text = $"%PDF-1.7\n11 0 obj\n<< /Filter /Standard /V 5 /R 6 {filter} /O <{o}> /U <{o}> /OE <{o[..64]}> /UE <{o[..64]}> /P -4 >>\nendobj\n";
+
+        var e = PdfReplyLinker.EncryptionOf(text, "11 0 R");
+        var cipher = PdfReplyLinker.CipherFor(e, "secret");
+
+        Assert.Equal(5, e.V);
+        if (clear)
+            Assert.Equal([1, 2, 3], cipher!([1, 2, 3]));
+        else
+            Assert.Null(cipher);   // AESV3 with a password that matches nothing: no key, so no cipher
+    }
 
     [Fact]
     public void No_Caret_Is_Created_In_An_Aes128_File()

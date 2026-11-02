@@ -268,10 +268,8 @@ public sealed class PdfAnnotationWriter
                     inPlace.Add((i, want)); // rect-based → modify in place, preserving other keys
                     // PDFium won't set /C over an /AP, so another producer's caret is recoloured by the
                     // post-pass, which replaces its colour and appearance and keeps everything else.
-                    if (want is CaretAnnotation && carets is not null && current is CaretAnnotation cur
-                        && (!string.Equals(cur.Color, want.Color, StringComparison.OrdinalIgnoreCase)
-                            || MathF.Abs(cur.Opacity - want.Opacity) > 0.01f)
-                        && ReadAnnotString(annot, "Sy") is not "P")
+                    if (want is CaretAnnotation wantCaret && carets is not null && current is CaretAnnotation cur
+                        && CaretColorChanged(cur, wantCaret) && ReadAnnotString(annot, "Sy") is not "P")
                         recolor.Add(nm!);
                 }
             }
@@ -562,10 +560,14 @@ public sealed class PdfAnnotationWriter
     private static bool CaretAppearanceChanged(CaretAnnotation current, CaretAnnotation want)
     {
         static bool Near(float a, float b) => MathF.Abs(a - b) <= 0.75f;
-        return !string.Equals(current.Color, want.Color, StringComparison.OrdinalIgnoreCase)
-               || MathF.Abs(current.Opacity - want.Opacity) > 0.01f
+        return CaretColorChanged(current, want)
                || !Near(current.X, want.X) || !Near(current.Y, want.Y) || !Near(current.W, want.W) || !Near(current.H, want.H);
     }
+
+    /// <summary>The colour or opacity differ — what a recolour redraws.</summary>
+    private static bool CaretColorChanged(CaretAnnotation current, CaretAnnotation want)
+        => !string.Equals(current.Color, want.Color, StringComparison.OrdinalIgnoreCase)
+           || MathF.Abs(current.Opacity - want.Opacity) > 0.01f;
 
     /// <summary>
     /// A caret with nothing a delete + recreate would lose: no /RD, /RC or /Popup and no symbol other

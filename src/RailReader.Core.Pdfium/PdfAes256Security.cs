@@ -20,14 +20,18 @@ internal static class PdfAes256Security
     public static byte[]? FileKey(int revision, byte[] o, byte[] u, byte[] oe, byte[] ue, string? password)
     {
         if (revision is not (5 or 6) || o.Length < 48 || u.Length < 48 || oe.Length < 32 || ue.Length < 32) return null;
-        var pw = PasswordBytes(password);
         var u48 = u.AsSpan(0, 48).ToArray();
 
-        // Owner first, as readers do: an owner password also opens the file but yields the key via /OE.
-        if (Hash(revision, pw, o.AsSpan(32, 8), u48).AsSpan().SequenceEqual(o.AsSpan(0, 32)))
-            return Unwrap(Hash(revision, pw, o.AsSpan(40, 8), u48), oe);
-        if (Hash(revision, pw, u.AsSpan(32, 8), []).AsSpan().SequenceEqual(u.AsSpan(0, 32)))
-            return Unwrap(Hash(revision, pw, u.AsSpan(40, 8), []), ue);
+        // The raw UTF-8 first — what PDFium checks, so what opened the file — then its NFKC form, the
+        // SASLprep a conforming writer may have applied.
+        foreach (var pw in PasswordCandidates(password))
+        {
+            // Owner first, as readers do: an owner password also opens the file but yields the key via /OE.
+            if (Hash(revision, pw, o.AsSpan(32, 8), u48).AsSpan().SequenceEqual(o.AsSpan(0, 32)))
+                return Unwrap(Hash(revision, pw, o.AsSpan(40, 8), u48), oe);
+            if (Hash(revision, pw, u.AsSpan(32, 8), []).AsSpan().SequenceEqual(u.AsSpan(0, 32)))
+                return Unwrap(Hash(revision, pw, u.AsSpan(40, 8), []), ue);
+        }
         return null;
     }
 
@@ -51,10 +55,14 @@ internal static class PdfAes256Security
 
     // SASLprep is approximated by NFKC, which covers every password a person types in practice;
     // the spec caps the UTF-8 form at 127 bytes.
-    private static byte[] PasswordBytes(string? password)
+    private static IEnumerable<byte[]> PasswordCandidates(string? password)
     {
-        var bytes = Encoding.UTF8.GetBytes((password ?? "").Normalize(NormalizationForm.FormKC));
-        return bytes.Length > 127 ? bytes[..127] : bytes;
+        var raw = password ?? "";
+        yield return Truncate(Encoding.UTF8.GetBytes(raw));
+        var prepped = raw.Normalize(NormalizationForm.FormKC);
+        if (prepped != raw) yield return Truncate(Encoding.UTF8.GetBytes(prepped));
+
+        static byte[] Truncate(byte[] bytes) => bytes.Length > 127 ? bytes[..127] : bytes;
     }
 
     private static byte[] Unwrap(byte[] key, byte[] wrapped)
