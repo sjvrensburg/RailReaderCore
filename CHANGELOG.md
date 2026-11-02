@@ -7,8 +7,9 @@
   direct dictionaries in `/Annots` until they were next edited — and PyMuPDF (`page.annots()`) skips
   those. A reviewed document opened and saved with one edit could show the reader 3 of its 141
   annotations. Now the same post-pass promotes every direct `/Annots` entry in the document, on every
-  page, inline arrays and indirect array objects alike. As before: only on a save that writes something
-  (an unchanged re-save still appends nothing), and not under RC4/AES-128, whose per-object keys a moved
+  page, inline arrays and indirect array objects alike, on any save that changes an annotation —
+  deleting one included. An unchanged re-save still appends nothing, nor does a change to a file with
+  nothing left to promote; RC4/AES-128 files keep their direct entries, whose per-object keys a moved
   dictionary would break.
 
 ## 0.82.1 — A recolour no longer costs a save its reply links (2026-11-02)

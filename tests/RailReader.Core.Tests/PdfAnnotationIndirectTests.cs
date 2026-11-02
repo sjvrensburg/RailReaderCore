@@ -218,6 +218,38 @@ public class PdfAnnotationIndirectTests
     }
 
     [Fact]
+    public void LegacyDirectAnnotations_ArePromoted_WhenTheSaveOnlyDeletes()
+    {
+        // A deletion writes nothing the post-pass would otherwise tag, but it is still a change.
+        var legacy = LegacyTwoPages();
+        var file = new PdfAnnotationReader().Read(legacy);
+        file.Pages[0].Clear();
+
+        var saved = new PdfAnnotationWriter().WriteReconciled(legacy, file);
+
+        AssertAllIndirect(saved, 2);
+        Assert.Empty(ReadBack(saved, 0));
+        Assert.Equal(["n-2", "n-3"], ReadBack(saved, 1).Select(a => a.NativeId).Order().ToList());
+    }
+
+    [Fact]
+    public void DeletionOnlySave_OfAnAllIndirectFile_AppendsNothing()
+    {
+        // Nothing direct to sweep: PDFium's rewrite alone, not an empty incremental update after it.
+        var writer = new PdfAnnotationWriter();
+        var file = AnnotationTestHelpers.OnePage(
+            new HighlightAnnotation { Rects = [new HighlightRect(72, 100, 80, 16)] },
+            new TextNoteAnnotation { X = 200, Y = 100, Text = "n" });
+        var first = writer.WriteReconciled(Plain(), file);
+        file.Pages[0].RemoveAt(1);
+
+        var second = writer.WriteReconciled(first, file);
+
+        Assert.Single(Regex.Matches(Encoding.Latin1.GetString(second), "startxref"));
+        AssertAllIndirect(second, 1);
+    }
+
+    [Fact]
     public void LegacyDirectAnnotations_UnchangedResave_AppendsNothing()
     {
         // Nothing written means no post-pass at all: the file is left as it was, direct entries included.
@@ -360,8 +392,13 @@ public class PdfAnnotationIndirectTests
 /// </summary>
 public sealed class PyMuPdfFactAttribute : FactAttribute
 {
-    private static readonly Lazy<bool> Available =
-        new(() => PdfAnnotationIndirectTests.PyMuPdfAnnotCounts(AnnotationTestHelpers.PlainPdfBytes()) is not null);
+    // Any failure of the probe (a python3 that is a stub, as on Windows without Store Python, or a broken
+    // PyMuPDF) means unavailable: thrown here it would error every test carrying the attribute.
+    private static readonly Lazy<bool> Available = new(() =>
+    {
+        try { return PdfAnnotationIndirectTests.PyMuPdfAnnotCounts(AnnotationTestHelpers.PlainPdfBytes()) is not null; }
+        catch (Exception) { return false; }
+    });
 
     public PyMuPdfFactAttribute()
     {
