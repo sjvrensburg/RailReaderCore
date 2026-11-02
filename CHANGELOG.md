@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — Caret and reply-link follow-ups
+## 0.82.0 — Carets on rotated pages and in AES-256 files; recolouring other producers' carets; groups act as one (2026-11-02)
 
 - **Carets point up on rotated pages.** A caret's appearance was drawn in unrotated page space, so on a
   page with `/Rotate` 90/180/270 it pointed sideways or down. The post-pass now draws the "^" turned
