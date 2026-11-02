@@ -11,8 +11,15 @@ namespace RailReader.Core.Services;
 /// <param name="Page">Page the root sits on. Replies are normally on the same page but need not be.</param>
 /// <param name="Root">The annotation that opens the thread (it may have no replies).</param>
 /// <param name="Replies">Descendants of <paramref name="Root"/> ordered by <see cref="Annotation.CreatedUtc"/>
-/// (undated first), ties broken by document order (page, then position on the page).</param>
-public sealed record AnnotationThread(int Page, Annotation Root, IReadOnlyList<Annotation> Replies);
+/// (undated first), ties broken by document order (page, then position on the page). A reply to one of
+/// the root's <see cref="Grouped"/> annotations is a reply to the root.</param>
+public sealed record AnnotationThread(int Page, Annotation Root, IReadOnlyList<Annotation> Replies)
+{
+    /// <summary>Annotations grouped with <see cref="Root"/> (<c>/RT /Group</c>, e.g. the strikeout of
+    /// Acrobat's Replace Text, grouped to its caret), in document order. They are part of the root,
+    /// not replies to it, and are never roots of threads of their own.</summary>
+    public IReadOnlyList<Annotation> Grouped { get; init; } = [];
+}
 
 /// <summary>
 /// Pure reply-thread logic over an <see cref="AnnotationFile"/>: grouping, root lookup and the
@@ -30,6 +37,9 @@ public static class AnnotationThreads
     /// <para>A root is an annotation with no usable parent: <c>InReplyTo</c> empty, naming itself,
     /// naming no annotation in the file, or part of a cycle (the cycle is broken at its earliest
     /// member in document order, which becomes the root).</para>
+    /// <para>A group (<c>/RT /Group</c>) acts as one annotation, its <i>leader</i> — the annotation the
+    /// group links to. Members are listed in the leader's <see cref="AnnotationThread.Grouped"/>, not as
+    /// threads, and a reply to a member joins the leader's thread.</para>
     /// </summary>
     public static List<AnnotationThread> Build(AnnotationFile file, int? page = null)
     {
@@ -37,7 +47,7 @@ public static class AnnotationThreads
         var result = new List<AnnotationThread>();
         for (int i = 0; i < g.Nodes.Count; i++)
         {
-            if (g.Parent[i] >= 0) continue;
+            if (g.Parent[i] >= 0 || g.IsMember(i)) continue;
             var (nodePage, ann) = g.Nodes[i];
             if (page is { } p && nodePage != p) continue;
 
@@ -55,18 +65,23 @@ public static class AnnotationThreads
                     .CompareTo(g.Nodes[b].Ann.CreatedUtc ?? DateTimeOffset.MinValue);
                 return byDate != 0 ? byDate : a.CompareTo(b);
             });
-            result.Add(new AnnotationThread(nodePage, ann, descendants.Select(d => g.Nodes[d].Ann).ToList()));
+            var grouped = new List<Annotation>();
+            for (int m = 0; m < g.Nodes.Count; m++)
+                if (g.Leader[m] == i) grouped.Add(g.Nodes[m].Ann);
+            result.Add(new AnnotationThread(nodePage, ann, descendants.Select(d => g.Nodes[d].Ann).ToList()) { Grouped = grouped });
         }
         return result;
     }
 
     /// <summary>The root of the thread <paramref name="annotation"/> belongs to — itself when it is
-    /// a root or is not in <paramref name="file"/>.</summary>
+    /// a root or is not in <paramref name="file"/>. A grouped annotation (<c>/RT /Group</c>) belongs to
+    /// its group leader's thread.</summary>
     public static Annotation RootOf(AnnotationFile file, Annotation annotation)
     {
         var g = new Graph(file);
         int i = g.IndexOf(annotation);
         if (i < 0) return annotation;
+        if (g.IsMember(i)) i = g.Leader[i];
         while (g.Parent[i] >= 0) i = g.Parent[i];
         return g.Nodes[i].Ann;
     }
@@ -80,24 +95,29 @@ public static class AnnotationThreads
     }
 
     /// <summary>
-    /// Every annotation that replies to <paramref name="root"/>, directly or through other replies —
-    /// the set deleted along with it. Annotations grouped with it (<c>/RT /Group</c>) are included: a
-    /// group goes as one. Follows <see cref="Annotation.InReplyTo"/> by id until nothing new
-    /// turns up, so cycles and self-replies terminate; <paramref name="root"/> itself is never included.
+    /// Everything deleted along with <paramref name="root"/>: every annotation that replies to it,
+    /// directly or through other replies, and its whole group (<c>/RT /Group</c>) — a group goes as
+    /// one, as in Acrobat, so deleting the strikeout of a Replace Text deletes its caret too (and the
+    /// caret's replies). Follows <see cref="Annotation.InReplyTo"/> by id until nothing new turns up, so
+    /// cycles and self-replies terminate; <paramref name="root"/> itself is never included.
     /// </summary>
     internal static HashSet<Annotation> Descendants(AnnotationFile file, Annotation root)
     {
         var found = new HashSet<Annotation>(ReferenceEqualityComparer.Instance);
-        if (string.IsNullOrEmpty(root.NativeId)) return found;
+        var g = new Graph(file);
+        int at = g.IndexOf(root);
+        var start = at >= 0 && g.IsMember(at) ? g.Nodes[g.Leader[at]].Ann : root;
+        if (!ReferenceEquals(start, root)) found.Add(start);
+        if (string.IsNullOrEmpty(start.NativeId)) return found;
 
-        var ids = new HashSet<string>(StringComparer.Ordinal) { root.NativeId };
+        var ids = new HashSet<string>(StringComparer.Ordinal) { start.NativeId };
         var all = file.Pages.Values.SelectMany(l => l).ToList();
         for (bool grew = true; grew;)
         {
             grew = false;
             foreach (var ann in all)
             {
-                if (ReferenceEquals(ann, root) || found.Contains(ann)) continue;
+                if (ReferenceEquals(ann, root) || ReferenceEquals(ann, start) || found.Contains(ann)) continue;
                 if (string.IsNullOrEmpty(ann.InReplyTo) || !ids.Contains(ann.InReplyTo)) continue;
                 found.Add(ann);
                 grew = true;
@@ -111,6 +131,9 @@ public static class AnnotationThreads
     {
         public readonly List<(int Page, Annotation Ann)> Nodes = [];
         public readonly int[] Parent;
+        /// <summary>For a grouped annotation, the node its group acts as (the first annotation up its
+        /// chain of <c>/RT /Group</c> links that is not itself grouped); -1 for any other node.</summary>
+        public readonly int[] Leader;
         public readonly List<int>[] Children;
         private readonly Dictionary<Annotation, int> _index = new(ReferenceEqualityComparer.Instance);
 
@@ -125,13 +148,32 @@ public static class AnnotationThreads
             for (int i = 0; i < Nodes.Count; i++)
                 if (!string.IsNullOrEmpty(Nodes[i].Ann.NativeId)) byId.TryAdd(Nodes[i].Ann.NativeId!, i);
 
+            int Linked(int i) => Nodes[i].Ann.InReplyTo is { Length: > 0 } irt && byId.TryGetValue(irt, out var p) && p != i ? p : -1;
+
+            // A grouped annotation (/RT /Group) is part of its leader, not a reply to it. A dangling
+            // group link, or a ring of group links with no leader, leaves the annotation ungrouped.
+            Leader = new int[Nodes.Count];
+            for (int i = 0; i < Nodes.Count; i++)
+            {
+                Leader[i] = -1;
+                int n = i;
+                for (int steps = 0; steps <= Nodes.Count && Nodes[n].Ann.ReplyType == AnnotationReplyType.Group; steps++)
+                {
+                    int next = Linked(n);
+                    if (next < 0) { n = -1; break; }
+                    n = next;
+                }
+                if (n >= 0 && n != i && Nodes[n].Ann.ReplyType != AnnotationReplyType.Group) Leader[i] = n;
+            }
+
+            // A group link is never a reply link, so members (and grouped annotations that found no
+            // leader) are not threaded; a reply to a member replies to its leader.
             Parent = new int[Nodes.Count];
             for (int i = 0; i < Nodes.Count; i++)
             {
-                // A grouped annotation (/RT /Group) is part of its parent, not a reply to it, so it
-                // is not threaded — though it is still deleted with it (see Descendants).
-                var irt = Nodes[i].Ann.ReplyType == AnnotationReplyType.Group ? null : Nodes[i].Ann.InReplyTo;
-                Parent[i] = !string.IsNullOrEmpty(irt) && byId.TryGetValue(irt, out var p) && p != i ? p : -1;
+                int p = Nodes[i].Ann.ReplyType == AnnotationReplyType.Group ? -1 : Linked(i);
+                if (p >= 0 && IsMember(p)) p = Leader[p];
+                Parent[i] = p != i ? p : -1;
             }
 
             BreakCycles();
@@ -143,6 +185,8 @@ public static class AnnotationThreads
         }
 
         public int IndexOf(Annotation a) => _index.TryGetValue(a, out var i) ? i : -1;
+
+        public bool IsMember(int i) => Leader[i] >= 0;
 
         // Every node has at most one parent, so a cycle is a closed loop of parent links. Cut each at
         // its earliest member in document order — that member becomes a root and the rest hang off it.
