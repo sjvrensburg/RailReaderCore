@@ -43,8 +43,13 @@ internal sealed class ReplyLinkPlan
     /// whether or not it takes part in a link (ISO 32000 requires <c>/Annots</c> to hold references).</summary>
     public List<int> Promote { get; } = [];
 
+    /// <summary>The save changed the document's annotations (wrote or deleted one), so the linker sweeps
+    /// it for direct <c>/Annots</c> entries left by an older version or another producer (#186), even
+    /// when nothing else needs doing. False on a save that changes nothing, which must append nothing.</summary>
+    public bool Sweep { get; set; }
+
     // A marker handed out has been set on an annotation, and only the linker strips it.
-    public bool IsEmpty => Links.Count == 0 && Promote.Count == 0 && Retype.Count == 0 && MarkerCount == 0;
+    public bool IsEmpty => !Sweep && Links.Count == 0 && Promote.Count == 0 && Retype.Count == 0 && MarkerCount == 0;
 
     public string KeyFor(int marker) => $"RRM{_salt}x{marker}";
 
@@ -97,9 +102,11 @@ internal readonly record struct CaretRetype(float Width, float Height, float R, 
 /// (<see cref="PdfAes256Security"/>).</para>
 ///
 /// <para><b>Promotion</b> is not only for parents. ISO 32000-1 (Table 30) says <c>/Annots</c> "shall
-/// contain indirect references", and MuPDF (so PyMuPDF) does not see a direct dictionary at all, so every
-/// annotation in <see cref="ReplyLinkPlan.Promote"/> that is direct is promoted too. Under RC4/AES-128
-/// it stays direct, as above.</para>
+/// contain indirect references", and PyMuPDF's <c>page.annots()</c> does not see a direct dictionary at all, so every
+/// annotation in <see cref="ReplyLinkPlan.Promote"/> that is direct is promoted too — and so is every
+/// other direct dictionary in a page's <c>/Annots</c> (#186): those an older version or another producer
+/// left there carry no marker, so they are found by scanning the page dictionaries instead. Under
+/// RC4/AES-128 they all stay direct, as above.</para>
 ///
 /// <para>The input is PDFium's own full rewrite (classic table, no object streams, not linearised).
 /// Anything outside that — an unrecognised trailer, an annotation inside a stream — makes the linker back off: it returns
@@ -140,7 +147,8 @@ internal static class PdfReplyLinker
         public DictNode? Top { get; set; }
     }
 
-    /// <summary>An annotation dictionary carrying a marker, and what to do to it.</summary>
+    /// <summary>An annotation dictionary the pass rewrites — one carrying a marker, or a direct one found
+    /// in a page's <c>/Annots</c> (#186) — and what to do to it.</summary>
     private sealed class Owner(Container container, DictNode dict)
     {
         public Container Container { get; } = container;
@@ -223,11 +231,19 @@ internal static class PdfReplyLinker
             }
         }
 
-        //    Then give every annotation that was written its own object (ISO 32000 Table 30).
+        //    Then give every annotation that was written its own object (ISO 32000 Table 30) — and every
+        //    other direct one still in the file: an older version, or another producer, left them there
+        //    (#186). Only the ones this save wrote carry markers, so the rest are found by their /Annots.
         if (canPromote)
+        {
             foreach (var m in plan.Promote)
                 if (ownerOfMarker.TryGetValue(m, out var o) && !o.IsIndirect && o.PromotedAs < 0)
                     o.PromotedAs = nextNumber++;
+            if (XRefEntries(text, trailer.Prev) is { } xref)
+                foreach (var o in DirectAnnotations(text, xref, containers, owners))
+                    if (o.PromotedAs < 0)
+                        o.PromotedAs = nextNumber++;
+        }
 
         //    Carets. The retype itself is an edit of the dictionary wherever it lives; the appearance
         //    is a new stream object. In an encrypted file that stream must be encrypted, which needs
@@ -285,6 +301,10 @@ internal static class PdfReplyLinker
             }
             rewritten[c.Number] = (c.Generation, ApplyEdits(text, c.BodyStart, c.BodyEnd, outer));
         }
+
+        // A sweep-only pass that found nothing direct has nothing to write (with a marker, its object is
+        // always rewritten): hand back PDFium's bytes rather than an empty update.
+        if (rewritten.Count == 0 && added.Count == 0) return pdf;
 
         // 4. Append everything as an incremental update.
         using var ms = new MemoryStream(pdf.Length + 4096);
@@ -446,19 +466,126 @@ internal static class PdfReplyLinker
             at = at == 0 ? -1 : text.LastIndexOf("/" + key, at - 1, StringComparison.Ordinal);
         }
         while (at >= 0 && at + key.Length + 1 < text.Length && char.IsAsciiLetterOrDigit(text[at + key.Length + 1]));
-        if (at < 0) return null;
+        return at < 0 ? null : Enclosing(text, at);
+    }
 
+    /// <summary>The object whose body contains offset <paramref name="at"/>.</summary>
+    private static Located? Enclosing(string text, int at)
+    {
         int from = Math.Max(0, text.LastIndexOf("endobj", at, StringComparison.Ordinal));
         Match? header = null;
         for (var m = ObjectHeader.Match(text, from, at - from); m.Success; m = m.NextMatch()) header = m;
         if (header is null) return null;
 
         int end = text.IndexOf("endobj", at, StringComparison.Ordinal);
-        if (end < 0) return null;
-        return new Located(
-            int.Parse(header.Groups[1].Value, CultureInfo.InvariantCulture),
-            int.Parse(header.Groups[2].Value, CultureInfo.InvariantCulture),
-            header.Index + header.Length, end);
+        // A digit run too long for an object number is not a header (and must not throw: the
+        // promotion sweep runs this on every "/Annots" in the file).
+        if (end < 0
+            || !TryInt(header.Groups[1].ValueSpan, out var number)
+            || !TryInt(header.Groups[2].ValueSpan, out var generation))
+            return null;
+        return new Located(number, generation, header.Index + header.Length, end);
+    }
+
+    private static bool TryInt(ReadOnlySpan<char> s, out int v)
+        => int.TryParse(s, NumberStyles.None, CultureInfo.InvariantCulture, out v);
+
+    /// <summary>
+    /// Each in-use object's generation and offset, read from the classic cross-reference table at
+    /// <paramref name="xref"/> — the file's own map, so text that only looks like an object (a PDF
+    /// embedded uncompressed in a stream, say) is never taken for one. Null when the table can't be read.
+    /// </summary>
+    private static Dictionary<int, (int Generation, int Offset)>? XRefEntries(string text, long xref)
+    {
+        if (xref < 0 || xref + 4 > text.Length) return null;
+        int t = text.IndexOf("trailer", (int)xref, StringComparison.Ordinal);
+        if (t < 0) return null;
+        var tokens = text[((int)xref + 4)..t].Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+
+        var entries = new Dictionary<int, (int, int)>();
+        for (int i = 0; i < tokens.Length;)
+        {
+            if (i + 1 >= tokens.Length || !TryInt(tokens[i], out var first) || !TryInt(tokens[i + 1], out var count)) return null;
+            i += 2;
+            for (int k = 0; k < count; k++, i += 3)
+            {
+                if (i + 2 >= tokens.Length) return null;
+                if (tokens[i + 2] == "n" && TryInt(tokens[i], out var off) && TryInt(tokens[i + 1], out var gen) && off < text.Length)
+                    entries[first + k] = (gen, off);
+            }
+        }
+        return entries;
+    }
+
+    /// <summary>Where object <paramref name="n"/> <paramref name="g"/>'s body starts, when the
+    /// cross-reference table points at a real header for it; otherwise -1. Checked only for the
+    /// objects asked about, not every object in the file.</summary>
+    private static int BodyStartOf(string text, Dictionary<int, (int Generation, int Offset)> xref, int n, int g)
+    {
+        if (!xref.TryGetValue(n, out var e) || e.Generation != g) return -1;
+        var m = ObjectHeader.Match(text, e.Offset, Math.Min(64, text.Length - e.Offset));
+        return m.Success && m.Index == e.Offset && TryInt(m.Groups[1].ValueSpan, out var number) && number == n
+            ? m.Index + m.Length : -1;
+    }
+
+    /// <summary>
+    /// Every annotation still held as a direct dictionary in a page's <c>/Annots</c> — an inline array,
+    /// or an indirect array object —, as an <see cref="Owner"/> (an existing one when a marker already
+    /// led to it). Best-effort: a page or array this parser can't read is skipped, never fatal, since
+    /// leaving an annotation direct only keeps the file as it was.
+    /// </summary>
+    private static List<Owner> DirectAnnotations(string text, Dictionary<int, (int Generation, int Offset)> xref,
+        Dictionary<int, Container?> containers, Dictionary<(int Container, int Open), Owner> owners)
+    {
+        var found = new List<Owner>();
+        Container? Get(Located l)
+        {
+            if (!containers.TryGetValue(l.Number, out var c)) containers[l.Number] = c = Parse(text, l);
+            return c is not null && c.Generation == l.Generation ? c : null;
+        }
+        void Take(Container c, DictNode d)
+        {
+            if (!LooksLikeAnnotation(text, c, d)) return;
+            if (!owners.TryGetValue((c.Number, d.OpenTok), out var o))
+                owners[(c.Number, d.OpenTok)] = o = new Owner(c, d);
+            found.Add(o);
+        }
+
+        var pages = new HashSet<int>();
+        for (int at = text.IndexOf("/Annots", StringComparison.Ordinal); at >= 0;
+             at = text.IndexOf("/Annots", at + 7, StringComparison.Ordinal))
+        {
+            if (at + 7 < text.Length && !IsWhite(text[at + 7]) && !IsDelim(text[at + 7])) continue; // "/AnnotsX"
+            // Only an object the cross-reference table points at: an "/Annots" inside a stream is not a page's.
+            if (Enclosing(text, at) is not { } l || BodyStartOf(text, xref, l.Number, l.Generation) != l.BodyStart
+                || !pages.Add(l.Number) || Get(l) is not { Top: { } page } c || TypeOf(text, c, page) != "/Page") continue;
+            var entry = page.Entries.FirstOrDefault(e => TokenText(text, c.Tokens[e.Name]) == "/Annots");
+            if (entry.ValEnd <= entry.ValStart) continue;
+
+            if (c.Tokens[entry.ValStart].Kind == K.ArrOpen)
+            {
+                foreach (var d in c.Dicts.Where(d => d.Parent == page && d.OpenTok > entry.ValStart && d.OpenTok < entry.ValEnd))
+                    Take(c, d);
+            }
+            else if (entry.ValEnd - entry.ValStart == 3
+                     && TryInt(TokenText(text, c.Tokens[entry.ValStart]), out var n)
+                     && TryInt(TokenText(text, c.Tokens[entry.ValStart + 1]), out var g)
+                     && BodyStartOf(text, xref, n, g) is var bodyStart and >= 0
+                     && text.IndexOf("endobj", bodyStart, StringComparison.Ordinal) is var end and >= 0
+                     && Get(new Located(n, g, bodyStart, end)) is { Top: null } array) // an array object: its dictionaries are its elements
+            {
+                foreach (var d in array.Dicts.Where(d => d.Parent is null))
+                    Take(array, d);
+            }
+        }
+        return found;
+    }
+
+    /// <summary>The value of <paramref name="d"/>'s <c>/Type</c>, or null when it has none.</summary>
+    private static string? TypeOf(string text, Container c, DictNode d)
+    {
+        var type = d.Entries.FirstOrDefault(e => TokenText(text, c.Tokens[e.Name]) == "/Type");
+        return type.ValEnd > type.ValStart ? TokenText(text, c.Tokens[type.ValStart]) : null;
     }
 
     private static Container? Parse(string text, Located l)
@@ -493,8 +620,7 @@ internal static class PdfReplyLinker
         bool Has(string name) => d.Entries.Any(e => TokenText(text, c.Tokens[e.Name]) == name);
         if (!Has("/Subtype")) return false;
         if (Has("/Kids")) return false;
-        var type = d.Entries.FirstOrDefault(e => TokenText(text, c.Tokens[e.Name]) == "/Type");
-        return type.ValStart == 0 || TokenText(text, c.Tokens[type.ValStart]) is not ("/Page" or "/Pages");
+        return TypeOf(text, c, d) is not ("/Page" or "/Pages");
     }
 
     private static string TokenText(string text, Tok t) => text.Substring(t.Start, t.End - t.Start);

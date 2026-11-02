@@ -155,19 +155,20 @@ public sealed class PdfAnnotationWriter
                     // Carets need the post-pass (see CaretAnnotation); without it none are created. Nor in a
                     // file encrypted before AES-256 (security handler revision < 5): the post-pass can't
                     // encrypt an appearance stream there (Poppler then draws nothing) or promote the caret
-                    // (MuPDF then sees nothing). AES-256 shares one key across the file, which the post-pass
+                    // (PyMuPDF then sees nothing). AES-256 shares one key across the file, which the post-pass
                     // recovers from the password.
                     int revision = FPDF_GetSecurityHandlerRevision(doc);
                     bool drawable = revision == -1 || revision >= 5;
                     var carets = withLinks && drawable ? new Dictionary<string, CaretRetype>(StringComparer.Ordinal) : null;
                     var plan = withLinks ? new ReplyLinkPlan { Password = password } : null;
+                    bool deleted = false;
                     foreach (var pageIndex in file.Pages.Keys.Where(k => k >= 0 && k < pageCount).OrderBy(k => k))
                     {
                         var page = FPDF_LoadPage(doc, pageIndex);
                         if (page == IntPtr.Zero) continue;
                         try
                         {
-                            ReconcilePage(page, file.Pages[pageIndex], recreated, written, carets, plan);
+                            deleted |= ReconcilePage(page, file.Pages[pageIndex], recreated, written, carets, plan);
                         }
                         finally
                         {
@@ -178,6 +179,8 @@ public sealed class PdfAnnotationWriter
                     // Links only matter when a reply exists in the model, or the file carries an /IRT that
                     // might now be stale; promotion only when something was written. Otherwise skip the
                     // extra passes over every annotated page.
+                    // Any change at all (a deletion too) is the save that repairs older direct entries (#186).
+                    if (plan is not null) plan.Sweep = deleted || written.Count > 0;
                     var links = plan is not null
                         ? PlanPostPass(plan, doc, pageCount, file, recreated, written, MayNeedLinks(pdfBytes, file), carets)
                         : new ReplyLinkPlan();
@@ -204,7 +207,8 @@ public sealed class PdfAnnotationWriter
     /// an encryption it can't write into), in which case carets are neither created nor recoloured.</param>
     /// <param name="plan">The post-pass plan (null when there is none), to which links that only this
     /// pass can see are added: a recreated reply's link to a parent the model can't name.</param>
-    private static void ReconcilePage(IntPtr page, List<Annotation> desired, HashSet<string> recreated,
+    /// <returns>True when an annotation was deleted from the page for good (not to be recreated).</returns>
+    private static bool ReconcilePage(IntPtr page, List<Annotation> desired, HashSet<string> recreated,
         HashSet<string> written, Dictionary<string, CaretRetype>? carets, ReplyLinkPlan? plan)
     {
         var tx = GetPageTransform(page);
@@ -222,6 +226,7 @@ public sealed class PdfAnnotationWriter
         var inPlace = new List<(int Index, Annotation Ann)>();
         var recolor = new HashSet<string>(StringComparer.Ordinal);
         var matched = new HashSet<string>(StringComparer.Ordinal);
+        bool removed = false;
 
         int count = FPDFPage_GetAnnotCount(page);
         for (int i = 0; i < count; i++)
@@ -238,6 +243,7 @@ public sealed class PdfAnnotationWriter
                 if (!desiredByNm.TryGetValue(nm!, out var want))
                 {
                     toDelete.Add(i); // removed from the model → delete from the PDF
+                    removed = true;
                     continue;
                 }
 
@@ -334,6 +340,7 @@ public sealed class PdfAnnotationWriter
                 if (!string.IsNullOrEmpty(ann.NativeId)) written.Add(ann.NativeId!);
             }
         }
+        return removed;
     }
 
     /// <summary>
@@ -395,8 +402,9 @@ public sealed class PdfAnnotationWriter
     /// changed or cleared. Ones whose link already matches are not tagged.</item>
     /// <item><b>Promotion</b> — every annotation this save wrote (<paramref name="written"/>). PDFium puts
     /// what it creates into <c>/Annots</c> as a direct dictionary, but ISO 32000 requires indirect
-    /// references there, and some readers (PyMuPDF/MuPDF) don't see direct ones at all. The linker moves
-    /// any that are direct into objects of their own.</item>
+    /// references there, and some readers (PyMuPDF's <c>page.annots()</c>) don't see direct ones at all. The linker moves
+    /// any that are direct into objects of their own — and, while it is at it, every other direct
+    /// <c>/Annots</c> entry in the document (#186), which it finds itself without markers.</item>
     /// </list>
     /// An ordinary re-save that writes nothing therefore appends nothing.
     /// </summary>
@@ -512,7 +520,7 @@ public sealed class PdfAnnotationWriter
         // Sorted so the promoted objects are numbered the same way on every run.
         foreach (var nm in written.Where(present.Contains).Order(StringComparer.Ordinal))
             plan.Promote.Add(plan.MarkerFor(nm));
-        if (plan.IsEmpty) return plan;
+        if (plan.MarkerCount == 0) return plan; // nothing to tag (a sweep alone needs no markers)
 
         // Every subtype: a parent the model doesn't hold may need a marker too.
         ForEachManagedAnnot(doc, markPages, (annot, nm) =>
