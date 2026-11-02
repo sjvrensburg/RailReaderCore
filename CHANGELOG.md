@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.82.1 — A recolour no longer costs a save its reply links (2026-11-02)
 
 - **A recolour no longer costs a save its reply links.** In an AES-256 file whose key the post-pass
   couldn't recover (an `/Encrypt` dictionary it misreads), a recolour of another producer's caret made it
