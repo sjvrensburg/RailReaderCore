@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.82.2 — Old annotations become visible to PyMuPDF on the next save (2026-11-02)
 
 - **Old annotations become visible to PyMuPDF on the next save (#186).** 0.79.1 moved the annotations a
   save writes into indirect objects, but annotations written before that, or by another producer, stayed
