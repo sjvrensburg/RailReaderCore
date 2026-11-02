@@ -349,7 +349,8 @@ public sealed class PdfAnnotationWriter
         try
         {
             if (!string.IsNullOrEmpty(ReadAnnotString(parent, "NM"))) return;
-            int marker = plan.MarkerFor("\u0001irt:" + Guid.NewGuid().ToString("N"));
+            // A name no /NM can collide with, unique within the plan.
+            int marker = plan.MarkerFor("\u0001irt:" + plan.Carried.Count.ToString(CultureInfo.InvariantCulture));
             SetString(parent, plan.KeyFor(marker), "1");
             var type = string.Equals(ReadAnnotString(annot, "RT"), "Group", StringComparison.Ordinal)
                 ? AnnotationReplyType.Group : AnnotationReplyType.Reply;
