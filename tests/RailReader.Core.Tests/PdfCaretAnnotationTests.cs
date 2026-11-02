@@ -317,6 +317,68 @@ public class PdfCaretAnnotationTests
         Assert.DoesNotContain("0 0.4 1 rg", Latin1(bytes));   // nothing in the clear
     }
 
+    /// <summary>
+    /// A one-page AES-256-labelled PDF whose /O and /U no password opens, holding a caret and a
+    /// highlight tagged with <paramref name="plan"/>'s markers for "caret" and "note": the case of
+    /// an encryption dictionary the linker misreads although PDFium opened the file.
+    /// </summary>
+    private static byte[] UnkeyableAes256Pdf(ReplyLinkPlan plan)
+    {
+        var junk = new string('0', 96);
+        string[] objects =
+        [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [4 0 R 5 0 R] >>",
+            $"<< /Type /Annot /Subtype /Caret /Rect [100 700 108 706] /RD [1 1 1 1] /Sy /None /NM (caret) /{plan.KeyFor(plan.MarkerFor("caret"))} (1) >>",
+            $"<< /Type /Annot /Subtype /Highlight /Rect [72 650 200 666] /NM (note) /{plan.KeyFor(plan.MarkerFor("note"))} (1) >>",
+            $"<< /Filter /Standard /V 5 /R 6 /Length 256 /CF << /StdCF << /CFM /AESV3 /Length 32 >> >> /StmF /StdCF /StrF /StdCF "
+                + $"/O <{junk}> /U <{junk}> /OE <{junk[..64]}> /UE <{junk[..64]}> /P -4 >>",
+        ];
+        var sb = new StringBuilder("%PDF-1.7\n");
+        var offsets = new List<int>();
+        for (int i = 0; i < objects.Length; i++)
+        {
+            offsets.Add(sb.Length);
+            sb.Append($"{i + 1} 0 obj\n{objects[i]}\nendobj\n");
+        }
+        int xref = sb.Length;
+        sb.Append($"xref\n0 {objects.Length + 1}\n0000000000 65535 f \n");
+        foreach (var o in offsets) sb.Append($"{o:D10} 00000 n \n");
+        sb.Append($"trailer\n<< /Size {objects.Length + 1} /Root 1 0 R /Encrypt 6 0 R >>\nstartxref\n{xref}\n%%EOF\n");
+        return Encoding.Latin1.GetBytes(sb.ToString());
+    }
+
+    [Fact]
+    public void An_Unrecoverable_File_Key_Drops_Only_A_Recolour_Not_The_Saves_Links()
+    {
+        // A recolour that can't be encrypted keeps the old appearance; the reply link still goes in.
+        var plan = new ReplyLinkPlan { Password = "anything" };
+        var pdf = UnkeyableAes256Pdf(plan);
+        plan.Links.Add((plan.MarkerFor("note"), plan.MarkerFor("caret"), AnnotationReplyType.Reply));
+        plan.Retype[plan.MarkerFor("caret")] = new CaretRetype(8, 6, 1, 0, 0, Recolor: true);
+
+        var linked = PdfReplyLinker.Apply(pdf, plan);
+
+        Assert.NotNull(linked);
+        var text = Latin1(linked);
+        Assert.Matches(@"/IRT\s+4\s+0\s+R", text);
+        Assert.DoesNotContain("RRM", text[pdf.Length..]);         // markers stripped in the update
+        Assert.DoesNotMatch(@"/Subtype\s*/XObject", text);        // no appearance written in the clear
+    }
+
+    [Fact]
+    public void An_Unrecoverable_File_Key_Still_Backs_Off_From_Creating_A_Caret()
+    {
+        // A placeholder that can't get its appearance would be left a /Square: no caret at all.
+        var plan = new ReplyLinkPlan { Password = "anything" };
+        var pdf = UnkeyableAes256Pdf(plan);
+        plan.Links.Add((plan.MarkerFor("note"), plan.MarkerFor("caret"), AnnotationReplyType.Reply));
+        plan.Retype[plan.MarkerFor("caret")] = new CaretRetype(8, 6, 1, 0, 0);
+
+        Assert.Null(PdfReplyLinker.Apply(pdf, plan));
+    }
+
     [Fact]
     public void Aes256_Stream_Encryption_Round_Trips()
     {

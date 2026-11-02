@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.82.1 — A recolour no longer costs a save its reply links (2026-11-02)
+
+- **A recolour no longer costs a save its reply links.** In an AES-256 file whose key the post-pass
+  couldn't recover (an `/Encrypt` dictionary it misreads), a recolour of another producer's caret made it
+  give up on the whole post-pass. All of that save's `/IRT` links, carried links and promotions to
+  indirect objects were lost with it. Now only the recolour is dropped, and the caret keeps its old
+  colour. Creating a caret there still backs off, since its placeholder would otherwise be left a
+  `/Square`.
+- The carried-link marker name comes from a counter instead of a fresh GUID.
+
 ## 0.82.0 — Carets on rotated pages and in AES-256 files; recolouring other producers' carets; groups act as one (2026-11-02)
 
 - **Carets point up on rotated pages.** A caret's appearance was drawn in unrotated page space, so on a

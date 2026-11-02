@@ -240,10 +240,16 @@ internal static class PdfReplyLinker
             {
                 // The writer only plans carets where they can be drawn (unencrypted or AES-256); an
                 // encryption dictionary we can't read (V 0) or a key we can't recover from the password
-                // PDFium accepted means the dictionary was misread. Back off rather than leave a caret
-                // no viewer may draw.
-                RailReaderLogging.Logger.Warn("[PdfReplyLinker] Could not recover the AES-256 file key; carets not written");
-                return null;
+                // PDFium accepted means the dictionary was misread. A placeholder left a /Square would be
+                // no caret at all, so back off; a recolour only keeps its old appearance, which is no
+                // reason to drop this save's links and promotions too.
+                if (plan.Retype.Values.Any(r => !r.Recolor))
+                {
+                    RailReaderLogging.Logger.Warn("[PdfReplyLinker] Could not recover the AES-256 file key; carets not written");
+                    return null;
+                }
+                RailReaderLogging.Logger.Warn("[PdfReplyLinker] Could not recover the AES-256 file key; carets not recoloured");
+                plan.Retype.Clear();
             }
         }
         // Every planned caret can be drawn by now: unencrypted, or the cipher was recovered above.
