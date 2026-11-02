@@ -233,23 +233,22 @@ internal static class PdfReplyLinker
         if (plan.Retype.Count > 0 && security is not null)
         {
             cipher = CipherFor(security, plan.Password);
-            if (cipher is null && security.V >= 5)
+            if (cipher is null)
             {
-                // The writer only plans carets where they can be drawn; a key we can't recover from the
-                // password PDFium accepted means the dictionary was misread. Back off rather than leave
-                // a caret no viewer may draw.
+                // The writer only plans carets where they can be drawn (unencrypted or AES-256); an
+                // encryption dictionary we can't read (V 0) or a key we can't recover from the password
+                // PDFium accepted means the dictionary was misread. Back off rather than leave a caret
+                // no viewer may draw.
                 RailReaderLogging.Logger.Warn("[PdfReplyLinker] Could not recover the AES-256 file key; carets not written");
                 return null;
             }
         }
+        // Every planned caret can be drawn by now: unencrypted, or the cipher was recovered above.
         foreach (var (m, retype) in plan.Retype)
         {
             if (!ownerOfMarker.TryGetValue(m, out var o)) continue;
-            bool drawable = trailer.Encrypt is null || cipher is not null;
-            // Recolouring replaces an appearance, so it needs one to put in its place.
-            if (retype.Recolor && !drawable) continue;
             o.Retype = retype;
-            if (drawable) o.AppearanceAs = nextNumber++;
+            o.AppearanceAs = nextNumber++;
         }
 
         // 3. Build the replacement text of every touched container and every promoted dictionary.
@@ -710,13 +709,13 @@ internal static class PdfReplyLinker
 
     /// <summary>
     /// How to encrypt a new stream in this file, or null when it can't be done: anything before
-    /// AES-256, or a password that recovers no key. A stream crypt filter of /Identity means streams
-    /// are stored in the clear.
+    /// AES-256, or a password that recovers no key. A stream crypt filter of /Identity — also the
+    /// default when /StmF is absent (ISO 32000-1 Table 20) — means streams are stored in the clear.
     /// </summary>
     private static StreamCipher? CipherFor(Encryption e, string? password)
     {
         if (e.V < 5) return null;
-        if (e.StmF == "/Identity") return data => data;
+        if (e.StmF is null or "/Identity") return data => data;
         if (PdfAes256Security.FileKey(e.R, e.O, e.U, e.OE, e.UE, password) is not { } key) return null;
         return data => PdfAes256Security.EncryptStream(key, data);
     }

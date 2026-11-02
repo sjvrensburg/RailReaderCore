@@ -15,9 +15,10 @@ namespace RailReader.Core.Services;
 /// the root's <see cref="Grouped"/> annotations is a reply to the root.</param>
 public sealed record AnnotationThread(int Page, Annotation Root, IReadOnlyList<Annotation> Replies)
 {
-    /// <summary>Annotations grouped with <see cref="Root"/> (<c>/RT /Group</c>, e.g. the strikeout of
-    /// Acrobat's Replace Text, grouped to its caret), in document order. They are part of the root,
-    /// not replies to it, and are never roots of threads of their own.</summary>
+    /// <summary>Annotations grouped with <see cref="Root"/> or with one of its <see cref="Replies"/>
+    /// (<c>/RT /Group</c>, e.g. the strikeout of Acrobat's Replace Text, grouped to its caret), in
+    /// document order. They are part of their leader, not replies to it, and are never roots of
+    /// threads of their own.</summary>
     public IReadOnlyList<Annotation> Grouped { get; init; } = [];
 }
 
@@ -44,6 +45,13 @@ public static class AnnotationThreads
     public static List<AnnotationThread> Build(AnnotationFile file, int? page = null)
     {
         var g = new Graph(file);
+        var membersOf = new Dictionary<int, List<int>>();
+        for (int m = 0; m < g.Nodes.Count; m++)
+            if (g.IsMember(m))
+            {
+                if (!membersOf.TryGetValue(g.Leader[m], out var list)) membersOf[g.Leader[m]] = list = [];
+                list.Add(m);
+            }
         var result = new List<AnnotationThread>();
         for (int i = 0; i < g.Nodes.Count; i++)
         {
@@ -65,9 +73,14 @@ public static class AnnotationThreads
                     .CompareTo(g.Nodes[b].Ann.CreatedUtc ?? DateTimeOffset.MinValue);
                 return byDate != 0 ? byDate : a.CompareTo(b);
             });
-            var grouped = new List<Annotation>();
-            for (int m = 0; m < g.Nodes.Count; m++)
-                if (g.Leader[m] == i) grouped.Add(g.Nodes[m].Ann);
+            // Members of the root's group and of its replies' groups, in document order — a group led by
+            // a reply would otherwise appear nowhere.
+            var groupedIdx = new List<int>();
+            if (membersOf.TryGetValue(i, out var own)) groupedIdx.AddRange(own);
+            foreach (var d in descendants)
+                if (membersOf.TryGetValue(d, out var ms)) groupedIdx.AddRange(ms);
+            groupedIdx.Sort();
+            var grouped = groupedIdx.Select(m => g.Nodes[m].Ann).ToList();
             result.Add(new AnnotationThread(nodePage, ann, descendants.Select(d => g.Nodes[d].Ann).ToList()) { Grouped = grouped });
         }
         return result;
@@ -110,7 +123,10 @@ public static class AnnotationThreads
         if (!ReferenceEquals(start, root)) found.Add(start);
         if (string.IsNullOrEmpty(start.NativeId)) return found;
 
+        // The root's own id too: when it is a member, replies (and members) linked straight to it are
+        // never found by the walk, which skips the root.
         var ids = new HashSet<string>(StringComparer.Ordinal) { start.NativeId };
+        if (!string.IsNullOrEmpty(root.NativeId)) ids.Add(root.NativeId);
         var all = file.Pages.Values.SelectMany(l => l).ToList();
         for (bool grew = true; grew;)
         {

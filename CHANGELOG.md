@@ -4,13 +4,15 @@
 
 - **Carets point up on rotated pages.** A caret's appearance was drawn in unrotated page space, so on a
   page with `/Rotate` 90/180/270 it pointed sideways or down. The post-pass now draws the "^" turned
-  against the page's rotation (`CaretRetype.Rotation`), so it points up as the page is displayed. Carets
+  against the page's rotation (`CaretRetype.Rotation`), so it points up as the page is displayed. A caret flagged NoRotate, which viewers don't turn with
+  the page, is drawn unturned. Carets
   written by 0.81.0 on rotated pages are redrawn the next time their colour or box changes.
 - **Carets in AES-256 files.** `WriteReconciled` now creates carets in a file encrypted with AES-256
   (security handler revision 5 or 6). The post-pass recovers the file key from the password the
   document was opened with — user or owner (ISO 32000-2 Algorithm 2.A, with the 2.B hash for R6) — and
   writes the appearance stream encrypted (`/AESV3`), or in the clear when the stream crypt filter is
-  `/Identity` (`PdfAes256Security`). If the key can't be recovered the post-pass backs off and the save
+  `/Identity` or absent (`PdfAes256Security`). If the encryption dictionary can't be read or the key can't be
+  recovered, the post-pass backs off and the save
   is retried without carets, so a caret is never left without an appearance. Files encrypted with
   RC4 or AES-128 still get no carets: there every object has its own key, which the post-pass doesn't
   derive, so it could neither encrypt the appearance nor promote the caret.
@@ -22,12 +24,13 @@
 - **Groups act as one annotation** (`/RT /Group`, e.g. the strikeout of Acrobat's Replace Text, grouped to
   its caret). A group's *leader* is the first annotation up its chain of group links that is not itself
   grouped.
-  - `AnnotationThreads.Build` lists members in the new `AnnotationThread.Grouped` of their leader's
-    thread, and no longer returns a member as a thread root of its own. A reply to a member joins the
+  - `AnnotationThreads.Build` lists members in the new `AnnotationThread.Grouped` of the thread their
+    leader belongs to (as root or reply), and no longer returns a member as a thread root of its own. A reply to a member joins the
     leader's thread.
   - `RootOf` of a member is its leader's root, so `DocumentModel.AddReply` on the strikeout replies to
     the caret.
-  - Deleting a member deletes the whole group with the replies to it (`Descendants`), as Acrobat does;
+  - Deleting a member deletes the whole group with the replies to it, including replies made to that
+    member directly (`Descendants`), as Acrobat does;
     before, deleting the strikeout left its caret behind. Undo restores all of it.
   - A grouped annotation whose group link dangles or forms a ring is ungrouped and, as before, not threaded.
 - **Reply links survive more edits.**

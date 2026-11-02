@@ -349,6 +349,34 @@ public class AnnotationThreadTests : IDisposable
     }
 
     [Fact]
+    public void Descendants_OfAGroupMember_IncludesRepliesLinkedStraightToIt()
+    {
+        var caret = GroupCaret();
+        var strike = GroupStrike();
+        var toStrike = Note("r", "s");
+        var grouped = GroupStrike("s2", "s");
+
+        var doomed = AnnotationThreads.Descendants(File(caret, strike, toStrike, grouped), strike);
+
+        Assert.Equal(new HashSet<Annotation>([caret, toStrike, grouped]), doomed.ToHashSet());
+    }
+
+    [Fact]
+    public void Build_AGroupLedByAReply_IsListedInTheThread()
+    {
+        var root = Note("n");
+        var caret = GroupCaret();
+        caret.InReplyTo = "n";
+        var strike = GroupStrike();
+
+        var t = Assert.Single(AnnotationThreads.Build(File(root, caret, strike)));
+
+        Assert.Same(root, t.Root);
+        Assert.Equal([caret], t.Replies);
+        Assert.Equal([strike], t.Grouped);
+    }
+
+    [Fact]
     public void AddReply_ToAGroupMember_RepliesToTheLeader()
     {
         var caret = GroupCaret();

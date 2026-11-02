@@ -368,8 +368,10 @@ public sealed class PdfAnnotationWriter
     {
         var color = ResolveColor(c);
         var rect = BoxRect(c.X, c.Y, c.W, c.H, tx);
+        // A NoRotate annotation (another producer's) is not turned with the page, so neither is its drawing.
+        int rotation = (c.Flags & FPDF_ANNOT_FLAG_NOROTATE) != 0 ? 0 : tx.Rotation;
         return new CaretRetype(rect.Right - rect.Left, rect.Top - rect.Bottom,
-            color.R / 255f, color.G / 255f, color.B / 255f, tx.Rotation, Alpha: color.A / 255f);
+            color.R / 255f, color.G / 255f, color.B / 255f, rotation, Alpha: color.A / 255f);
     }
 
     /// <summary>The post-pass that writes the links; a seam so tests can force its back-off path.</summary>
