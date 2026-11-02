@@ -98,8 +98,10 @@ internal readonly record struct CaretRetype(float Width, float Height, float R, 
 ///
 /// <para><b>Promotion</b> is not only for parents. ISO 32000-1 (Table 30) says <c>/Annots</c> "shall
 /// contain indirect references", and MuPDF (so PyMuPDF) does not see a direct dictionary at all, so every
-/// annotation in <see cref="ReplyLinkPlan.Promote"/> that is direct is promoted too. Under RC4/AES-128
-/// it stays direct, as above.</para>
+/// annotation in <see cref="ReplyLinkPlan.Promote"/> that is direct is promoted too — and so is every
+/// other direct dictionary in a page's <c>/Annots</c> (#186): those an older version or another producer
+/// left there carry no marker, so they are found by scanning the page dictionaries instead. Under
+/// RC4/AES-128 they all stay direct, as above.</para>
 ///
 /// <para>The input is PDFium's own full rewrite (classic table, no object streams, not linearised).
 /// Anything outside that — an unrecognised trailer, an annotation inside a stream — makes the linker back off: it returns
@@ -140,7 +142,8 @@ internal static class PdfReplyLinker
         public DictNode? Top { get; set; }
     }
 
-    /// <summary>An annotation dictionary carrying a marker, and what to do to it.</summary>
+    /// <summary>An annotation dictionary the pass rewrites — one carrying a marker, or a direct one found
+    /// in a page's <c>/Annots</c> (#186) — and what to do to it.</summary>
     private sealed class Owner(Container container, DictNode dict)
     {
         public Container Container { get; } = container;
@@ -223,11 +226,19 @@ internal static class PdfReplyLinker
             }
         }
 
-        //    Then give every annotation that was written its own object (ISO 32000 Table 30).
+        //    Then give every annotation that was written its own object (ISO 32000 Table 30) — and every
+        //    other direct one still in the file: an older version, or another producer, left them there
+        //    (#186). Only the ones this save wrote carry markers, so the rest are found by their /Annots.
         if (canPromote)
+        {
             foreach (var m in plan.Promote)
                 if (ownerOfMarker.TryGetValue(m, out var o) && !o.IsIndirect && o.PromotedAs < 0)
                     o.PromotedAs = nextNumber++;
+            if (ObjectBodies(text, trailer.Prev) is { } bodies)
+                foreach (var o in DirectAnnotations(text, bodies, containers, owners))
+                    if (o.PromotedAs < 0)
+                        o.PromotedAs = nextNumber++;
+        }
 
         //    Carets. The retype itself is an edit of the dictionary wherever it lives; the appearance
         //    is a new stream object. In an encrypted file that stream must be encrypted, which needs
@@ -446,19 +457,116 @@ internal static class PdfReplyLinker
             at = at == 0 ? -1 : text.LastIndexOf("/" + key, at - 1, StringComparison.Ordinal);
         }
         while (at >= 0 && at + key.Length + 1 < text.Length && char.IsAsciiLetterOrDigit(text[at + key.Length + 1]));
-        if (at < 0) return null;
+        return at < 0 ? null : Enclosing(text, at);
+    }
 
+    /// <summary>The object whose body contains offset <paramref name="at"/>.</summary>
+    private static Located? Enclosing(string text, int at)
+    {
         int from = Math.Max(0, text.LastIndexOf("endobj", at, StringComparison.Ordinal));
         Match? header = null;
         for (var m = ObjectHeader.Match(text, from, at - from); m.Success; m = m.NextMatch()) header = m;
         if (header is null) return null;
 
         int end = text.IndexOf("endobj", at, StringComparison.Ordinal);
-        if (end < 0) return null;
-        return new Located(
-            int.Parse(header.Groups[1].Value, CultureInfo.InvariantCulture),
-            int.Parse(header.Groups[2].Value, CultureInfo.InvariantCulture),
-            header.Index + header.Length, end);
+        // A digit run too long for an object number is not a header (and must not throw: the
+        // promotion sweep runs this on every "/Annots" in the file).
+        if (end < 0
+            || !int.TryParse(header.Groups[1].ValueSpan, NumberStyles.None, CultureInfo.InvariantCulture, out var number)
+            || !int.TryParse(header.Groups[2].ValueSpan, NumberStyles.None, CultureInfo.InvariantCulture, out var generation))
+            return null;
+        return new Located(number, generation, header.Index + header.Length, end);
+    }
+
+    /// <summary>
+    /// Where each in-use object's body starts, and its generation, read from the classic cross-reference
+    /// table at <paramref name="xref"/> — the file's own map, so text that only looks like an object (a
+    /// PDF embedded uncompressed in a stream, say) is never taken for one. Null when the table can't be read.
+    /// </summary>
+    private static Dictionary<int, (int Generation, int BodyStart)>? ObjectBodies(string text, long xref)
+    {
+        if (xref < 0 || xref + 4 > text.Length) return null;
+        int t = text.IndexOf("trailer", (int)xref, StringComparison.Ordinal);
+        if (t < 0) return null;
+        var tokens = text[((int)xref + 4)..t].Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        static bool Int(string s, out int v) => int.TryParse(s, NumberStyles.None, CultureInfo.InvariantCulture, out v);
+
+        var bodies = new Dictionary<int, (int, int)>();
+        for (int i = 0; i < tokens.Length;)
+        {
+            if (i + 1 >= tokens.Length || !Int(tokens[i], out var first) || !Int(tokens[i + 1], out var count)) return null;
+            i += 2;
+            for (int k = 0; k < count; k++, i += 3)
+            {
+                if (i + 2 >= tokens.Length) return null;
+                if (tokens[i + 2] != "n" || !Int(tokens[i], out var off) || !Int(tokens[i + 1], out var gen) || off >= text.Length)
+                    continue;
+                var m = ObjectHeader.Match(text, off, Math.Min(64, text.Length - off));
+                if (m.Success && m.Index == off && Int(m.Groups[1].Value, out var n) && n == first + k)
+                    bodies[n] = (gen, m.Index + m.Length);
+            }
+        }
+        return bodies;
+    }
+
+    /// <summary>
+    /// Every annotation still held as a direct dictionary in a page's <c>/Annots</c> — an inline array,
+    /// or an indirect array object —, as an <see cref="Owner"/> (an existing one when a marker already
+    /// led to it). Best-effort: a page or array this parser can't read is skipped, never fatal, since
+    /// leaving an annotation direct only keeps the file as it was.
+    /// </summary>
+    private static List<Owner> DirectAnnotations(string text, Dictionary<int, (int Generation, int BodyStart)> bodies,
+        Dictionary<int, Container?> containers, Dictionary<(int Container, int Open), Owner> owners)
+    {
+        var found = new List<Owner>();
+        Container? Get(Located l)
+        {
+            if (!containers.TryGetValue(l.Number, out var c)) containers[l.Number] = c = Parse(text, l);
+            return c is not null && c.Generation == l.Generation ? c : null;
+        }
+        void Take(Container c, DictNode d)
+        {
+            if (!LooksLikeAnnotation(text, c, d)) return;
+            if (!owners.TryGetValue((c.Number, d.OpenTok), out var o))
+                owners[(c.Number, d.OpenTok)] = o = new Owner(c, d);
+            found.Add(o);
+        }
+
+        var pages = new HashSet<int>();
+        for (int at = text.IndexOf("/Annots", StringComparison.Ordinal); at >= 0;
+             at = text.IndexOf("/Annots", at + 7, StringComparison.Ordinal))
+        {
+            if (at + 7 < text.Length && !IsWhite(text[at + 7]) && !IsDelim(text[at + 7])) continue; // "/AnnotsX"
+            // Only an object the cross-reference table points at: an "/Annots" inside a stream is not a page's.
+            if (Enclosing(text, at) is not { } l || !bodies.TryGetValue(l.Number, out var known) || known != (l.Generation, l.BodyStart)
+                || !pages.Add(l.Number) || Get(l) is not { Top: { } page } c) continue;
+            if (!IsPage(text, c, page)) continue;
+            var entry = page.Entries.FirstOrDefault(e => TokenText(text, c.Tokens[e.Name]) == "/Annots");
+            if (entry.ValEnd <= entry.ValStart) continue;
+
+            if (c.Tokens[entry.ValStart].Kind == K.ArrOpen)
+            {
+                foreach (var d in c.Dicts.Where(d => d.Parent == page && d.OpenTok > entry.ValStart && d.OpenTok < entry.ValEnd))
+                    Take(c, d);
+            }
+            else if (entry.ValEnd - entry.ValStart == 3
+                     && int.TryParse(TokenText(text, c.Tokens[entry.ValStart]), NumberStyles.None, CultureInfo.InvariantCulture, out var n)
+                     && int.TryParse(TokenText(text, c.Tokens[entry.ValStart + 1]), NumberStyles.None, CultureInfo.InvariantCulture, out var g)
+                     && bodies.TryGetValue(n, out var obj) && obj.Generation == g
+                     && text.IndexOf("endobj", obj.BodyStart, StringComparison.Ordinal) is var end and >= 0
+                     && Get(new Located(n, g, obj.BodyStart, end)) is { Top: null } array) // an array object: its dictionaries are its elements
+            {
+                foreach (var d in array.Dicts.Where(d => d.Parent is null))
+                    Take(array, d);
+            }
+        }
+        return found;
+    }
+
+    private static bool IsPage(string text, Container c, DictNode d)
+    {
+        var type = d.Entries.FirstOrDefault(e => TokenText(text, c.Tokens[e.Name]) == "/Type");
+        return type.ValEnd > type.ValStart && TokenText(text, c.Tokens[type.ValStart]) == "/Page";
     }
 
     private static Container? Parse(string text, Located l)

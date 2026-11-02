@@ -396,7 +396,8 @@ public sealed class PdfAnnotationWriter
     /// <item><b>Promotion</b> — every annotation this save wrote (<paramref name="written"/>). PDFium puts
     /// what it creates into <c>/Annots</c> as a direct dictionary, but ISO 32000 requires indirect
     /// references there, and some readers (PyMuPDF/MuPDF) don't see direct ones at all. The linker moves
-    /// any that are direct into objects of their own.</item>
+    /// any that are direct into objects of their own — and, while it is at it, every other direct
+    /// <c>/Annots</c> entry in the document (#186), which it finds itself without markers.</item>
     /// </list>
     /// An ordinary re-save that writes nothing therefore appends nothing.
     /// </summary>

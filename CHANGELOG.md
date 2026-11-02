@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Old annotations become visible to PyMuPDF on the next save (#186).** 0.79.1 moved the annotations a
+  save writes into indirect objects, but annotations written before that, or by another producer, stayed
+  direct dictionaries in `/Annots` until they were next edited — and PyMuPDF (`page.annots()`) skips
+  those. A reviewed document opened and saved with one edit could show the reader 3 of its 141
+  annotations. Now the same post-pass promotes every direct `/Annots` entry in the document, on every
+  page, inline arrays and indirect array objects alike. As before: only on a save that writes something
+  (an unchanged re-save still appends nothing), and not under RC4/AES-128, whose per-object keys a moved
+  dictionary would break.
+
 ## 0.82.1 — A recolour no longer costs a save its reply links (2026-11-02)
 
 - **A recolour no longer costs a save its reply links.** In an AES-256 file whose key the post-pass
