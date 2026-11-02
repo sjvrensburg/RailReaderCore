@@ -112,8 +112,8 @@ public sealed class PdfAnnotationWriter
     /// deleted or recreated) are rewritten; a parent absent from the document drops the link rather
     /// than leave it dangling.</para>
     /// <b>Mutates</b> <paramref name="file"/> by back-filling /NM and Source on newly persisted
-    /// annotations. Caret annotations are created only when the post-pass runs and the document is not
-    /// encrypted (<see cref="CaretAnnotation"/>). Only pages present in <paramref name="file"/> are
+    /// annotations. Caret annotations are created only when the post-pass runs and the document is
+    /// unencrypted or AES-256 encrypted (<see cref="CaretAnnotation"/>). Only pages present in <paramref name="file"/> are
     /// visited.
     /// </summary>
     public byte[] WriteReconciled(byte[] pdfBytes, AnnotationFile file, string? password = null)
@@ -152,18 +152,22 @@ public sealed class PdfAnnotationWriter
                     int pageCount = FPDF_GetPageCount(doc);
                     var recreated = new HashSet<string>(StringComparer.Ordinal);
                     var written = new HashSet<string>(StringComparer.Ordinal);
-                    // Carets need the post-pass (see CaretAnnotation); without it none are created. Nor in
-                    // an encrypted file: the post-pass can't add an appearance stream there (Poppler then
-                    // draws nothing) and, under RC4/AES-128, can't promote the caret (MuPDF then sees nothing).
-                    bool encrypted = FPDF_GetSecurityHandlerRevision(doc) != -1;
-                    var carets = withLinks && !encrypted ? new Dictionary<string, CaretRetype>(StringComparer.Ordinal) : null;
+                    // Carets need the post-pass (see CaretAnnotation); without it none are created. Nor in a
+                    // file encrypted before AES-256 (security handler revision < 5): the post-pass can't
+                    // encrypt an appearance stream there (Poppler then draws nothing) or promote the caret
+                    // (MuPDF then sees nothing). AES-256 shares one key across the file, which the post-pass
+                    // recovers from the password.
+                    int revision = FPDF_GetSecurityHandlerRevision(doc);
+                    bool drawable = revision == -1 || revision >= 5;
+                    var carets = withLinks && drawable ? new Dictionary<string, CaretRetype>(StringComparer.Ordinal) : null;
+                    var plan = withLinks ? new ReplyLinkPlan { Password = password } : null;
                     foreach (var pageIndex in file.Pages.Keys.Where(k => k >= 0 && k < pageCount).OrderBy(k => k))
                     {
                         var page = FPDF_LoadPage(doc, pageIndex);
                         if (page == IntPtr.Zero) continue;
                         try
                         {
-                            ReconcilePage(page, file.Pages[pageIndex], recreated, written, carets);
+                            ReconcilePage(page, file.Pages[pageIndex], recreated, written, carets, plan);
                         }
                         finally
                         {
@@ -174,9 +178,10 @@ public sealed class PdfAnnotationWriter
                     // Links only matter when a reply exists in the model, or the file carries an /IRT that
                     // might now be stale; promotion only when something was written. Otherwise skip the
                     // extra passes over every annotated page.
-                    var links = withLinks
-                        ? PlanPostPass(doc, pageCount, file, recreated, written, MayNeedLinks(pdfBytes, file), carets)
+                    var links = plan is not null
+                        ? PlanPostPass(plan, doc, pageCount, file, recreated, written, MayNeedLinks(pdfBytes, file), carets)
                         : new ReplyLinkPlan();
+                    ExtraPagesSearched = links.ExtraPagesSearched;
                     var saved = SaveDocumentBytes(doc);
                     return links.IsEmpty ? saved : LinkApplier(saved, links);
                 }
@@ -194,10 +199,13 @@ public sealed class PdfAnnotationWriter
 
     /// <param name="written">Receives the /NM of every annotation this pass created, recreated or edited,
     /// so <see cref="PlanPostPass"/> can have the ones PDFium left as direct dictionaries promoted.</param>
-    /// <param name="carets">Receives the caret placeholders written, by /NM, for the post-pass to retype;
-    /// null when there will be no post-pass, in which case carets are not created.</param>
+    /// <param name="carets">Receives the carets to draw, by /NM, for the post-pass: placeholders to retype
+    /// and other producers' carets to recolour. Null when no appearance can be written (no post-pass, or
+    /// an encryption it can't write into), in which case carets are neither created nor recoloured.</param>
+    /// <param name="plan">The post-pass plan (null when there is none), to which links that only this
+    /// pass can see are added: a recreated reply's link to a parent the model can't name.</param>
     private static void ReconcilePage(IntPtr page, List<Annotation> desired, HashSet<string> recreated,
-        HashSet<string> written, Dictionary<string, CaretRetype>? carets)
+        HashSet<string> written, Dictionary<string, CaretRetype>? carets, ReplyLinkPlan? plan)
     {
         var tx = GetPageTransform(page);
 
@@ -212,6 +220,7 @@ public sealed class PdfAnnotationWriter
         var toDelete = new List<int>();
         var recreate = new List<Annotation>();
         var inPlace = new List<(int Index, Annotation Ann)>();
+        var recolor = new HashSet<string>(StringComparer.Ordinal);
         var matched = new HashSet<string>(StringComparer.Ordinal);
 
         int count = FPDFPage_GetAnnotCount(page);
@@ -250,10 +259,18 @@ public sealed class PdfAnnotationWriter
                     // PDFium can't remove /IC — are handled by delete + recreate (same /NM).
                     toDelete.Add(i);
                     recreate.Add(want);
+                    // Recreating drops /IRT. A link to a parent the model can name is rewritten from the
+                    // model; one to a parent with no /NM can only be carried over from here.
+                    if (plan is not null && string.IsNullOrEmpty(want.InReplyTo)) CarryUnnamedParentLink(annot, nm!, plan);
                 }
                 else
                 {
                     inPlace.Add((i, want)); // rect-based → modify in place, preserving other keys
+                    // PDFium won't set /C over an /AP, so another producer's caret is recoloured by the
+                    // post-pass, which replaces its colour and appearance and keeps everything else.
+                    if (want is CaretAnnotation wantCaret && carets is not null && current is CaretAnnotation cur
+                        && CaretColorChanged(cur, wantCaret) && ReadAnnotString(annot, "Sy") is not "P")
+                        recolor.Add(nm!);
                 }
             }
             finally
@@ -278,6 +295,8 @@ public sealed class PdfAnnotationWriter
             try { EditRectBasedInPlace(annot, ann, tx); }
             finally { FPDFPage_CloseAnnot(annot); }
             written.Add(ann.NativeId!);
+            if (ann is CaretAnnotation c && recolor.Contains(c.NativeId!))
+                carets![c.NativeId!] = CaretDrawing(c, tx) with { Recolor = true };
         }
 
         // …then deletions, descending so earlier indices stay valid…
@@ -317,6 +336,46 @@ public sealed class PdfAnnotationWriter
         }
     }
 
+    /// <summary>
+    /// Before <paramref name="annot"/> (a reply about to be deleted and recreated) loses its /IRT: when
+    /// that points at an annotation with no /NM — which the model can't name, so would never restore —
+    /// marks the parent now, through the link itself, and plans the link from the recreated reply to it.
+    /// </summary>
+    private static void CarryUnnamedParentLink(IntPtr annot, string childNm, ReplyLinkPlan plan)
+    {
+        if (!FPDFAnnot_HasKey(annot, "IRT")) return;
+        var parent = FPDFAnnot_GetLinkedAnnot(annot, "IRT");
+        if (parent == IntPtr.Zero) return;
+        try
+        {
+            if (!string.IsNullOrEmpty(ReadAnnotString(parent, "NM"))) return;
+            int marker = plan.MarkerFor("\u0001irt:" + Guid.NewGuid().ToString("N"));
+            SetString(parent, plan.KeyFor(marker), "1");
+            var type = string.Equals(ReadAnnotString(annot, "RT"), "Group", StringComparison.Ordinal)
+                ? AnnotationReplyType.Group : AnnotationReplyType.Reply;
+            plan.Carried.Add((childNm, marker, type));
+        }
+        finally
+        {
+            FPDFPage_CloseAnnot(parent);
+        }
+    }
+
+    /// <summary>What the post-pass needs to draw <paramref name="c"/>: its /Rect size in user space, colour,
+    /// opacity and the page's rotation (the appearance turns with the page).</summary>
+    private static CaretRetype CaretDrawing(CaretAnnotation c, in PageTransform tx)
+    {
+        var color = ResolveColor(c);
+        var rect = BoxRect(c.X, c.Y, c.W, c.H, tx);
+        // A NoRotate annotation (another producer's) is not turned with the page, so neither is its drawing.
+        int rotation = (c.Flags & FPDF_ANNOT_FLAG_NOROTATE) != 0 ? 0 : tx.Rotation;
+        return new CaretRetype(rect.Right - rect.Left, rect.Top - rect.Bottom,
+            color.R / 255f, color.G / 255f, color.B / 255f, rotation, Alpha: color.A / 255f);
+    }
+
+    /// <summary>How many pages outside the model the last save loaded to find a reply's parent; for tests.</summary>
+    internal int ExtraPagesSearched { get; private set; }
+
     /// <summary>The post-pass that writes the links; a seam so tests can force its back-off path.</summary>
     internal Func<byte[], ReplyLinkPlan, byte[]?> LinkApplier { get; set; } = PdfReplyLinker.Apply;
 
@@ -340,10 +399,9 @@ public sealed class PdfAnnotationWriter
     /// </list>
     /// An ordinary re-save that writes nothing therefore appends nothing.
     /// </summary>
-    private static ReplyLinkPlan PlanPostPass(IntPtr doc, int pageCount, AnnotationFile file,
+    private static ReplyLinkPlan PlanPostPass(ReplyLinkPlan plan, IntPtr doc, int pageCount, AnnotationFile file,
         HashSet<string> recreated, HashSet<string> written, bool needLinks, Dictionary<string, CaretRetype>? carets)
     {
-        var plan = new ReplyLinkPlan();
         if (!needLinks && written.Count == 0) return plan;
         var byNm = new Dictionary<string, Annotation>(StringComparer.Ordinal);
         foreach (var a in file.Pages.Values.SelectMany(l => l))
@@ -404,18 +462,47 @@ public sealed class PdfAnnotationWriter
             if (!consistent) needs.Add((nm, parent, has, type));
         });
 
-        // Parents the model names but does not hold, looked up among every annotation on the pages.
+        // Links carried over by ReconcilePage: their parents are marked already, the children below. A
+        // child that wasn't written gets no link; its parent's marker is still stripped, since the
+        // linker runs whenever a marker was handed out.
+        foreach (var (child, parentMarker, type) in plan.Carried)
+            if (present.Contains(child)) plan.Links.Add((plan.MarkerFor(child), parentMarker, type));
+
+        // Parents the model names but does not hold, looked up among every annotation on the pages — then,
+        // for any still missing, on the document's other pages (a page with no annotation the model holds
+        // is not in the model at all). That wider search is only for a reply this save recreated, which
+        // has just lost its link: a reply naming a parent that is gone for good would otherwise have
+        // every page of the document loaded on every save, looking for it.
         var unmodelled = new HashSet<string>(StringComparer.Ordinal);
+        var markPages = new List<int>(pages);
         var wanted = needs.Where(n => n.Parent is not null && !byNm.ContainsKey(n.Parent)).Select(n => n.Parent!).ToHashSet();
         if (wanted.Count > 0)
             ForEachManagedAnnot(doc, pages, (_, nm) => { if (wanted.Contains(nm)) unmodelled.Add(nm); }, managedOnly: false);
+        var farWanted = needs.Where(n => n.Parent is not null && wanted.Contains(n.Parent) && !unmodelled.Contains(n.Parent)
+                                         && recreated.Contains(n.Child))
+            .Select(n => n.Parent!).ToHashSet();
+        if (farWanted.Count > 0)
+        {
+            var modelPages = pages.ToHashSet();
+            foreach (var other in Enumerable.Range(0, pageCount).Where(p => !modelPages.Contains(p)))
+            {
+                bool found = false;
+                plan.ExtraPagesSearched++;
+                ForEachManagedAnnot(doc, [other], (_, nm) =>
+                {
+                    if (farWanted.Remove(nm) && unmodelled.Add(nm)) found = true;
+                }, managedOnly: false);
+                if (found) markPages.Add(other);
+                if (farWanted.Count == 0) break;
+            }
+        }
 
         foreach (var (child, parent, hasLink, type) in needs)
         {
             // A parent that was never written (empty geometry, a caret with no post-pass) is an orphan.
             string? target = parent is not null && (present.Contains(parent) || unmodelled.Contains(parent)) ? parent : null;
             // Nothing to clear and nowhere to point: leave the child alone. Nor is a link cleared for want
-            // of an unmodelled parent that just isn't on these pages — it may well be elsewhere.
+            // of an unmodelled parent that wasn't found — the reader named it, so it is somewhere.
             if (target is null && (!hasLink || (parent is not null && !byNm.ContainsKey(parent)))) continue;
             plan.Links.Add((plan.MarkerFor(child), target is null ? -1 : plan.MarkerFor(target), type));
         }
@@ -427,7 +514,7 @@ public sealed class PdfAnnotationWriter
         if (plan.IsEmpty) return plan;
 
         // Every subtype: a parent the model doesn't hold may need a marker too.
-        ForEachManagedAnnot(doc, pages, (annot, nm) =>
+        ForEachManagedAnnot(doc, markPages, (annot, nm) =>
         {
             int marker = plan.TryGetMarker(nm);
             if (marker >= 0) SetString(annot, plan.KeyFor(marker), "1");
@@ -473,10 +560,14 @@ public sealed class PdfAnnotationWriter
     private static bool CaretAppearanceChanged(CaretAnnotation current, CaretAnnotation want)
     {
         static bool Near(float a, float b) => MathF.Abs(a - b) <= 0.75f;
-        return !string.Equals(current.Color, want.Color, StringComparison.OrdinalIgnoreCase)
-               || MathF.Abs(current.Opacity - want.Opacity) > 0.01f
+        return CaretColorChanged(current, want)
                || !Near(current.X, want.X) || !Near(current.Y, want.Y) || !Near(current.W, want.W) || !Near(current.H, want.H);
     }
+
+    /// <summary>The colour or opacity differ — what a recolour redraws.</summary>
+    private static bool CaretColorChanged(CaretAnnotation current, CaretAnnotation want)
+        => !string.Equals(current.Color, want.Color, StringComparison.OrdinalIgnoreCase)
+           || MathF.Abs(current.Opacity - want.Opacity) > 0.01f;
 
     /// <summary>
     /// A caret with nothing a delete + recreate would lose: no /RD, /RC or /Popup and no symbol other
@@ -701,8 +792,7 @@ public sealed class PdfAnnotationWriter
             var rect = BoxRect(c.X, c.Y, c.W, c.H, tx);
             FPDFAnnot_SetRect(annot, ref rect);
             ApplyCommonMetadata(annot, c);
-            carets[c.NativeId!] = new CaretRetype(rect.Right - rect.Left, rect.Top - rect.Bottom,
-                color.R / 255f, color.G / 255f, color.B / 255f);
+            carets[c.NativeId!] = CaretDrawing(c, tx);
             return true;
         }
         finally

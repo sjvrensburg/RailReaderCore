@@ -272,4 +272,138 @@ public class AnnotationThreadTests : IDisposable
         _doc.Undo();
         Assert.Equal("typo", reply.EffectiveContents);
     }
+
+    // --- groups (/RT /Group: Acrobat's Replace Text is a caret with a strikeout grouped to it) ---
+
+    private static CaretAnnotation GroupCaret(string id = "c") => new() { NativeId = id, X = 10, Y = 10, W = 8, H = 7 };
+
+    private static StrikeOutAnnotation GroupStrike(string id = "s", string leader = "c")
+        => new() { NativeId = id, InReplyTo = leader, ReplyType = AnnotationReplyType.Group, Rects = [new HighlightRect(10, 10, 40, 10)] };
+
+    [Fact]
+    public void Build_ListsGroupMembersWithTheirLeader_NotAsThreads()
+    {
+        var caret = GroupCaret();
+        var strike = GroupStrike();
+        var reply = Note("r", "c");
+
+        var t = Assert.Single(AnnotationThreads.Build(File(caret, strike, reply)));
+
+        Assert.Same(caret, t.Root);
+        Assert.Equal([strike], t.Grouped);
+        Assert.Equal([reply], t.Replies);
+    }
+
+    [Fact]
+    public void Build_AReplyToAGroupMember_JoinsTheLeadersThread()
+    {
+        var caret = GroupCaret();
+        var strike = GroupStrike();
+        var toStrike = Note("r", "s");
+
+        var t = Assert.Single(AnnotationThreads.Build(File(caret, strike, toStrike)));
+
+        Assert.Same(caret, t.Root);
+        Assert.Equal([toStrike], t.Replies);
+        Assert.Same(caret, AnnotationThreads.RootOf(File(caret, strike, toStrike), toStrike));
+    }
+
+    [Fact]
+    public void RootOf_AGroupMember_IsItsLeadersRoot()
+    {
+        var root = Note("n");
+        var caret = GroupCaret();
+        caret.InReplyTo = "n";                      // the group itself replies to a note
+        var strike = GroupStrike();
+        var f = File(root, caret, strike);
+
+        Assert.Same(root, AnnotationThreads.RootOf(f, strike));
+        Assert.Same(root, AnnotationThreads.RootOf(f, caret));
+    }
+
+    [Fact]
+    public void Build_DanglingOrCyclicGroupLinks_LeaveTheAnnotationUngrouped()
+    {
+        var dangling = GroupStrike("d", "missing");
+        var a = GroupStrike("a", "b");
+        var b = GroupStrike("b", "a");              // a ring of group links has no leader
+
+        var threads = AnnotationThreads.Build(File(dangling, a, b));
+
+        Assert.Equal([dangling, a, b], threads.Select(t => t.Root));
+        Assert.All(threads, t => Assert.Empty(t.Grouped));
+    }
+
+    [Fact]
+    public void Descendants_OfAGroupMember_IsTheWholeGroupAndItsReplies()
+    {
+        var caret = GroupCaret();
+        var strike = GroupStrike();
+        var second = GroupStrike("s2");
+        var reply = Note("r", "c");
+        var other = Note("o");
+
+        var doomed = AnnotationThreads.Descendants(File(caret, strike, second, reply, other), strike);
+
+        Assert.Equal(new HashSet<Annotation>([caret, second, reply]), doomed.ToHashSet());
+    }
+
+    [Fact]
+    public void Descendants_OfAGroupMember_IncludesRepliesLinkedStraightToIt()
+    {
+        var caret = GroupCaret();
+        var strike = GroupStrike();
+        var toStrike = Note("r", "s");
+        var grouped = GroupStrike("s2", "s");
+
+        var doomed = AnnotationThreads.Descendants(File(caret, strike, toStrike, grouped), strike);
+
+        Assert.Equal(new HashSet<Annotation>([caret, toStrike, grouped]), doomed.ToHashSet());
+    }
+
+    [Fact]
+    public void Build_AGroupLedByAReply_IsListedInTheThread()
+    {
+        var root = Note("n");
+        var caret = GroupCaret();
+        caret.InReplyTo = "n";
+        var strike = GroupStrike();
+
+        var t = Assert.Single(AnnotationThreads.Build(File(root, caret, strike)));
+
+        Assert.Same(root, t.Root);
+        Assert.Equal([caret], t.Replies);
+        Assert.Equal([strike], t.Grouped);
+    }
+
+    [Fact]
+    public void AddReply_ToAGroupMember_RepliesToTheLeader()
+    {
+        var caret = GroupCaret();
+        var strike = GroupStrike();
+        _doc.Annotations.Pages[0] = [caret, strike];
+
+        var reply = _doc.AddReply(strike, "why strike this?")!;
+
+        Assert.Equal("c", reply.InReplyTo);
+        Assert.Equal(AnnotationReplyType.Reply, reply.ReplyType);
+        Assert.Equal([reply], Assert.Single(_doc.GetThreads(0)).Replies);
+    }
+
+    [Fact]
+    public void RemoveAnnotation_OfAGroupMember_RemovesTheGroup_AndUndoRestoresIt()
+    {
+        var f = _doc.Annotations;
+        var other = Note("o");
+        var caret = GroupCaret();
+        var strike = GroupStrike();
+        var reply = Note("r", "c");
+        f.Pages[0] = [other, caret, strike, reply];
+
+        _doc.RemoveAnnotation(0, strike);
+        Assert.Equal([other], f.Pages[0]);
+
+        _doc.Undo();
+        Assert.Equal([other, caret, strike, reply], f.Pages[0]);
+    }
 }

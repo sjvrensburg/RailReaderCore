@@ -116,4 +116,125 @@ public class PdfReplyLinkUnmodelledParentTests
 
         Assert.Null(ById(new PdfAnnotationReader().Read(second), "r").InReplyTo);
     }
+
+    private static byte[] Build(string[] objects)
+    {
+        var sb = new StringBuilder("%PDF-1.7\n");
+        var offsets = new List<int>();
+        for (int i = 0; i < objects.Length; i++)
+        {
+            offsets.Add(sb.Length);
+            sb.Append($"{i + 1} 0 obj\n{objects[i]}\nendobj\n");
+        }
+        int xref = sb.Length;
+        sb.Append($"xref\n0 {objects.Length + 1}\n0000000000 65535 f \n");
+        foreach (var o in offsets) sb.Append($"{o:D10} 00000 n \n");
+        sb.Append($"trailer\n<< /Size {objects.Length + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n");
+        return Encoding.Latin1.GetBytes(sb.ToString());
+    }
+
+    /// <summary>The object number of the (one) Circle in <paramref name="pdf"/>'s live objects.</summary>
+    private static int CircleObject(string pdf)
+    {
+        var m = Regex.Matches(pdf, @"(\d+)\s+0\s+obj\s*<<(?:(?!endobj).)*?/Subtype\s*/Circle", RegexOptions.Singleline);
+        return int.Parse(m[^1].Groups[1].Value);
+    }
+
+    private static string Live(byte[] pdf)
+        => Encoding.Latin1.GetString(new PdfAnnotationWriter().WriteReconciled(pdf, new PdfAnnotationReader().Read(pdf)));
+
+    [Fact]
+    public void A_Recreated_Reply_Keeps_Its_Link_To_A_Parent_With_No_NM()
+    {
+        // The model can't name the parent (InReplyTo is null), so the link is carried over from the old
+        // reply's own /IRT before it is deleted and recreated.
+        var source = CirclePdf(circleHasNm: false);
+        var model = new PdfAnnotationReader().Read(source);
+        ById(model, "hl-1").Color = "#00FF00";
+
+        var saved = new PdfAnnotationWriter().WriteReconciled(source, model);
+
+        var live = Live(saved);
+        int circle = CircleObject(live);
+        Assert.Equal(2, Regex.Matches(live, $@"/IRT\s*{circle}\s+0\s+R").Count);
+        Assert.Equal("#00FF00", ById(new PdfAnnotationReader().Read(saved), "hl-1").Color, ignoreCase: true);
+        Assert.DoesNotContain("RRM", live);
+    }
+
+    [Fact]
+    public void A_Carried_Link_Keeps_Its_Group_Type()
+    {
+        var source = Build(
+        [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 6 0 R /Annots [4 0 R 5 0 R] >>",
+            "<< /Type /Annot /Subtype /Circle /Rect [20 20 80 80] /C [1 0 0] /F 4 >>",
+            "<< /Type /Annot /Subtype /Highlight /Rect [72 134 152 150] /QuadPoints [72 150 152 150 72 134 152 134] /C [1 1 0] /NM (hl-1) /F 4 /IRT 4 0 R /RT /Group >>",
+            "<< /Length 0 >>\nstream\n\nendstream",
+        ]);
+        var model = new PdfAnnotationReader().Read(source);
+        ById(model, "hl-1").Color = "#00FF00";
+
+        var live = Live(new PdfAnnotationWriter().WriteReconciled(source, model));
+
+        // PDFium orders keys alphabetically, so look for both inside the highlight's dictionary.
+        var highlight = Regex.Match(live, @"<<[^>]*/Subtype\s*/Highlight[^>]*>>").Value;
+        Assert.Matches($@"/IRT\s*{CircleObject(live)}\s+0\s+R", highlight);
+        Assert.Matches(@"/RT\s*/Group", highlight);
+    }
+
+    [Fact]
+    public void A_Reply_Keeps_Its_Link_To_An_Unmodelled_Parent_On_A_Page_The_Model_Does_Not_Hold()
+    {
+        // Page 1 holds only the Circle, so the model has no page 1; the parent is still found there.
+        var source = Build(
+        [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 7 0 R /Annots [6 0 R] >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 7 0 R /Annots [5 0 R] >>",
+            "<< /Type /Annot /Subtype /Circle /Rect [20 20 80 80] /C [1 0 0] /NM (circle-1) /F 4 >>",
+            "<< /Type /Annot /Subtype /Highlight /Rect [72 134 152 150] /QuadPoints [72 150 152 150 72 134 152 134] /C [1 1 0] /NM (hl-1) /F 4 /IRT 5 0 R /RT /R >>",
+            "<< /Length 0 >>\nstream\n\nendstream",
+        ]);
+        var model = new PdfAnnotationReader().Read(source);
+        Assert.False(model.Pages.TryGetValue(1, out var p1) && p1.Count > 0);
+        Assert.Equal("circle-1", ById(model, "hl-1").InReplyTo);
+        ById(model, "hl-1").Color = "#00FF00";
+
+        var writer = new PdfAnnotationWriter();
+        var saved = writer.WriteReconciled(source, model);
+
+        Assert.Equal(1, writer.ExtraPagesSearched);
+        Assert.Equal("circle-1", ById(new PdfAnnotationReader().Read(saved), "hl-1").InReplyTo);
+        Assert.DoesNotContain("RRM", Live(saved));
+    }
+
+    [Fact]
+    public void A_Save_Does_Not_Search_Other_Pages_For_A_Parent_That_Is_Gone()
+    {
+        // The reply wasn't recreated, so it hasn't just lost a link; its parent is gone for good. Searching
+        // every page for it on every save would cost a full pass over a large document each time.
+        var pages = Enumerable.Range(0, 20).Select(i => $"{i + 3} 0 R").ToList();
+        var objects = new List<string>
+        {
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            $"<< /Type /Pages /Kids [{string.Join(' ', pages)}] /Count 20 >>",
+        };
+        for (int i = 0; i < 20; i++)
+            objects.Add(i == 0
+                ? "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 24 0 R /Annots [23 0 R] >>"
+                : "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 24 0 R >>");
+        objects.Add("<< /Type /Annot /Subtype /Text /Rect [90 60 114 84] /C [1 1 0] /NM (reply-1) /Contents (orphan) /F 4 >>");
+        objects.Add("<< /Length 0 >>\nstream\n\nendstream");
+        var source = Build([.. objects]);
+        var model = new PdfAnnotationReader().Read(source);
+        ById(model, "reply-1").InReplyTo = "gone";
+
+        var writer = new PdfAnnotationWriter();
+        writer.WriteReconciled(source, model);
+
+        Assert.Equal(0, writer.ExtraPagesSearched);
+    }
 }

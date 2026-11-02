@@ -169,7 +169,7 @@ public class PdfCaretAnnotationTests
     /// </summary>
     private const string Ap = "0 0 1 rg 0 0 m 4 7 l 8 0 l f %ACROAP";
 
-    private static byte[] AcrobatCaretPdf()
+    private static byte[] AcrobatCaretPdf(string symbol = "/P")
     {
         var objects = new[]
         {
@@ -177,7 +177,7 @@ public class PdfCaretAnnotationTests
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 6 0 R /Annots [4 0 R 7 0 R] >>",
             "<< /Type /Annot /Subtype /Caret /Rect [100 130 108 137] /C [0 0 1] /NM (acro-caret) /T (Acro) "
-                + "/Contents (old words) /RC (<body><p>old words</p></body>) /RD [1 1 1 1] /Sy /P /F 4 /P 3 0 R "
+                + $"/Contents (old words) /RC (<body><p>old words</p></body>) /RD [1 1 1 1] /Sy {symbol} /F 4 /P 3 0 R "
                 + "/Popup 7 0 R /AP << /N 5 0 R >> >>",
             $"<< /Type /XObject /Subtype /Form /BBox [0 0 8 7] /Length {Ap.Length} >>\nstream\n{Ap}\nendstream",
             "<< /Length 0 >>\nstream\n\nendstream",
@@ -254,10 +254,40 @@ public class PdfCaretAnnotationTests
     }
 
     [Fact]
-    public void Recolouring_Another_Producers_Caret_Does_Not_Recreate_It()
+    public void Recolouring_Another_Producers_Caret_Replaces_Only_Its_Colour_And_Appearance()
     {
-        // Its colour can't be changed in place (PDFium won't set /C over an /AP), but that is better
-        // than recreating it and dropping its rich text, padding, symbol and pop-up.
+        // PDFium won't set /C over an /AP, and recreating the caret would drop its rich text, padding
+        // and pop-up; the post-pass rewrites /C and the appearance and keeps the rest.
+        var source = AcrobatCaretPdf("/None");
+        var model = new PdfAnnotationReader().Read(source);
+        ((CaretAnnotation)model.Pages[0][0]).Color = "#FF0000";
+
+        var saved = new PdfAnnotationWriter().WriteReconciled(source, model);
+
+        var back = Assert.IsType<CaretAnnotation>(Assert.Single(ReadBack(saved)));
+        Assert.Equal("#FF0000", back.Color, ignoreCase: true);
+        Assert.Equal("acro-caret", back.NativeId);
+        Assert.Equal("Acro", back.Author);
+        var live = Live(saved);
+        var streams = StreamText(Latin1Bytes(live));
+        Assert.DoesNotContain("%ACROAP", streams);
+        Assert.Contains("1 0 0 rg 1 1 m 4 6 l 7 1 l", streams);   // drawn inside the /RD [1 1 1 1] inset
+        Assert.Matches(@"/RD\s*\[", live);
+        Assert.Matches(@"/RC\s*\(", live);
+        Assert.Matches(@"/Popup\s*\d+\s+0\s+R", live);
+        Assert.Matches(@"/C\s*\[\s*1\s+0\s+0\s*\]", live);
+        Assert.DoesNotContain("RRM", live);
+
+        // Now stable: the colour reads back from the new appearance, so a re-save sees no change and
+        // runs no post-pass (PDFium's rewrite alone: one cross-reference section).
+        var again = new PdfAnnotationWriter().WriteReconciled(saved, new PdfAnnotationReader().Read(saved));
+        Assert.Equal(1, Latin1(again).Split("startxref").Length - 1);
+    }
+
+    [Fact]
+    public void A_Paragraph_Caret_From_Another_Producer_Is_Not_Recoloured()
+    {
+        // /Sy /P is drawn as a pilcrow, not a "^": the post-pass has no appearance to replace it with.
         var source = AcrobatCaretPdf();
         var model = new PdfAnnotationReader().Read(source);
         ((CaretAnnotation)model.Pages[0][0]).Color = "#FF0000";
@@ -268,12 +298,83 @@ public class PdfCaretAnnotationTests
         Assert.Matches(@"/RD\s*\[", live);
     }
 
-    [Fact]
-    public void No_Caret_Is_Created_In_An_Encrypted_File()
+    [Theory]
+    [InlineData(TestFixtures.EncryptedPdfPassword)]   // user password
+    [InlineData("owner")]                             // owner password: the key comes from /OE instead
+    public void A_Caret_Is_Created_In_An_Aes256_File_With_An_Encrypted_Appearance(string password)
     {
-        // The post-pass can't add an appearance stream there (Poppler would draw nothing) or, under
-        // RC4/AES-128, promote the caret (MuPDF would see nothing), so it is not written at all.
         var source = File.ReadAllBytes(TestFixtures.GetEncryptedTestPdfPath());
+        var caret = Caret();
+        var file = AnnotationTestHelpers.OnePage(caret);
+
+        var bytes = new PdfAnnotationWriter().WriteReconciled(source, file, password);
+
+        var back = Assert.IsType<CaretAnnotation>(Assert.Single(new PdfAnnotationReader().Read(bytes, password).Pages[0]));
+        // The colour is read from the appearance stream, so it reads back only if PDFium could decrypt it.
+        Assert.Equal("#0066FF", back.Color, ignoreCase: true);
+        Assert.Equal("inserted words", back.Contents);
+        Assert.Equal(AnnotationSource.InPdf, caret.Source);
+        Assert.DoesNotContain("0 0.4 1 rg", Latin1(bytes));   // nothing in the clear
+    }
+
+    [Fact]
+    public void Aes256_Stream_Encryption_Round_Trips()
+    {
+        var key = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+        var data = Encoding.Latin1.GetBytes("0 0.4 1 rg 0 0 m 4 7 l 8 0 l h f");
+
+        var sealedData = PdfAes256Security.EncryptStream(key, data);
+
+        Assert.Equal(16 + (data.Length / 16 + 1) * 16, sealedData.Length);   // IV + PKCS#7-padded blocks
+        Assert.Equal(data, PdfAes256Security.DecryptStream(key, sealedData));
+    }
+
+    [Theory]
+    [InlineData("(a\\(b\\)\\\\\\101\\n)", new byte[] { (byte)'a', (byte)'(', (byte)'b', (byte)')', (byte)'\\', 0x41, 10 })]
+    [InlineData("<41 42 4>", new byte[] { 0x41, 0x42, 0x40 })]
+    [InlineData("(a\rb\r\nc\nd)", new byte[] { (byte)'a', 10, (byte)'b', 10, (byte)'c', 10, (byte)'d' })]   // raw EOLs are one LF
+    public void Pdf_Strings_Decode(string token, byte[] expected)
+        => Assert.Equal(expected, PdfReplyLinker.DecodeString(token));
+
+    [Fact]
+    public void The_File_Key_Is_Recovered_From_A_Password_That_Normalisation_Would_Change()
+    {
+        // PDFium checks the raw UTF-8 of the password; hashing only its NFKC form ("secret") would
+        // recover no key, and the save would lose its carets.
+        var source = File.ReadAllBytes(TestFixtures.GetFullWidthPasswordPdfPath());
+
+        var bytes = new PdfAnnotationWriter().WriteReconciled(source, AnnotationTestHelpers.OnePage(Caret()), TestFixtures.FullWidthPassword);
+
+        var back = Assert.IsType<CaretAnnotation>(Assert.Single(new PdfAnnotationReader().Read(bytes, TestFixtures.FullWidthPassword).Pages[0]));
+        Assert.Equal("#0066FF", back.Color, ignoreCase: true);
+    }
+
+    [Theory]
+    [InlineData("/StmF /StdCF /CF << /StdCF << /CFM /None /Length 32 >> >>", true)]    // crypt filter of method /None
+    [InlineData("/StmF /Identity", true)]
+    [InlineData("", true)]                                                              // no /StmF: Identity by default
+    [InlineData("/StmF /StdCF /CF << /StdCF << /CFM /AESV3 /Length 32 >> >>", false)]
+    public void Streams_Are_Written_In_The_Clear_Only_Where_The_Stream_Filter_Says_So(string filter, bool clear)
+    {
+        var o = new string('0', 96);
+        var text = $"%PDF-1.7\n11 0 obj\n<< /Filter /Standard /V 5 /R 6 {filter} /O <{o}> /U <{o}> /OE <{o[..64]}> /UE <{o[..64]}> /P -4 >>\nendobj\n";
+
+        var e = PdfReplyLinker.EncryptionOf(text, "11 0 R");
+        var cipher = PdfReplyLinker.CipherFor(e, "secret");
+
+        Assert.Equal(5, e.V);
+        if (clear)
+            Assert.Equal([1, 2, 3], cipher!([1, 2, 3]));
+        else
+            Assert.Null(cipher);   // AESV3 with a password that matches nothing: no key, so no cipher
+    }
+
+    [Fact]
+    public void No_Caret_Is_Created_In_An_Aes128_File()
+    {
+        // Under RC4/AES-128 the post-pass can't encrypt an appearance stream (Poppler would draw
+        // nothing) or promote the caret (MuPDF would see nothing), so it is not written at all.
+        var source = File.ReadAllBytes(TestFixtures.GetAes128TestPdfPath());
         var caret = Caret();
         var file = AnnotationTestHelpers.OnePage(caret, new HighlightAnnotation { Rects = [new HighlightRect(72, 100, 80, 16)] });
 
@@ -307,12 +408,69 @@ public class PdfCaretAnnotationTests
         var reply = new TextNoteAnnotation { NativeId = "r", InReplyTo = "caret-1" };
         var file = AnnotationTestHelpers.OnePage(caret, strike, reply);
 
-        var thread = Assert.Single(AnnotationThreads.Build(file), t => ReferenceEquals(t.Root, caret));
+        var thread = Assert.Single(AnnotationThreads.Build(file));
+        Assert.Same(caret, thread.Root);
         Assert.Equal([reply], thread.Replies);
-        Assert.Contains(AnnotationThreads.Build(file), t => ReferenceEquals(t.Root, strike));
+        Assert.Equal([strike], thread.Grouped);
 
         var goesWith = AnnotationThreads.Descendants(file, caret);
         Assert.Contains(strike, goesWith);
         Assert.Contains(reply, goesWith);
+    }
+
+    // --- rotated pages ---
+
+    /// <summary>A one-page 300×200 PDF with the given /Rotate. Hand-built, classic xref.</summary>
+    private static byte[] RotatedPdf(int rotate)
+    {
+        var objects = new[]
+        {
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            $"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Rotate {rotate} /Contents 4 0 R >>",
+            "<< /Length 0 >>\nstream\n\nendstream",
+        };
+        var sb = new StringBuilder("%PDF-1.7\n");
+        var offsets = new List<int>();
+        for (int i = 0; i < objects.Length; i++)
+        {
+            offsets.Add(sb.Length);
+            sb.Append($"{i + 1} 0 obj\n{objects[i]}\nendobj\n");
+        }
+        int xref = sb.Length;
+        sb.Append($"xref\n0 {objects.Length + 1}\n0000000000 65535 f \n");
+        foreach (var o in offsets) sb.Append($"{o:D10} 00000 n \n");
+        sb.Append($"trailer\n<< /Size {objects.Length + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n");
+        return Encoding.Latin1.GetBytes(sb.ToString());
+    }
+
+    [Theory]
+    // The /Rect is in unrotated space (w × h); where the apex must sit for the "^" to point up on screen.
+    [InlineData(0, "0 0 m 4 7 l 8 0 l")]     // apex top centre
+    [InlineData(1, "7 0 m 0 4 l 7 8 l")]     // shown turned 90° clockwise: up on screen is −x
+    [InlineData(2, "8 7 m 4 0 l 0 7 l")]     // upside down: apex bottom centre
+    [InlineData(3, "0 8 m 7 4 l 0 0 l")]     // 270°: up on screen is +x
+    public void The_Caret_Appearance_Points_Up_As_The_Page_Is_Displayed(int quarterTurns, string path)
+    {
+        // An 8 × 7 caret as displayed; on a 90°/270° page its /Rect is 7 × 8.
+        var (w, h) = (quarterTurns & 1) == 0 ? (8f, 7f) : (7f, 8f);
+        var content = PdfReplyLinker.CaretAppearance(new CaretRetype(w, h, 0, 0, 1, quarterTurns));
+        Assert.Contains(path, content);
+    }
+
+    [Theory]
+    [InlineData(90, "7 0 m 0 4 l 7 8 l")]
+    [InlineData(270, "0 8 m 7 4 l 0 0 l")]
+    public void A_Caret_On_A_Rotated_Page_Keeps_Its_Box_And_Points_Up(int rotate, string path)
+    {
+        var bytes = new PdfAnnotationWriter().WriteReconciled(RotatedPdf(rotate), AnnotationTestHelpers.OnePage(Caret()));
+
+        var back = Assert.IsType<CaretAnnotation>(Assert.Single(ReadBack(bytes)));
+        Assert.Equal(150, back.X, 0.5f);
+        Assert.Equal(110, back.Y, 0.5f);
+        Assert.Equal(8, back.W, 0.5f);
+        Assert.Equal(7, back.H, 0.5f);
+        Assert.Contains(path, StreamText(bytes));
+        Assert.Matches(@"/BBox\s*\[0 0 7 8\]", Latin1(bytes));
     }
 }

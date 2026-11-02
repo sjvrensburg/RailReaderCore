@@ -261,6 +261,7 @@ internal static class PdfiumNative
     internal const int FPDF_ANNOT_INK = 15;
     internal const int FPDF_ANNOT_POPUP = 16;
     internal const int FPDF_ANNOT_FLAG_PRINT = 4;
+    internal const int FPDF_ANNOT_FLAG_NOROTATE = 16;
     internal const int FPDFANNOT_COLORTYPE_COLOR = 0;
     internal const int FPDFANNOT_COLORTYPE_INTERIOR = 1;
 
