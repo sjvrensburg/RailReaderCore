@@ -639,12 +639,31 @@ public sealed class AnalysisWorker : IDisposable
         }
     }
 
+    /// <summary>How long <see cref="Dispose"/> waits for the stage threads to stop.</summary>
+    public static TimeSpan ShutdownTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Stops both stages and waits (up to <see cref="ShutdownTimeout"/>) for their threads to finish,
+    /// which is when the layout analyzer and OCR service release their ONNX Runtime sessions. Without the
+    /// wait, a host that exits right after disposing tore down native libraries while a thread-pool thread
+    /// was still inside a GPU inference, crashing the process at exit (railreader2#276: SIGSEGV in the
+    /// NVIDIA driver, or a jump to a null address). An in-flight inference is abandoned through the
+    /// cancellation token, so the wait is normally short.
+    /// </summary>
     public void Dispose()
     {
+        if (_disposed) return;
         _disposed = true;
         _ocrChannel.Writer.TryComplete();
         _layoutChannel.Writer.TryComplete();
         _cts.Cancel();
+        var stages = _ocrTask is null ? new[] { _layoutTask } : new[] { _layoutTask, _ocrTask };
+        try
+        {
+            if (!Task.WaitAll(stages, ShutdownTimeout))
+                _logger.Warn($"[Worker] Stages still running {ShutdownTimeout.TotalSeconds:0.#} s after shutdown was requested");
+        }
+        catch (AggregateException) { } // faults are already logged by Observe
         _cts.Dispose();
     }
 }
