@@ -1248,6 +1248,13 @@ public sealed partial class Viewport : IDisposable
         Rail.StartSnapToCurrent(Camera.OffsetX, Camera.OffsetY, Camera.Zoom, windowWidth, windowHeight);
     }
 
+    /// <summary>Snap to the current line keeping the camera's horizontal position (a click on the
+    /// line). See <see cref="Services.RailNav.StartSnapKeepingX"/>.</summary>
+    public void StartSnapKeepingX(double windowWidth, double windowHeight)
+    {
+        Rail.StartSnapKeepingX(Camera.OffsetX, Camera.OffsetY, Camera.Zoom, windowWidth, windowHeight);
+    }
+
     public void StartSnapPreservingPosition(double windowWidth, double windowHeight,
         double horizontalFraction, double lineScreenY)
     {
