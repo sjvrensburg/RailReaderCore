@@ -413,7 +413,10 @@ public sealed partial class DocumentController
 
         vp.Rail.FindBlockNearPoint(pageX, pageY);
         var (ww2, wh2) = (vp.Width, vp.Height);
-        vp.StartSnap(ww2, wh2);
+        // Keep the camera's x: the clicked point is on screen, so aligning the line start would only
+        // throw the reader away from where they clicked (e.g. the first click of a double-click
+        // that opens a highlight's comment). The line still comes to the reading height.
+        vp.StartSnapKeepingX(ww2, wh2);
         // The click-snap must not fight the wall-clock scroll trajectory: without a pause the
         // Scrolling state recomputes cameraX from the pre-click origin every frame, discarding
         // the snap's X (only its Y survived) and potentially firing an instant line advance

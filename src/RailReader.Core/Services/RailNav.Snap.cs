@@ -19,6 +19,31 @@ public sealed partial class RailNav
     }
 
     /// <summary>
+    /// Snap to the current line for a click on it: the line comes to the reading height as usual,
+    /// but on a unit wider than the window the camera keeps its horizontal position (hard-clamped
+    /// into the unit's scroll range) instead of aligning the line start. The clicked point is on
+    /// screen by definition, so the reader stays where they clicked — a click on a highlight that
+    /// opens its comment, or seats the rail mid-line, no longer throws the view back to the line
+    /// start. Narrow (centred or fitting) units frame exactly as <see cref="StartSnapToCurrent"/>.
+    /// </summary>
+    public void StartSnapKeepingX(double cameraX, double cameraY, double zoom, double windowWidth, double windowHeight)
+    {
+        if (!CanNavigate || SnapSuppressed(zoom)) return;
+        var (targetX, targetY) = ComputeTargetCamera(zoom, windowWidth, windowHeight);
+        var (chunkLeft, chunkRight, chunkWidthPx) = GetFramingBounds(zoom);
+        if (chunkWidthPx > windowWidth && !ShouldCenterUnit(chunkWidthPx, windowWidth))
+        {
+            double maxX = -chunkLeft * zoom;
+            double minX = windowWidth - chunkRight * zoom;
+            targetX = SnapX(Math.Clamp(cameraX, minX, maxX), zoom);
+        }
+        BeginSnap(cameraX, cameraY, targetX, targetY);
+    }
+
+    /// <summary>Target of the snap in progress, or null when none is running. Test hook.</summary>
+    internal (double X, double Y)? PendingSnapTarget => _snap is { } s ? (s.TargetX, s.TargetY) : null;
+
+    /// <summary>
     /// Snap to the right (end) edge of the current line. Used when navigating backward
     /// via edge-hold so the user lands at the end of the previous line and can continue scrolling.
     /// </summary>

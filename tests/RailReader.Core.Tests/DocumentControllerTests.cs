@@ -806,6 +806,87 @@ public class DocumentControllerTests : IDisposable
     }
 
     [Fact]
+    public void HandleClick_RailMode_WideLine_KeepsCameraX()
+    {
+        // At rail zoom the test block (468 pt wide, zoom 4) is far wider than the 800 px window. A click
+        // mid-line must not throw the view back to the line start: the snap keeps the camera's x and
+        // only brings the line to the reading height.
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupRailMode(state);
+        var vp = state.Primary;
+        Assert.True(vp.Rail.Active);
+
+        vp.Camera.OffsetX = -800; // scrolled into the middle of the line (range is [-1360, -288])
+        var block = vp.Rail.CurrentNavigableBlock;
+        var line = block.Lines[2];
+        double pageX = line.X + line.Width / 2, pageY = line.Y;
+        double canvasX = pageX * vp.Camera.Zoom + vp.Camera.OffsetX;
+        double canvasY = pageY * vp.Camera.Zoom + vp.Camera.OffsetY;
+
+        var (handled, _) = _controller.HandleClick(canvasX, canvasY);
+
+        Assert.True(handled);
+        Assert.Equal(2, vp.Rail.CurrentLine);
+        var target = vp.Rail.PendingSnapTarget;
+        Assert.NotNull(target);
+        Assert.Equal(-800, target.Value.X, 3);
+        var (lineStartX, readingY) = vp.Rail.ComputeSnapTarget(vp.Camera.Zoom, vp.Width, vp.Height);
+        Assert.NotEqual(lineStartX, target.Value.X, 3); // the old behaviour would have aligned the line start
+        Assert.Equal(readingY, target.Value.Y, 3);
+    }
+
+    [Fact]
+    public void HandleClick_RailMode_WideLine_ClampsCameraXIntoScrollRange()
+    {
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(800, 600);
+        SetupRailMode(state);
+        var vp = state.Primary;
+
+        vp.Camera.OffsetX = -100; // left of the unit's scroll range (its left boundary, with margin, is < -100)
+        var line = vp.Rail.CurrentNavigableBlock.Lines[1];
+        double canvasX = (line.X + 10) * vp.Camera.Zoom + vp.Camera.OffsetX;
+        double canvasY = line.Y * vp.Camera.Zoom + vp.Camera.OffsetY;
+
+        _controller.HandleClick(canvasX, canvasY);
+
+        // Clamped to the left boundary of the range — which is where the line-start framing lands too.
+        var (lineStartX, _) = vp.Rail.ComputeSnapTarget(vp.Camera.Zoom, vp.Width, vp.Height);
+        Assert.True(lineStartX < -100);
+        Assert.Equal(lineStartX, vp.Rail.PendingSnapTarget!.Value.X, 3);
+    }
+
+    [Fact]
+    public void HandleClick_RailMode_UnitFitsWindow_FramesAsBefore()
+    {
+        // 468 pt × zoom 4 = 1872 px fits a 2000 px window: no horizontal scroll range, so the click
+        // frames the unit exactly as the standard snap does.
+        var state = _controller.CreateDocument(_pdfPath);
+        state.LoadPageBitmap();
+        _controller.AddDocument(state);
+        _controller.SetViewportSize(2000, 600);
+        SetupRailMode(state);
+        var vp = state.Primary;
+
+        vp.Camera.OffsetX = -50;
+        var line = vp.Rail.CurrentNavigableBlock.Lines[3];
+        double canvasX = (line.X + 20) * vp.Camera.Zoom + vp.Camera.OffsetX;
+        double canvasY = line.Y * vp.Camera.Zoom + vp.Camera.OffsetY;
+
+        _controller.HandleClick(canvasX, canvasY);
+
+        var expected = vp.Rail.ComputeSnapTarget(vp.Camera.Zoom, vp.Width, vp.Height);
+        var target = vp.Rail.PendingSnapTarget!.Value;
+        Assert.Equal(expected.X, target.X, 3);
+        Assert.Equal(expected.Y, target.Y, 3);
+    }
+
+    [Fact]
     public void HandleClick_EmptyArea_NotHandled()
     {
         var state = _controller.CreateDocument(_pdfPath);
