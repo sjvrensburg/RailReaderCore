@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.83.0 — A rail-mode click keeps your place on the line (2026-11-10)
+
+- **A rail-mode click keeps your place on the line.** A click seated the clicked line and snapped the
+  camera back to the line's start, so on a line wider than the window the reader lost the spot they
+  clicked. It showed most on the first click of a double-click that opens a highlight's comment: the
+  view jumped to the line start before the dialog appeared. `HandleClick` now uses the new
+  `RailNav.StartSnapKeepingX` (and `Viewport.StartSnapKeepingX`). The line still comes to the reading
+  height, but the camera keeps its horizontal position, clamped into the line's scroll range. A line
+  that fits the window is framed as before, and the other snaps (line advance, Home/End, zoom, search)
+  are unchanged. Home still takes you to the line start.
+
 ## 0.82.2 — Old annotations become visible to PyMuPDF on the next save (2026-11-02)
 
 - **Old annotations become visible to PyMuPDF on the next save (#186).** 0.79.1 moved the annotations a
