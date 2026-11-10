@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.83.1 — Disposing the analysis worker waits for its threads (2026-11-10)
+
+- **`AnalysisWorker.Dispose` now stops its stages and waits for them.** It used to cancel and return at
+  once, so a host that exited right after disposing tore down native libraries while a thread-pool
+  thread was still inside a GPU inference, or still held its ONNX Runtime session. The process then
+  crashed at exit (railreader2#276: SIGSEGV in the NVIDIA driver, or a jump to a null address). Dispose
+  now cancels the in-flight run, then waits up to `AnalysisWorker.ShutdownTimeout` (5 s) for the layout
+  and OCR stages to finish, which is when they dispose the analyzer and the OCR service. It is now
+  idempotent. `DocumentController.Dispose` stops the worker before disposing the documents.
+
 ## 0.83.0 — A rail-mode click keeps your place on the line (2026-11-10)
 
 - **A rail-mode click keeps your place on the line.** A click seated the clicked line and snapped the

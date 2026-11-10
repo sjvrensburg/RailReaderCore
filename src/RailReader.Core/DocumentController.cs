@@ -440,11 +440,13 @@ public sealed partial class DocumentController : IDisposable
     public void Dispose()
     {
         SaveAllReadingPositions();
+        // The worker first: Dispose waits for its threads to release their inference sessions, and it
+        // must not still be working on pages of documents that are already gone.
+        _worker?.Dispose();
+        _worker = null;
         foreach (var doc in Documents)
             doc.Dispose();
         Documents.Clear();
-        _worker?.Dispose();
-        _worker = null;
         _annotationManager.Dispose();
     }
 
