@@ -1215,10 +1215,16 @@ public sealed partial class DocumentController : IDisposable
                     // reader's drag bias, relative to the line, is kept).
                     if (readingLineChanged && vp.Rail.Active && !vp.Rail.Paused)
                         vp.StartSnap(vp.Width, vp.Height);
-                    // A narrower over-scroll margin (#199) pulls a browse camera back inside it. Rail
-                    // owns its own vertical framing, so an active rail is left to its next snap.
-                    else if (overscrollChanged && !vp.Rail.Active)
+                    // A narrower over-scroll margin (#199) pulls a browse (or free-panning) camera back
+                    // inside it. An unpaused rail owns its own vertical framing, so it is left to its
+                    // next snap.
+                    else if (overscrollChanged && (!vp.Rail.Active || vp.Rail.Paused))
+                    {
                         vp.ClampCamera(vp.Width, vp.Height);
+                        // The clamp can move the screen centre onto a neighbouring page in continuous
+                        // mode; adopt it as the anchor like any other camera move.
+                        ReanchorIfNeeded(vp, vp.Width, vp.Height);
+                    }
                 }
             }
         }
