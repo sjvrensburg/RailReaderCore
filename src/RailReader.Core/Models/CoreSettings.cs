@@ -18,6 +18,44 @@ public sealed record CoreSettings
     public double LinePadding { get; init; } = 0.2;
     public double JumpPercentage { get; init; } = 25.0;
 
+    /// <summary>
+    /// Where the rail seats the current line, as a fraction of the window height from the top
+    /// (#200). <c>0.5</c> (the default) is the window's vertical centre, exactly the old behaviour;
+    /// a smaller value seats the line higher. The rail's <c>VerticalBias</c> (a manual drag) is an
+    /// offset from this line, so its resets on a new page return the line here, not to the centre.
+    /// Clamped to [<see cref="MinRailReadingLineFraction"/>, <see cref="MaxRailReadingLineFraction"/>];
+    /// a non-finite value means 0.5. Read it through <see cref="EffectiveRailReadingLineFraction"/>.
+    /// </summary>
+    public double RailReadingLineFraction { get; init; } = 0.5;
+
+    public const double MinRailReadingLineFraction = 0.2;
+    public const double MaxRailReadingLineFraction = 0.8;
+
+    /// <summary><see cref="RailReadingLineFraction"/> clamped to its valid range.</summary>
+    public double EffectiveRailReadingLineFraction => double.IsFinite(RailReadingLineFraction)
+        ? Math.Clamp(RailReadingLineFraction, MinRailReadingLineFraction, MaxRailReadingLineFraction)
+        : 0.5;
+
+    /// <summary>
+    /// How far a pan may move a page's (or, in continuous mode, the document's) top or bottom edge
+    /// inward from the window edge, as a fraction of the window height (#199). Vertical only — the
+    /// rail's horizontal range has its own soft clamp. <c>0</c> (the default) is the old clamp
+    /// exactly. With margin <c>m = fraction × windowHeight</c>, a page taller than the window may sit
+    /// with <c>OffsetY</c> in <c>[windowHeight − pageHeight − m, m]</c>, and a shorter one within
+    /// <c>m</c> of the centre (fit-page and page starts still land centred; only a pan moves it).
+    /// Clamped to [0, <see cref="MaxVerticalOverscrollFraction"/>], so at least half the window is
+    /// always page and a page can never be panned out of view; a non-finite value means 0. Read it
+    /// through <see cref="EffectiveVerticalOverscrollFraction"/>. Confined (portal) views ignore it.
+    /// </summary>
+    public double VerticalOverscrollFraction { get; init; } = 0.0;
+
+    public const double MaxVerticalOverscrollFraction = 0.5;
+
+    /// <summary><see cref="VerticalOverscrollFraction"/> clamped to its valid range.</summary>
+    public double EffectiveVerticalOverscrollFraction => double.IsFinite(VerticalOverscrollFraction)
+        ? Math.Clamp(VerticalOverscrollFraction, 0.0, MaxVerticalOverscrollFraction)
+        : 0.0;
+
     // Hold-to-scroll
     public double ScrollSpeedStart { get; init; } = 14.0;
     public double ScrollSpeedMax { get; init; } = 42.0;

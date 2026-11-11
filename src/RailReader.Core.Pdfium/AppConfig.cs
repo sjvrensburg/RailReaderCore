@@ -24,6 +24,14 @@ public sealed class AppConfig : IRecentFilesStore
     public double ScrollSpeedMax { get; set; } = 42.0;
     public double DefaultAutoScrollSpeed => (ScrollSpeedStart + ScrollSpeedMax) / 2.0;
     public double ScrollRampTime { get; set; } = 1.5;
+
+    /// <summary>Where the rail seats the current line, as a fraction of the window height from the top
+    /// (0.5 = centre). See <see cref="CoreSettings.RailReadingLineFraction"/>.</summary>
+    public double RailReadingLineFraction { get; set; } = 0.5;
+
+    /// <summary>How far a pan may move the page's top/bottom edge inward from the window edge, as a
+    /// fraction of the window height (0 = never). See <see cref="CoreSettings.VerticalOverscrollFraction"/>.</summary>
+    public double VerticalOverscrollFraction { get; set; } = 1.0 / 3.0;
     /// <summary>Zoom at which the scroll speeds above are exact; hold-to-scroll, auto-scroll and the steered scroll are
     /// scaled by <c>(reference / zoom) ^ exponent</c> so the on-screen velocity doesn't grow with magnification.
     /// <c>&lt;= 0</c> disables it. See <see cref="CoreSettings.ScrollSpeedZoomReference"/>.</summary>
@@ -166,6 +174,8 @@ public sealed class AppConfig : IRecentFilesStore
         ScrollSpeedStart = ScrollSpeedStart,
         ScrollSpeedMax = ScrollSpeedMax,
         ScrollRampTime = ScrollRampTime,
+        RailReadingLineFraction = RailReadingLineFraction,
+        VerticalOverscrollFraction = VerticalOverscrollFraction,
         ScrollSpeedZoomReference = ScrollSpeedZoomReference,
         ScrollSpeedZoomExponent = ScrollSpeedZoomExponent,
         AnalysisLookaheadPages = AnalysisLookaheadPages,

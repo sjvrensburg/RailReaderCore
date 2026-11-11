@@ -260,7 +260,9 @@ public sealed partial class DocumentController
                         vp.Camera.OffsetY = forward
                             ? topTarget
                             : Math.Min(wh - (ry + rh) * vp.Camera.Zoom, topTarget);
-                        vp.ClampCamera(ww, wh);
+                        // Strict clamp: the turned-to page lands flush (centred if short), not in
+                        // the over-scroll margin the hold was triggered from (#199).
+                        vp.ClampCamera(ww, wh, overscroll: false);
                     }
                 }
             }

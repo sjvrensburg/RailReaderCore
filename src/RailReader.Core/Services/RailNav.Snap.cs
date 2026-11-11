@@ -135,8 +135,7 @@ public sealed partial class RailNav
         var line = CurrentLineInfo;
 
         double targetY = lineScreenY - line.Y * zoom;
-        double centeredY = windowHeight / 2.0 - line.Y * zoom;
-        VerticalBias = targetY - centeredY;
+        VerticalBias = targetY - ReadingLineOffsetY(line, zoom, windowHeight);
 
         var (blockLeft, blockRight, blockWidthPx) = GetFramingBounds(zoom);
         double targetX;
@@ -218,7 +217,7 @@ public sealed partial class RailNav
     private (double X, double Y) ComputeTargetCamera(double zoom, double windowWidth, double windowHeight)
     {
         var line = CurrentLineInfo;
-        double targetY = windowHeight / 2.0 - line.Y * zoom + VerticalBias;
+        double targetY = ReadingLineOffsetY(line, zoom, windowHeight) + VerticalBias;
 
         // Frame the current unit: the whole chunk (column run) for prose, so crossing block
         // boundaries within a column doesn't shift the camera horizontally — but a set-off display

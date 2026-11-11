@@ -43,8 +43,21 @@ public class ContinuousScrollBrowseModeTests : IDisposable
         var doc = SetupDoc();
         var vp = doc.Primary;
         vp.Camera.OffsetY = 100; // would be invalid without clamping down to the document top
-        vp.ClampCamera(vp.Width, vp.Height);
+        vp.ClampCamera(vp.Width, vp.Height, overscroll: false);
         Assert.Equal(0.0, vp.DocumentOffsetY, precision: 6);
+    }
+
+    [Fact]
+    public void ClampCamera_AtDocumentTop_AllowsOverscrollMargin()
+    {
+        // #199: the document's top edge may come inward by the margin, and no further.
+        var doc = SetupDoc();
+        var vp = doc.Primary;
+        double m = _appConfig.ToCoreSettings().EffectiveVerticalOverscrollFraction * vp.Height;
+        Assert.True(m > 0);
+        vp.Camera.OffsetY = 1_000_000;
+        vp.ClampCamera(vp.Width, vp.Height);
+        Assert.Equal(m, vp.DocumentOffsetY, precision: 6);
     }
 
     [Fact]
@@ -55,9 +68,15 @@ public class ContinuousScrollBrowseModeTests : IDisposable
         var layout = doc.PageLayout!;
         double z = vp.Camera.Zoom;
         vp.Camera.OffsetY = -1_000_000; // push far past the end
-        vp.ClampCamera(vp.Width, vp.Height);
+        vp.ClampCamera(vp.Width, vp.Height, overscroll: false);
         double expected = vp.Height - layout.TotalHeight * z;
         Assert.Equal(expected, vp.DocumentOffsetY, precision: 3);
+
+        // With the margin (#199) the document's end may come inward by m.
+        double m = _appConfig.ToCoreSettings().EffectiveVerticalOverscrollFraction * vp.Height;
+        vp.Camera.OffsetY = -1_000_000;
+        vp.ClampCamera(vp.Width, vp.Height);
+        Assert.Equal(expected - m, vp.DocumentOffsetY, precision: 3);
     }
 
     [Fact]
