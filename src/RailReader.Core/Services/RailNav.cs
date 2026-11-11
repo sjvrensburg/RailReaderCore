@@ -518,7 +518,14 @@ public sealed partial class RailNav : ICameraClamp
         return bestIdx;
     }
 
-    private static int FindNearestLine(LayoutBlock block, double pageY)
+    /// <summary>
+    /// Index of the line of <paramref name="block"/> a click at page-space <paramref name="pageY"/>
+    /// seats — the line whose centre (<see cref="LineInfo.Y"/>) is nearest, the first on a tie — or 0
+    /// when the block has no lines. This is the rule <see cref="FindBlockNearPoint"/> uses, exposed so
+    /// a host choosing a line before the rail is seated (e.g. the <c>line</c> for
+    /// <c>DocumentController.SmoothlyFrameBlock</c> on a double-click) picks the same one a click would.
+    /// </summary>
+    public static int FindNearestLine(LayoutBlock block, double pageY)
     {
         double bestDist = double.MaxValue;
         int bestLine = 0;

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.84.0 — Hosts can pick a click's line the way the rail does (2026-11-11)
+
+- **`RailNav.FindNearestLine(LayoutBlock, double pageY)` is now public** (#197). It is the rule a
+  rail-mode click uses to seat its line: the line whose centre (`LineInfo.Y`) is nearest `pageY`, the
+  first on a tie, or 0 when the block has no lines. Behaviour is unchanged. A host that has to choose a
+  line before the rail is seated, such as the `line` argument of `DocumentController.SmoothlyFrameBlock`
+  for a double-click, can call it instead of keeping its own copy that could drift from Core's rule.
+  Additive; no existing API changes.
+
 ## 0.83.1 — Disposing the analysis worker waits for its threads (2026-11-10)
 
 - **`AnalysisWorker.Dispose` now stops its stages and waits for them.** It used to cancel and return at

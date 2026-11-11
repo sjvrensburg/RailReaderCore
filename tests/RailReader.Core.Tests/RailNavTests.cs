@@ -1491,4 +1491,48 @@ public class RailNavTests
         Assert.Equal(1.0, nav.SnapProgress); // no snap running
     }
 
+    // ===== FindNearestLine (public, issue #197) =====
+
+    private static LayoutBlock LinesBlock(params float[] centres)
+    {
+        var b = new LayoutBlock { BBox = new BBox(72, 100, 400, 200), Role = BlockRole.Text, Confidence = 0.9f };
+        foreach (var y in centres) b.Lines.Add(new LineInfo(y, 16, 72, 400));
+        return b;
+    }
+
+    [Fact]
+    public void FindNearestLine_NoLines_ReturnsZero()
+    {
+        Assert.Equal(0, RailNav.FindNearestLine(LinesBlock(), 150));
+    }
+
+    [Theory]
+    [InlineData(0, 0)]      // above the first line
+    [InlineData(118, 0)]
+    [InlineData(131, 1)]    // nearer line 1's centre (140) than line 0's (120)
+    [InlineData(165, 2)]
+    [InlineData(1000, 3)]   // below the last line
+    public void FindNearestLine_PicksNearestCentre(double pageY, int expected)
+    {
+        Assert.Equal(expected, RailNav.FindNearestLine(LinesBlock(120, 140, 160, 180), pageY));
+    }
+
+    [Fact]
+    public void FindNearestLine_Tie_PicksFirst()
+    {
+        Assert.Equal(0, RailNav.FindNearestLine(LinesBlock(120, 140), 130));
+    }
+
+    [Fact]
+    public void FindNearestLine_MatchesClickSeating()
+    {
+        var block = LinesBlock(120, 140, 160, 180);
+        var nav = new RailNav(_config.ToCoreSettings());
+        nav.SetAnalysis(ChunkAnalysis(block), NavRoles);
+        foreach (var y in new[] { 100.0, 129.0, 151.0, 175.0, 300.0 })
+        {
+            nav.FindBlockNearPoint(200, y);
+            Assert.Equal(RailNav.FindNearestLine(block, y), nav.CurrentLine);
+        }
+    }
 }
