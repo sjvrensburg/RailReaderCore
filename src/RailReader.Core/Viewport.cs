@@ -1198,21 +1198,15 @@ public sealed partial class Viewport : IDisposable
 
     /// <summary>
     /// Clamps a vertical offset of content <paramref name="scaledH"/> tall in a window
-    /// <paramref name="windowHeight"/> tall, letting either content edge come up to
-    /// <paramref name="margin"/> inward of the window edge. Content taller than the window: <c>[wh −
-    /// scaledH − m, m]</c>. Shorter: within <c>m</c> of centre. With <c>m = 0</c> both are exactly the
-    /// strict clamp (flush / centred). The two ranges meet at <c>scaledH == wh</c>, so a zoom crossing
-    /// the window height doesn't jump.
+    /// <paramref name="windowHeight"/> tall. Content taller than the window may have either edge up to
+    /// <paramref name="margin"/> inward of the window edge: <c>[wh − scaledH − m, m]</c>. Content no
+    /// taller than the window is centred, whatever the margin — so fit-page stays pinned and its
+    /// arrow-key page flipping hits the edge at once. With <c>m = 0</c> this is exactly the strict clamp.
     /// </summary>
     internal static double ClampVerticalOffset(double offsetY, double scaledH, double windowHeight, double margin)
-    {
-        if (scaledH <= windowHeight)
-        {
-            double centred = (windowHeight - scaledH) / 2.0;
-            return margin > 0 ? Math.Clamp(offsetY, centred - margin, centred + margin) : centred;
-        }
-        return Math.Clamp(offsetY, windowHeight - scaledH - margin, margin);
-    }
+        => scaledH <= windowHeight
+            ? (windowHeight - scaledH) / 2.0
+            : Math.Clamp(offsetY, windowHeight - scaledH - margin, margin);
 
     private double ContinuousScrollDocumentOffsetX(double scaledDocW, double windowWidth)
         => scaledDocW <= windowWidth

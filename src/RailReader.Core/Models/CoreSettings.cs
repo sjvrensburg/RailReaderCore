@@ -41,13 +41,11 @@ public sealed record CoreSettings
     /// inward from the window edge, as a fraction of the window height (#199). Vertical only — the
     /// rail's horizontal range has its own soft clamp. <c>0</c> (the default) is the old clamp
     /// exactly. With margin <c>m = fraction × windowHeight</c>, a page taller than the window may sit
-    /// with <c>OffsetY</c> in <c>[windowHeight − pageHeight − m, m]</c>, and a shorter one within
-    /// <c>m</c> of the centre (fit-page and page starts still land centred; a pan, or a zoom/resize
-    /// that is then clamped, may leave it off-centre by up to <c>m</c>).
+    /// with <c>OffsetY</c> in <c>[windowHeight − pageHeight − m, m]</c>. A page (or document) no taller
+    /// than the window is still centred, as before, so fit-page is unaffected. Page starts land flush.
     /// Clamped to [0, <see cref="MaxVerticalOverscrollFraction"/>], so a page taller than the window
-    /// always fills at least half of it and a short page keeps at least half its height in view; a
-    /// non-finite value means 0. Read it
-    /// through <see cref="EffectiveVerticalOverscrollFraction"/>. Confined (portal) views ignore it.
+    /// always fills at least half of it; a non-finite value means 0. Read it through
+    /// <see cref="EffectiveVerticalOverscrollFraction"/>. Confined (portal) views ignore it.
     /// </summary>
     public double VerticalOverscrollFraction { get; init; } = 0.0;
 

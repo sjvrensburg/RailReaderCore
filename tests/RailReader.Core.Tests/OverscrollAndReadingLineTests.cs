@@ -66,14 +66,11 @@ public class OverscrollAndReadingLineTests : IDisposable
     }
 
     [Fact]
-    public void ClampVerticalOffset_RangesMeetAtWindowHeight()
+    public void ClampVerticalOffset_ShortContent_IsCentredWhateverTheMargin()
     {
-        // No jump when a zoom takes the page across the window height.
-        const double m = 200;
-        Assert.Equal(m, Viewport.ClampVerticalOffset(1e6, H, H, m), precision: 9);
-        Assert.Equal(m, Viewport.ClampVerticalOffset(1e6, H + 1e-9, H, m), precision: 6);
-        Assert.Equal(-m, Viewport.ClampVerticalOffset(-1e6, H, H, m), precision: 9);
-        Assert.Equal(-m, Viewport.ClampVerticalOffset(-1e6, H + 1e-9, H, m), precision: 6);
+        Assert.Equal(150, Viewport.ClampVerticalOffset(1e6, 300, H, 200));
+        Assert.Equal(150, Viewport.ClampVerticalOffset(-1e6, 300, H, 200));
+        Assert.Equal(0, Viewport.ClampVerticalOffset(1e6, H, H, 200));
     }
 
     [Fact]
@@ -116,7 +113,7 @@ public class OverscrollAndReadingLineTests : IDisposable
     }
 
     [Fact]
-    public void ShortPage_FitPageLandsCentred_PanMovesWithinMargin()
+    public void ShortPage_StaysCentred_MarginIsForTallPagesOnly()
     {
         var (controller, _, vp) = Setup();
         controller.FitPage();
@@ -126,9 +123,9 @@ public class OverscrollAndReadingLineTests : IDisposable
         Assert.Equal(centred, vp.Camera.OffsetY, precision: 6);
 
         controller.HandlePan(0, 1e6);
-        Assert.Equal(centred + H / 3.0, vp.Camera.OffsetY, precision: 6);
+        Assert.Equal(centred, vp.Camera.OffsetY, precision: 6);
         controller.HandlePan(0, -1e6);
-        Assert.Equal(centred - H / 3.0, vp.Camera.OffsetY, precision: 6);
+        Assert.Equal(centred, vp.Camera.OffsetY, precision: 6);
     }
 
     [Fact]
@@ -177,13 +174,14 @@ public class OverscrollAndReadingLineTests : IDisposable
     }
 
     [Fact]
-    public void PageEdgeHold_OnShortPage_TurnedPageLandsCentred()
+    public void PageEdgeHold_OnShortPage_IsAtEdgeAtOnce_AndTurnedPageLandsCentred()
     {
         var (controller, _, vp) = Setup();
         controller.FitPage();
         double centred = vp.Camera.OffsetY;
 
-        for (int i = 0; i < 500; i++) controller.HandleArrowDown();
+        controller.HandleArrowDown(); // first press is already at the edge: the camera doesn't move
+        Assert.Equal(centred, vp.Camera.OffsetY, precision: 6);
         Assert.Equal(0, vp.CurrentPage);
         Thread.Sleep(450);
         controller.HandleArrowDown();

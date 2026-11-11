@@ -6,14 +6,14 @@
   (#199). New setting `CoreSettings.VerticalOverscrollFraction` (persisted as
   `vertical_overscroll_fraction`), a fraction of the window height. Let `m` be that fraction times
   the window height. On a page taller than the window, `OffsetY` is now clamped to
-  `[windowHeight − pageHeight − m, m]` instead of `[windowHeight − pageHeight, 0]`. A shorter page
-  (fit-page) can move up to `m` either side of centre instead of being pinned there. In continuous
-  mode the margin applies only at the document's start and end. The fraction is capped at 0.5, so at
-  least half the window is always page. The margin is vertical only, and confined (portal) views ignore
+  `[windowHeight − pageHeight − m, m]` instead of `[windowHeight − pageHeight, 0]`. A page no taller
+  than the window (fit-page) is still centred, so fit-page arrow-key paging is unchanged. In continuous
+  mode the margin applies only at the document's start and end. The fraction is capped at 0.5, so a
+  page taller than the window always fills at least half of it. The margin is vertical only, and confined (portal) views ignore
   it. This lets a reader drag the page out from under a host overlay, and, in rail mode near a page's
   bottom, drag the line above the middle: `HandlePan` records the bias after the wider clamp. A page
-  start (`GoToPage`, the page-edge-hold turn) still lands flush, or centred for a short page, rather
-  than inheriting a pan into the margin. The page-edge hold now starts at the extended edge.
+  start (`GoToPage`, the page-edge-hold turn) still lands flush rather than inheriting a pan into the
+  margin. On a tall page the page-edge hold now starts at the extended edge.
   **Defaults:** `CoreSettings` defaults to 0, which is exactly the old clamp. `AppConfig` defaults to
   1/3, so desktop hosts get the margin unless `config.json` sets it. Changing the setting re-clamps
   every browse-mode view.
