@@ -483,8 +483,9 @@ public sealed partial class RailNav : ICameraClamp
     {
         if (_analysis is null) return;
 
+        // The point the rail reads from: horizontally centred, vertically on the reading line (#200).
         double centerX = (windowWidth / 2.0 - cameraX) / zoom;
-        double centerY = (windowHeight / 2.0 - cameraY) / zoom;
+        double centerY = (ReadingLineScreenY(windowHeight) - cameraY) / zoom;
 
         CurrentBlock = FindNearestNavigableIndex(centerX, centerY);
         CurrentLine = 0;
@@ -698,16 +699,27 @@ public sealed partial class RailNav : ICameraClamp
 
 
     /// <summary>
-    /// Captures the vertical bias from the current camera position relative to
-    /// where the current line's center-aligned position would be.
+    /// Screen Y (from the window top) at which the rail seats the current line's centre when
+    /// <see cref="VerticalBias"/> is 0: <see cref="CoreSettings.RailReadingLineFraction"/> of the
+    /// window height (#200; 0.5 = the vertical centre, the historical behaviour).
+    /// </summary>
+    public double ReadingLineScreenY(double windowHeight)
+        => windowHeight * _config.EffectiveRailReadingLineFraction;
+
+    /// <summary>Camera OffsetY that puts the current line's centre on the reading line, before
+    /// <see cref="VerticalBias"/>. <see cref="VerticalBias"/> is always relative to this.</summary>
+    internal double ReadingLineOffsetY(LineInfo line, double zoom, double windowHeight)
+        => ReadingLineScreenY(windowHeight) - line.Y * zoom;
+
+    /// <summary>
+    /// Captures the vertical bias from the current camera position relative to where the current
+    /// line would sit on the reading line (<see cref="ReadingLineScreenY"/>).
     /// Call this when the user manually pans while in rail mode.
     /// </summary>
     public void CaptureVerticalBias(double cameraY, double zoom, double windowHeight)
     {
         if (!CanNavigate) return;
-        var line = CurrentLineInfo;
-        double centeredY = windowHeight / 2.0 - line.Y * zoom;
-        VerticalBias = cameraY - centeredY;
+        VerticalBias = cameraY - ReadingLineOffsetY(CurrentLineInfo, zoom, windowHeight);
     }
 
     public double? ComputeLineStartX(double zoom, double windowWidth)

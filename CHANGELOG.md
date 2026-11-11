@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.85.0 — Over-scroll margin and a configurable rail reading line (2026-11-11)
+
+- **A pan can now move the page's top or bottom edge inward from the window edge, up to a limit**
+  (#199). New setting `CoreSettings.VerticalOverscrollFraction` (persisted as
+  `vertical_overscroll_fraction`), a fraction of the window height. Let `m` be that fraction times
+  the window height. On a page taller than the window, `OffsetY` is now clamped to
+  `[windowHeight − pageHeight − m, m]` instead of `[windowHeight − pageHeight, 0]`. A page no taller
+  than the window (fit-page) is still centred, so fit-page arrow-key paging is unchanged. In continuous
+  mode the margin applies only at the document's start and end. The fraction is capped at 0.5, so a
+  page taller than the window always fills at least half of it. The margin is vertical only, and confined (portal) views ignore
+  it. This lets a reader drag the page out from under a host overlay, and, in rail mode near a page's
+  bottom, drag the line above the middle: `HandlePan` records the bias after the wider clamp. A page
+  start (`GoToPage`, the page-edge-hold turn) still lands flush rather than inheriting a pan into the
+  margin. On a tall page the page-edge hold now starts at the extended edge.
+  **Defaults:** `CoreSettings` defaults to 0, which is exactly the old clamp. `AppConfig` defaults to
+  1/3, so desktop hosts get the margin unless `config.json` sets it. Changing the setting re-clamps
+  every browse-mode view.
+- **The rail's reading line is configurable** (#200). New setting `CoreSettings.RailReadingLineFraction`
+  (persisted as `rail_reading_line_fraction`) is the line's height as a fraction of the window from the
+  top, clamped to 0.2–0.8. The default 0.5 is the old centre. Every rail framing now measures from this
+  line instead of the window centre: snaps, line steps, jumps, zoom and position-preserving snaps,
+  history restore, and the block chosen when rail mode switches on during a zoom-in. `VerticalBias`
+  (a manual drag) is now relative to it, so its existing resets on a new page put the line back at the
+  reader's chosen height. Changing the setting re-snaps every active rail.
+  New public `RailNav.ReadingLineScreenY(windowHeight)`.
+- `Viewport.ClampCamera` keeps its signature; an internal `overscroll: false` overload is the strict
+  clamp. Additive.
+
 ## 0.84.0 — Hosts can pick a click's line the way the rail does (2026-11-11)
 
 - **`RailNav.FindNearestLine(LayoutBlock, double pageY)` is now public** (#197). It is the rule a

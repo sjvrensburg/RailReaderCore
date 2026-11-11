@@ -604,7 +604,7 @@ public sealed partial class DocumentController : IDisposable
             // Keep the restored camera: express its Y as the rail's vertical bias so the next snap or
             // line advance doesn't recentre the line.
             var li = vp.Rail.CurrentLineInfo;
-            vp.Rail.VerticalBias = vp.Camera.OffsetY - (wh / 2.0 - li.Y * vp.Camera.Zoom);
+            vp.Rail.VerticalBias = vp.Camera.OffsetY - vp.Rail.ReadingLineOffsetY(li, vp.Camera.Zoom, wh);
         }
         vp.UpdateRenderDpiIfNeeded();
         FireReadingPositionChanged();
@@ -1166,6 +1166,8 @@ public sealed partial class DocumentController : IDisposable
     /// </summary>
     public void OnConfigChanged(CoreSettings newConfig)
     {
+        bool readingLineChanged = newConfig.EffectiveRailReadingLineFraction != _config.EffectiveRailReadingLineFraction;
+        bool overscrollChanged = newConfig.EffectiveVerticalOverscrollFraction != _config.EffectiveVerticalOverscrollFraction;
         _config = newConfig;
         // Set through the property, not the worker field: a change has to invalidate the
         // scanned pages already analysed under the old value, which its setter handles.
@@ -1206,6 +1208,24 @@ public sealed partial class DocumentController : IDisposable
                 // analysis on a page that wasn't being shown with structure.
                 if (paramsChanged && doc.IsPageAnalysed(vp.CurrentPage))
                     doc.SubmitAnalysis(vp, _worker, _config.NavigableRoles);
+
+                if (vp.Width > 0 && vp.Height > 0)
+                {
+                    // A moved reading line (#200) re-seats the current line at its new height (the
+                    // reader's drag bias, relative to the line, is kept).
+                    if (readingLineChanged && vp.Rail.Active && !vp.Rail.Paused)
+                        vp.StartSnap(vp.Width, vp.Height);
+                    // A narrower over-scroll margin (#199) pulls a browse (or free-panning) camera back
+                    // inside it. An unpaused rail owns its own vertical framing, so it is left to its
+                    // next snap.
+                    else if (overscrollChanged && (!vp.Rail.Active || vp.Rail.Paused))
+                    {
+                        vp.ClampCamera(vp.Width, vp.Height);
+                        // The clamp can move the screen centre onto a neighbouring page in continuous
+                        // mode; adopt it as the anchor like any other camera move.
+                        ReanchorIfNeeded(vp, vp.Width, vp.Height);
+                    }
+                }
             }
         }
     }

@@ -1133,6 +1133,16 @@ public sealed partial class Viewport : IDisposable
             : Camera.ZoomMin;
 
     public void ClampCamera(double windowWidth, double windowHeight)
+        => ClampCamera(windowWidth, windowHeight, overscroll: true);
+
+    /// <summary>
+    /// <see cref="ClampCamera(double, double)"/> with the vertical over-scroll margin
+    /// (<see cref="CoreSettings.VerticalOverscrollFraction"/>, #199) switched on or off.
+    /// <paramref name="overscroll"/> false is the strict clamp — page edges flush with the window, a
+    /// short page centred — which a page start uses so a new page lands flush/centred rather than
+    /// inheriting a pan into the margin from the page before. The confinement clamp ignores it.
+    /// </summary>
+    internal void ClampCamera(double windowWidth, double windowHeight, bool overscroll)
     {
         // Block-confined (portal) view: clamp pan — and floor zoom — to the focus block's rectangle
         // instead of the whole page, so the view can never wander off the pinned block. Inert while a
@@ -1161,7 +1171,8 @@ public sealed partial class Viewport : IDisposable
             double scaledDocH = layout.TotalHeight * Camera.Zoom;
 
             double docOx = ContinuousScrollDocumentOffsetX(scaledDocW, windowWidth);
-            double docOy = ContinuousScrollDocumentOffsetY(scaledDocH, windowHeight);
+            double docOy = ClampVerticalOffset(DocumentOffsetY, scaledDocH, windowHeight,
+                VerticalOverscrollMargin(windowHeight, overscroll));
 
             int a = CurrentPageBacking;
             Camera.OffsetX = docOx + layout.Left(a) * Camera.Zoom;
@@ -1177,21 +1188,30 @@ public sealed partial class Viewport : IDisposable
         else
             Camera.OffsetX = Math.Clamp(Camera.OffsetX, windowWidth - scaledW, 0);
 
-        if (scaledH <= windowHeight)
-            Camera.OffsetY = (windowHeight - scaledH) / 2.0;
-        else
-            Camera.OffsetY = Math.Clamp(Camera.OffsetY, windowHeight - scaledH, 0);
+        Camera.OffsetY = ClampVerticalOffset(Camera.OffsetY, scaledH, windowHeight,
+            VerticalOverscrollMargin(windowHeight, overscroll));
     }
+
+    /// <summary>The vertical over-scroll margin in screen pixels for this window (#199).</summary>
+    private double VerticalOverscrollMargin(double windowHeight, bool overscroll)
+        => overscroll ? Owner.Config.EffectiveVerticalOverscrollFraction * windowHeight : 0.0;
+
+    /// <summary>
+    /// Clamps a vertical offset of content <paramref name="scaledH"/> tall in a window
+    /// <paramref name="windowHeight"/> tall. Content taller than the window may have either edge up to
+    /// <paramref name="margin"/> inward of the window edge: <c>[wh − scaledH − m, m]</c>. Content no
+    /// taller than the window is centred, whatever the margin — so fit-page stays pinned and its
+    /// arrow-key page flipping hits the edge at once. With <c>m = 0</c> this is exactly the strict clamp.
+    /// </summary>
+    internal static double ClampVerticalOffset(double offsetY, double scaledH, double windowHeight, double margin)
+        => scaledH <= windowHeight
+            ? (windowHeight - scaledH) / 2.0
+            : Math.Clamp(offsetY, windowHeight - scaledH - margin, margin);
 
     private double ContinuousScrollDocumentOffsetX(double scaledDocW, double windowWidth)
         => scaledDocW <= windowWidth
             ? (windowWidth - scaledDocW) / 2.0
             : Math.Clamp(DocumentOffsetX, windowWidth - scaledDocW, 0);
-
-    private double ContinuousScrollDocumentOffsetY(double scaledDocH, double windowHeight)
-        => scaledDocH <= windowHeight
-            ? (windowHeight - scaledDocH) / 2.0
-            : Math.Clamp(DocumentOffsetY, windowHeight - scaledDocH, 0);
 
     /// <summary>
     /// Confinement clamp for a <see cref="Focus"/>ed (portal) view: floors zoom at the block's

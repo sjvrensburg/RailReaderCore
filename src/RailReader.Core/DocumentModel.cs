@@ -1082,7 +1082,10 @@ public sealed class DocumentModel : IDisposable
         }
         SubmitAnalysis(vp, worker, navigableRoles);
         vp.Camera.Zoom = oldZoom;
-        vp.ClampCamera(windowWidth, windowHeight);
+        // A page start lands flush (or centred, for a short page) — the strict clamp, not the
+        // over-scroll one (#199), so a pan into the margin on the old page isn't carried over. A
+        // PreserveScreen re-anchor must not move the screen, so it keeps the margin.
+        vp.ClampCamera(windowWidth, windowHeight, overscroll: preserve);
         return true;
     }
 
