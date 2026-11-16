@@ -23,6 +23,19 @@ public sealed class AnnotationFileManager : IDisposable
     /// </summary>
     public Action<string>? OnSaveFailure { get; set; }
 
+    /// <summary>
+    /// Raised after a document's annotations were successfully written to the store, once per
+    /// actual write: after the debounced auto-save, on the last <see cref="Release"/>, and from
+    /// <see cref="FlushAll"/>/<see cref="Dispose"/>. A flush with nothing unsaved raises nothing,
+    /// and a failed save raises <see cref="OnSaveFailure"/> instead. Raised synchronously on the
+    /// thread that saved — the UI thread for auto-save (it is marshalled there) and the caller's
+    /// thread otherwise. <see cref="AnnotationsSavedEventArgs.Annotations"/> is the live shared
+    /// model the UI keeps editing: copy what you need inside the handler rather than reading it
+    /// later from another thread. A handler that throws is logged and does not stop other
+    /// documents from being flushed.
+    /// </summary>
+    public event EventHandler<AnnotationsSavedEventArgs>? Saved;
+
     public AnnotationFileManager(IAnnotationStore store, IThreadMarshaller marshaller)
     {
         _store = store;
@@ -150,9 +163,26 @@ public sealed class AnnotationFileManager : IDisposable
             : _store.Delete(entry.PdfPath, entry.Password);
 
         if (ok)
+        {
             entry.Dirty = false;
+            RaiseSaved(entry, deleted: !hasContent);
+        }
         else if (hasContent)
             OnSaveFailure?.Invoke($"Failed to save annotations for {Path.GetFileName(entry.PdfPath)}");
+    }
+
+    private void RaiseSaved(SharedEntry entry, bool deleted)
+    {
+        var handler = Saved;
+        if (handler is null) return;
+        try
+        {
+            handler(this, new AnnotationsSavedEventArgs(entry.PdfPath, entry.Annotations, deleted));
+        }
+        catch (Exception ex)
+        {
+            RailReaderLogging.Logger.Error($"AnnotationFileManager.Saved handler failed for {Path.GetFileName(entry.PdfPath)}", ex);
+        }
     }
 
     private sealed class SharedEntry
@@ -164,4 +194,16 @@ public sealed class AnnotationFileManager : IDisposable
         public bool Dirty;
         public Timer? AutoSaveTimer;
     }
+}
+
+/// <summary>Arguments for <see cref="AnnotationFileManager.Saved"/>.</summary>
+/// <param name="PdfPath">The document's path as it was checked out.</param>
+/// <param name="Annotations">The live shared model that was saved; see <see cref="AnnotationFileManager.Saved"/>.</param>
+/// <param name="Deleted">True when the document had no annotations or bookmarks left, so its stored
+/// annotations were removed rather than written.</param>
+public sealed class AnnotationsSavedEventArgs(string pdfPath, AnnotationFile annotations, bool deleted) : EventArgs
+{
+    public string PdfPath { get; } = pdfPath;
+    public AnnotationFile Annotations { get; } = annotations;
+    public bool Deleted { get; } = deleted;
 }
