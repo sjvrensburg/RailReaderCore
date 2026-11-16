@@ -81,6 +81,13 @@ public sealed class SearchService
     }
 
     public void ExecuteSearch(string query, bool caseSensitive, bool useRegex)
+        => ExecuteSearch(query, caseSensitive, useRegex, startPage: null);
+
+    /// <summary>
+    /// <see cref="ExecuteSearch(string, bool, bool)"/>, activating the first match on or after
+    /// <paramref name="startPage"/> (see <see cref="FinalizeSearch(DocumentModel, List{SearchMatch}, int?)"/>).
+    /// </summary>
+    public void ExecuteSearch(string query, bool caseSensitive, bool useRegex, int? startPage)
     {
         CloseSearch();
 
@@ -94,7 +101,7 @@ public sealed class SearchService
         for (int page = 0; page < doc.PageCount; page++)
             SearchPage(doc, page, query, regex, comparison, allMatches);
 
-        FinalizeSearch(doc, allMatches);
+        FinalizeSearch(doc, allMatches, startPage);
     }
 
     /// <summary>
@@ -217,9 +224,21 @@ public sealed class SearchService
     }
 
     /// <summary>
-    /// Finalizes search results: sets active match, navigates, updates current page matches.
+    /// Finalizes search results: sets active match, navigates, updates current page matches. The
+    /// active match is the first on or after the page the focused view of <paramref name="doc"/> is
+    /// showing (the document's own current page if no focused view shows it), wrapping to the first.
     /// </summary>
     public void FinalizeSearch(DocumentModel doc, List<SearchMatch> allMatches)
+        => FinalizeSearch(doc, allMatches, startPage: null);
+
+    /// <summary>
+    /// <see cref="FinalizeSearch(DocumentModel, List{SearchMatch})"/>, but activating the first match on
+    /// or after <paramref name="startPage"/> (wrapping to the first match when none is) instead of the
+    /// one after the view's current page — for a host that opens a document at a result page and
+    /// finalises before the view has moved there, so the view goes straight to that page's match. Null
+    /// keeps the default. A confined (portal) view still activates only a match its block can show.
+    /// </summary>
+    public void FinalizeSearch(DocumentModel doc, List<SearchMatch> allMatches, int? startPage)
     {
         _searchedDocument = doc;
         SearchMatches = allMatches;
@@ -240,9 +259,9 @@ public sealed class SearchService
             // primary — so a search from a focused non-primary pane jumps relative to that pane. Only
             // honour the focused view's page when it is actually viewing THIS document; otherwise (a
             // caller finalising results for a non-focused doc) fall back to the doc's own current page.
-            int fromPage = FocusedView is { } fv && ReferenceEquals(fv.Owner, doc)
+            int fromPage = startPage ?? (FocusedView is { } fv && ReferenceEquals(fv.Owner, doc)
                 ? fv.CurrentPage
-                : doc.CurrentPage;
+                : doc.CurrentPage);
             int firstOnCurrentOrAfter = allMatches.FindIndex(m => m.PageIndex >= fromPage);
             int seed = firstOnCurrentOrAfter >= 0 ? firstOnCurrentOrAfter : 0;
             // Confined (portal) view: seed ONLY onto a reachable (in-block) match so the counter never

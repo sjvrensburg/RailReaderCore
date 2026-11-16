@@ -157,6 +157,39 @@ public class SearchServiceTests : IDisposable
         return matches;
     }
 
+    // #205: a host opening a document at a result page activates that page's match directly.
+    [Fact]
+    public void FinalizeSearch_StartPage_ActivatesFirstMatchOnOrAfterIt()
+    {
+        Assert.Equal(0, _state.CurrentPage);
+        _search.FinalizeSearch(_state, MakeMatches(0, 1, 2, 2), startPage: 2);
+        Assert.Equal(2, _search.ActiveMatchIndex);
+        Assert.Equal(2, _lastGoToPage);   // straight there, no stop at page 0
+    }
+
+    [Fact]
+    public void FinalizeSearch_StartPage_BetweenMatchPages_TakesTheNextOne()
+    {
+        _search.FinalizeSearch(_state, MakeMatches(0, 2), startPage: 1);
+        Assert.Equal(1, _search.ActiveMatchIndex);
+        Assert.Equal(2, _lastGoToPage);
+    }
+
+    [Fact]
+    public void FinalizeSearch_StartPage_PastTheLastMatch_WrapsToTheFirst()
+    {
+        _search.FinalizeSearch(_state, MakeMatches(0, 1), startPage: 2);
+        Assert.Equal(0, _search.ActiveMatchIndex);
+    }
+
+    [Fact]
+    public void FinalizeSearch_NullStartPage_KeepsTheCurrentPageDefault()
+    {
+        _search.FinalizeSearch(_state, MakeMatches(0, 1, 2), startPage: null);
+        Assert.Equal(0, _search.ActiveMatchIndex);
+        Assert.Equal(-1, _lastGoToPage);   // already on page 0: no page change
+    }
+
     [Fact]
     public void NextMatch_WrapsAround()
     {

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.87.0 — APIs for library search (2026-11-16)
+
+Four additions requested by railreader2's library search; nothing existing changes behaviour.
+
+- **`DocumentIdentity.KnownDocuments()`** (#202) lists every path in the identity map with the
+  id it last resolved to, as a sorted `KnownDocument(Path, Id)` snapshot. Read-only (it never
+  writes the map) and safe from any thread, so a host no longer parses `document_ids.json`
+  itself. A long-lived read-only host should call `Refresh()` first; a listed path may no longer
+  exist.
+- **`IPdfMetadataService`** (#203), a new optional capability discovered by casting the text
+  service (like `IPdfRulingService`): `GetMetadata(pdfBytes, password)` returns a `PdfMetadata`
+  record (Title, Author, Subject, Keywords, Creator, Producer; null when absent or blank,
+  `PdfMetadata.Empty` when the document can't be opened). The PDFium `PdfTextService` implements
+  it via `FPDF_GetMetaText` under `PdfiumGate.Lock`. It reuses the document cached for text
+  extraction when given those same bytes, and otherwise opens and closes its own copy, so reading
+  other files' metadata doesn't evict the open document. Info dictionary only: PDFium doesn't parse XMP. The PdfPig backend doesn't
+  implement it yet.
+- **`AnnotationFileManager.Saved`** (#204) is raised after each successful write of a
+  document's annotations (debounced auto-save, last `Release`, `FlushAll`, `Dispose`) with the
+  path, the saved model and whether an emptied document's stored annotations were deleted. Not
+  raised for a clean flush or a failed save. Synchronous on the saving thread (for auto-save,
+  wherever the marshaller runs posted work: the UI thread, or a timer thread under
+  `SynchronousThreadMarshaller`); flushes of one document are serialised, so a racing
+  `Release`/`FlushAll` can't write it, or raise the event, twice. The model is the live shared one, so copy inside the handler. A throwing handler is
+  logged and doesn't stop other documents flushing. Reach it via
+  `DocumentController.AnnotationManager`.
+- **`SearchService.FinalizeSearch(doc, matches, startPage)`** and
+  **`ExecuteSearch(query, caseSensitive, useRegex, startPage)`** (#205) activate the first match
+  on or after `startPage`, wrapping to the first, instead of the one after the focused view's
+  current page. A host that opens a document at a result page and searches before the view has
+  moved goes straight to that page's match. The existing overloads are unchanged.
+
 ## 0.86.0 — WebGPU runs on the GPU you pick (2026-11-16)
 
 - **`WebGpuAccelerator`'s `deviceIndex` now selects the GPU** (#182). Before, the plugin ignored

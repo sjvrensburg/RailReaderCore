@@ -143,6 +143,27 @@ public static class DocumentIdentity
     }
 
     /// <summary>
+    /// Every document path the map knows, with the id it last resolved to, sorted by path (ordinal).
+    /// A snapshot: later <see cref="Resolve"/> calls don't change the returned list. Read-only and
+    /// safe from any thread; it doesn't touch the file system beyond reading the map the first time,
+    /// so a path may name a file that has since moved or been deleted — check before opening it. A
+    /// long-lived read-only host should call <see cref="Refresh"/> first to see documents the app
+    /// opened since the map was read. Several paths can share an id (copies, moves), and a path
+    /// recorded under an older, non-canonical spelling is listed as recorded.
+    /// </summary>
+    public static IReadOnlyList<KnownDocument> KnownDocuments()
+    {
+        lock (s_lock)
+        {
+            var files = Map().Files;
+            var result = new List<KnownDocument>(files.Count);
+            foreach (var (path, entry) in files) result.Add(new KnownDocument(path, entry.Id));
+            result.Sort(static (a, b) => string.CompareOrdinal(a.Path, b.Path));
+            return result;
+        }
+    }
+
+    /// <summary>
     /// Re-reads the map from disk, for a long-lived read-only host: the map is otherwise read once per
     /// process, so documents the app opens later stay unknown to <see cref="Lookup"/>. Returns false and
     /// keeps the current map when the file can't be read — an empty map would send
@@ -260,6 +281,10 @@ public static class DocumentIdentity
         return Convert.ToHexStringLower(SHA256.HashData(stream));
     }
 }
+
+/// <summary>A document path recorded in the identity map and the id it last resolved to
+/// (<see cref="DocumentIdentity.KnownDocuments"/>).</summary>
+public readonly record struct KnownDocument(string Path, string Id);
 
 /// <summary>A path's last-seen (size, mtime) and the id it resolved to.</summary>
 public sealed class FileEntry

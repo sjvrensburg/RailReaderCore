@@ -31,6 +31,9 @@ internal static class PdfiumNative
         [MarshalAs(UnmanagedType.LPUTF8Str)] string? password);
     [DllImport(Lib)] internal static extern void FPDF_CloseDocument(IntPtr document);
     [DllImport(Lib)] internal static extern int FPDF_GetSignatureCount(IntPtr document);
+    // Document Info dictionary entry (Title, Author, ...): byte length incl. the UTF-16LE terminator.
+    [DllImport(Lib)] internal static extern uint FPDF_GetMetaText(IntPtr document,
+        [MarshalAs(UnmanagedType.LPStr)] string tag, IntPtr buffer, uint buflen);
 
     // FPDF_GetLastError returns the failure reason for the most recent load on this
     // thread. Only meaningful immediately after a load returned IntPtr.Zero.
