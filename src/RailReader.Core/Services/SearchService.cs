@@ -240,19 +240,7 @@ public sealed class SearchService
     /// </summary>
     public void FinalizeSearch(DocumentModel doc, List<SearchMatch> allMatches, int? startPage)
     {
-        _searchedDocument = doc;
-        SearchMatches = allMatches;
-        var byPage = new Dictionary<int, List<SearchMatch>>();
-        foreach (var m in allMatches)
-        {
-            if (!byPage.TryGetValue(m.PageIndex, out var list))
-            {
-                list = [];
-                byPage[m.PageIndex] = list;
-            }
-            list.Add(m);
-        }
-        _searchMatchesByPage = byPage;
+        InstallMatches(doc, allMatches);
         if (allMatches.Count > 0)
         {
             // Seed the active match at/after the FOCUSED view's page (issue #74), not the document's
@@ -274,6 +262,75 @@ public sealed class SearchService
             NavigateToActiveMatch();
         }
         UpdateCurrentPageMatches();
+    }
+
+    /// <summary>
+    /// Replaces the match list without moving any view — for a progressive search: finalise with the
+    /// first page's matches (<see cref="FinalizeSearch(DocumentModel, List{SearchMatch}, int?)"/>,
+    /// which navigates), then install the complete list here when the rest of the document has been
+    /// searched, so a reader who has moved on meanwhile isn't pulled back.
+    /// <para>
+    /// <paramref name="allMatches"/> is the complete list, sorted in page order (as
+    /// <see cref="SearchPage"/> produces it). The active match stays the same match (same page and
+    /// <see cref="SearchMatch.CharStart"/>) when it is in the new list; otherwise it becomes the first
+    /// match on or after the old active match's page, wrapping to the first. With no previous active
+    /// match for <paramref name="doc"/> (a first call, or the previous list was another document's)
+    /// it is seeded as <see cref="FinalizeSearch(DocumentModel, List{SearchMatch})"/> seeds it — but
+    /// still without navigating. A confined (portal) view showing <paramref name="doc"/> keeps its
+    /// rule: the active match must be one its block can show (the nearest such, or none).
+    /// Rebuilds the per-page index and <see cref="CurrentPageSearchMatches"/>.
+    /// </para>
+    /// </summary>
+    public void UpdateMatches(DocumentModel doc, List<SearchMatch> allMatches)
+    {
+        SearchMatch? previous = ReferenceEquals(_searchedDocument, doc)
+            && ActiveMatchIndex >= 0 && ActiveMatchIndex < SearchMatches.Count
+            ? SearchMatches[ActiveMatchIndex]
+            : null;
+
+        InstallMatches(doc, allMatches);
+
+        if (allMatches.Count == 0)
+        {
+            ActiveMatchIndex = 0;   // as CloseSearch leaves it
+        }
+        else
+        {
+            int index;
+            if (previous is not null)
+            {
+                index = allMatches.FindIndex(m => m.PageIndex == previous.PageIndex && m.CharStart == previous.CharStart);
+                if (index < 0) index = allMatches.FindIndex(m => m.PageIndex >= previous.PageIndex);
+                if (index < 0) index = 0;
+            }
+            else
+            {
+                int fromPage = FocusedView is { } fv && ReferenceEquals(fv.Owner, doc) ? fv.CurrentPage : doc.CurrentPage;
+                index = allMatches.FindIndex(m => m.PageIndex >= fromPage);
+                if (index < 0) index = 0;
+            }
+            if (FocusedView is { } cfv && ReferenceEquals(cfv.Owner, doc) && cfv.CurrentFocusBlockIndex is not null)
+                index = ResolveReachableTarget(index);
+            ActiveMatchIndex = index;
+        }
+        UpdateCurrentPageMatches();
+    }
+
+    private void InstallMatches(DocumentModel doc, List<SearchMatch> allMatches)
+    {
+        _searchedDocument = doc;
+        SearchMatches = allMatches;
+        var byPage = new Dictionary<int, List<SearchMatch>>();
+        foreach (var m in allMatches)
+        {
+            if (!byPage.TryGetValue(m.PageIndex, out var list))
+            {
+                list = [];
+                byPage[m.PageIndex] = list;
+            }
+            list.Add(m);
+        }
+        _searchMatchesByPage = byPage;
     }
 
     public void NextMatch()

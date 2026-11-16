@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.89.0 — Progressive search: replace the match list without moving the view (2026-11-16)
+
+- **`SearchService.UpdateMatches(doc, allMatches)`** (#211) installs a complete, page-ordered
+  match list without navigating, so a host can finalise with the hit page's matches first
+  (instant highlight and jump), search the rest of the document, then install the full list
+  without pulling a reader who has moved on back to the hit. The active match stays the same
+  match (same page and `CharStart`) when it is in the new list, otherwise the first match on or
+  after its page, wrapping to the first; with no previous active match for the document it is
+  seeded as `FinalizeSearch` seeds it, still without navigating. A confined (portal) view keeps
+  its reachable-match rule. Rebuilds the per-page index and `CurrentPageSearchMatches`.
+  `FinalizeSearch` is unchanged; both now share the code that installs the list.
+
 ## 0.88.0 — Tell the reader's saved notes from a reviewer's (2026-11-16)
 
 - **`Annotation.WrittenByRailReader`** (#208): annotations RailReader Core creates in a PDF now
