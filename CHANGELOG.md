@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.88.0 — Tell the reader's saved notes from a reviewer's (2026-11-16)
+
+- **`Annotation.WrittenByRailReader`** (#208): annotations RailReader Core creates in a PDF now
+  carry a private `/RailReader` key in their annotation dictionary (other viewers ignore it), and
+  read back with `WrittenByRailReader = true`. A host can tell the reader's own saved notes
+  (`Source.InPdf` once saved) from a reviewer's when no author name is set to compare. The writer
+  also sets the flag on the model when it writes a marked annotation.
+- **Who gets the mark:** every annotation Core creates in the PDF (new, pasted, merged,
+  migrated from the sidecar, and replies), and an annotation that already had it when an edit
+  recreates it. A reviewer's annotation is never marked, whether the reader edits it in place
+  or an edit recreates it. A key rather than an `/NM` prefix, because Core also mints `/NM` for
+  other people's annotations that lack one so a reply can link to them.
+- **It identifies the app, not the person:** two RailReader users exchanging a PDF see each
+  other's notes as marked. With an author name set, comparing `Author` stays authoritative; use
+  the mark only when there is none.
+- Annotations written before 0.88.0 stay unmarked (unknown origin): nothing identifies them as
+  RailReader's, so they can't be marked on a later edit either.
+- The mark survives a qpdf rewrite, `mutool clean -gg`, a PyMuPDF edit-and-save with
+  `garbage=4`, and the caret post-pass. It is not stored in the JSON sidecar.
+
 ## 0.87.1 — Layout and OCR both on WebGPU: validated and documented (2026-11-16)
 
 - **Running the layout analyzer and OCR both on WebGPU is now a supported configuration**

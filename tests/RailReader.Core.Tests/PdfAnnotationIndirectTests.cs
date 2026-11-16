@@ -361,7 +361,7 @@ public class PdfAnnotationIndirectTests
     /// A PDF with the given page dictionaries (objects 3…) followed by <paramref name="extra"/> objects;
     /// object 1 is the catalog, 2 the page tree.
     /// </summary>
-    private static byte[] BuildPdf(string[] pages, string[] extra)
+    internal static byte[] BuildPdf(string[] pages, string[] extra)
     {
         var kids = string.Join(" ", pages.Select((_, i) => $"{i + 3} 0 R"));
         string[] objects =

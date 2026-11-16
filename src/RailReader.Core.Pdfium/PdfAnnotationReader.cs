@@ -233,6 +233,7 @@ public sealed class PdfAnnotationReader
         a.Author = ReadAnnotString(annot, "T");
         a.Subject = ReadAnnotString(annot, "Subj");
         a.NativeId = ReadAnnotString(annot, "NM");
+        a.WrittenByRailReader = FPDFAnnot_HasKey(annot, PdfAnnotationWriter.OriginMarkKey);
         a.CreatedUtc = ParsePdfDate(ReadAnnotString(annot, "CreationDate"));
         a.ModifiedUtc = ParsePdfDate(ReadAnnotString(annot, "M"));
         a.State = ParseReviewState(ReadAnnotString(annot, "StateModel"), ReadAnnotString(annot, "State"));
