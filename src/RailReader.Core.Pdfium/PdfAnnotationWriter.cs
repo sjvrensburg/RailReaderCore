@@ -323,6 +323,7 @@ public sealed class PdfAnnotationWriter
             if (WriteAnnotationToPage(page, ann, tx, carets))
             {
                 ann.Source = AnnotationSource.InPdf;
+                ann.WrittenByRailReader = true;   // ShouldMark held: it wasn't in the PDF yet
                 written.Add(ann.NativeId);
             }
             else
@@ -334,9 +335,11 @@ public sealed class PdfAnnotationWriter
             // annotation already in the PDF are InPdf anyway; this covers one that arrived with an id
             // but no PDF counterpart (migrated from the sidecar, or given an id by AddReply). A write
             // that produces nothing (empty geometry) must not be flagged, or it would be lost.
+            bool marked = ShouldMark(ann);   // before Source flips to InPdf
             if (WriteAnnotationToPage(page, ann, tx, carets))
             {
                 ann.Source = AnnotationSource.InPdf;
+                ann.WrittenByRailReader = marked;
                 if (!string.IsNullOrEmpty(ann.NativeId)) written.Add(ann.NativeId!);
             }
         }
@@ -895,9 +898,28 @@ public sealed class PdfAnnotationWriter
         FPDFAnnot_SetBorder(annot, 0, 0, ra.StrokeWidth);
     }
 
-    /// <summary>Stamps the shared PDF metadata keys (/NM, /Contents, /T, /Subj, dates, flags).</summary>
+    /// <summary>
+    /// Private key marking an annotation RailReader Core created (<see cref="Annotation.WrittenByRailReader"/>).
+    /// A key, not an <c>/NM</c> prefix: Core also mints <c>/NM</c> for other people's annotations that
+    /// lack one (so a reply can link to them), and a prefixed id would mark those as ours.
+    /// </summary>
+    internal const string OriginMarkKey = "RailReader";
+    private const string OriginMarkValue = "1";
+
+    /// <summary>
+    /// Whether a created or recreated annotation gets the origin mark: one authored here (not yet in
+    /// the PDF: new, pasted, migrated from the sidecar, or a reply Core gave an id) or one that
+    /// already carried it. A reviewer's annotation recreated by an edit stays unmarked.
+    /// </summary>
+    internal static bool ShouldMark(Annotation ann)
+        => ann.WrittenByRailReader || ann.Source != AnnotationSource.InPdf;
+
+    /// <summary>Stamps the shared PDF metadata keys (/NM, /Contents, /T, /Subj, dates, flags) and
+    /// the origin mark. Only creation paths call this; an in-place edit keeps the keys it finds.</summary>
     private static void ApplyCommonMetadata(IntPtr annot, Annotation ann)
     {
+        if (ShouldMark(ann)) SetString(annot, OriginMarkKey, OriginMarkValue);
+
         // Preserve the annotation's original /F flags (Hidden/NoView/ReadOnly/Locked/…);
         // default to Print for RailReader-authored annots (Flags unset).
         FPDFAnnot_SetFlags(annot, ann.Flags != 0 ? ann.Flags : FPDF_ANNOT_FLAG_PRINT);

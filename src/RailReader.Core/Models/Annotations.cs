@@ -111,6 +111,25 @@ public abstract partial class Annotation
     public AnnotationSource Source { get; set; } = AnnotationSource.RailReader;
 
     /// <summary>
+    /// True when this annotation carries the mark RailReader Core writes on annotations it creates
+    /// in a PDF (a private <c>/RailReader</c> key in the annotation dictionary, which other viewers
+    /// ignore). Set when such an annotation is read back, and when Core writes one. Lets a host tell
+    /// the reader's own saved notes (<see cref="AnnotationSource.InPdf"/> once saved) from a
+    /// reviewer's when no author name is set to compare against.
+    /// <para>
+    /// It identifies the <b>app</b>, not the person: a PDF exchanged between two RailReader users
+    /// shows each one's notes as marked to the other. When the reader has a name set, comparing
+    /// <see cref="Author"/> stays authoritative; use this only when there is none. An annotation
+    /// with <see cref="Source"/> other than <see cref="AnnotationSource.InPdf"/> was authored here
+    /// by definition and is false until written. Annotations written by Core before 0.88.0 are
+    /// unmarked (unknown origin) and stay so: nothing identifies them as RailReader's to mark later.
+    /// A reviewer's annotation the reader edits is never marked.
+    /// </para>
+    /// </summary>
+    [JsonIgnore]
+    public bool WrittenByRailReader { get; set; }
+
+    /// <summary>
     /// Faithful DeviceRGB colour components (each 0..1) from the PDF /C array, when
     /// known. Authoritative over <see cref="Color"/> for round-trip; null when unknown
     /// (e.g. PDFium cannot report /C because the annotation carries an /AP stream).
