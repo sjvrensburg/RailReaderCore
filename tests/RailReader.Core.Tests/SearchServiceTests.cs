@@ -157,6 +157,72 @@ public class SearchServiceTests : IDisposable
         return matches;
     }
 
+    // #211: progressive search — install the complete list without moving the view.
+    private static SearchMatch M(int page, int charStart) => new(page, charStart, 4, [new RectF(10, 10 + charStart, 50, 20 + charStart)]);
+
+    [Fact]
+    public void UpdateMatches_ProgressiveSearch_InstallsTheFullListWithoutNavigating()
+    {
+        _search.FinalizeSearch(_state, [M(2, 0), M(2, 30)], startPage: 2);   // hit page first
+        Assert.Equal(2, _lastGoToPage);
+        _lastGoToPage = -1;
+
+        _search.UpdateMatches(_state, [M(0, 5), M(1, 0), M(2, 0), M(2, 30)]);
+
+        Assert.Equal(-1, _lastGoToPage);                  // no navigation
+        Assert.Equal(4, _search.SearchMatches.Count);
+        Assert.Equal(2, _search.ActiveMatchIndex);        // still the page-2 match it was on
+        Assert.Equal(M(2, 0).CharStart, _search.SearchMatches[_search.ActiveMatchIndex].CharStart);
+    }
+
+    [Fact]
+    public void UpdateMatches_KeepsTheMatchTheReaderSteppedTo()
+    {
+        _search.FinalizeSearch(_state, [M(2, 0), M(2, 30)], startPage: 2);
+        _search.NextMatch();                               // reader moved on to the second hit
+        _lastGoToPage = -1;
+
+        _search.UpdateMatches(_state, [M(0, 5), M(1, 0), M(2, 0), M(2, 30)]);
+
+        Assert.Equal(3, _search.ActiveMatchIndex);
+        Assert.Equal(-1, _lastGoToPage);
+    }
+
+    [Fact]
+    public void UpdateMatches_ActiveMatchGone_TakesTheFirstOnOrAfterItsPage_ThenWraps()
+    {
+        _search.FinalizeSearch(_state, [M(1, 7)], startPage: 1);
+        _search.UpdateMatches(_state, [M(0, 0), M(1, 2), M(2, 0)]);
+        Assert.Equal(1, _search.ActiveMatchIndex);         // page 1, different char → first on page 1
+
+        _search.FinalizeSearch(_state, [M(2, 9)], startPage: 2);
+        _search.UpdateMatches(_state, [M(0, 0), M(1, 0)]);
+        Assert.Equal(0, _search.ActiveMatchIndex);         // nothing on/after page 2 → wrap
+    }
+
+    [Fact]
+    public void UpdateMatches_FirstCall_SeedsFromTheCurrentPage_WithoutNavigating()
+    {
+        _search.UpdateMatches(_state, [M(1, 0), M(2, 0)]);
+        Assert.Equal(0, _search.ActiveMatchIndex);         // view on page 0 → first on/after it
+        Assert.Equal(-1, _lastGoToPage);
+    }
+
+    [Fact]
+    public void UpdateMatches_RebuildsCurrentPageMatches_AndHandlesAnEmptyList()
+    {
+        _search.FinalizeSearch(_state, [M(2, 0)], startPage: 2);
+        _search.UpdateMatches(_state, [M(0, 0), M(0, 20), M(2, 0)]);
+        // The view never moved (the GoToPage callback is a recorder here), so it is still on page 0.
+        Assert.Equal(2, _search.CurrentPageSearchMatches?.Count);
+        Assert.Equal(2, _search.MatchesForPage(0)?.Count);
+
+        _search.UpdateMatches(_state, []);
+        Assert.Empty(_search.SearchMatches);
+        Assert.Equal(0, _search.ActiveMatchIndex);
+        Assert.True(_search.CurrentPageSearchMatches is null or { Count: 0 });
+    }
+
     // #205: a host opening a document at a result page activates that page's match directly.
     [Fact]
     public void FinalizeSearch_StartPage_ActivatesFirstMatchOnOrAfterIt()
@@ -320,6 +386,26 @@ public class SearchServiceTests : IDisposable
 
         _search.PreviousMatch();             // backwards also skips idx1
         Assert.Equal(2, _search.ActiveMatchIndex);
+    }
+
+    // #211: UpdateMatches keeps a confined view's reachability rule.
+    [Fact]
+    public void ConfinedSearch_UpdateMatches_FallbackSkipsOffBlockMatches()
+    {
+        _state.Primary.Focus = new FocusBlock(0, 0, new BBox(0, 0, 100, 100));
+        var inBlockA = new SearchMatch(0, 0, 4, [new RectF(10, 10, 50, 20)]);
+        var offBlock = new SearchMatch(0, 4, 4, [new RectF(500, 400, 560, 430)]);
+        var inBlockB = new SearchMatch(0, 8, 4, [new RectF(10, 50, 50, 60)]);
+        _search.FinalizeSearch(_state, [inBlockA]);
+        Assert.Equal(0, _search.ActiveMatchIndex);
+
+        // The active match is gone; the first on its page is off-block → the nearest reachable one.
+        _search.UpdateMatches(_state, [offBlock, inBlockB]);
+        Assert.Equal(1, _search.ActiveMatchIndex);
+
+        // Nothing reachable at all → no active match, as FinalizeSearch would leave it.
+        _search.UpdateMatches(_state, [offBlock]);
+        Assert.Equal(-1, _search.ActiveMatchIndex);
     }
 
     [Fact]
