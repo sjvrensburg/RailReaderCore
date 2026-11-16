@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>GpuPipelineProbe</AssemblyName>
+    <NoWarn>CA1416</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Direct reference so RapidOcrNet's build target copies the bundled PP-OCRv5 models
+         (a transitive ProjectReference does not carry it). -->
+    <PackageReference Include="RapidOcrNet" Version="4.2.*" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/RailReader.Core/RailReader.Core.csproj" />
+    <ProjectReference Include="../../src/RailReader.Core.Analysis/RailReader.Core.Analysis.csproj" />
+    <ProjectReference Include="../../src/RailReader.Core.Analysis.WebGpu/RailReader.Core.Analysis.WebGpu.csproj" />
+    <ProjectReference Include="../../src/RailReader.Core.Ocr.RapidOcr/RailReader.Core.Ocr.RapidOcr.csproj" />
+    <ProjectReference Include="../../src/RailReader.Core.Pdfium/RailReader.Core.Pdfium.csproj" />
+    <ProjectReference Include="../../src/RailReader.Renderer.Skia/RailReader.Renderer.Skia.csproj" />
+  </ItemGroup>
+</Project>
