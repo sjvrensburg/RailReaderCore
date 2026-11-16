@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.86.0 — WebGPU runs on the GPU you pick (2026-11-16)
+
+- **`WebGpuAccelerator`'s `deviceIndex` now selects the GPU** (#182). Before, the plugin ignored
+  the device it was handed and Dawn chose: on a hybrid laptop every session ran on the discrete
+  card, whichever index was passed. The index is now translated into the plugin's `adapterIndex`
+  provider option (WebGPU EP 0.5.0+). Dawn ranks adapters discrete first, then integrated, while
+  `AvailableDevices` keeps ORT's (OS) order, so the translation reorders by ORT's `Discrete`
+  hardware metadata. Measured on an Intel Iris Xe + NVIDIA RTX A2000 laptop from each process's
+  own counters: index 0 (Intel) now runs on the iGPU, index 1 on the NVIDIA card.
+- **The no-argument forms are unchanged in behaviour.** `TryEnable(architecture)` and
+  `TryBuildSessionHook()` are now separate overloads that let Dawn choose (its high-performance
+  pick), as before. A caller compiled against an older version that relied on the default
+  `deviceIndex = 0` should recompile: the compiled call passes an explicit 0, which now means
+  `AvailableDevices[0]` (an integrated GPU on a typical hybrid laptop).
+- **`DeviceDescription` names the device inference actually runs on**, rather than
+  `AvailableDevices[0]`: the active device once bound, otherwise Dawn's automatic pick. On the
+  test laptop it used to say Intel while inference ran on the NVIDIA card.
+- **One GPU per process.** The plugin's default context binds one adapter for the life of the
+  process; a second adapter needs native WebGPU handles that .NET can't supply. New
+  `WebGpuAccelerator.ActiveDeviceIndex` reports the bound device. After binding, an explicit
+  request for a different device returns `false`/`null` (the caller stays on CPU) instead of
+  throwing at session construction; automatic requests join the bound device. A settings UI that
+  offers a GPU choice should say it applies after a restart. The layout analyzer and OCR cannot
+  use two different GPUs in one process.
+- **`enableInt64` is no longer passed.** `AppendExecutionProvider` prefixes every option key with
+  `ep.webgpuexecutionprovider.` itself, so the already-prefixed key the 0.60.1 fix added arrived
+  doubled and the plugin never saw it. Passed correctly on EP 0.5.0 it aborts the process when
+  Heron runs (`OrtDevice: Invalid memory type: -1`). Heron and PP-DocLayoutV3 on WebGPU without it
+  match CPU exactly at the production threshold (12 pages from 8 documents, recall and precision
+  1.000), on the Intel iGPU, which no earlier validation had actually used.
+- Earlier GPU results labelled as Intel iGPU runs (the WebGPU spike timings, the 0.60.x FP16/FP32
+  corpus checks, the #121 OCR spot-check) ran on the NVIDIA card. `WebGpuAccelerator`'s doc
+  comments now say so.
+- `tools/gpu-threshold-probe` and `tools/ocr-cost-probe` default to the automatic device; pass
+  `--device=N` / `OCRCOST_GPU_DEVICE=N` to pick one.
+
 ## 0.85.0 — Over-scroll margin and a configurable rail reading line (2026-11-11)
 
 - **A pan can now move the page's top or bottom edge inward from the window edge, up to a limit**
