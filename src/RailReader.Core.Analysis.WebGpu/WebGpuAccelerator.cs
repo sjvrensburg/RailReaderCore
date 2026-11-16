@@ -166,11 +166,57 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// <b>Scope of that result:</b> both sessions were on the same physical GPU, which is the only
 /// case that can arise: a process uses one GPU (see "One GPU per process" above). Concurrent
 /// mode does not allow I/O binding to overlap <c>Run()</c> on the same session; each
-/// analyzer here owns its own session, so that does not arise. <c>AnalysisWorker</c> still
-/// does not route both its OCR and layout stages through WebGPU: enabling that is a
-/// separate change, to be made with its own validation. (An earlier version of this comment
-/// said cross-device use was verified on the dev box; before #182 was fixed that check ran
-/// both sessions on the NVIDIA card.)
+/// analyzer here owns its own session, so that does not arise. (An earlier version of this
+/// comment said cross-device use was verified on the dev box; before #182 was fixed that check
+/// ran both sessions on the NVIDIA card.)
+/// </para>
+///
+/// <para>
+/// <b>Layout and OCR both on WebGPU (issue #193) — supported, on one GPU.</b>
+/// <c>AnalysisWorker</c> runs its layout and OCR stages on two concurrent threads and builds each
+/// stage's engine on that stage's thread, so a host turns both on simply by handing
+/// <c>InitializeWorker</c> a GPU analyzer factory and a GPU OCR factory; nothing in Core forbids
+/// the combination. Both land on the process's one GPU. Measured with <c>tools/gpu-pipeline-probe</c>
+/// (2026-11-16, ORT 1.31.1 + plugin 0.5.0, Linux/Vulkan), on both the NVIDIA RTX A2000 and the
+/// Intel Iris Xe: layout blocks and OCR text with both engines on the GPU and running concurrently
+/// were identical to CPU on every page (PP-DocLayoutV3 and Heron; OCR tiers v5-latin, PP-OCRv6
+/// Small and Medium; 14 pages from 9 documents, 3 for Medium); sustained concurrent load (60–120 s
+/// per run) raised no exception and no crash; and constructing both engines at once in a fresh
+/// process — the first-session race the worker's stage threads create — succeeded 15/15 times on
+/// NVIDIA and 10/10 on Intel.
+/// </para>
+///
+/// <para>
+/// <b>Which stage is worth putting on the GPU depends on the OCR tier, not on the combination.</b>
+/// Layout on the discrete card is 5–12× faster than CPU (PP-DocLayoutV3 ~0.6 s/page, Heron
+/// ~0.2 s/page on NVIDIA; on the Intel iGPU ~1.8 s/page, or ~2.6 s/page when OCR shares the iGPU,
+/// against ~2.6 s/page on CPU). OCR is the other way
+/// round for the light tiers: v5-latin and PP-OCRv6 Small were <i>slower</i> on the GPU than on CPU
+/// (v5-latin ~8 s against ~5 s per 1920-px page, Small ~11 s against ~8 s), while PP-OCRv6 Medium
+/// was ~13× faster on NVIDIA (~11 s against ~149 s) and ~10× on the Intel iGPU. Putting a light OCR
+/// tier on the GPU alongside GPU layout costs OCR throughput rather than buying it; with Medium,
+/// both on the GPU is the fastest placement measured (3 pages: 33 s against 446 s all-CPU). These
+/// timings are single runs on one laptop, both stages loaded at once, so read them as indicative.
+/// </para>
+///
+/// <para>
+/// <b>Wiring.</b> The layout factory follows the pattern above (hold <see cref="ConstructionLock"/>,
+/// <see cref="TryEnable(LayoutModelArchitecture)"/>, construct, fall back to CPU on an exception,
+/// <see cref="Disable"/>). The OCR factory needs its own CPU fallback inside it: the worker treats an
+/// OCR factory that throws as "no OCR for the life of the worker" (it records
+/// <c>OcrStartupError</c> and passes pages through), not as "retry on CPU". For example:
+/// <code>
+/// var hook = WebGpuAccelerator.TryBuildSessionHook();
+/// IOcrService Ocr()
+/// {
+///     if (hook is not null)
+///         try { return new RapidOcrService(set, configureSession: hook); }
+///         catch (Exception) { /* log; fall through to CPU */ }
+///     return new RapidOcrService(set);
+/// }
+/// </code>
+/// Use the no-argument forms for both stages (or pass the same index to both): an explicit request
+/// for a device other than the one the first stage bound is refused (see "One GPU per process").
 /// </para>
 ///
 /// <para>

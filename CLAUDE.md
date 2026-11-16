@@ -386,6 +386,8 @@ Tests in `tests/RailReader.Core.Tests/` are xUnit. `TestFixtures.cs` generates s
 
 **OCR cost per model tier**: `tools/ocr-cost-probe <pdf> [page|first-last]` times detection and recognition separately for each installed tier, on the page you actually care about. Run it before blaming the pipeline for a slow scanned page — the tier gap (~15× between PP-OCRv6 Small and Medium) usually is the answer, and `OCRCOST_THREADS` will show you that the intra-op cap is not.
 
+**Layout + OCR on the GPU together (#193)**: `tools/gpu-pipeline-probe <pdf|dir> <v3|heron> <model> [pagesPerPdf] [--ocr=tier] [--device=N] [--stress=s]` runs both engines concurrently as `AnalysisWorker`'s stage threads do, compares each CPU/GPU placement against CPU (block IoU agreement, OCR text), times them, then stress-loops GPU+GPU; `--construct-race` (loop it from a shell, one process per attempt) builds both GPU engines at once to exercise the plugin's first-session context init. Supported on one GPU; only PP-OCRv6 Medium is faster on the GPU — lighter OCR tiers are slower there (see `WebGpuAccelerator`'s doc).
+
 ## Troubleshooting
 
 **Scanned PDF freezes analysis in every open document**: fixed in the #100 work — OCR runs on its own worker thread, recovered text is reused rather than re-recognised, and background read-ahead no longer triggers OCR. If it recurs, check in this order: (1) is it a *second* scanned page waiting on the first (expected — the OCR stage is one thread); (2) did a change start routing text-layer pages through the OCR stage (`AnalysisWorker.Submit`'s `needsOcr`); (3) is `tools/ocr-cost-probe` simply reporting a tier that costs a minute a page, in which case the answer is Tiny/Small, not the scheduler.

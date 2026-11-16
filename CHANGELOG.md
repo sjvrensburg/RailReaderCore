@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.87.1 — Layout and OCR both on WebGPU: validated and documented (2026-11-16)
+
+- **Running the layout analyzer and OCR both on WebGPU is now a supported configuration**
+  (#193). No Core code change was needed: `AnalysisWorker` already runs the two stages on
+  concurrent threads with host-supplied factories. What was missing was validation, now done
+  with the new `tools/gpu-pipeline-probe` on an NVIDIA RTX A2000 and an Intel Iris Xe (ORT
+  1.31.1 + WebGPU plugin 0.5.0, Linux/Vulkan): with both engines on the GPU and running at once,
+  layout blocks and OCR text matched CPU exactly on every page (PP-DocLayoutV3 and Heron; OCR
+  v5-latin, PP-OCRv6 Small and Medium); sustained concurrent load raised no exception or crash;
+  and building both engines at once in a fresh process succeeded every time (25 processes).
+  Hosts can drop a "only one of the two on GPU" rule.
+- **Both stages share the process's one GPU** (#182); use the no-argument `TryEnable` /
+  `TryBuildSessionHook` for both, or the same index.
+- **Only the heaviest OCR tier gains from the GPU.** v5-latin and PP-OCRv6 Small were slower on
+  the GPU than on CPU (about 8 s against 5 s, and 11 s against 8 s, per 1920-px page), while
+  PP-OCRv6 Medium was about 13× faster on the NVIDIA card and 10× on the iGPU. Layout gains 5–12×
+  on the discrete card and little on the iGPU.
+- **An OCR factory needs its own CPU fallback**: the worker treats a factory that throws as "no
+  OCR", not "retry on CPU". `WebGpuAccelerator`'s doc shows the pattern.
+
 ## 0.87.0 — APIs for library search (2026-11-16)
 
 Four additions requested by railreader2's library search; nothing existing changes behaviour.
