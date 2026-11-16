@@ -17,6 +17,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="RailReader.Core.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Separate package (not a Core.Analysis dependency) because its published RIDs
          are desktop-only (win-x64, win-arm64, linux-x64, osx-arm64) — no Android. A
          mobile consumer references Core.Analysis alone and never sees this package or

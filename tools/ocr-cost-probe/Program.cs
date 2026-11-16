@@ -26,10 +26,11 @@ using RapidOcrNet;
 //                     through RailReader.Core.Analysis.WebGpu's WebGpuAccelerator.TryBuildSessionHook()
 //                     (issue #121). If no WebGPU device is found, gpu rows are reported and skipped
 //                     rather than silently falling back to cpu.
-//   OCRCOST_GPU_DEVICE index into WebGpuAccelerator.AvailableDevices to use for gpu rows (default 0
-//                     — whichever device ORT's plugin EP reports first). On a machine with more than
-//                     one WebGPU-capable device (e.g. an integrated + discrete GPU pair) the probe
-//                     prints the full list with indices so you can target a specific one.
+//   OCRCOST_GPU_DEVICE index into WebGpuAccelerator.AvailableDevices to use for gpu rows (default:
+//                     automatic — Dawn's high-performance pick, a discrete card over an integrated
+//                     one). On a machine with more than one WebGPU-capable device the probe prints
+//                     the full list with indices so you can target a specific one. One GPU per
+//                     process (issue #182), so compare devices in separate runs.
 //
 // Reading the output: `det` is one detector pass over the whole page (what OcrMode.Lines pays);
 // `rec` is everything OcrMode.Full adds on top, which is per-line and therefore scales with how
@@ -83,11 +84,13 @@ if (backends.Contains("gpu", StringComparer.OrdinalIgnoreCase))
         foreach (var d in devices) Console.WriteLine($"  [{d.Index}] {d.Description}");
     }
 
-    int deviceIndex = int.TryParse(Environment.GetEnvironmentVariable("OCRCOST_GPU_DEVICE"), out var idx) ? idx : 0;
-    gpuHook = WebGpuAccelerator.TryBuildSessionHook(deviceIndex);
+    int? deviceIndex = int.TryParse(Environment.GetEnvironmentVariable("OCRCOST_GPU_DEVICE"), out var idx) ? idx : null;
+    gpuHook = deviceIndex is int di ? WebGpuAccelerator.TryBuildSessionHook(di) : WebGpuAccelerator.TryBuildSessionHook();
     Console.WriteLine(gpuHook is null
-        ? $"note: OCRCOST_BACKENDS includes gpu but no WebGPU device at index {deviceIndex} — gpu rows will be skipped"
-        : $"note: using WebGPU device [{deviceIndex}] {devices[deviceIndex].Description}");
+        ? $"note: OCRCOST_BACKENDS includes gpu but {(deviceIndex is int bad ? $"no WebGPU device at index {bad}" : "no WebGPU device")} — gpu rows will be skipped"
+        : deviceIndex is int chosen
+            ? $"note: using WebGPU device [{chosen}] {devices[chosen].Description}"
+            : $"note: using WebGPU device (automatic) {WebGpuAccelerator.DeviceDescription}");
 }
 
 var factory = new SkiaPdfServiceFactory();

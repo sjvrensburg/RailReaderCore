@@ -103,18 +103,52 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// consumer that isn't a layout analyzer — e.g. <c>Core.Ocr.RapidOcr</c>'s
 /// <c>RapidOcrService</c>, which takes its own <c>configureSession</c> delegate — use
 /// <see cref="TryBuildSessionHook"/> instead: <c>new RapidOcrService(modelSet,
-/// configureSession: WebGpuAccelerator.TryBuildSessionHook())</c>. On a machine with more
-/// than one WebGPU-capable device (an integrated + discrete GPU pair, or multiple discrete
-/// cards) both methods default to <see cref="AvailableDevices"/>[0] — whichever the driver
-/// happens to report first, not necessarily the one a user wants. Read
-/// <see cref="AvailableDevices"/> to list them (vendor, device ID, a ready-to-display
-/// string) and pass the chosen index to <c>TryEnable(architecture, deviceIndex)</c> /
-/// <c>TryBuildSessionHook(deviceIndex)</c> to target it. <b>⚠ That selection does not
-/// currently take effect (issue #182):</b> on this repo's dev box (Intel Iris Xe + NVIDIA RTX
-/// A2000) every session runs on the NVIDIA card whichever index is passed, as measured from
-/// the process's own counters (NVIDIA memory per PID; zero i915 engine time). Treat
-/// <c>deviceIndex</c> as advisory until #182 is fixed (likely via the 0.5.0 plugin's
-/// <c>adapterIndex</c> provider option).
+/// configureSession: WebGpuAccelerator.TryBuildSessionHook())</c>.
+/// </para>
+///
+/// <para>
+/// <b>Choosing a GPU (issue #182).</b> The WebGPU EP ignores which <c>OrtEpDevice</c> it is
+/// handed: Dawn picks the physical adapter itself. Without help it takes its
+/// high-performance choice (a discrete card over an integrated one), and that is what the
+/// no-argument <see cref="TryEnable(LayoutModelArchitecture)"/>/<see cref="TryBuildSessionHook()"/>
+/// still do; <see cref="DeviceDescription"/> names that device. To target a specific one,
+/// pass an index from <see cref="AvailableDevices"/> to
+/// <see cref="TryEnable(LayoutModelArchitecture, int)"/>/<see cref="TryBuildSessionHook(int)"/>.
+/// The two lists are in different orders: ORT reports devices in the OS's order (on the dev
+/// box, Intel Iris Xe then NVIDIA RTX A2000), while Dawn ranks discrete before integrated
+/// and appends software adapters such as llvmpipe that ORT never lists. This class
+/// translates the index into the plugin's <c>adapterIndex</c> provider option by ranking
+/// <see cref="AvailableDevices"/> the way Dawn does: discrete first (ORT's
+/// <c>Discrete</c> hardware metadata), ORT's order kept within a group. Measured on the dev
+/// box from the process's own counters (NVIDIA memory per PID, i915 <c>drm-engine-*</c>
+/// time in fdinfo), not from the description string. Two cards of the same kind keep ORT's
+/// relative order, which is the OS's and is untested against Dawn's.
+/// </para>
+///
+/// <para>
+/// <b>What is verified where.</b> The no-argument forms send the same provider options as every
+/// earlier release (no <c>adapterIndex</c>), so on every platform they run where they always ran.
+/// Explicit selection is verified on Linux/Vulkan only. The ranking relies on ORT's
+/// <c>Discrete</c> metadata, seen there; where ORT doesn't report it (unconfirmed for
+/// Windows/D3D12 and macOS/Metal) every device ranks alike and the index passes through in ORT's
+/// order, so on a hybrid machine an explicit index may land on the other GPU. Dawn normally lists
+/// every GPU ORT does, plus software adapters that rank last, so the index stays in range; if it
+/// ever didn't, session construction throws and the caller's usual fallback builds on CPU.
+/// <see cref="DeviceDescription"/> and <see cref="ActiveDeviceIndex"/>
+/// for an automatic binding are a prediction from the same ranking, with the same caveat.
+/// </para>
+///
+/// <para>
+/// <b>One GPU per process.</b> The plugin's default context owns a single device for the
+/// lifetime of the process: the first WebGPU session fixes it (a second adapter would need
+/// a native <c>WGPUInstance</c>/<c>WGPUDevice</c>, which can't be supplied from .NET).
+/// <see cref="ActiveDeviceIndex"/> reports the device once a session has been configured.
+/// After that, an explicit request for a <i>different</i> device returns <c>false</c>/<c>null</c>
+/// instead of letting session construction throw (<c>TryEnable</c> then leaves any hook already
+/// installed for that architecture in place, so call <see cref="Disable"/> for CPU), and the
+/// no-argument forms join the active device. A settings UI that lets a user pick a GPU should
+/// therefore say the change applies after a restart. In particular, the layout analyzer and
+/// OCR cannot run on two different GPUs in one process.
 /// </para>
 ///
 /// <para>
@@ -129,23 +163,23 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// WebGPU operation on a device. That is why core and plugin are bumped as a matched pair.
 /// On 1.31.1 + 0.5.0, two PP-DocLayoutV3 or Heron sessions ran up to 1,000 concurrent
 /// <c>Run()</c> calls without a crash; on 1.29 + 0.3 the same repro crashed every time.
-/// <b>Scope of that result:</b> both sessions were on the same physical GPU (see #182 above:
-/// device selection doesn't take effect), so concurrent inference on two <i>different</i>
-/// GPUs is untested; upstream also describes multi-GPU WebGPU as unsupported. Concurrent
+/// <b>Scope of that result:</b> both sessions were on the same physical GPU, which is the only
+/// case that can arise: a process uses one GPU (see "One GPU per process" above). Concurrent
 /// mode does not allow I/O binding to overlap <c>Run()</c> on the same session; each
 /// analyzer here owns its own session, so that does not arise. <c>AnalysisWorker</c> still
 /// does not route both its OCR and layout stages through WebGPU: enabling that is a
 /// separate change, to be made with its own validation. (An earlier version of this comment
-/// said cross-device use was verified on the dev box; given #182, that check almost
-/// certainly ran both sessions on the NVIDIA card.)
+/// said cross-device use was verified on the dev box; before #182 was fixed that check ran
+/// both sessions on the NVIDIA card.)
 /// </para>
 ///
 /// <para>
 /// <b>OCR spot-check (issue #121, 2026-09-11).</b> Unlike the layout analyzers above,
 /// PP-OCR's detector (DBNet) and recognizer (CRNN) are plain CNN/RNN graphs with no
 /// deformable-attention TopK step, so they were never expected to hit the FP16 tie-break
-/// bug documented above — and a one-page spot-check on what was labelled the Intel Iris Xe
-/// iGPU (given #182, it most likely ran on the NVIDIA card) (<c>tools/ocr-cost-probe</c> + a throwaway CPU-vs-GPU text diff) bears that out:
+/// bug documented above — and a one-page spot-check (<c>tools/ocr-cost-probe</c> + a throwaway
+/// CPU-vs-GPU text diff) bears that out. It was labelled as running on the Intel Iris Xe iGPU,
+/// but before #182 was fixed it ran on the NVIDIA card, so the timings below are the NVIDIA card's:
 /// v5-latin, PP-OCRv6 Small and PP-OCRv6 Medium all produced byte-for-byte identical
 /// recognized text, line count, and line order on GPU vs CPU. Speed scales with model
 /// size the opposite way it does on CPU — GPU is where the expensive tiers pay off: on
@@ -187,8 +221,8 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// reset hook" sequence, not just the calls into this class. <see cref="ConstructionLock"/>
 /// is reentrant-safe (a plain <c>lock</c>), so nesting is fine. <see cref="ConstructionLock"/>
 /// covers construction only — it says nothing about calling <c>Run()</c> on two already-built
-/// WebGPU-backed sessions from two threads at once; that is a confirmed crash, see the
-/// "Different models on different GPUs" paragraph below.
+/// WebGPU-backed sessions from two threads at once; see the "Concurrent inference" paragraph
+/// above.
 /// </para>
 /// </summary>
 public static class WebGpuAccelerator
@@ -203,6 +237,20 @@ public static class WebGpuAccelerator
 
     private static bool _probed;
     private static IReadOnlyList<OrtEpDevice> _devices = [];
+    // _adapterIndex[i] = Dawn's adapterIndex for _devices[i]; see DawnAdapterOrder.
+    private static int[] _adapterIndex = [];
+
+    // The device this process's WebGPU context is bound to, packed as
+    // (index into _devices) * 2 + (1 if bound by an explicit request that passed adapterIndex,
+    // 0 if bound by an automatic one that passed none); Unbound until a hook from this class
+    // first configures a session. Written from inside a hook, which can run outside
+    // ConstructionLock (a consumer such as RapidOcrService invokes its delegate on its own
+    // schedule), hence Interlocked rather than the lock.
+    private const int Unbound = -1;
+    private static int _binding = Unbound;
+
+    private static int BoundDevice(int binding) => binding < 0 ? -1 : binding >> 1;
+    private static bool BoundWithIndex(int binding) => binding >= 0 && (binding & 1) == 1;
 
     /// <summary>
     /// Whether at least one WebGPU-capable device was found. Probes and registers the
@@ -215,21 +263,47 @@ public static class WebGpuAccelerator
     }
 
     /// <summary>
-    /// Human-readable identity of <see cref="AvailableDevices"/>[0] — the device every
-    /// no-argument <see cref="TryEnable"/>/<see cref="TryBuildSessionHook"/> call picks —
-    /// once probed; <c>null</c> if unavailable. On a multi-GPU machine this is only one of
-    /// several candidates: enumerate <see cref="AvailableDevices"/> to see (and let a user
-    /// pick) the rest.
+    /// Human-readable identity of the device WebGPU inference runs on: the active device once
+    /// a session has been configured (<see cref="ActiveDeviceIndex"/>), otherwise the one the
+    /// no-argument <see cref="TryEnable(LayoutModelArchitecture)"/>/<see cref="TryBuildSessionHook()"/>
+    /// would pick (Dawn's high-performance choice, a discrete card before an integrated one).
+    /// <c>null</c> if unavailable. On a multi-GPU machine this is only one of several
+    /// candidates: enumerate <see cref="AvailableDevices"/> to see (and let a user pick) the rest.
     /// </summary>
     public static string? DeviceDescription
     {
-        get { lock (ConstructionLock) { Probe(); return _devices.Count == 0 ? null : Describe(_devices[0]); } }
+        get
+        {
+            lock (ConstructionLock)
+            {
+                Probe();
+                int i = EffectiveAutomaticDevice();
+                return i < 0 ? null : Describe(_devices[i]);
+            }
+        }
     }
 
     /// <summary>
-    /// Every WebGPU-capable device ORT's plugin EP reports, in the (unspecified,
-    /// driver-decided) order it reports them — index 0 is what every no-argument
-    /// <see cref="TryEnable"/>/<see cref="TryBuildSessionHook"/> call uses. Pass an index
+    /// The <see cref="AvailableDevices"/> index this process's WebGPU inference is bound to,
+    /// or <c>null</c> before any session has been configured through this class. The plugin
+    /// uses one GPU per process, fixed by the first WebGPU session; after that, a request for
+    /// another device is refused (see the type doc's "One GPU per process"), so a new choice
+    /// takes effect only after a restart.
+    /// </summary>
+    public static int? ActiveDeviceIndex
+    {
+        get
+        {
+            int i = BoundDevice(Volatile.Read(ref _binding));
+            return i < 0 ? null : i;
+        }
+    }
+
+    /// <summary>
+    /// Every WebGPU-capable device ORT's plugin EP reports, in the (OS-decided) order it
+    /// reports them. That is not necessarily the device the no-argument
+    /// <see cref="TryEnable(LayoutModelArchitecture)"/>/<see cref="TryBuildSessionHook()"/>
+    /// use (see <see cref="DeviceDescription"/>). Pass an index
     /// from this list to <see cref="TryEnable(LayoutModelArchitecture, int)"/> or
     /// <see cref="TryBuildSessionHook(int)"/> to target a specific one — e.g. surfaced as a
     /// dropdown in a settings UI on a machine with more than one GPU (an integrated +
@@ -264,12 +338,56 @@ public static class WebGpuAccelerator
             {
                 if (d.EpName == WebGpuEp.GetEpName()) found.Add(d);
             }
+            // Rank before publishing the devices, so a metadata read that throws can't leave
+            // _devices populated with no matching _adapterIndex entries.
+            var adapterIndex = DawnAdapterOrder(found.Select(IsDiscrete).ToList());
+            _adapterIndex = adapterIndex;
             _devices = found;
         }
         catch (Exception ex)
         {
             RailReaderLogging.Logger.Warn($"[WebGPU] Plugin EP registration failed, staying on CPU: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// ORT marks a discrete card with a <c>Discrete=1</c> hardware-metadata entry (observed on
+    /// Linux/Vulkan for an NVIDIA dGPU; the Intel iGPU had no entry).
+    /// </summary>
+    private static bool IsDiscrete(OrtEpDevice device) =>
+        device.HardwareDevice.Metadata.Entries.TryGetValue("Discrete", out var v) && v == "1";
+
+    /// <summary>
+    /// Maps each ORT device (by position) to its index in Dawn's adapter enumeration, which
+    /// the plugin's <c>adapterIndex</c> option indexes. Under the plugin's default
+    /// high-performance preference Dawn ranks discrete adapters, then integrated, then CPU
+    /// (llvmpipe and the like, which ORT never lists, so they only ever come last). Within a
+    /// group ORT's order is kept. Measured on Linux/Vulkan with one Intel iGPU and one NVIDIA
+    /// dGPU: ORT lists Intel, NVIDIA; Dawn's adapterIndex 0 is NVIDIA, 1 Intel, 2 llvmpipe.
+    /// </summary>
+    internal static int[] DawnAdapterOrder(IReadOnlyList<bool> isDiscrete)
+    {
+        var result = new int[isDiscrete.Count];
+        int next = 0;
+        for (int pass = 0; pass < 2; pass++)
+        {
+            bool wantDiscrete = pass == 0;
+            for (int i = 0; i < isDiscrete.Count; i++)
+                if (isDiscrete[i] == wantDiscrete) result[i] = next++;
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// The <see cref="_devices"/> index a no-argument request lands on: the active device if
+    /// there is one, otherwise the one Dawn ranks first; -1 if there are no devices. Caller
+    /// must have probed.
+    /// </summary>
+    private static int EffectiveAutomaticDevice()
+    {
+        int active = BoundDevice(Volatile.Read(ref _binding));
+        if (active >= 0) return active;
+        return Array.IndexOf(_adapterIndex, 0);
     }
 
     private static string Describe(OrtEpDevice device)
@@ -304,29 +422,44 @@ public static class WebGpuAccelerator
     };
 
     /// <summary>
-    /// ONNX Runtime's WebGPU EP registers int64 kernels (Add, Sub, Equal, …) only when
-    /// this provider option is set — off by default (see upstream
-    /// microsoft/onnxruntime#29392, #29844). Without it, a graph with an int64 node on
-    /// the EP's covered ops (e.g. Heron/RT-DETR's <c>orig_target_sizes</c>-driven
-    /// post-processing) fails kernel lookup at <c>Run()</c> time with "GetElementType is
-    /// not implemented" — a plugin-EP kernel-registration gap, not a construction
-    /// failure, so it isn't caught by the caller-side construction fallback described
-    /// above. WebGPU int64 arithmetic is backed by i32 (low 32 bits only); safe here
-    /// since every int64 tensor these models pass is page pixel dimensions, far inside
-    /// int32 range. See issue #108.
+    /// Provider-option key for the plugin's physical adapter selector (WebGPU plugin EP 0.5.0+,
+    /// microsoft/onnxruntime#32319). Unprefixed: <c>AppendExecutionProvider</c> prepends
+    /// <c>ep.webgpuexecutionprovider.</c> to every key itself, so a prefixed key arrives doubled
+    /// and is silently ignored.
     /// </summary>
-    private const string EnableInt64Option = "ep.webgpuexecutionprovider.enableInt64";
+    /// <remarks>
+    /// Up to 0.85.0 this class also passed <c>ep.webgpuexecutionprovider.enableInt64</c> — doubled
+    /// by that prefixing, so the plugin never saw it. Passing it correctly makes Heron abort the
+    /// process inside the plugin on EP 0.5.0 (<c>OrtDevice: Invalid memory type: -1</c>, not a
+    /// catchable exception), and Heron runs without it, so it is no longer passed. If a future
+    /// plugin needs it again, Heron's int64 post-processing fails at <c>Run()</c> with
+    /// "GetElementType is not implemented" (issue #108, the 0.60.1 entry in the changelog), after
+    /// construction, so the construction-time CPU fallback won't catch it.
+    /// </remarks>
+    private const string AdapterIndexOption = "adapterIndex";
 
     /// <summary>
     /// Points <paramref name="architecture"/>'s analyzer at a WebGPU device for the next
-    /// construction. <paramref name="deviceIndex"/> indexes into <see cref="AvailableDevices"/>
-    /// (default 0 — the first device ORT's plugin EP reports; on a single-GPU machine
-    /// that's the only choice, on a multi-GPU one it's driver-decided and not necessarily
-    /// the one a user wants). Returns <c>false</c> (and leaves the hook untouched) if no
-    /// device was found at that index — the analyzer then builds on CPU exactly as if this
-    /// were never called.
+    /// construction, letting Dawn choose which one (its high-performance pick, named by
+    /// <see cref="DeviceDescription"/>; the active device once one is bound). Returns
+    /// <c>false</c> (and leaves the hook untouched) if there is no WebGPU device — the analyzer
+    /// then builds on CPU exactly as if this were never called.
     /// </summary>
-    public static bool TryEnable(LayoutModelArchitecture architecture, int deviceIndex = 0)
+    public static bool TryEnable(LayoutModelArchitecture architecture) => TryEnableCore(architecture, deviceIndex: null);
+
+    /// <summary>
+    /// Points <paramref name="architecture"/>'s analyzer at the device at
+    /// <paramref name="deviceIndex"/> in <see cref="AvailableDevices"/> for the next
+    /// construction. Returns <c>false</c> (and leaves the hook untouched) if there is no device
+    /// at that index, or if this process is already bound to a different device
+    /// (<see cref="ActiveDeviceIndex"/>) — the analyzer then builds exactly as if this were
+    /// never called: on CPU, unless an earlier <c>TryEnable</c> left a hook in place, which
+    /// keeps targeting the device it was built for (call <see cref="Disable"/> to force CPU).
+    /// </summary>
+    public static bool TryEnable(LayoutModelArchitecture architecture, int deviceIndex) =>
+        TryEnableCore(architecture, deviceIndex);
+
+    private static bool TryEnableCore(LayoutModelArchitecture architecture, int? deviceIndex)
     {
         lock (ConstructionLock)
         {
@@ -338,33 +471,114 @@ public static class WebGpuAccelerator
     }
 
     /// <summary>
-    /// Architecture-independent form of <see cref="TryEnable"/>: probes for WebGPU devices
-    /// (cached after the first call, same probe as <see cref="IsAvailable"/>) and returns a
-    /// <c>SessionOptions</c> configurator for the one at <paramref name="deviceIndex"/> in
-    /// <see cref="AvailableDevices"/> (default 0), or <c>null</c> if no device exists at
-    /// that index. Unlike <see cref="TryEnable"/> this does not touch any analyzer's
-    /// <c>ConfigureSession</c> hook — it hands the delegate to the caller, so any ONNX
-    /// consumer (OCR's <c>RapidOcrService(configureSession: ...)</c>, or a future one) can
-    /// opt in without this assembly knowing about it. On a machine with more than one
-    /// WebGPU-capable device, read <see cref="AvailableDevices"/> first (e.g. to populate a
-    /// settings dropdown) and pass the user's choice here — there's no other way to steer
-    /// which GPU gets used.
+    /// Architecture-independent form of <see cref="TryEnable(LayoutModelArchitecture)"/>:
+    /// probes for WebGPU devices (cached after the first call, same probe as
+    /// <see cref="IsAvailable"/>) and returns a <c>SessionOptions</c> configurator that lets
+    /// Dawn choose the device, or <c>null</c> if there is none. Unlike <see cref="TryEnable(LayoutModelArchitecture)"/>
+    /// this does not touch any analyzer's <c>ConfigureSession</c> hook — it hands the delegate
+    /// to the caller, so any ONNX consumer (OCR's <c>RapidOcrService(configureSession: ...)</c>,
+    /// or a future one) can opt in without this assembly knowing about it.
     /// </summary>
-    public static Action<SessionOptions>? TryBuildSessionHook(int deviceIndex = 0)
+    public static Action<SessionOptions>? TryBuildSessionHook()
+    {
+        lock (ConstructionLock) { return TryBuildSessionHookLocked(deviceIndex: null); }
+    }
+
+    /// <summary>
+    /// Like <see cref="TryBuildSessionHook()"/>, but for the device at
+    /// <paramref name="deviceIndex"/> in <see cref="AvailableDevices"/> (e.g. a user's choice
+    /// from a settings dropdown). Returns <c>null</c> if there is no device at that index, or
+    /// if this process is already bound to a different device (<see cref="ActiveDeviceIndex"/>).
+    /// A hook built before another device was bound throws <see cref="InvalidOperationException"/>
+    /// when it configures a session — the same construction-time failure a caller already
+    /// falls back to CPU on.
+    /// </summary>
+    public static Action<SessionOptions>? TryBuildSessionHook(int deviceIndex)
     {
         lock (ConstructionLock) { return TryBuildSessionHookLocked(deviceIndex); }
     }
 
-    /// <summary>Caller must hold <see cref="ConstructionLock"/>.</summary>
-    private static Action<SessionOptions>? TryBuildSessionHookLocked(int deviceIndex)
+    /// <summary>
+    /// <paramref name="deviceIndex"/> <c>null</c> = automatic. An automatic hook passes no
+    /// <c>adapterIndex</c>, exactly the provider options of every release before this one, so
+    /// Dawn makes its own choice and a consumer that never asks for a device sees no change on
+    /// any platform; it records Dawn's predicted first-ranked device as the binding (or joins the
+    /// existing one). An explicit hook passes <c>adapterIndex</c> only when it is the one that binds
+    /// the process. The plugin compares each session's <c>adapterIndex</c> with the one its context
+    /// was initialised with, but only when the joining session sets one: a set index throws against
+    /// a context initialised with a different one or with none ("0" versus "unset"), while a session
+    /// that sets none joins any context. So an explicit request for the device an automatic hook
+    /// bound must omit it and join, and an automatic hook can always omit it (measured both ways).
+    /// Caller must hold <see cref="ConstructionLock"/>.
+    /// </summary>
+    private static Action<SessionOptions>? TryBuildSessionHookLocked(int? deviceIndex)
     {
         Probe();
-        if ((uint)deviceIndex >= (uint)_devices.Count) return null;
-        var device = _devices[deviceIndex];
+        if (_devices.Count == 0) return null;
+
+        if (deviceIndex is not int requested)
+        {
+            return opts =>
+            {
+                // Bind-or-join in one step, so a concurrent explicit hook (e.g. OCR built on its
+                // worker) can't make this throw: an automatic request joins whichever device won.
+                int dawnFirst = Array.IndexOf(_adapterIndex, 0);
+                int mine = dawnFirst * 2;
+                int prior = Interlocked.CompareExchange(ref _binding, mine, Unbound);
+                try
+                {
+                    // No adapterIndex, ever: a session that sets none joins whatever context exists.
+                    Append(opts, prior >= 0 ? BoundDevice(prior) : dawnFirst, withAdapterIndex: false);
+                }
+                catch when (prior < 0)
+                {
+                    Interlocked.CompareExchange(ref _binding, Unbound, mine);
+                    throw;
+                }
+            };
+        }
+
+        if ((uint)requested >= (uint)_devices.Count) return null;
+        int active = BoundDevice(Volatile.Read(ref _binding));
+        if (active >= 0 && active != requested)
+        {
+            RailReaderLogging.Logger.Warn(
+                $"[WebGPU] {Describe(_devices[requested])} requested, but this process is already using " +
+                $"{Describe(_devices[active])}; WebGPU uses one GPU per process, so staying on CPU. Restart to switch.");
+            return null;
+        }
+
         return opts =>
-            opts.AppendExecutionProvider(OrtEnv.Instance(), new[] { device },
-                new Dictionary<string, string> { [EnableInt64Option] = "1" });
+        {
+            int mine = requested * 2 + 1;
+            int prior = Interlocked.CompareExchange(ref _binding, mine, Unbound);
+            if (prior >= 0 && BoundDevice(prior) != requested)
+                throw new InvalidOperationException(
+                    $"WebGPU is already using {Describe(_devices[BoundDevice(prior)])} in this process and cannot also use " +
+                    $"{Describe(_devices[requested])}: the plugin binds one GPU per process.");
+            try
+            {
+                // Binding now: select the adapter. Joining: match how the context was initialised.
+                Append(opts, requested, withAdapterIndex: prior < 0 || BoundWithIndex(prior));
+            }
+            catch when (prior < 0)
+            {
+                // No session can exist on the device if the provider was never added, so don't
+                // leave the process pinned to it.
+                Interlocked.CompareExchange(ref _binding, Unbound, mine);
+                throw;
+            }
+        };
     }
+
+    private static void Append(SessionOptions opts, int device, bool withAdapterIndex) =>
+        opts.AppendExecutionProvider(OrtEnv.Instance(), new[] { _devices[device] },
+            withAdapterIndex
+                ? new Dictionary<string, string>
+                {
+                    [AdapterIndexOption] = _adapterIndex[device].ToString(System.Globalization.CultureInfo.InvariantCulture),
+                }
+                : new Dictionary<string, string>());
 
     /// <summary>Reverts <paramref name="architecture"/>'s analyzer to CPU-only for the next construction.</summary>
     public static void Disable(LayoutModelArchitecture architecture)
