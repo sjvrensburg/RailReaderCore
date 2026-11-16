@@ -324,4 +324,47 @@ public sealed class DocumentIdentityTests : IDisposable
         DocumentIdentity.Resolve(moved);                     // the app opening the renamed copy
         Assert.Equal(stored, app.GetStoragePath(moved));
     }
+
+    // #202: hosts list the known documents through Core instead of parsing document_ids.json.
+    [Fact]
+    public void KnownDocumentsListsEveryResolvedPathWithItsId_SortedByPath()
+    {
+        string b = Write("b.pdf", "two");
+        string a = Write("a.pdf", "one");
+        string copy = Write("c.pdf", "one");
+        string idA = DocumentIdentity.Resolve(a), idB = DocumentIdentity.Resolve(b);
+        DocumentIdentity.Resolve(copy);
+
+        Assert.Equal(
+            [new KnownDocument(a, idA), new KnownDocument(b, idB), new KnownDocument(copy, idA)],
+            DocumentIdentity.KnownDocuments());
+    }
+
+    [Fact]
+    public void KnownDocumentsIsASnapshot()
+    {
+        DocumentIdentity.Resolve(Write("a.pdf", "one"));
+        var before = DocumentIdentity.KnownDocuments();
+        DocumentIdentity.Resolve(Write("b.pdf", "two"));
+        Assert.Single(before);
+        Assert.Equal(2, DocumentIdentity.KnownDocuments().Count);
+    }
+
+    [Fact]
+    public void KnownDocumentsReadsTheMapAnotherProcessWrote_WithoutWritingIt()
+    {
+        // The on-disk shape railreader2 once misread: {"files": {"/path.pdf": {size, mtime_ticks, id}}}.
+        string gone = Path.Combine(_dir, "deleted.pdf");
+        File.WriteAllText(DocumentIdentity.MapPath,
+            "{\"version\":1,\"files\":{" + JsonSerializer.Serialize(gone)
+            + ":{\"size\":3,\"mtime_ticks\":5,\"id\":\"abc\"}},\"aliases\":{},\"paths\":{}}");
+        DocumentIdentity.OverrideMapPathForTesting(DocumentIdentity.MapPath);
+        var stamp = File.GetLastWriteTimeUtc(DocumentIdentity.MapPath);
+
+        Assert.Equal([new KnownDocument(gone, "abc")], DocumentIdentity.KnownDocuments());
+        Assert.Equal(stamp, File.GetLastWriteTimeUtc(DocumentIdentity.MapPath));
+    }
+
+    [Fact]
+    public void KnownDocumentsIsEmptyWithoutAMap() => Assert.Empty(DocumentIdentity.KnownDocuments());
 }
