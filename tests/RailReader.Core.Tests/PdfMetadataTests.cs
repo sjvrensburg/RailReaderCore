@@ -73,4 +73,17 @@ public class PdfMetadataTests
         Assert.Equal("Shared", ((IPdfMetadataService)text).GetMetadata(bytes).Title);
         Assert.Contains("hello", text.ExtractPageText(bytes, 0).Text);
     }
+
+    [Fact]
+    public void ReadingAnotherDocumentsMetadataLeavesTheOpenDocumentCached()
+    {
+        var open = Pdf(new SKDocumentPdfMetadata { Title = "Open" });
+        var other = Pdf(new SKDocumentPdfMetadata { Title = "Other" });
+        var text = TestFixtures.CreatePdfFactory().CreatePdfTextService();
+        text.ExtractPageText(open, 0);
+
+        Assert.Equal("Other", ((IPdfMetadataService)text).GetMetadata(other).Title);
+        Assert.Equal("Open", ((IPdfMetadataService)text).GetMetadata(open).Title);
+        Assert.Contains("hello", text.ExtractPageText(open, 0).Text);
+    }
 }

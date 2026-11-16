@@ -58,6 +58,15 @@ internal sealed class CachedPdfDocument
         return doc;
     }
 
+    /// <summary>
+    /// The cached handle if it was loaded from this very array (and password), else
+    /// <see cref="IntPtr.Zero"/>, without loading anything or evicting the cache — for a one-off
+    /// read of another document that shouldn't displace the one being worked through.
+    /// Must be called inside <c>lock (PdfiumGate.Lock)</c>.
+    /// </summary>
+    public IntPtr PeekCached(byte[] pdfBytes, string? password)
+        => _doc != IntPtr.Zero && ReferenceEquals(_bytes, pdfBytes) && _password == password ? _doc : IntPtr.Zero;
+
     private void CloseCore()
     {
         if (_doc != IntPtr.Zero)

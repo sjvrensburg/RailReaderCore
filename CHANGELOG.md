@@ -13,14 +13,17 @@ Four additions requested by railreader2's library search; nothing existing chang
   service (like `IPdfRulingService`): `GetMetadata(pdfBytes, password)` returns a `PdfMetadata`
   record (Title, Author, Subject, Keywords, Creator, Producer; null when absent or blank,
   `PdfMetadata.Empty` when the document can't be opened). The PDFium `PdfTextService` implements
-  it via `FPDF_GetMetaText` under `PdfiumGate.Lock`, reusing the document it caches for text
-  extraction. Info dictionary only: PDFium doesn't parse XMP. The PdfPig backend doesn't
+  it via `FPDF_GetMetaText` under `PdfiumGate.Lock`. It reuses the document cached for text
+  extraction when given those same bytes, and otherwise opens and closes its own copy, so reading
+  other files' metadata doesn't evict the open document. Info dictionary only: PDFium doesn't parse XMP. The PdfPig backend doesn't
   implement it yet.
 - **`AnnotationFileManager.Saved`** (#204) is raised after each successful write of a
   document's annotations (debounced auto-save, last `Release`, `FlushAll`, `Dispose`) with the
   path, the saved model and whether an emptied document's stored annotations were deleted. Not
-  raised for a clean flush or a failed save. Synchronous on the saving thread (the UI thread for
-  auto-save); the model is the live shared one, so copy inside the handler. A throwing handler is
+  raised for a clean flush or a failed save. Synchronous on the saving thread (for auto-save,
+  wherever the marshaller runs posted work: the UI thread, or a timer thread under
+  `SynchronousThreadMarshaller`); flushes of one document are serialised, so a racing
+  `Release`/`FlushAll` can't write it, or raise the event, twice. The model is the live shared one, so copy inside the handler. A throwing handler is
   logged and doesn't stop other documents flushing. Reach it via
   `DocumentController.AnnotationManager`.
 - **`SearchService.FinalizeSearch(doc, matches, startPage)`** and

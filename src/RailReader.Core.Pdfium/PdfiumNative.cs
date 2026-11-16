@@ -31,6 +31,9 @@ internal static class PdfiumNative
         [MarshalAs(UnmanagedType.LPUTF8Str)] string? password);
     [DllImport(Lib)] internal static extern void FPDF_CloseDocument(IntPtr document);
     [DllImport(Lib)] internal static extern int FPDF_GetSignatureCount(IntPtr document);
+    // Document Info dictionary entry (Title, Author, ...): byte length incl. the UTF-16LE terminator.
+    [DllImport(Lib)] internal static extern uint FPDF_GetMetaText(IntPtr document,
+        [MarshalAs(UnmanagedType.LPStr)] string tag, IntPtr buffer, uint buflen);
 
     // FPDF_GetLastError returns the failure reason for the most recent load on this
     // thread. Only meaningful immediately after a load returned IntPtr.Zero.
@@ -89,9 +92,6 @@ internal static class PdfiumNative
     [DllImport(Lib)] internal static extern IntPtr FPDFBookmark_GetFirstChild(IntPtr document, IntPtr bookmark);
     [DllImport(Lib)] internal static extern IntPtr FPDFBookmark_GetNextSibling(IntPtr document, IntPtr bookmark);
     [DllImport(Lib)] internal static extern uint FPDFBookmark_GetTitle(IntPtr bookmark, IntPtr buffer, uint buflen);
-    // Document Info dictionary entry (Title, Author, ...): byte length incl. the UTF-16LE terminator.
-    [DllImport(Lib)] internal static extern uint FPDF_GetMetaText(IntPtr document,
-        [MarshalAs(UnmanagedType.LPStr)] string tag, IntPtr buffer, uint buflen);
     [DllImport(Lib)] internal static extern IntPtr FPDFBookmark_GetDest(IntPtr document, IntPtr bookmark);
     [DllImport(Lib)] internal static extern IntPtr FPDFBookmark_GetAction(IntPtr bookmark);
     [DllImport(Lib)] internal static extern IntPtr FPDFAction_GetDest(IntPtr document, IntPtr action);

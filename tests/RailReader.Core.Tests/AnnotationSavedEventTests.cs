@@ -21,11 +21,12 @@ public class AnnotationSavedEventTests
     private readonly MemoryStore _store = new();
     private readonly QueuedThreadMarshaller _ui = new();
     private readonly List<AnnotationsSavedEventArgs> _events = [];
+    private readonly List<int> _eventThreads = [];
 
     private AnnotationFileManager Manager()
     {
         var m = new AnnotationFileManager(_store, _ui);
-        m.Saved += (_, e) => _events.Add(e);
+        m.Saved += (_, e) => { _events.Add(e); _eventThreads.Add(Environment.CurrentManagedThreadId); };
         return m;
     }
 
@@ -46,6 +47,7 @@ public class AnnotationSavedEventTests
         Assert.Same(file, e.Annotations);
         Assert.False(e.Deleted);
         Assert.Equal(1, _store.Saves);
+        Assert.Equal(Environment.CurrentManagedThreadId, Assert.Single(_eventThreads));   // pumped here
     }
 
     [Fact]
@@ -101,5 +103,32 @@ public class AnnotationSavedEventTests
         m.Dispose();
         Assert.Equal(2, _events.Count);
         Assert.Equal(2, _store.Saves);
+    }
+
+    private sealed class SlowStore : IAnnotationStore
+    {
+        public int Saves;
+        public AnnotationFile? Load(string pdfPath, string? password = null) => null;
+        public bool Save(string pdfPath, AnnotationFile annotations, string? password = null)
+        {
+            Interlocked.Increment(ref Saves);
+            Thread.Sleep(50);   // widen the window a racing flush would need
+            return true;
+        }
+        public bool Delete(string pdfPath, string? password = null) => true;
+    }
+
+    [Fact]
+    public void ConcurrentFlushesOfOneDocumentWriteAndRaiseOnce()
+    {
+        var store = new SlowStore();
+        int raised = 0;
+        using var m = new AnnotationFileManager(store, new SynchronousThreadMarshaller());
+        m.Saved += (_, _) => Interlocked.Increment(ref raised);
+        Edit(m.Checkout(Pdf));
+        m.MarkDirty(Pdf);
+        Parallel.For(0, 4, _ => m.FlushAll());
+        Assert.Equal(1, store.Saves);
+        Assert.Equal(1, raised);
     }
 }
