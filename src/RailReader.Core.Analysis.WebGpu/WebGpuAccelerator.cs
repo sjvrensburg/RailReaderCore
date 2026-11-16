@@ -131,7 +131,8 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// a native <c>WGPUInstance</c>/<c>WGPUDevice</c>, which can't be supplied from .NET).
 /// <see cref="ActiveDeviceIndex"/> reports the device once a session has been configured.
 /// After that, an explicit request for a <i>different</i> device returns <c>false</c>/<c>null</c>
-/// (so the caller stays on CPU) instead of letting session construction throw, and the
+/// instead of letting session construction throw (<c>TryEnable</c> then leaves any hook already
+/// installed for that architecture in place, so call <see cref="Disable"/> for CPU), and the
 /// no-argument forms join the active device. A settings UI that lets a user pick a GPU should
 /// therefore say the change applies after a restart. In particular, the layout analyzer and
 /// OCR cannot run on two different GPUs in one process.
@@ -419,26 +420,21 @@ public static class WebGpuAccelerator
     /// <c>false</c> (and leaves the hook untouched) if there is no WebGPU device — the analyzer
     /// then builds on CPU exactly as if this were never called.
     /// </summary>
-    public static bool TryEnable(LayoutModelArchitecture architecture)
-    {
-        lock (ConstructionLock)
-        {
-            var hook = TryBuildSessionHookLocked(deviceIndex: null);
-            if (hook is null) return false;
-            SetHook(architecture, hook);
-            return true;
-        }
-    }
+    public static bool TryEnable(LayoutModelArchitecture architecture) => TryEnableCore(architecture, deviceIndex: null);
 
     /// <summary>
     /// Points <paramref name="architecture"/>'s analyzer at the device at
     /// <paramref name="deviceIndex"/> in <see cref="AvailableDevices"/> for the next
     /// construction. Returns <c>false</c> (and leaves the hook untouched) if there is no device
     /// at that index, or if this process is already bound to a different device
-    /// (<see cref="ActiveDeviceIndex"/>) — the analyzer then builds on CPU exactly as if this
-    /// were never called.
+    /// (<see cref="ActiveDeviceIndex"/>) — the analyzer then builds exactly as if this were
+    /// never called: on CPU, unless an earlier <c>TryEnable</c> left a hook in place, which
+    /// keeps targeting the device it was built for (call <see cref="Disable"/> to force CPU).
     /// </summary>
-    public static bool TryEnable(LayoutModelArchitecture architecture, int deviceIndex)
+    public static bool TryEnable(LayoutModelArchitecture architecture, int deviceIndex) =>
+        TryEnableCore(architecture, deviceIndex);
+
+    private static bool TryEnableCore(LayoutModelArchitecture architecture, int? deviceIndex)
     {
         lock (ConstructionLock)
         {
@@ -495,9 +491,12 @@ public static class WebGpuAccelerator
         {
             return opts =>
             {
-                int device = EffectiveAutomaticDevice();
-                Bind(device);
-                Append(opts, device);
+                // Bind-or-join in one step: reading the active device and then binding would
+                // race an explicit hook on another thread (e.g. OCR built on its worker) and
+                // throw, where an automatic request should simply join whichever device won.
+                int dawnFirst = Array.IndexOf(_adapterIndex, 0);
+                int prior = Interlocked.CompareExchange(ref _activeDevice, dawnFirst, -1);
+                Append(opts, prior >= 0 ? prior : dawnFirst);
             };
         }
 
@@ -513,8 +512,10 @@ public static class WebGpuAccelerator
 
         return opts =>
         {
-            Bind(requested);
+            // Append first: if it throws, no session can exist on the device, so the process
+            // must not be pinned to it. Bind still runs before the session is constructed.
             Append(opts, requested);
+            Bind(requested);
         };
     }
 

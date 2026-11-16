@@ -85,7 +85,7 @@ if (!WebGpuAccelerator.IsAvailable)
     return 1;
 }
 Console.Error.WriteLine(deviceIndex is int di
-    ? $"WebGPU device {di}: {(di < WebGpuAccelerator.AvailableDevices.Count ? WebGpuAccelerator.AvailableDevices[di].Description : "(none)")}"
+    ? $"WebGPU device {di}: {((uint)di < (uint)WebGpuAccelerator.AvailableDevices.Count ? WebGpuAccelerator.AvailableDevices[di].Description : "(none)")}"
     : $"WebGPU device (automatic): {WebGpuAccelerator.DeviceDescription ?? "(none)"}");
 
 // CPU reference: production tuning (LayoutDetectionTuning.Default), exactly

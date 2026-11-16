@@ -87,7 +87,7 @@ if (backends.Contains("gpu", StringComparer.OrdinalIgnoreCase))
     int? deviceIndex = int.TryParse(Environment.GetEnvironmentVariable("OCRCOST_GPU_DEVICE"), out var idx) ? idx : null;
     gpuHook = deviceIndex is int di ? WebGpuAccelerator.TryBuildSessionHook(di) : WebGpuAccelerator.TryBuildSessionHook();
     Console.WriteLine(gpuHook is null
-        ? $"note: OCRCOST_BACKENDS includes gpu but no WebGPU device at index {deviceIndex?.ToString() ?? "(automatic)"} — gpu rows will be skipped"
+        ? $"note: OCRCOST_BACKENDS includes gpu but {(deviceIndex is int bad ? $"no WebGPU device at index {bad}" : "no WebGPU device")} — gpu rows will be skipped"
         : deviceIndex is int chosen
             ? $"note: using WebGPU device [{chosen}] {devices[chosen].Description}"
             : $"note: using WebGPU device (automatic) {WebGpuAccelerator.DeviceDescription}");
