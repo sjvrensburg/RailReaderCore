@@ -338,8 +338,11 @@ public static class WebGpuAccelerator
             {
                 if (d.EpName == WebGpuEp.GetEpName()) found.Add(d);
             }
+            // Rank before publishing the devices, so a metadata read that throws can't leave
+            // _devices populated with no matching _adapterIndex entries.
+            var adapterIndex = DawnAdapterOrder(found.Select(IsDiscrete).ToList());
+            _adapterIndex = adapterIndex;
             _devices = found;
-            _adapterIndex = DawnAdapterOrder(found.Select(IsDiscrete).ToList());
         }
         catch (Exception ex)
         {
@@ -428,7 +431,10 @@ public static class WebGpuAccelerator
     /// Up to 0.85.0 this class also passed <c>ep.webgpuexecutionprovider.enableInt64</c> — doubled
     /// by that prefixing, so the plugin never saw it. Passing it correctly makes Heron abort the
     /// process inside the plugin on EP 0.5.0 (<c>OrtDevice: Invalid memory type: -1</c>, not a
-    /// catchable exception), and Heron runs without it, so it is no longer passed.
+    /// catchable exception), and Heron runs without it, so it is no longer passed. If a future
+    /// plugin needs it again, Heron's int64 post-processing fails at <c>Run()</c> with
+    /// "GetElementType is not implemented" (issue #108, the 0.60.1 entry in the changelog), after
+    /// construction, so the construction-time CPU fallback won't catch it.
     /// </remarks>
     private const string AdapterIndexOption = "adapterIndex";
 
@@ -499,9 +505,10 @@ public static class WebGpuAccelerator
     /// any platform; it records Dawn's predicted first-ranked device as the binding (or joins the
     /// existing one). An explicit hook passes <c>adapterIndex</c> only when it is the one that binds
     /// the process. The plugin compares each session's <c>adapterIndex</c> with the one its context
-    /// was initialised with and throws on any difference, "unset" versus "0" included, so once an
-    /// automatic hook has bound the process an explicit request for the same device must also omit
-    /// it, and join.
+    /// was initialised with, but only when the joining session sets one: a set index throws against
+    /// a context initialised with a different one or with none ("0" versus "unset"), while a session
+    /// that sets none joins any context. So an explicit request for the device an automatic hook
+    /// bound must omit it and join, and an automatic hook can always omit it (measured both ways).
     /// Caller must hold <see cref="ConstructionLock"/>.
     /// </summary>
     private static Action<SessionOptions>? TryBuildSessionHookLocked(int? deviceIndex)
@@ -516,8 +523,18 @@ public static class WebGpuAccelerator
                 // Bind-or-join in one step, so a concurrent explicit hook (e.g. OCR built on its
                 // worker) can't make this throw: an automatic request joins whichever device won.
                 int dawnFirst = Array.IndexOf(_adapterIndex, 0);
-                int prior = Interlocked.CompareExchange(ref _binding, dawnFirst * 2, Unbound);
-                Append(opts, prior >= 0 ? BoundDevice(prior) : dawnFirst, withAdapterIndex: false);
+                int mine = dawnFirst * 2;
+                int prior = Interlocked.CompareExchange(ref _binding, mine, Unbound);
+                try
+                {
+                    // No adapterIndex, ever: a session that sets none joins whatever context exists.
+                    Append(opts, prior >= 0 ? BoundDevice(prior) : dawnFirst, withAdapterIndex: false);
+                }
+                catch when (prior < 0)
+                {
+                    Interlocked.CompareExchange(ref _binding, Unbound, mine);
+                    throw;
+                }
             };
         }
 
