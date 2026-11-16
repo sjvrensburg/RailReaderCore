@@ -9,19 +9,29 @@
   `AvailableDevices` keeps ORT's (OS) order, so the translation reorders by ORT's `Discrete`
   hardware metadata. Measured on an Intel Iris Xe + NVIDIA RTX A2000 laptop from each process's
   own counters: index 0 (Intel) now runs on the iGPU, index 1 on the NVIDIA card.
+- **Explicit selection is verified on Linux/Vulkan only.** The translation relies on ORT's
+  `Discrete` metadata. Where ORT doesn't report it (unconfirmed for Windows/D3D12 and
+  macOS/Metal), the index passes through in ORT's order, so on a hybrid machine an explicit index
+  may land on the other GPU; it still runs on a GPU. The Windows plugin binaries do support
+  `adapterIndex` (a native-Dawn build).
 - **The no-argument forms are unchanged in behaviour.** `TryEnable(architecture)` and
   `TryBuildSessionHook()` are now separate overloads that let Dawn choose (its high-performance
-  pick), as before. A caller compiled against an older version that relied on the default
+  pick), as before. They send no `adapterIndex`: the provider options are the ones every earlier
+  release sent in effect (see `enableInt64` below), so they run where they always ran on every
+  platform. A caller compiled against an older version that relied on the default
   `deviceIndex = 0` should recompile: the compiled call passes an explicit 0, which now means
   `AvailableDevices[0]` (an integrated GPU on a typical hybrid laptop).
 - **`DeviceDescription` names the device inference actually runs on**, rather than
   `AvailableDevices[0]`: the active device once bound, otherwise Dawn's automatic pick. On the
-  test laptop it used to say Intel while inference ran on the NVIDIA card.
+  test laptop it used to say Intel while inference ran on the NVIDIA card. Where ORT reports no
+  `Discrete` metadata it is a prediction that falls back to the old answer.
 - **One GPU per process.** The plugin's default context binds one adapter for the life of the
   process; a second adapter needs native WebGPU handles that .NET can't supply. New
   `WebGpuAccelerator.ActiveDeviceIndex` reports the bound device. After binding, an explicit
-  request for a different device returns `false`/`null` (the caller stays on CPU) instead of
-  throwing at session construction; automatic requests join the bound device. A settings UI that
+  request for a different device returns `false`/`null` (an analyzer hook installed earlier stays;
+  `Disable` forces CPU) instead of
+  throwing at session construction; automatic requests join the bound device, and once an automatic
+  request has bound it, an explicit request for the same device joins too. A settings UI that
   offers a GPU choice should say it applies after a restart. The layout analyzer and OCR cannot
   use two different GPUs in one process.
 - **`enableInt64` is no longer passed.** `AppendExecutionProvider` prefixes every option key with

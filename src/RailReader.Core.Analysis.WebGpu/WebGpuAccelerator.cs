@@ -126,6 +126,19 @@ namespace RailReader.Core.Analysis.WebGpu;
 /// </para>
 ///
 /// <para>
+/// <b>What is verified where.</b> The no-argument forms send the same provider options as every
+/// earlier release (no <c>adapterIndex</c>), so on every platform they run where they always ran.
+/// Explicit selection is verified on Linux/Vulkan only. The ranking relies on ORT's
+/// <c>Discrete</c> metadata, seen there; where ORT doesn't report it (unconfirmed for
+/// Windows/D3D12 and macOS/Metal) every device ranks alike and the index passes through in ORT's
+/// order, so on a hybrid machine an explicit index may land on the other GPU. Dawn normally lists
+/// every GPU ORT does, plus software adapters that rank last, so the index stays in range; if it
+/// ever didn't, session construction throws and the caller's usual fallback builds on CPU.
+/// <see cref="DeviceDescription"/> and <see cref="ActiveDeviceIndex"/>
+/// for an automatic binding are a prediction from the same ranking, with the same caveat.
+/// </para>
+///
+/// <para>
 /// <b>One GPU per process.</b> The plugin's default context owns a single device for the
 /// lifetime of the process: the first WebGPU session fixes it (a second adapter would need
 /// a native <c>WGPUInstance</c>/<c>WGPUDevice</c>, which can't be supplied from .NET).
@@ -227,11 +240,17 @@ public static class WebGpuAccelerator
     // _adapterIndex[i] = Dawn's adapterIndex for _devices[i]; see DawnAdapterOrder.
     private static int[] _adapterIndex = [];
 
-    // The device this process's WebGPU context is bound to, as an index into _devices; -1
-    // until a hook from this class first configures a session. Written from inside a hook,
-    // which can run outside ConstructionLock (a consumer such as RapidOcrService invokes
-    // its delegate on its own schedule), hence Interlocked rather than the lock.
-    private static int _activeDevice = -1;
+    // The device this process's WebGPU context is bound to, packed as
+    // (index into _devices) * 2 + (1 if bound by an explicit request that passed adapterIndex,
+    // 0 if bound by an automatic one that passed none); Unbound until a hook from this class
+    // first configures a session. Written from inside a hook, which can run outside
+    // ConstructionLock (a consumer such as RapidOcrService invokes its delegate on its own
+    // schedule), hence Interlocked rather than the lock.
+    private const int Unbound = -1;
+    private static int _binding = Unbound;
+
+    private static int BoundDevice(int binding) => binding < 0 ? -1 : binding >> 1;
+    private static bool BoundWithIndex(int binding) => binding >= 0 && (binding & 1) == 1;
 
     /// <summary>
     /// Whether at least one WebGPU-capable device was found. Probes and registers the
@@ -275,7 +294,7 @@ public static class WebGpuAccelerator
     {
         get
         {
-            int i = Volatile.Read(ref _activeDevice);
+            int i = BoundDevice(Volatile.Read(ref _binding));
             return i < 0 ? null : i;
         }
     }
@@ -363,7 +382,7 @@ public static class WebGpuAccelerator
     /// </summary>
     private static int EffectiveAutomaticDevice()
     {
-        int active = Volatile.Read(ref _activeDevice);
+        int active = BoundDevice(Volatile.Read(ref _binding));
         if (active >= 0) return active;
         return Array.IndexOf(_adapterIndex, 0);
     }
@@ -474,12 +493,15 @@ public static class WebGpuAccelerator
     }
 
     /// <summary>
-    /// <paramref name="deviceIndex"/> <c>null</c> = automatic: the active device if one is bound,
-    /// otherwise Dawn's first-ranked one, resolved when the hook runs. Every hook passes an
-    /// explicit <c>adapterIndex</c>, automatic ones included: the plugin compares a session's
-    /// <c>adapterIndex</c> against the one its context was initialised with and throws on any
-    /// difference, "unset" versus "0" included, so a context first initialised without one
-    /// would reject a later explicit request even for the same GPU.
+    /// <paramref name="deviceIndex"/> <c>null</c> = automatic. An automatic hook passes no
+    /// <c>adapterIndex</c>, exactly the provider options of every release before this one, so
+    /// Dawn makes its own choice and a consumer that never asks for a device sees no change on
+    /// any platform; it records Dawn's predicted first-ranked device as the binding (or joins the
+    /// existing one). An explicit hook passes <c>adapterIndex</c> only when it is the one that binds
+    /// the process. The plugin compares each session's <c>adapterIndex</c> with the one its context
+    /// was initialised with and throws on any difference, "unset" versus "0" included, so once an
+    /// automatic hook has bound the process an explicit request for the same device must also omit
+    /// it, and join.
     /// Caller must hold <see cref="ConstructionLock"/>.
     /// </summary>
     private static Action<SessionOptions>? TryBuildSessionHookLocked(int? deviceIndex)
@@ -491,17 +513,16 @@ public static class WebGpuAccelerator
         {
             return opts =>
             {
-                // Bind-or-join in one step: reading the active device and then binding would
-                // race an explicit hook on another thread (e.g. OCR built on its worker) and
-                // throw, where an automatic request should simply join whichever device won.
+                // Bind-or-join in one step, so a concurrent explicit hook (e.g. OCR built on its
+                // worker) can't make this throw: an automatic request joins whichever device won.
                 int dawnFirst = Array.IndexOf(_adapterIndex, 0);
-                int prior = Interlocked.CompareExchange(ref _activeDevice, dawnFirst, -1);
-                Append(opts, prior >= 0 ? prior : dawnFirst);
+                int prior = Interlocked.CompareExchange(ref _binding, dawnFirst * 2, Unbound);
+                Append(opts, prior >= 0 ? BoundDevice(prior) : dawnFirst, withAdapterIndex: false);
             };
         }
 
         if ((uint)requested >= (uint)_devices.Count) return null;
-        int active = Volatile.Read(ref _activeDevice);
+        int active = BoundDevice(Volatile.Read(ref _binding));
         if (active >= 0 && active != requested)
         {
             RailReaderLogging.Logger.Warn(
@@ -512,33 +533,35 @@ public static class WebGpuAccelerator
 
         return opts =>
         {
-            // Append first: if it throws, no session can exist on the device, so the process
-            // must not be pinned to it. Bind still runs before the session is constructed.
-            Append(opts, requested);
-            Bind(requested);
+            int mine = requested * 2 + 1;
+            int prior = Interlocked.CompareExchange(ref _binding, mine, Unbound);
+            if (prior >= 0 && BoundDevice(prior) != requested)
+                throw new InvalidOperationException(
+                    $"WebGPU is already using {Describe(_devices[BoundDevice(prior)])} in this process and cannot also use " +
+                    $"{Describe(_devices[requested])}: the plugin binds one GPU per process.");
+            try
+            {
+                // Binding now: select the adapter. Joining: match how the context was initialised.
+                Append(opts, requested, withAdapterIndex: prior < 0 || BoundWithIndex(prior));
+            }
+            catch when (prior < 0)
+            {
+                // No session can exist on the device if the provider was never added, so don't
+                // leave the process pinned to it.
+                Interlocked.CompareExchange(ref _binding, Unbound, mine);
+                throw;
+            }
         };
     }
 
-    private static void Append(SessionOptions opts, int device) =>
+    private static void Append(SessionOptions opts, int device, bool withAdapterIndex) =>
         opts.AppendExecutionProvider(OrtEnv.Instance(), new[] { _devices[device] },
-            new Dictionary<string, string>
-            {
-                [AdapterIndexOption] = _adapterIndex[device].ToString(System.Globalization.CultureInfo.InvariantCulture),
-            });
-
-    /// <summary>
-    /// Records <paramref name="device"/> as the process's WebGPU device if none is yet, or
-    /// throws if another one is: the plugin would reject the session anyway, with a less
-    /// helpful message.
-    /// </summary>
-    private static void Bind(int device)
-    {
-        int prior = Interlocked.CompareExchange(ref _activeDevice, device, -1);
-        if (prior >= 0 && prior != device)
-            throw new InvalidOperationException(
-                $"WebGPU is already using {Describe(_devices[prior])} in this process and cannot also use " +
-                $"{Describe(_devices[device])}: the plugin binds one GPU per process.");
-    }
+            withAdapterIndex
+                ? new Dictionary<string, string>
+                {
+                    [AdapterIndexOption] = _adapterIndex[device].ToString(System.Globalization.CultureInfo.InvariantCulture),
+                }
+                : new Dictionary<string, string>());
 
     /// <summary>Reverts <paramref name="architecture"/>'s analyzer to CPU-only for the next construction.</summary>
     public static void Disable(LayoutModelArchitecture architecture)
