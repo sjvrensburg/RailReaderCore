@@ -14,6 +14,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="RailReader.Export.Tests" />
+    <InternalsVisibleTo Include="RailReader.Core.Tests" />
   </ItemGroup>
 
   <ItemGroup>

@@ -278,6 +278,41 @@ public record PageText(string Text, List<CharBox> CharBoxes)
     }
 
     /// <summary>
+    /// Extracts the text of every block in <paramref name="blocks"/>, giving each character to
+    /// at most one block: a block takes the characters inside its box that no earlier block in
+    /// the list has taken. Pass the blocks in reading order, so a character shared by two
+    /// overlapping boxes goes to the one read first.
+    /// <para>Use this, not <see cref="ExtractBlockText(LayoutBlock)"/> per block, wherever the
+    /// blocks' texts are put together into one document. The layout models' boxes can overlap
+    /// heavily without either containing the other (a list box plus a box around its last item;
+    /// a reference list plus one of its entries), so per-block extraction would emit the shared
+    /// text twice (#214). Text that only the later block covers is kept, so nothing is lost.</para>
+    /// </summary>
+    /// <returns>One trimmed string per block, in the same order; empty when a block has no text
+    /// left.</returns>
+    public string[] ExtractBlockTexts(IReadOnlyList<LayoutBlock> blocks)
+    {
+        var texts = new string[blocks.Count];
+        var claimed = new bool[Text.Length];
+        var buf = new System.Text.StringBuilder();
+        for (int b = 0; b < blocks.Count; b++)
+        {
+            var bbox = blocks[b].BBox;
+            var indices = IndicesInRect(bbox.X, bbox.Y, bbox.X + bbox.W, bbox.Y + bbox.H);
+            indices.Sort();
+            buf.Clear();
+            foreach (int i in indices)
+            {
+                if (claimed[i]) continue;
+                claimed[i] = true;
+                buf.Append(Text[i]);
+            }
+            texts[b] = buf.ToString().Trim();
+        }
+        return texts;
+    }
+
+    /// <summary>
     /// Extracts up to <paramref name="maxChars"/> characters of a block's text in
     /// reading order (trimmed for display). Sets <paramref name="truncated"/> to
     /// true when the block contains more matched characters than were returned, so

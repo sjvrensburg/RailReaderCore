@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.90.0 — Export each region once; date unsigned annotations (2026-11-17)
+
+- **Markdown export no longer writes a region twice** (#214). Layout boxes can overlap heavily
+  without either containing the other (a list box plus a box around its last item, a reference
+  list plus one of its entries), which gets past NMS, nested-block suppression and
+  `ResolveVerticalOverlaps` (it leaves a block alone when trimming would leave under 5pt). The
+  export pulled each block's text separately, so the shared characters came out in both. It now
+  gives each character to the first block in reading order whose box holds it. A later block
+  keeps only text no earlier block covers, and is dropped when nothing is left. No text is lost.
+  `HeadingLevelResolver.Resolve` uses the same extraction.
+- **`PageText.ExtractBlockTexts(blocks)`** (new): every block's text in one pass, each
+  character given to at most one block. Use it wherever block texts are joined into one
+  document. `ExtractBlockText` per block is unchanged.
+- **Unsigned annotations get a creation time** (#213). `AnnotationInteractionHandler` stamped
+  `CreatedUtc` only when `Author` was set, so a new note by a reader with no name configured
+  had no date until it was read back from the PDF. Every annotation the handler creates (all
+  tools, paste, replies) now gets `CreatedUtc`; `Author` is still set only when a name is
+  configured. The PDF writer already wrote `/CreationDate` as the save time when `CreatedUtc`
+  was null, so saved files only change in carrying the true creation time.
+
 ## 0.89.0 — Progressive search: replace the match list without moving the view (2026-11-16)
 
 - **`SearchService.UpdateMatches(doc, allMatches)`** (#211) installs a complete, page-ordered
