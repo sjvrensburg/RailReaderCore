@@ -12,7 +12,10 @@
   `HeadingLevelResolver.Resolve` uses the same extraction.
 - **`PageText.ExtractBlockTexts(blocks)`** (new): every block's text in one pass, each
   character given to at most one block. Use it wherever block texts are joined into one
-  document. `ExtractBlockText` per block is unchanged.
+  document. An optional `claimsText` predicate lets blocks whose text the caller drops (the
+  export passes figures, charts, running headers/footers, page numbers, decorations) read
+  without claiming, so a figure box read first cannot swallow the caption it overlaps.
+  `ExtractBlockText` per block is unchanged.
 - **Unsigned annotations get a creation time** (#213). `AnnotationInteractionHandler` stamped
   `CreatedUtc` only when `Author` was set, so a new note by a reader with no name configured
   had no date until it was read back from the PDF. Every annotation the handler creates (all

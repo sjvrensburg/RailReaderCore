@@ -224,11 +224,13 @@ public sealed class MarkdownExportService : IMarkdownExportService
     /// <summary>
     /// Each block's text keyed by block index, with a block that has none left out. Each
     /// character goes to the first block (in reading order) whose box holds it; see
-    /// <see cref="PageText.ExtractBlockTexts"/>.
+    /// <see cref="PageText.ExtractBlockTexts"/>. Only blocks whose text the page builder emits
+    /// claim characters: a figure or running header read first must not swallow the text of a
+    /// caption or paragraph it overlaps.
     /// </summary>
     internal static Dictionary<int, string> BlockTexts(PageText pageText, IReadOnlyList<LayoutBlock> blocks)
     {
-        var texts = pageText.ExtractBlockTexts(blocks);
+        var texts = pageText.ExtractBlockTexts(blocks, b => PageMarkdownBuilder.EmitsText(b.Role));
         var byIndex = new Dictionary<int, string>(blocks.Count);
         for (int i = 0; i < texts.Length; i++)
         {

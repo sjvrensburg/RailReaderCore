@@ -195,6 +195,15 @@ public static class PageMarkdownBuilder
         sb.AppendLine();
     }
 
+    /// <summary>
+    /// Whether <see cref="Build"/> writes a block of this role's extracted text (figures, charts,
+    /// running headers/footers, page numbers and decorations never do). Keep in step with
+    /// <see cref="RenderBlock"/>.
+    /// </summary>
+    internal static bool EmitsText(BlockRole role) => role is not (
+        BlockRole.Figure or BlockRole.Chart
+        or BlockRole.Header or BlockRole.Footer or BlockRole.PageNumber or BlockRole.Decoration);
+
     private static string? RenderBlock(
         BlockRole role,
         int blockIndex,

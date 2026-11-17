@@ -111,4 +111,23 @@ public class MarkdownExportOverlapTests
 
         Assert.Equal(blocks.Select(page.ExtractBlockText), texts);
     }
+
+    [Fact]
+    public void BoxWhoseTextIsNotEmitted_DoesNotSwallowTheTextItOverlaps()
+    {
+        // A figure (or running header) read first whose box runs into the caption below it: the
+        // figure writes no text, so the caption must keep every character.
+        var page = MakePage("axis label", "Figure 1: the caption");
+        var blocks = new List<LayoutBlock>
+        {
+            Block(45, 95, 200, 42, BlockRole.Figure),  // covers both rows
+            Block(45, 117, 200, 22, BlockRole.Caption),
+        };
+
+        var texts = MarkdownExportService.BlockTexts(page, blocks);
+        var md = PageMarkdownBuilder.Build(blocks, new Dictionary<int, int>(), texts, null, null);
+
+        Assert.Equal("Figure 1: the caption", texts[1]);
+        Assert.Equal(1, Count(md, "Figure 1: the caption"));
+    }
 }
