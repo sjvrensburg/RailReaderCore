@@ -189,14 +189,9 @@ public sealed class MarkdownExportService : IMarkdownExportService
         if (blocks.Count == 0)
             return ExportPagePlainText(pdf, pageIdx, textService, pageEntries, annotationFile, options);
 
-        // Cache text extraction per block to avoid redundant O(chars) scans
-        var blockTexts = new Dictionary<int, string>(blocks.Count);
-        for (int i = 0; i < blocks.Count; i++)
-        {
-            var text = pageText.ExtractBlockText(blocks[i]);
-            if (!string.IsNullOrEmpty(text))
-                blockTexts[i] = text;
-        }
+        // Extract every block's text once, each character going to one block only: overlapping
+        // boxes would otherwise emit their shared text twice (#214).
+        var blockTexts = BlockTexts(pageText, blocks);
 
         var headingLevels = HeadingLevelResolver.ResolveForPage(
             blocks, blockTexts, pageEntries);
@@ -224,6 +219,25 @@ public sealed class MarkdownExportService : IMarkdownExportService
         }
 
         return md;
+    }
+
+    /// <summary>
+    /// Each block's text keyed by block index, with a block that has none left out. Each
+    /// character goes to the first block (in reading order) whose box holds it; see
+    /// <see cref="PageText.ExtractBlockTexts"/>. Only blocks whose text the page builder emits
+    /// claim characters: a figure or running header read first must not swallow the text of a
+    /// caption or paragraph it overlaps.
+    /// </summary>
+    internal static Dictionary<int, string> BlockTexts(PageText pageText, IReadOnlyList<LayoutBlock> blocks)
+    {
+        var texts = pageText.ExtractBlockTexts(blocks, b => PageMarkdownBuilder.EmitsText(b.Role));
+        var byIndex = new Dictionary<int, string>(blocks.Count);
+        for (int i = 0; i < texts.Length; i++)
+        {
+            if (!string.IsNullOrEmpty(texts[i]))
+                byIndex[i] = texts[i];
+        }
+        return byIndex;
     }
 
     private string ExportPagePlainText(

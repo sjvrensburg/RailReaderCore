@@ -41,19 +41,22 @@ public sealed class AnnotationInteractionHandler
 
     /// <summary>
     /// Name stamped into <see cref="Annotation.Author"/> (PDF /T) of every annotation this handler
-    /// creates — all tools, paste, merge results and replies — along with
-    /// <see cref="Annotation.CreatedUtc"/>. Null/blank keeps the historical behaviour (no author).
+    /// creates — all tools, paste, merge results and replies. Null/blank leaves the author unset.
+    /// <see cref="Annotation.CreatedUtc"/> is stamped on those annotations either way (#213): the
+    /// creation time is not personal the way a name is, so it is not tied to having one.
     /// Driven by <c>CoreSettings.AnnotationAuthor</c>. Annotations that already exist (read from the
     /// PDF) are never re-authored.
     /// </summary>
     public string? Author { get; set; }
 
-    /// <summary>Stamps a freshly authored annotation (see <see cref="Author"/>). No-op without an author.</summary>
+    /// <summary>
+    /// Stamps a freshly authored annotation: always its creation time, and the author when one is
+    /// set (see <see cref="Author"/>).
+    /// </summary>
     private T Stamp<T>(T annotation) where T : Annotation
     {
-        if (string.IsNullOrWhiteSpace(Author)) return annotation;
-        annotation.Author = Author;
         annotation.CreatedUtc = DateTimeOffset.UtcNow;
+        if (!string.IsNullOrWhiteSpace(Author)) annotation.Author = Author;
         return annotation;
     }
     public float ActiveStrokeWidth { get; set; } = 2f;

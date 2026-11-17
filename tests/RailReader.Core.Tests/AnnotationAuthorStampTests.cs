@@ -89,19 +89,34 @@ public class AnnotationAuthorStampTests : IDisposable
     }
 
     [Fact]
-    public void NoAuthor_KeepsHistoricalBehaviour()
+    public void NoAuthor_LeavesAuthorUnset_ButStillStampsCreationTime()
     {
+        var before = DateTimeOffset.UtcNow.AddSeconds(-1);
         foreach (var blank in new string?[] { null, "", "   " })
         {
             _handler.Author = blank;
             _handler.CompleteTextNote(_doc.Primary, 50, 50, "note");
         }
+        Draw(AnnotationTool.Rectangle);
+        var free = _handler.AddFreeText(_doc.Primary, 10, 10, 100, 30, "typed");
 
+        // #213: an unsigned note must still carry a date, or the host shows none until a reopen.
+        Assert.Equal(5, Page0.Count);
         Assert.All(Page0, a =>
         {
             Assert.Null(a.Author);
-            Assert.Null(a.CreatedUtc);
+            Assert.True(a.CreatedUtc >= before);
         });
+
+        _handler.SelectedAnnotation = free;
+        Assert.True(_handler.CopySelectedAnnotation(_doc.Primary));
+        var pasted = _handler.PasteAnnotation(_doc.Primary)!;
+        Assert.Null(pasted.Author);
+        Assert.True(pasted.CreatedUtc >= before);
+
+        var reply = _handler.CreateReply(_doc.Primary, free!, "agreed")!;
+        Assert.Null(reply.Author);
+        Assert.True(reply.CreatedUtc >= before);
     }
 
     [Fact]

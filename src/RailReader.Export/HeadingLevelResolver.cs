@@ -24,16 +24,9 @@ public static class HeadingLevelResolver
     {
         var flatOutline = FlattenOutline(outline);
 
-        var blockTexts = new Dictionary<int, string>();
-        if (pageText != null)
-        {
-            for (int i = 0; i < blocks.Count; i++)
-            {
-                var text = pageText.ExtractBlockText(blocks[i]);
-                if (!string.IsNullOrEmpty(text))
-                    blockTexts[i] = text;
-            }
-        }
+        var blockTexts = pageText != null
+            ? MarkdownExportService.BlockTexts(pageText, blocks)
+            : new Dictionary<int, string>();
 
         return ResolveWithFlatOutline(blocks, blockTexts, flatOutline, pageIndex);
     }
