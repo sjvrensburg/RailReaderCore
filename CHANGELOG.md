@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.90.0 — Export each region once; date unsigned annotations (2026-11-17)
+## 0.90.0 — One block per region; date unsigned annotations (2026-11-17)
 
 - **Markdown export no longer writes a region twice** (#214). Layout boxes can overlap heavily
   without either containing the other (a list box plus a box around its last item, a reference
@@ -16,6 +16,19 @@
   export passes figures, charts, running headers/footers, page numbers, decorations) read
   without claiming, so a figure box read first cannot swallow the caption it overlaps.
   `ExtractBlockText` per block is unchanged.
+- **Analysis drops duplicate prose blocks** (#216). The same overlapping-box geometry behind #214
+  also reached every consumer of `PageAnalysis.Blocks`: rail stepped the shared lines twice, and
+  per-block text extraction (bibliography parsing, accessibility outlines, VLM) saw them twice.
+  `BlockPostProcessor.PostProcess` now removes a prose block (Text, Reference, Footnote, Aside,
+  InlineMath) when ≥90% of its characters also lie in another prose block that holds more. The
+  bigger block wins whatever the reading order. If some of the dropped block's characters are in no
+  other block, the survivor grows to cover it (losing its `Quad`), unless that would take in a
+  third block's text, in which case both are kept. Headings, captions, equations, algorithms,
+  tables and figures are never dropped. It needs a text layer, so a scanned page with OCR off is
+  unchanged. Survivors are renumbered, so `blocks[i].Order == i` still holds; a host that stored a
+  block index on an affected page should re-resolve it (railreader2's portal anchors already fall
+  back by role and position). On the 150-page V3 probe corpus it fired once: an `InlineMath` box
+  straddling two paragraphs whose text the lower one already held.
 - **Unsigned annotations get a creation time** (#213). `AnnotationInteractionHandler` stamped
   `CreatedUtc` only when `Author` was set, so a new note by a reader with no name configured
   had no date until it was read back from the PDF. Every annotation the handler creates (all
