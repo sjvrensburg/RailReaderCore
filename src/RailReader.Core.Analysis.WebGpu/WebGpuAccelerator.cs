@@ -188,15 +188,23 @@ namespace RailReader.Core.Analysis.WebGpu;
 ///
 /// <para>
 /// <b>Which stage is worth putting on the GPU depends on the OCR tier, not on the combination.</b>
-/// Layout on the discrete card is 5–12× faster than CPU (PP-DocLayoutV3 ~0.6 s/page, Heron
-/// ~0.2 s/page on NVIDIA; on the Intel iGPU ~1.8 s/page, or ~2.6 s/page when OCR shares the iGPU,
-/// against ~2.6 s/page on CPU). OCR is the other way
-/// round for the light tiers: v5-latin and PP-OCRv6 Small were <i>slower</i> on the GPU than on CPU
-/// (v5-latin ~8 s against ~5 s per 1920-px page, Small ~11 s against ~8 s), while PP-OCRv6 Medium
-/// was ~13× faster on NVIDIA (~11 s against ~149 s) and ~10× on the Intel iGPU. Putting a light OCR
-/// tier on the GPU alongside GPU layout costs OCR throughput rather than buying it; with Medium,
-/// both on the GPU is the fastest placement measured (3 pages: 33 s against 446 s all-CPU). These
-/// timings are single runs on one laptop, both stages loaded at once, so read them as indicative.
+/// Re-measured 2026-11-18 on ORT 1.32.0 + plugin 0.6.0, NVIDIA RTX A2000, FP32 models, shipping
+/// thread cap: paired CPU/GPU runs interleaved page by page (order flipped each round), after a
+/// warm-up, over 12 pages from 6 documents (3 for Medium). Layout alone is 4–8× faster on the GPU
+/// (PP-DocLayoutV3 0.23 s against 0.94 s per page, Heron 0.12 s against 0.94 s). OCR alone, at
+/// 1920 px, is faster on the GPU for every tier but Tiny (v5-latin 1.4 s against 2.2 s, Tiny 2.0 s
+/// against 2.1 s, Small 2.3 s against 4.2 s, Medium 2.9 s against 57 s — ~20×). <i>Isolated numbers
+/// mislead for the light tiers, though</i>: with GPU layout running continuously beside it — the
+/// worker's two stages at full load — the GPU's lead goes. The paired CPU/GPU ratio (above 1 = GPU
+/// faster) falls to 0.66 for v5-latin and 0.61 for Tiny beside Heron, 1.00 and 0.80 beside V3;
+/// Small keeps a modest lead (1.11 beside Heron, 1.55 beside V3). V3 shifts the balance because its
+/// mask→quad fit runs on the CPU and slows CPU OCR too (v5-latin 2.2 s → 4.4 s). Where OCR runs
+/// barely moves layout throughput (within ~8% either way). So: layout on the GPU always; v5-latin
+/// and Tiny on CPU when layout is on the GPU; Small and Medium on the GPU. The real worker idles
+/// between pages, so reality sits between the isolated and the concurrent figures. Earlier
+/// figures (ORT 1.31.1 + plugin 0.5.0, both stages loaded at once, single runs) had Small slower
+/// on the GPU (~11 s against ~8 s); on the Intel Iris Xe, not re-measured, layout was ~1.8 s/page
+/// against ~2.6 s on CPU (~2.6 s when OCR shared the iGPU) and Medium ~10× faster on the GPU.
 /// </para>
 ///
 /// <para>

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.91.0 — ONNX Runtime 1.32 with WebGPU plugin 0.6 (2026-11-18)
+
+- ONNX Runtime 1.32: `RailReader.Core.Analysis` and `RailReader.Core.Ocr.RapidOcr` move from
+  `Microsoft.ML.OnnxRuntime` 1.31.* to 1.32.* (resolves 1.32.0), and `RailReader.Core.Analysis.WebGpu` moves from
+  `Microsoft.ML.OnnxRuntime.EP.WebGpu` 0.5.* to 0.6.*, the plugin ORT 1.32 is matched with (core and plugin must
+  share contributed-operator schemas). On the FP32 GPU path, PP-DocLayoutV3 and Docling Heron blocks and OCR text
+  matched CPU exactly on every CPU/GPU placement (12 pages, 6 documents), and 30 s of concurrent layout + OCR on
+  one GPU raised no exception and no crash.
+- Other dependencies: `OpenAI` 2.14.0 → 2.15.0 (`RailReader.Core.Vlm.OpenAI`); the `PdfPig.Rendering.Skia` floor
+  0.1.16.7 → 0.1.16.8 (`RailReader.Renderer.PdfPigSkia`; still SkiaSharp 3.119). Not updated: PDFtoImage 5.3+ and
+  SkiaSharp 4 (PDFtoImage 5.3+ requires SkiaSharp 4, which PdfPig.Rendering.Skia and RapidOcrNet don't support yet).
+- GPU placement re-measured (`WebGpuAccelerator` docs). On an RTX A2000, run alone, layout is 4–8× faster on the GPU
+  and OCR is faster there for every tier but PP-OCRv6 Tiny (Medium ~20×). With GPU layout running beside it, the
+  light tiers lose that lead: v5-latin and Tiny are as fast or faster on CPU, PP-OCRv6 Small is now 1.1–1.55×
+  faster on the GPU (it measured slower on 1.31 + 0.5), and Medium stays far ahead on the GPU. Recommended
+  placement: layout on the GPU; v5-latin and Tiny OCR on CPU; Small and Medium OCR on the GPU.
+
 ## 0.90.0 — One block per region; date unsigned annotations (2026-11-17)
 
 - **Markdown export no longer writes a region twice** (#214). Layout boxes can overlap heavily
