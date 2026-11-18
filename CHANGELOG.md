@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.92.0 — Colour-category names in Markdown export; safer annotation text (2026-11-18)
 
 - **Markdown export labels annotations with colour-category names** (#219). New optional
   `MarkdownExportOptions.ColourCategories` (hex colour → name, e.g. `#FFFF00` → "Definition") is
