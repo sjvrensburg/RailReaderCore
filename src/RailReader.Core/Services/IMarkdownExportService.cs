@@ -29,6 +29,15 @@ public record MarkdownExportOptions
     /// how it's honoured.
     /// </summary>
     public AcceleratorPreference Accelerator { get; init; } = AcceleratorPreference.Cpu;
+
+    /// <summary>
+    /// Optional colour-category names keyed by hex colour (e.g. <c>#FFFF00</c> →
+    /// "Definition"), shown alongside an annotation's colour in the exported Markdown.
+    /// Keys and annotation colours are both compared after <see cref="ColourKey.Normalise"/>;
+    /// a blank name counts as no name. Core only reads this map and never owns or persists
+    /// the names. Null, empty or unmatched leaves the output exactly as without it.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? ColourCategories { get; init; }
 }
 
 public interface IMarkdownExportService

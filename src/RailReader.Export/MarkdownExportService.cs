@@ -206,7 +206,7 @@ public sealed class MarkdownExportService : IMarkdownExportService
                 vlmEndpoint, options, vlmResults, figurePaths, ct);
         }
 
-        var pageAnnotations = ExtractPageAnnotations(annotationFile, pageIdx);
+        var pageAnnotations = ExtractPageAnnotations(annotationFile, pageIdx, options);
 
         var md = PageMarkdownBuilder.Build(
             blocks, headingLevels, blockTexts, vlmResults, figurePaths);
@@ -250,7 +250,7 @@ public sealed class MarkdownExportService : IMarkdownExportService
     {
         var pageText = textService.ExtractPageText(pdf.PdfBytes, pageIdx, pdf.Password);
         var pageAnnotations = options.IncludeAnnotations
-            ? ExtractPageAnnotations(annotationFile, pageIdx)
+            ? ExtractPageAnnotations(annotationFile, pageIdx, options)
             : null;
 
         return PageMarkdownBuilder.BuildPlainTextForPage(
@@ -354,7 +354,7 @@ public sealed class MarkdownExportService : IMarkdownExportService
     }
 
     private static PageMarkdownBuilder.PageAnnotations? ExtractPageAnnotations(
-        AnnotationFile? annotationFile, int pageIdx)
+        AnnotationFile? annotationFile, int pageIdx, MarkdownExportOptions options)
     {
         if (annotationFile == null) return null;
         if (!annotationFile.Pages.TryGetValue(pageIdx, out var pageAnns) || pageAnns.Count == 0)
@@ -363,6 +363,9 @@ public sealed class MarkdownExportService : IMarkdownExportService
         // Pass the page's annotations through in document order. PageMarkdownBuilder decides
         // which actually render (markups always; comment-bearing types when they have text;
         // decoration-only drawings are dropped), so the surfacing rule lives in one place.
-        return new PageMarkdownBuilder.PageAnnotations(pageAnns);
+        return new PageMarkdownBuilder.PageAnnotations(pageAnns)
+        {
+            ColourCategories = options.ColourCategories,
+        };
     }
 }
