@@ -149,6 +149,22 @@ public class MarkdownColourCategoryTests
         Assert.DoesNotContain(lines, l => l.StartsWith("next"));   // the newline didn't end the quote
     }
 
+    [Fact]
+    public void InvisibleOnlyName_IsIgnored()
+    {
+        var anns = new Annotation[] { new HighlightAnnotation { Color = "#FFFF00" } };
+        Assert.Equal(Render(null, null, anns),
+            Render(new Dictionary<string, string> { ["#FFFF00"] = "\u0002\u00AD" }, null, anns));
+    }
+
+    [Fact]
+    public void EntityInName_IsEscaped()
+    {
+        var md = Render(new Dictionary<string, string> { ["#FFFF00"] = "A &lt; B" }, null,
+            new HighlightAnnotation { Color = "#FFFF00" });
+        Assert.Contains(@"[highlight: A \&lt; B (#FFFF00)]", md);
+    }
+
     private static int CountOf(string s, string sub)
     {
         int n = 0, i = 0;

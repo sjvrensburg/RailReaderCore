@@ -139,7 +139,7 @@ public static class PageMarkdownBuilder
 
     /// <summary>
     /// Re-keys the host's names by <see cref="ColourKey.Normalise"/>, dropping unparseable
-    /// keys and blank names. Where two keys normalise alike, the first non-blank name in the
+    /// keys and blank (or invisible-only) names. Where two keys normalise alike, the first non-blank name in the
     /// map's enumeration order wins. Null when nothing usable remains.
     /// </summary>
     private static Dictionary<string, string>? NormaliseCategories(IReadOnlyDictionary<string, string>? raw)
@@ -148,10 +148,13 @@ public static class PageMarkdownBuilder
         Dictionary<string, string>? result = null;
         foreach (var (key, name) in raw)
         {
+            // Clean before the blank test: a name of only invisible controls (U+0002, a soft
+            // hyphen) is not whitespace but renders as nothing, leaving "**:**" / "Note ()".
             var k = ColourKey.Normalise(key);
-            if (k is null || string.IsNullOrWhiteSpace(name)) continue;
+            var clean = MarkdownText.Clean(name);
+            if (k is null || string.IsNullOrWhiteSpace(clean)) continue;
             result ??= new Dictionary<string, string>(StringComparer.Ordinal);
-            result.TryAdd(k, name.Trim());
+            result.TryAdd(k, clean.Trim());
         }
         return result;
     }

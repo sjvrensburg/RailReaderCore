@@ -56,7 +56,7 @@ internal static class MarkdownText
     /// Makes a short host-supplied label (a colour-category name) safe to embed inline in
     /// Markdown: invisible controls stripped, whitespace (including line breaks, which would
     /// end a blockquote) collapsed to single spaces, and Markdown punctuation backslash-escaped
-    /// so it cannot open emphasis, a link, a code span or an HTML tag.
+    /// so it cannot open emphasis, a link, a code span, an HTML tag or an entity reference.
     /// </summary>
     public static string EscapeInline(string text)
     {
@@ -64,7 +64,7 @@ internal static class MarkdownText
         var sb = new System.Text.StringBuilder(flat.Length + 8);
         foreach (var c in flat)
         {
-            if (c is '\\' or '*' or '_' or '`' or '[' or ']' or '<' or '>' or '#' or '|' or '~')
+            if (c is '\\' or '*' or '_' or '`' or '[' or ']' or '<' or '>' or '#' or '|' or '~' or '&')
                 sb.Append('\\');
             sb.Append(c);
         }
