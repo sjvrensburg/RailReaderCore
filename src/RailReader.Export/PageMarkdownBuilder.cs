@@ -181,34 +181,40 @@ public static class PageMarkdownBuilder
     {
         var label = MarkupLabel(markup);
         var covered = ExtractMarkupText(markup, pageText);
+        // A well-formed hex colour is written as stored (the usual case, byte-identical to
+        // before). Anything else came from a hand-edited or crafted sidecar and is made safe
+        // for where it lands, so e.g. "-->" can't close the HTML comment.
+        var validColour = ColourKey.Normalise(markup.Color) is not null;
+        var colourInComment = validColour ? markup.Color : MarkdownText.HtmlCommentSafe(markup.Color);
+        var colourInline = validColour ? markup.Color : MarkdownText.EscapeInline(markup.Color);
 
         if (covered != null)
         {
             if (category is null)
             {
                 sb.AppendLine($"> {covered}");
-                sb.AppendLine($"<!-- {label}: {markup.Color} -->");
+                sb.AppendLine($"<!-- {label}: {colourInComment} -->");
             }
             else
             {
                 sb.AppendLine($"> **{MarkdownText.EscapeInline(category)}:** {covered}");
-                sb.AppendLine($"<!-- {label}: {markup.Color} ({MarkdownText.HtmlCommentSafe(category)}) -->");
+                sb.AppendLine($"<!-- {label}: {colourInComment} ({MarkdownText.HtmlCommentSafe(category)}) -->");
             }
         }
         else if (category is null)
         {
-            sb.AppendLine($"> [{label}: {markup.Color}]");
+            sb.AppendLine($"> [{label}: {colourInline}]");
         }
         else
         {
-            sb.AppendLine($"> [{label}: {MarkdownText.EscapeInline(category)} ({markup.Color})]");
+            sb.AppendLine($"> [{label}: {MarkdownText.EscapeInline(category)} ({colourInline})]");
         }
 
         // The reviewer's note attached to the markup (PDF /Contents) — for moderation
         // this comment is the substance, distinct from the text being marked.
-        var comment = MarkdownText.Clean(markup.EffectiveContents);
-        if (!string.IsNullOrWhiteSpace(comment))
-            sb.AppendLine($"> — {comment.Trim()}");
+        var comment = MarkdownText.QuoteContinuation(markup.EffectiveContents);
+        if (comment.Length > 0)
+            sb.AppendLine($"> — {comment}");
 
         sb.AppendLine();
     }
@@ -232,16 +238,19 @@ public static class PageMarkdownBuilder
             var t = pageText.ExtractTextInRect(rect.X, rect.Y, rect.X + rect.W, rect.Y + rect.H);
             if (t != null) texts.Add(t);
         }
-        return texts.Count > 0 ? MarkdownText.Clean(string.Join(" ", texts)) : null;
+        if (texts.Count == 0) return null;
+        var quoted = MarkdownText.QuoteContinuation(string.Join(" ", texts));
+        return quoted.Length > 0 ? quoted : null;
     }
 
     private static void AppendComment(StringBuilder sb, string label, string contents, string? category)
     {
-        if (string.IsNullOrWhiteSpace(contents))
+        var body = MarkdownText.QuoteContinuation(contents);
+        if (body.Length == 0)
             return;
         if (category is not null)
             label = $"{label} ({MarkdownText.EscapeInline(category)})";
-        sb.AppendLine($"> **{label}:** {MarkdownText.Clean(contents).Trim()}");
+        sb.AppendLine($"> **{label}:** {body}");
         sb.AppendLine();
     }
 

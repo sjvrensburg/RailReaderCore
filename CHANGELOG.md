@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.92.0 — Colour-category names in Markdown export; safer annotation text (2026-11-18)
 
 - **Markdown export labels annotations with colour-category names** (#219). New optional
   `MarkdownExportOptions.ColourCategories` (hex colour → name, e.g. `#FFFF00` → "Definition") is
@@ -13,6 +13,15 @@
   rule (trim, upper-case, add `#`, expand `#RGB`, drop the alpha of `#AARRGGBB`; unparseable →
   null), so hosts can key their names the same way. `PageMarkdownBuilder.PageAnnotations` gains a
   matching `ColourCategories` init property.
+- **Annotation text can no longer break the Markdown export's structure.** A multi-line comment
+  (or covered text spanning lines) now continues its blockquote on every line; before, a blank
+  line ended the quote and the rest of the note leaked into the page body, where `#`/`-` made
+  headings or lists. A `<` that could open raw HTML in annotation text is escaped (an unclosed
+  `<!--` in a comment hid the rest of the document); `x < y` is kept as is, and emphasis
+  characters are left alone, as in the page body. An annotation colour that isn't valid hex
+  (hand-edited or crafted sidecar) is sanitised so it can't close the `<!-- … -->` comment;
+  valid colours are written exactly as before. A comment of only invisible characters no
+  longer emits an empty `**Note:**` line.
 
 ## 0.91.0 — ONNX Runtime 1.32 with WebGPU plugin 0.6 (2026-11-18)
 
