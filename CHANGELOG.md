@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **Markdown export labels annotations with colour-category names** (#219). New optional
+  `MarkdownExportOptions.ColourCategories` (hex colour → name, e.g. `#FFFF00` → "Definition") is
+  host-supplied and read-only: Core never owns or persists the names. A named markup with recovered
+  text renders `> **Definition:** covered text` and `<!-- highlight: #FFFF00 (Definition) -->`;
+  without recovered text, `> [highlight: Definition (#FFFF00)]`; notes, FreeText, carets and
+  commented drawings render `> **Note (Definition):** body`. Names are escaped so they can't open
+  Markdown emphasis/links or close the HTML comment. With no map, or for a colour with no name,
+  the output is byte-identical to before. New public `ColourKey.Normalise` (Core) is the matching
+  rule (trim, upper-case, add `#`, expand `#RGB`, drop the alpha of `#AARRGGBB`; unparseable →
+  null), so hosts can key their names the same way. `PageMarkdownBuilder.PageAnnotations` gains a
+  matching `ColourCategories` init property.
+
 ## 0.91.0 — ONNX Runtime 1.32 with WebGPU plugin 0.6 (2026-11-18)
 
 - ONNX Runtime 1.32: `RailReader.Core.Analysis` and `RailReader.Core.Ocr.RapidOcr` move from

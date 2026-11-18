@@ -17,7 +17,15 @@ public static class PageMarkdownBuilder
     /// type (text markups, sticky notes, typewriter/FreeText, carets, and commented
     /// drawings) rather than a fixed pair of lists, so adding a type needs no shape change.
     /// </summary>
-    public record PageAnnotations(IReadOnlyList<Annotation> Annotations);
+    public record PageAnnotations(IReadOnlyList<Annotation> Annotations)
+    {
+        /// <summary>
+        /// Host-supplied colour-category names (see
+        /// <see cref="MarkdownExportOptions.ColourCategories"/>); keys need not be
+        /// normalised. Null or empty renders exactly as without it.
+        /// </summary>
+        public IReadOnlyDictionary<string, string>? ColourCategories { get; init; }
+    }
 
     /// <summary>
     /// Builds Markdown for a single page from layout blocks.
@@ -111,13 +119,15 @@ public static class PageMarkdownBuilder
         // least one annotation actually produced output — markups always do; comment-only
         // types render nothing when they carry no comment. This dispatch is the single
         // source of truth for which annotation types appear in the export.
+        var categories = NormaliseCategories(annotations.ColourCategories);
         var body = new StringBuilder();
         foreach (var ann in annotations.Annotations)
         {
+            var category = CategoryOf(categories, ann.Color);
             if (ann is TextMarkupAnnotation markup)
-                AppendMarkup(body, markup, pageText);
+                AppendMarkup(body, markup, pageText, category);
             else
-                AppendComment(body, CommentLabel(ann), ann.EffectiveContents);
+                AppendComment(body, CommentLabel(ann), ann.EffectiveContents, category);
         }
 
         if (body.Length == 0)
@@ -126,6 +136,32 @@ public static class PageMarkdownBuilder
         sb.AppendLine();
         sb.Append(body);
     }
+
+    /// <summary>
+    /// Re-keys the host's names by <see cref="ColourKey.Normalise"/>, dropping unparseable
+    /// keys and blank (or invisible-only) names. Where two keys normalise alike, the first non-blank name in the
+    /// map's enumeration order wins. Null when nothing usable remains.
+    /// </summary>
+    private static Dictionary<string, string>? NormaliseCategories(IReadOnlyDictionary<string, string>? raw)
+    {
+        if (raw is null || raw.Count == 0) return null;
+        Dictionary<string, string>? result = null;
+        foreach (var (key, name) in raw)
+        {
+            // Clean before the blank test: a name of only invisible controls (U+0002, a soft
+            // hyphen) is not whitespace but renders as nothing, leaving "**:**" / "Note ()".
+            var k = ColourKey.Normalise(key);
+            var clean = MarkdownText.Clean(name);
+            if (k is null || string.IsNullOrWhiteSpace(clean)) continue;
+            result ??= new Dictionary<string, string>(StringComparer.Ordinal);
+            result.TryAdd(k, clean.Trim());
+        }
+        return result;
+    }
+
+    private static string? CategoryOf(Dictionary<string, string>? categories, string? colour) =>
+        categories is not null && ColourKey.Normalise(colour) is { } key
+            && categories.TryGetValue(key, out var name) ? name : null;
 
     private static string CommentLabel(Annotation ann) => ann switch
     {
@@ -141,19 +177,31 @@ public static class PageMarkdownBuilder
     /// Renders a text-markup annotation: the covered text (or a colour marker when the
     /// text can't be recovered) followed by the reviewer's comment if one is attached.
     /// </summary>
-    private static void AppendMarkup(StringBuilder sb, TextMarkupAnnotation markup, PageText? pageText)
+    private static void AppendMarkup(StringBuilder sb, TextMarkupAnnotation markup, PageText? pageText, string? category)
     {
         var label = MarkupLabel(markup);
         var covered = ExtractMarkupText(markup, pageText);
 
         if (covered != null)
         {
-            sb.AppendLine($"> {covered}");
-            sb.AppendLine($"<!-- {label}: {markup.Color} -->");
+            if (category is null)
+            {
+                sb.AppendLine($"> {covered}");
+                sb.AppendLine($"<!-- {label}: {markup.Color} -->");
+            }
+            else
+            {
+                sb.AppendLine($"> **{MarkdownText.EscapeInline(category)}:** {covered}");
+                sb.AppendLine($"<!-- {label}: {markup.Color} ({MarkdownText.HtmlCommentSafe(category)}) -->");
+            }
+        }
+        else if (category is null)
+        {
+            sb.AppendLine($"> [{label}: {markup.Color}]");
         }
         else
         {
-            sb.AppendLine($"> [{label}: {markup.Color}]");
+            sb.AppendLine($"> [{label}: {MarkdownText.EscapeInline(category)} ({markup.Color})]");
         }
 
         // The reviewer's note attached to the markup (PDF /Contents) — for moderation
@@ -187,10 +235,12 @@ public static class PageMarkdownBuilder
         return texts.Count > 0 ? MarkdownText.Clean(string.Join(" ", texts)) : null;
     }
 
-    private static void AppendComment(StringBuilder sb, string label, string contents)
+    private static void AppendComment(StringBuilder sb, string label, string contents, string? category)
     {
         if (string.IsNullOrWhiteSpace(contents))
             return;
+        if (category is not null)
+            label = $"{label} ({MarkdownText.EscapeInline(category)})";
         sb.AppendLine($"> **{label}:** {MarkdownText.Clean(contents).Trim()}");
         sb.AppendLine();
     }

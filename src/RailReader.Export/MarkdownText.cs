@@ -52,6 +52,41 @@ internal static class MarkdownText
     /// <summary>Null-tolerant <see cref="Clean(string)"/>.</summary>
     public static string? CleanOrNull(string? text) => text == null ? null : Clean(text);
 
+    /// <summary>
+    /// Makes a short host-supplied label (a colour-category name) safe to embed inline in
+    /// Markdown: invisible controls stripped, whitespace (including line breaks, which would
+    /// end a blockquote) collapsed to single spaces, and Markdown punctuation backslash-escaped
+    /// so it cannot open emphasis, a link, a code span, an HTML tag or an entity reference.
+    /// </summary>
+    public static string EscapeInline(string text)
+    {
+        var flat = CollapseWhitespace(Clean(text));
+        var sb = new System.Text.StringBuilder(flat.Length + 8);
+        foreach (var c in flat)
+        {
+            if (c is '\\' or '*' or '_' or '`' or '[' or ']' or '<' or '>' or '#' or '|' or '~' or '&')
+                sb.Append('\\');
+            sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Makes a short label safe inside an HTML comment (<c>&lt;!-- … --&gt;</c>), where
+    /// backslash escapes mean nothing: whitespace is collapsed and every <c>--</c> is broken
+    /// up, so the label can never close the comment early.
+    /// </summary>
+    public static string HtmlCommentSafe(string text)
+    {
+        var flat = CollapseWhitespace(Clean(text));
+        while (flat.Contains("--", StringComparison.Ordinal))
+            flat = flat.Replace("--", "- -", StringComparison.Ordinal);
+        return flat;
+    }
+
+    private static string CollapseWhitespace(string text) =>
+        string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+
     private static bool IsInvisible(char c) =>
         (c < ' ' && c is not ('\t' or '\n' or '\r'))   // C0 controls, incl. PDFium's U+0002
         || c == '\u007F'                                // DEL
