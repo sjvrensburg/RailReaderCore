@@ -84,6 +84,43 @@ internal static class MarkdownText
         return flat;
     }
 
+    /// <summary>
+    /// Renders annotation text (a reviewer's comment, or the document text a markup covers)
+    /// as the continuation of a <c>&gt; </c> blockquote line. Only what would break the
+    /// export's structure is neutralised; emphasis characters are left alone, as in the page
+    /// body, so the text stays greppable and quotable:
+    /// <list type="bullet">
+    /// <item>every line break continues the quote (<c>&gt; </c>, or <c>&gt;</c> for a blank
+    /// line) — otherwise a blank line ends the quote and the rest of a multi-line note
+    /// becomes page body, where a leading <c>#</c> or <c>-</c> makes a heading or list;</item>
+    /// <item>a <c>&lt;</c> that could open raw HTML (followed by a letter, <c>/</c>, <c>!</c>
+    /// or <c>?</c>) is escaped — an unclosed <c>&lt;!--</c> in a comment would otherwise hide
+    /// everything after it. A <c>&lt;</c> followed by anything else (<c>x &lt; y</c>) is
+    /// already literal and is kept as is.</item>
+    /// </list>
+    /// Invisible controls are stripped and the result trimmed.
+    /// </summary>
+    public static string QuoteContinuation(string text)
+    {
+        var clean = Clean(text).Trim();
+        var sb = new System.Text.StringBuilder(clean.Length + 8);
+        var lines = clean.ReplaceLineEndings("\n").Split('\n');
+        for (int li = 0; li < lines.Length; li++)
+        {
+            var line = lines[li].TrimEnd();
+            if (li > 0)
+                sb.Append(Environment.NewLine).Append(line.Length == 0 ? ">" : "> ");
+            for (int i = 0; i < line.Length; i++)
+            {
+                if (line[i] == '<' && i + 1 < line.Length
+                    && (char.IsAsciiLetter(line[i + 1]) || line[i + 1] is '/' or '!' or '?'))
+                    sb.Append('\\');
+                sb.Append(line[i]);
+            }
+        }
+        return sb.ToString();
+    }
+
     private static string CollapseWhitespace(string text) =>
         string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 
