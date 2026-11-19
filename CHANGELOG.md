@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+- **`XYCutPlusPlusResolver` no longer orders a block after the block directly below it** (#223).
+  Four independent causes, each reproduced from a reporter's Heron boxes:
+  - Heading attachment moved a heading down past a block below it in its own column (a section
+    heading past its subsection heading, a centred name past the wider affiliation line under it,
+    a heading past a duplicate text box). A heading is now never carried across an x-overlapping
+    block lying on the other side of it on the page.
+  - Two blocks sharing an edge or overlapping by ~1 pt counted as a *clipping* overlap, so whole
+    paragraphs were lifted out of the cut and re-inserted next to the wrong neighbour. Overlap must
+    now exceed `SpannerOverlapTolerancePoints` (2 pt, new public constant) on both axes.
+  - Re-inserted (masked) blocks are kept after every block above them in their column and before
+    every block below; a block above (below) everything reads first (last), and blocks above
+    everything keep their left-to-right order (a running-header pair).
+  - A divider crossing a column split — a full-width title under a logo, spanning a side column
+    and the main column, or a caption shared by side-by-side tables at a region's top or bottom —
+    is now cut at horizontally instead of being assigned to one column by its centre.
+
+  On a 487-page corpus (PP-DocLayoutV3 boxes from `tools/order-eval`, re-ordered without the text
+  layer, V3's own order as reference) mean body Kendall-τ falls 0.043 → 0.025 and exact-match
+  pages rise 273 → 325; blocks ordered after the block below them fall 8 → 5 of 808 headings and
+  229 → 30 of 4,701 other blocks. Five pages move away from V3's order, all figure grids or
+  furniture; the largest (a page of small multiples) is a pre-existing limit of centroid-anchored
+  re-insertion.
+
 ## 0.92.0 — Colour-category names in Markdown export; safer annotation text (2026-11-18)
 
 - **Markdown export labels annotations with colour-category names** (#219). New optional

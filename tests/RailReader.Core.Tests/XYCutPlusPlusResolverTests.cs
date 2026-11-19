@@ -636,4 +636,143 @@ public class XYCutPlusPlusResolverTests
         Assert.Equal(new[] { "a", "c", "b", "d" }.Select(t => t.GetHashCode()),
             blocks.Select(Id));
     }
+
+    // -----------------------------------------------------------------
+    // Issue #223: blocks ordered after the block directly below them.
+    // Box lists are the reporter's minimal reductions (Heron detections).
+    // -----------------------------------------------------------------
+
+    private static string[] OrderedTags(List<LayoutBlock> blocks, Dictionary<int, string> names) =>
+        blocks.Select(b => names[Id(b)]).ToArray();
+
+    private static (List<LayoutBlock> Blocks, Dictionary<int, string> Names) Page(
+        params (string Tag, BlockRole Role, float X, float Y, float W, float H)[] boxes)
+    {
+        var blocks = boxes.Select(b => Block(b.X, b.Y, b.W, b.H, b.Role, b.Tag)).ToList();
+        var names = boxes.ToDictionary(b => b.Tag.GetHashCode(), b => b.Tag);
+        return (blocks, names);
+    }
+
+    [Fact]
+    public void Issue223_SectionHeadingDirectlyAboveSubsectionHeading()
+    {
+        // Linton & Mammen (2005), p.14: "4. ASYMPTOTIC PROPERTIES" then "4.1. Regularity Conditions".
+        var (blocks, names) = Page(
+            ("h4", BlockRole.Heading, 163f, 480f, 129f, 9f),
+            ("h41", BlockRole.Heading, 170f, 498f, 115f, 11f),
+            ("para", BlockRole.Text, 54f, 515f, 349f, 86f));
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 456, 702);
+        Assert.Equal(new[] { "h4", "h41", "para" }, OrderedTags(blocks, names));
+    }
+
+    [Fact]
+    public void Issue223_CentredHeadingAboveWiderCentredBlock()
+    {
+        // Hentschel (1995), p.1: author name, affiliation, received line.
+        var (blocks, names) = Page(
+            ("affil", BlockRole.Text, 71f, 188f, 288f, 18f),
+            ("author", BlockRole.Heading, 173f, 171f, 84f, 11f),
+            ("received", BlockRole.Text, 109f, 218f, 208f, 9f));
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 432, 648);
+        Assert.Equal(new[] { "author", "affil", "received" }, OrderedTags(blocks, names));
+    }
+
+    [Fact]
+    public void Issue223_HeadingAboveTwoOverlappingTextBoxes()
+    {
+        // forecast JSS vignette, p.23: the small box is a duplicate of the large
+        // one's top-left corner. Either text order is acceptable; the heading
+        // must precede both.
+        var (blocks, names) = Page(
+            ("header", BlockRole.Header, 228.3f, 75.8f, 146.4f, 8.7f),
+            ("large", BlockRole.Text, 78.9f, 131.2f, 444.3f, 140.5f),
+            ("heading", BlockRole.Heading, 79.9f, 110.4f, 62.6f, 9.5f),
+            ("small", BlockRole.Text, 79.6f, 127.7f, 80.3f, 9.6f));
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 595, 842);
+        var order = OrderedTags(blocks, names).ToList();
+        Assert.Equal("header", order[0]);
+        Assert.Equal("heading", order[1]);
+    }
+
+    [Fact]
+    public void Issue223_EquationTouchingParagraphAbove()
+    {
+        // kernlab vignette, p.19.
+        var (blocks, names) = Page(
+            ("header", BlockRole.Header, 189.2f, 76.4f, 223.2f, 9.9f),
+            ("p1", BlockRole.Text, 88.6f, 390.7f, 425.1f, 33.9f),
+            ("p2", BlockRole.Text, 88.6f, 453.1f, 425.1f, 34.3f),
+            ("eq1", BlockRole.DisplayMath, 220.5f, 424.6f, 291.7f, 22.7f),
+            ("eq2", BlockRole.DisplayMath, 238.8f, 487.1f, 273.4f, 36.0f));
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 595, 842);
+        Assert.Equal(new[] { "header", "p1", "eq1", "p2", "eq2" }, OrderedTags(blocks, names));
+    }
+
+    [Fact]
+    public void Issue223_NarrowEquationBetweenParagraphs()
+    {
+        // Linton & Mammen (2005), p.7.
+        var (blocks, names) = Page(
+            ("eq", BlockRole.DisplayMath, 53.3f, 425.6f, 121.9f, 11.6f),
+            ("p1", BlockRole.Text, 52.7f, 76.0f, 348.5f, 119.8f),
+            ("p2", BlockRole.Text, 52.5f, 194.8f, 348.9f, 219.9f),
+            ("p3", BlockRole.Text, 52.9f, 448.5f, 348.4f, 82.9f),
+            ("fn", BlockRole.Text, 53.1f, 549.6f, 347.8f, 51.4f));
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 456, 702);
+        Assert.Equal(new[] { "p1", "p2", "eq", "p3", "fn" }, OrderedTags(blocks, names));
+    }
+
+    [Fact]
+    public void Issue223_TitleSpanningSideColumnAndMainColumn()
+    {
+        // Dang & Ullah (2022), MDPI p.1: narrow left info column under a wide title.
+        var (blocks, names) = Page(
+            ("logo", BlockRole.Figure, 35f, 49f, 130f, 37f),
+            ("citation", BlockRole.Text, 34f, 438f, 118f, 91f),
+            ("received", BlockRole.Text, 34f, 558f, 85f, 31f),
+            ("note", BlockRole.Text, 34f, 600f, 119f, 42f),
+            ("copyright", BlockRole.Text, 34f, 683f, 119f, 90f),
+            ("title", BlockRole.Heading, 35f, 118f, 442f, 39f),
+            ("main1", BlockRole.Text, 165f, 455f, 395f, 122f),
+            ("main2", BlockRole.Text, 165f, 581f, 396f, 185f));
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 595, 842);
+        var order = OrderedTags(blocks, names).ToList();
+        Assert.Equal(new[] { "logo", "title" }, order.Take(2));
+        // Each column still reads top-down.
+        Assert.True(order.IndexOf("main1") < order.IndexOf("main2"));
+        Assert.True(order.IndexOf("citation") < order.IndexOf("received"));
+        Assert.True(order.IndexOf("received") < order.IndexOf("note"));
+        Assert.True(order.IndexOf("note") < order.IndexOf("copyright"));
+    }
+
+    [Fact]
+    public void Issue223_CaptionSharedBySideBySideTables_ReadAfterBoth()
+    {
+        // TOTEM p.6 (V3 boxes): one caption centred under two side-by-side tables
+        // crosses the column split; it must not be assigned to the left column.
+        var (blocks, names) = Page(
+            ("para", BlockRole.Text, 68f, 136f, 474f, 53f),
+            ("capL", BlockRole.Caption, 132f, 204f, 133f, 9f),
+            ("tabL", BlockRole.Table, 93f, 212f, 212f, 165f),
+            ("capR", BlockRole.Caption, 371f, 233f, 130f, 9f),
+            ("tabR", BlockRole.Table, 342f, 241f, 188f, 108f),
+            ("shared", BlockRole.Caption, 191f, 387f, 228f, 12f),
+            ("next", BlockRole.Heading, 69f, 429f, 82f, 12f));
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 612, 792);
+        Assert.Equal(new[] { "para", "capL", "tabL", "capR", "tabR", "shared", "next" }, OrderedTags(blocks, names));
+    }
+
+    [Fact]
+    public void Issue223_RunningHeaderPair_KeepsLeftToRightOrder()
+    {
+        // Two running headers above everything both re-insert at the top; the
+        // second must not displace the first.
+        var (blocks, names) = Page(
+            ("hdrL", BlockRole.Header, 37f, 33f, 59f, 8f),
+            ("hdrR", BlockRole.Header, 392f, 33f, 116f, 8f),
+            ("p1", BlockRole.Text, 37f, 60f, 470f, 100f),
+            ("p2", BlockRole.Text, 37f, 170f, 470f, 100f));
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 545, 720);
+        Assert.Equal(new[] { "hdrL", "hdrR", "p1", "p2" }, OrderedTags(blocks, names));
+    }
 }
