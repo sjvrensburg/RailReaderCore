@@ -1,7 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.93.0 — XYCut++ reading-order fixes; page-region rendering (2026-11-19)
 
+- **Render a page region at a chosen scale** (#222). New optional capability
+  `IPdfRegionRenderService.RenderRegionPixmap(page, regionInPagePoints, scale, viewRotation, ct)`
+  rasterises only the rectangle (displayed page points, the space of `GetPageSize` and layout block
+  boxes; clamped to the page; snapped outward to whole pixels) as packed RGB, like
+  `RenderPagePixmap`. `SkiaPdfService` implements it with one PDFium render into a region-sized
+  bitmap; its pixels match a crop of a whole-page render at the same scale. Most callers want the
+  extension `PdfRegionRendering.RenderRegionPixmap(this IPdfService …)`, which uses the capability
+  when the backend has it and falls back to render-and-crop otherwise (the PdfPig backend, a
+  decorator that doesn't forward it). For an 80 × 20 pt equation at 11.7 px/pt (an 8192 px page)
+  the region is 935 × 235 px — 0.66 MB instead of a 131 MB page raster, about 65× faster, and the
+  PDFium gate is held for that long only.
 - **`XYCutPlusPlusResolver` no longer orders a block after the block directly below it** (#223).
   Four independent causes, each reproduced from a reporter's Heron boxes:
   - Heading attachment moved a heading down past a block below it in its own column (a section
