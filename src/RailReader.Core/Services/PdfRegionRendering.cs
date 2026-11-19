@@ -31,8 +31,32 @@ public static class PdfRegionRendering
         // Validates scale and the region before paying for a page render.
         PixelBounds(regionInPagePoints, pageW, pageH, scale);
 
+        var page = RenderPageForCropping(pdf, pageIndex, scale, viewRotation);
+        return CropPagePixmap(page, regionInPagePoints, pageW, pageH);
+    }
+
+    /// <summary>
+    /// The whole page at <paramref name="scale"/>, for cropping several regions out of one render
+    /// with <see cref="CropPagePixmap"/> — what the fallback does for one region, and what a caller
+    /// wanting regions that cover most of the page can do instead of rendering each.
+    /// </summary>
+    internal static (byte[] RgbBytes, int Width, int Height) RenderPageForCropping(IPdfService pdf,
+        int pageIndex, double scale, int viewRotation)
+    {
+        var (pageW, pageH) = pdf.GetPageSize(pageIndex, viewRotation);
         int targetSize = (int)Math.Ceiling(Math.Max(pageW, pageH) * scale);
-        var (rgb, w, h) = pdf.RenderPagePixmap(pageIndex, targetSize, viewRotation);
+        return pdf.RenderPagePixmap(pageIndex, targetSize, viewRotation);
+    }
+
+    /// <summary>
+    /// Crops <paramref name="regionInPagePoints"/> out of a whole-page raster of a
+    /// <paramref name="pageW"/> × <paramref name="pageH"/> pt page, at the scale the raster was
+    /// actually rendered at. Clamping and snapping follow <see cref="PixelBounds"/>.
+    /// </summary>
+    internal static (byte[] RgbBytes, int Width, int Height) CropPagePixmap(
+        (byte[] RgbBytes, int Width, int Height) page, BBox regionInPagePoints, double pageW, double pageH)
+    {
+        var (rgb, w, h) = page;
         double actualScale = Math.Min(w / pageW, h / pageH);
         var (x0, y0, x1, y1) = PixelBounds(regionInPagePoints, pageW, pageH, actualScale);
         // The raster can be a pixel short of pageW x actualScale (truncation): keep the crop inside it.

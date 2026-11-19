@@ -87,6 +87,7 @@ RailReaderCore.slnx
 ├── src/RailReader.Core.Pdfium/      ← Desktop PDFium impls of IPdfTextService/IPdfLinkService/IPdfOutlineService + filesystem-backed AppConfig/AnnotationService/ConsoleLogger/LayoutModelLocator + native PDF annotation read/write (PdfAnnotationReader/Writer/Store, CompositeAnnotationStore)
 ├── src/RailReader.Core.Analysis/    ← ONNX-backed ILayoutAnalyzer (PP-DocLayoutV3, PP-DocLayout-S, Docling Heron)
 ├── src/RailReader.Core.Vlm.OpenAI/  ← IVlmService impl for OpenAI-compatible chat-completions endpoints
+├── src/RailReader.Core.Vlm.Anthropic/ ← IVlmService impl for Claude (Anthropic Messages API, official SDK)
 ├── src/RailReader.Core.Ocr.RapidOcr/ ← IOcrService impl (RapidOcrNet / PaddleOCR PP-OCR ONNX) for pages with no text layer
 ├── src/RailReader.Renderer.Skia/    ← SkiaSharp rasterisation + IPdfServiceFactory (PDFium-backed)
 └── tests/RailReader.Core.Tests/     ← xUnit headless tests
@@ -99,11 +100,12 @@ Renderer.Skia    ──→ Core + Core.Pdfium
 Core.Analysis    ──→ Core
 Core.Pdfium      ──→ Core
 Core.Vlm.OpenAI  ──→ Core
+Core.Vlm.Anthropic ─→ Core
 Core.Ocr.RapidOcr ─→ Core
 Core             ←── (root; no project refs, no non-system NuGet deps)
 ```
 
-The deliberate split: `Core` is the only project a non-desktop consumer (mobile) needs to take. It has zero non-system NuGet deps. All native binaries (PDFium, ONNX) and provider SDKs (OpenAI) live in sibling projects, behind interfaces — additional VLM providers (Anthropic, Gemini, …) would slot in as further `Core.Vlm.*` packages.
+The deliberate split: `Core` is the only project a non-desktop consumer (mobile) needs to take. It has zero non-system NuGet deps. All native binaries (PDFium, ONNX) and provider SDKs (OpenAI, Anthropic) live in sibling projects, behind interfaces — further VLM providers (Gemini, …) would slot in as more `Core.Vlm.*` packages.
 
 ### RailReader.Core (the portable layer)
 
@@ -173,6 +175,10 @@ PP-DocLayout-S is the intended detector for the planned MAUI mobile build — V3
 ### RailReader.Core.Vlm.OpenAI (OpenAI-compatible VLM client)
 
 Single class: `OpenAIVlmClient` implements `IVlmService` against any endpoint that speaks the OpenAI chat-completions protocol (OpenAI proper, Ollama, vLLM, LightOnOCR, …). Stateless — endpoint config is passed per call via `VlmEndpointConfig`. Prompts, schemas, and routing are pulled from the static `VlmService` helper in Core, so this package is purely a transport layer.
+
+### RailReader.Core.Vlm.Anthropic (Claude VLM client)
+
+Single class: `AnthropicVlmClient` implements `IVlmService` over the official `Anthropic` .NET SDK (Messages API). Same contract as the OpenAI client — stateless, prompts/schemas from `VlmService`, never throws for expected failures. Which client a host uses is chosen by `VlmEndpointConfig.Provider` (`VlmProvider.OpenAICompatible` default | `Anthropic`), carried from `CoreSettings.VlmProvider` / `AppConfig.VlmProvider` (`"vlm_provider": "anthropic"`); `MarkdownExportService.CreateVlmClient` is the switch in Export. For Anthropic the endpoint is an optional base URL (blank = api.anthropic.com) and a blank key leaves credential resolution to the SDK (`ANTHROPIC_API_KEY`, …) — hence `VlmEndpointConfig.IsConfigured` rather than an endpoint-non-empty check. Structured output uses `output_config.format` (json_schema). `max_tokens` is 16000 because current Claude models think by default and thinking tokens count against it; a 1024 cap (the OpenAI client's) would truncate. **Refusal fallback:** for models that accept it (`ServerFallbackModels`: Opus 5.5/5, Sonnet 5.5, Fable/Mythos 5.x — not Haiku, not 4.x) and only against Anthropic's own API (no configured endpoint, no `ANTHROPIC_BASE_URL`, since a gateway may not know the beta), the request goes to the beta endpoint with `fallbacks: "default"` (`server-side-fallback-2026-07-01`), so a declined crop is re-served by the model Anthropic recommends for the refusal category; categories with no fallback still return the "declined" error. Everything else uses the plain endpoint. A test-connection call is a tiny real Messages request, not a Models API lookup, so a Messages-only gateway passes. The request body's JSON is reachable for tests via `MessageCreateParams.ToString()` under `BodyData`.
 
 ### RailReader.Core.Ocr.RapidOcr (OCR for pages with no text layer)
 
@@ -288,7 +294,7 @@ from the cached `PageText`'s own char boxes.
 
 ### RailReader.Renderer.Skia (SkiaSharp rasterisation)
 
-The only project that imports both `Core` and `Core.Pdfium`. `SkiaPdfServiceFactory` is what desktop consumers wire into Core: it hands out a `SkiaPdfService` for rasterisation alongside the Core.Pdfium text/link/outline services. Also owns the Skia-side renderers (annotation, overlay, screenshot compositor, SkSL colour-effect shaders) and the 300-DPI block crop renderer used for VLM transcription.
+The only project that imports both `Core` and `Core.Pdfium`. `SkiaPdfServiceFactory` is what desktop consumers wire into Core: it hands out a `SkiaPdfService` for rasterisation alongside the Core.Pdfium text/link/outline services. Also owns the Skia-side renderers (annotation, overlay, screenshot compositor, SkSL colour-effect shaders) and the 300-DPI block crop renderer used for VLM transcription. `BlockCropRenderer` renders each crop as a page region (`RenderRegionPixmap`, #228) rather than cutting it from a whole-page raster, falling back to one page render when a page's padded crops cover more than half of it; it takes a `viewRotation` because block boxes of a rotated view are in the rotated frame. Crops can differ from the old page+crop by a pixel per edge, and by a sub-pixel drift at DPIs where PDFtoImage truncates the page size (300 DPI on Letter: 3299 not 3300 px) — the region is the one at the exact scale.
 
 ### Wiring a consumer
 
