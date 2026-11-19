@@ -10,6 +10,7 @@ Portable libraries powering [RailReader2](https://github.com/sjvrensburg/railrea
 | `RailReader.Core.Pdfium` | Desktop PDFium implementations of the Core interfaces + filesystem-backed `AppConfig` / `AnnotationService` / `ConsoleLogger` / `LayoutModelLocator` | PDFium native libraries |
 | `RailReader.Core.Analysis` | ONNX-backed `ILayoutAnalyzer` implementations (PP-DocLayoutV3, PP-DocLayout-S, Docling Heron) | `Microsoft.ML.OnnxRuntime` |
 | `RailReader.Core.Vlm.OpenAI` | `IVlmService` for OpenAI-compatible chat-completions endpoints (OpenAI, Ollama, vLLM, LightOnOCR, …) | `OpenAI` |
+| `RailReader.Core.Vlm.Anthropic` | `IVlmService` for Claude via the Anthropic Messages API (select with `VlmEndpointConfig.Provider = VlmProvider.Anthropic`) | `Anthropic` |
 | `RailReader.Core.Ocr.RapidOcr` | `IOcrService` for pages with no text layer, via PaddleOCR PP-OCR ONNX models | `RapidOcrNet`, `SkiaSharp` |
 | `RailReader.Renderer.Skia` | SkiaSharp rasterisation + `IPdfServiceFactory` that desktop consumers wire into Core | `SkiaSharp`, `PDFtoImage` |
 
@@ -20,6 +21,7 @@ RailReader.Core              ← no native deps, no IO
   ├─ Core.Pdfium             → Core
   ├─ Core.Analysis           → Core
   ├─ Core.Vlm.OpenAI         → Core
+  ├─ Core.Vlm.Anthropic      → Core
   ├─ Core.Ocr.RapidOcr       → Core
   └─ Renderer.Skia           → Core + Core.Pdfium
 ```

@@ -139,6 +139,7 @@ public sealed class AppConfig : IRecentFilesStore
     public string? VlmModel { get; set; }
     public string? VlmApiKey { get; set; }
     public bool VlmStructuredOutput { get; set; } = false;
+    public VlmProvider VlmProvider { get; set; } = VlmProvider.OpenAICompatible;
 
     /// <summary>
     /// Per-tool selected index into the fixed five-colour annotation palette
@@ -213,6 +214,7 @@ public sealed class AppConfig : IRecentFilesStore
         VlmModel = VlmModel,
         VlmApiKey = VlmApiKey,
         VlmStructuredOutput = VlmStructuredOutput,
+        VlmProvider = VlmProvider,
         AnnotationColorIndices = ParseAnnotationColorIndices(AnnotationColorIndices),
     };
 

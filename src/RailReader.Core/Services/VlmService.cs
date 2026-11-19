@@ -6,8 +6,25 @@ namespace RailReader.Core.Services;
 /// <summary>Minimal config needed to call a VLM endpoint.</summary>
 public record VlmEndpointConfig(string? Endpoint, string? Model, string? ApiKey)
 {
+    /// <summary>
+    /// Which protocol <see cref="Endpoint"/> speaks. Defaults to
+    /// <see cref="VlmProvider.OpenAICompatible"/>, so configs built before the provider existed
+    /// keep their meaning.
+    /// </summary>
+    public VlmProvider Provider { get; init; } = VlmProvider.OpenAICompatible;
+
+    /// <summary>
+    /// True when there is enough to attempt a call: a model, plus an endpoint URL unless the
+    /// provider has a default one (<see cref="VlmProvider.Anthropic"/>). An API key is not
+    /// required here — local OpenAI-compatible servers take none, and the Anthropic client can
+    /// read one from the environment.
+    /// </summary>
+    public bool IsConfigured =>
+        !string.IsNullOrWhiteSpace(Model)
+        && (Provider == VlmProvider.Anthropic || !string.IsNullOrWhiteSpace(Endpoint));
+
     public static VlmEndpointConfig FromCoreSettings(CoreSettings settings) =>
-        new(settings.VlmEndpoint, settings.VlmModel, settings.VlmApiKey);
+        new(settings.VlmEndpoint, settings.VlmModel, settings.VlmApiKey) { Provider = settings.VlmProvider };
 }
 
 /// <summary>

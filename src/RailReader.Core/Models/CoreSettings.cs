@@ -220,6 +220,8 @@ public sealed record CoreSettings
     public string? VlmModel { get; init; }
     public string? VlmApiKey { get; init; }
     public bool VlmStructuredOutput { get; init; }
+    /// <summary>Wire protocol of <see cref="VlmEndpoint"/>; see <see cref="Models.VlmProvider"/>.</summary>
+    public VlmProvider VlmProvider { get; init; } = VlmProvider.OpenAICompatible;
 
     /// <summary>
     /// Per-tool selected index into <see cref="AnnotationInteractionHandler.AnnotationColors"/>

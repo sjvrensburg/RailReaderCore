@@ -4,6 +4,7 @@ using RailReader.Core.Analysis;
 using RailReader.Core.Analysis.WebGpu;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
+using RailReader.Core.Vlm.Anthropic;
 using RailReader.Core.Vlm.OpenAI;
 using RailReader.Renderer.Skia;
 
@@ -23,6 +24,13 @@ public sealed class MarkdownExportService : IMarkdownExportService
         _factory = factory;
         _logger = logger ?? NullLogger.Instance;
     }
+
+    /// <summary>The <see cref="IVlmService"/> that speaks <paramref name="provider"/>'s protocol.</summary>
+    internal static IVlmService CreateVlmClient(VlmProvider provider) => provider switch
+    {
+        VlmProvider.Anthropic => new AnthropicVlmClient(),
+        _ => new OpenAIVlmClient(),
+    };
 
     /// <summary>
     /// Resolves and constructs the layout analyzer for <paramref name="accelerator"/>.
@@ -106,9 +114,7 @@ public sealed class MarkdownExportService : IMarkdownExportService
             annotationFile = CompositeAnnotationStore.Default.Load(pdfPath, password);
 
         var vlmEndpoint = options.VlmEndpoint;
-        bool vlmAvailable = options.EnableVlm && vlmEndpoint != null
-            && !string.IsNullOrWhiteSpace(vlmEndpoint.Endpoint)
-            && !string.IsNullOrWhiteSpace(vlmEndpoint.Model);
+        bool vlmAvailable = options.EnableVlm && vlmEndpoint is { IsConfigured: true };
 
         // Flatten + bucket the outline once for the whole document so per-page
         // heading resolution is an O(1) lookup rather than a full re-scan per page.
@@ -279,7 +285,7 @@ public sealed class MarkdownExportService : IMarkdownExportService
 
         if (vlmTargets.Count == 0) return;
 
-        IVlmService vlm = new OpenAIVlmClient();
+        IVlmService vlm = CreateVlmClient(vlmEndpoint.Provider);
         var bboxes = vlmTargets.Select(t => t.Block.BBox).ToList();
         List<byte[]?> pngs;
         try
