@@ -34,6 +34,34 @@ python3 tools/order-eval/analyze2.py /tmp/oe_merge6.json   # body-only τ + buck
 python3 tools/order-eval/analyze3.py /tmp/oe_merge6.json   # column-interleaving breakdown
 ```
 
+## Fast A/B of a resolver change (reorder mode)
+
+A detect run is slow: it rasterises every page and runs V3. To evaluate a change to
+`XYCutPlusPlusResolver` you only need the boxes, so detect **once** and re-order the dump
+with each build:
+
+```bash
+# 1. Once: detect and dump boxes (any build; keep the *_raw.json).
+dotnet run -c Release --project tools/order-eval -- <PP-DocLayoutV3.onnx> /tmp/oe <pdf-dir>
+
+# 2. Re-order the dump with the baseline (e.g. a `git worktree` of main) and with the branch.
+dotnet run -c Release --project <main-worktree>/tools/order-eval -- reorder /tmp/oe_raw.json /tmp/base.json
+dotnet run -c Release --project tools/order-eval -- reorder /tmp/oe_raw.json /tmp/cand.json
+
+# 3. Compare.
+python3 tools/order-eval/compare.py /tmp/base.json /tmp/cand.json --top 20
+```
+
+`compare.py` prints, per side, body-τ against V3 and body exact-match pages (as above), plus
+**after-below**: blocks ordered after the nearest block directly below them in their column
+(x-overlapping), split headings / other. After-below needs no reference order, so a rise in it
+is a regression whatever V3 thinks (it is the measure from issue #223). It then lists the pages
+whose order changed, worst τ regression first: look at those before trusting a mean.
+
+Reorder mode has no text layer (the dump does not carry char boxes), so the leaf tie-break is
+geometric: compare two reorders with each other, never a reorder with a detect run. Dumps
+written before `PageW`/`PageH` were recorded get the page size estimated from the block extent.
+
 ## Super-block merge-then-order
 
 Group vertically-adjacent, horizontally-overlapping text blocks into column-run
