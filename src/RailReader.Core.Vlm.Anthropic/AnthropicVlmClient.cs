@@ -4,6 +4,7 @@ using Anthropic;
 using Anthropic.Exceptions;
 using Anthropic.Models.Messages;
 using RailReader.Core.Services;
+using Beta = Anthropic.Models.Beta.Messages;
 
 namespace RailReader.Core.Vlm.Anthropic;
 
@@ -29,6 +30,21 @@ public sealed class AnthropicVlmClient : IVlmService
     /// </summary>
     internal const int MaxOutputTokens = 16000;
 
+    /// <summary>Beta header for server-side refusal fallback with the <c>"default"</c> routing.</summary>
+    internal const string ServerFallbackBeta = "server-side-fallback-2026-07-01";
+
+    /// <summary>
+    /// Models whose safety classifiers can decline a request and that accept
+    /// <c>fallbacks: "default"</c>. Others (Haiku, older models) either reject the parameter or
+    /// have nothing to fall back to, so they are sent the plain request.
+    /// </summary>
+    internal static readonly IReadOnlySet<string> ServerFallbackModels = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5",
+        "claude-fable-5-2", "claude-fable-5-1", "claude-fable-5",
+        "claude-mythos-5-2", "claude-mythos-5-1",
+    };
+
     public async Task<VlmService.VlmResult> DescribeBlockAsync(
         byte[] pngBytes,
         VlmService.BlockAction action,
@@ -43,17 +59,35 @@ public sealed class AnthropicVlmClient : IVlmService
         try
         {
             var client = CreateClient(endpoint);
-            var parameters = BuildDescribeParams(pngBytes, action, endpoint.Model!, style, structuredOutput);
+            bool refused, cutOff;
+            string? text;
+            if (UseServerFallback(endpoint, Environment.GetEnvironmentVariable("ANTHROPIC_BASE_URL")))
+            {
+                // A declined request is re-run server-side on the model Anthropic recommends for the
+                // refusal's category; the reply then holds that model's answer (plus a `fallback`
+                // marker block, which ExtractText skips). Categories with no fallback still come
+                // back as a refusal.
+                var response = await client.Beta.Messages.Create(
+                    BuildFallbackDescribeParams(pngBytes, action, endpoint.Model!, style, structuredOutput), ct);
+                refused = response.StopReason == "refusal";
+                cutOff = response.StopReason == "max_tokens";
+                text = ExtractText(response);
+            }
+            else
+            {
+                var response = await client.Messages.Create(
+                    BuildDescribeParams(pngBytes, action, endpoint.Model!, style, structuredOutput), ct);
+                refused = response.StopReason == "refusal";
+                cutOff = response.StopReason == "max_tokens";
+                text = ExtractText(response);
+            }
 
-            var response = await client.Messages.Create(parameters, ct);
-
-            if (response.StopReason == "refusal")
+            if (refused)
                 return new VlmService.VlmResult(null, "Claude declined to transcribe this block");
 
-            var text = ExtractText(response);
             if (string.IsNullOrWhiteSpace(text))
             {
-                return new VlmService.VlmResult(null, response.StopReason == "max_tokens"
+                return new VlmService.VlmResult(null, cutOff
                     ? "VLM response was cut off before any text (max_tokens)"
                     : "VLM returned empty response");
             }
@@ -151,6 +185,61 @@ public sealed class AnthropicVlmClient : IVlmService
         return parameters;
     }
 
+    /// <summary>
+    /// Whether to ask for server-side refusal fallback: only against Anthropic's own API (no
+    /// configured base URL, in the config or the SDK's <c>ANTHROPIC_BASE_URL</c>) — a gateway may
+    /// not know the beta — and only for a model that accepts it.
+    /// </summary>
+    internal static bool UseServerFallback(VlmEndpointConfig endpoint, string? baseUrlFromEnvironment) =>
+        string.IsNullOrWhiteSpace(endpoint.Endpoint)
+        && string.IsNullOrWhiteSpace(baseUrlFromEnvironment)
+        && endpoint.Model is { } model && ServerFallbackModels.Contains(model.Trim());
+
+    /// <summary><see cref="BuildDescribeParams"/> on the beta endpoint, with <c>fallbacks: "default"</c>.</summary>
+    internal static Beta.MessageCreateParams BuildFallbackDescribeParams(byte[] pngBytes,
+        VlmService.BlockAction action, string model, VlmService.PromptStyle style, bool structuredOutput)
+    {
+        var parameters = new Beta.MessageCreateParams
+        {
+            Model = model.Trim(),
+            MaxTokens = MaxOutputTokens,
+            Betas = [ServerFallbackBeta],
+            Fallbacks = new Beta.Default(),
+            Messages =
+            [
+                new Beta.BetaUserMessageParam
+                {
+                    Content = new List<Beta.BetaContentBlockParam>
+                    {
+                        new Beta.BetaImageBlockParam
+                        {
+                            Source = new Beta.BetaBase64ImageSource
+                            {
+                                Data = Convert.ToBase64String(pngBytes),
+                                MediaType = Beta.MediaType.ImagePng,
+                            },
+                        },
+                        new Beta.BetaTextBlockParam { Text = VlmService.GetPrompt(action, style, structuredOutput) },
+                    },
+                },
+            ],
+        };
+
+        if (structuredOutput)
+        {
+            var (_, schema) = VlmService.GetSchema(action);
+            parameters = parameters with
+            {
+                OutputConfig = new Beta.BetaOutputConfig
+                {
+                    Format = new Beta.BetaJsonOutputFormat { Schema = ParseSchema(schema) },
+                },
+            };
+        }
+
+        return parameters;
+    }
+
     /// <summary>A JSON-schema string as the SDK's property map.</summary>
     internal static Dictionary<string, JsonElement> ParseSchema(string schema)
     {
@@ -165,6 +254,18 @@ public sealed class AnthropicVlmClient : IVlmService
         foreach (var block in response.Content)
         {
             if (block.TryPickText(out TextBlock? text))
+                sb.Append(text.Text);
+        }
+        return sb.ToString().Trim();
+    }
+
+    /// <summary>All text blocks of a beta reply, joined; thinking and fallback blocks are skipped.</summary>
+    private static string? ExtractText(Beta.BetaMessage response)
+    {
+        var sb = new StringBuilder();
+        foreach (var block in response.Content)
+        {
+            if (block.TryPickText(out Beta.BetaTextBlock? text))
                 sb.Append(text.Text);
         }
         return sb.ToString().Trim();

@@ -56,6 +56,40 @@ public class AnthropicVlmClientTests
         Assert.False(schema.GetProperty("additionalProperties").GetBoolean());
     }
 
+    [Theory]
+    [InlineData("claude-opus-5-5", null, null, true)]
+    [InlineData("claude-sonnet-5-5", "", null, true)]
+    [InlineData("claude-fable-5-2", null, null, true)]
+    [InlineData("claude-haiku-5-5", null, null, false)]          // no server-side fallback
+    [InlineData("claude-opus-4-8", null, null, false)]           // older model: parameter not accepted
+    [InlineData("claude-opus-5-5", "https://gateway.example", null, false)]  // configured gateway
+    [InlineData("claude-opus-5-5", null, "https://gateway.example", false)]  // ANTHROPIC_BASE_URL gateway
+    public void Server_fallback_only_for_supporting_models_on_anthropics_api(
+        string model, string? endpoint, string? envBaseUrl, bool expected)
+    {
+        var config = new VlmEndpointConfig(endpoint, model, null) { Provider = VlmProvider.Anthropic };
+        Assert.Equal(expected, AnthropicVlmClient.UseServerFallback(config, envBaseUrl));
+    }
+
+    [Fact]
+    public void Fallback_request_opts_into_default_routing_with_the_same_content()
+    {
+        var p = AnthropicVlmClient.BuildFallbackDescribeParams(Png, VlmService.BlockAction.Description,
+            "claude-opus-5-5", VlmService.PromptStyle.Instruction, structuredOutput: true);
+
+        using var json = JsonDocument.Parse(p.ToString());
+        var body = json.RootElement.GetProperty("BodyData");
+        Assert.Equal("default", body.GetProperty("fallbacks").GetString());
+        Assert.Contains(AnthropicVlmClient.ServerFallbackBeta, p.ToString());
+
+        var content = body.GetProperty("messages")[0].GetProperty("content");
+        Assert.Equal("image", content[0].GetProperty("type").GetString());
+        Assert.Equal("image/png", content[0].GetProperty("source").GetProperty("media_type").GetString());
+        Assert.Equal("text", content[1].GetProperty("type").GetString());
+        var schema = body.GetProperty("output_config").GetProperty("format").GetProperty("schema");
+        Assert.True(schema.GetProperty("properties").TryGetProperty("description", out _));
+    }
+
     [Fact]
     public async Task Missing_model_prompts_for_config()
     {
