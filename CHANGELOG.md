@@ -29,8 +29,24 @@
     over 487 pages, V3's own order as reference: mean body Kendall-τ 0.043 → 0.023, body
     exact-match pages 273 → 329, after-below 8 → 5 of 808 headings and 229 → 26 of 4,701 others.
     Six pages move away from V3's order — figure grids, a masthead now read row by row, furniture;
-    the largest (+0.075, a grid of small charts) is the centroid-anchored re-insertion tracked in
-    #225.
+    the largest (+0.075, a grid of small charts) came from centroid-anchored re-insertion and is
+    fixed by #225 below.
+- **Re-inserted blocks follow their own column, and equation numbers their equation** (#225).
+  Masked blocks were anchored next to the nearest block by centroid, inside the column clamp above.
+  Two cases now anchor by structure instead:
+  - When the neighbour above a re-inserted block spans other columns (more than
+    `SpanningNeighbourWidthRatio` — 1.5, new public constant — times as wide as the block and its
+    neighbour below) and another column's content sits beside the block, it reads just before its
+    neighbour below: a right-column chart grid under a full-width caption no longer reads before
+    the whole left column.
+  - A masked `Decoration` (an equation number) reads right after the nearest block that overlaps
+    it vertically and starts to its left — its equation, even when the page number above it, or
+    the other column's equation, is nearer by centroid.
+
+  With #223, on the same 487 reordered V3 pages against 0.92.0: body τ 0.043 → 0.021, body
+  exact-match pages 273 → 361, after-below 8 → 5 headings and 229 → 25 others; five pages move away
+  from V3's order, the largest +0.039 (a masthead read row by row). Against #223 alone, #225 improves
+  54 pages and worsens 2, both chart grids with "(a)"-style panel labels whose order is ambiguous.
 - **`tools/order-eval` reorder mode.** `reorder <dump.json> <out.json>` re-runs the resolver on a
   detect run's dumped boxes (seconds, no model or PDFs), and `compare.py` A/Bs two dumps by body-τ,
   exact matches and the reference-free after-below count, listing regressed pages first. Detect

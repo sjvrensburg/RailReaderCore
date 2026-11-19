@@ -831,4 +831,82 @@ public class XYCutPlusPlusResolverTests
             new[] { "title", "authors", "centred", "L1", "L2", "Lh", "L3", "fn1", "fn2", "R1", "R2", "R3", "R4" },
             OrderedTags(blocks, names));
     }
+
+    [Fact]
+    public void Issue225_ChartGridUnderFullWidthCaption_ReadsInItsOwnColumn()
+    {
+        // "A Robust Approach for Daily Solar Irradiance Clustering" p.5 (V3 boxes). The right
+        // column's 2x2 chart grid is masked as margin notes; its nearest centroid is the
+        // full-width caption over both columns, which put it ahead of the whole left column.
+        var (blocks, names) = Page(
+            ("fig1", BlockRole.Figure, 48.0f, 63.1f, 509.4f, 49.3f),
+            ("fig1a", BlockRole.Caption, 270.3f, 104.6f, 14.3f, 10.4f),
+            ("fig2", BlockRole.Figure, 48.2f, 127.8f, 459.6f, 45.1f),
+            ("fig2a", BlockRole.Caption, 269.7f, 169.3f, 15.3f, 10.3f),
+            ("cap", BlockRole.Caption, 44.5f, 184.8f, 521.0f, 25.1f),
+            ("L1", BlockRole.Chart, 48.7f, 239.8f, 237.2f, 115.4f),
+            ("L1a", BlockRole.Caption, 167.3f, 359.3f, 14.0f, 9.7f),
+            ("L2", BlockRole.Chart, 49.2f, 370.9f, 236.8f, 121.2f),
+            ("L2a", BlockRole.Caption, 167.7f, 496.7f, 13.0f, 9.5f),
+            ("Lcap", BlockRole.Caption, 45.4f, 512.9f, 255.9f, 23.8f),
+            ("Ltext", BlockRole.Text, 44.8f, 562.2f, 258.2f, 143.4f),
+            ("Ltext2", BlockRole.Text, 55.6f, 707.9f, 246.7f, 12.1f),
+            ("g1", BlockRole.Chart, 313.0f, 241.5f, 113.8f, 69.6f),
+            ("g2", BlockRole.Chart, 431.2f, 242.1f, 105.4f, 68.7f),
+            ("g3", BlockRole.Chart, 312.9f, 314.5f, 115.9f, 85.1f),
+            ("g4", BlockRole.Chart, 430.5f, 314.8f, 106.4f, 81.2f),
+            ("g4a", BlockRole.Caption, 430.5f, 409.1f, 13.2f, 9.5f),
+            ("R1", BlockRole.Chart, 312.4f, 425.4f, 240.8f, 66.4f),
+            ("R1a", BlockRole.Caption, 430.0f, 492.7f, 14.0f, 9.7f),
+            ("Rcap", BlockRole.Caption, 308.2f, 507.8f, 256.6f, 35.5f),
+            ("Rcap2", BlockRole.Caption, 309.2f, 558.4f, 254.6f, 11.8f),
+            ("Rtab", BlockRole.Table, 311.9f, 573.8f, 248.9f, 38.9f),
+            ("Rtext", BlockRole.Text, 308.0f, 635.3f, 258.4f, 85.3f));
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 610, 836);
+        var order = OrderedTags(blocks, names).ToList();
+        int leftEnd = order.IndexOf("Ltext2");
+        foreach (var g in new[] { "g1", "g2", "g3", "g4" })
+        {
+            Assert.True(order.IndexOf(g) > leftEnd, $"{g} read before the left column ends: {string.Join(",", order)}");
+            Assert.True(order.IndexOf(g) < order.IndexOf("R1"), $"{g} read after the chart below it: {string.Join(",", order)}");
+        }
+    }
+
+    [Fact]
+    public void Issue225_EquationNumbers_FollowTheirEquation()
+    {
+        // TimeGMM p.2 (V3 boxes). Masked equation numbers anchored by centroid could land by a
+        // neighbouring paragraph, or by the other column's equation (the left column's number at
+        // x 287 is nearer the right column's equation than its own).
+        var (blocks, names) = Page(
+            ("fig", BlockRole.Figure, 66.8f, 70.8f, 479.4f, 204.0f),
+            ("cap", BlockRole.Caption, 50.4f, 285.8f, 510.8f, 42.6f),
+            ("L1", BlockRole.Text, 75.3f, 338.6f, 225.0f, 22.2f),
+            ("L2", BlockRole.Text, 68.4f, 365.7f, 231.6f, 62.6f),
+            ("L3", BlockRole.Text, 67.8f, 432.6f, 232.3f, 41.9f),
+            ("Lh1", BlockRole.Heading, 130.1f, 490.7f, 90.6f, 10.4f),
+            ("L4", BlockRole.Text, 50.8f, 511.7f, 248.8f, 41.9f),
+            ("Lh2", BlockRole.Heading, 51.2f, 569.3f, 151.3f, 10.4f),
+            ("L5", BlockRole.Text, 49.3f, 587.9f, 250.7f, 94.5f),
+            ("eqL", BlockRole.DisplayMath, 99.3f, 690.8f, 151.7f, 36.3f),
+            ("numL", BlockRole.Decoration, 286.9f, 704.2f, 11.7f, 10.1f),
+            ("R1", BlockRole.Text, 310.9f, 337.3f, 250.0f, 32.4f),
+            ("R2", BlockRole.Text, 310.5f, 370.5f, 250.4f, 62.0f),
+            ("eqR1", BlockRole.DisplayMath, 366.3f, 439.1f, 140.0f, 17.8f),
+            ("numR1", BlockRole.Decoration, 547.3f, 444.0f, 12.3f, 9.9f),
+            ("R3", BlockRole.Text, 310.8f, 460.0f, 249.5f, 23.4f),
+            ("Rh", BlockRole.Heading, 312.3f, 495.8f, 115.4f, 11.0f),
+            ("R4", BlockRole.Text, 311.5f, 512.3f, 248.8f, 30.9f),
+            ("R5", BlockRole.Text, 311.4f, 543.8f, 249.7f, 64.3f),
+            ("eqR2", BlockRole.DisplayMath, 368.1f, 614.2f, 136.3f, 17.0f),
+            ("numR2", BlockRole.Decoration, 547.2f, 618.5f, 12.2f, 9.5f),
+            ("R6", BlockRole.Text, 311.4f, 635.2f, 249.3f, 41.5f),
+            ("eqR3", BlockRole.DisplayMath, 323.1f, 690.2f, 214.8f, 16.2f),
+            ("numR3", BlockRole.Decoration, 547.5f, 693.4f, 11.9f, 9.9f),
+            ("R7", BlockRole.Text, 312.5f, 712.8f, 228.2f, 10.9f));
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 610, 795);
+        var order = OrderedTags(blocks, names).ToList();
+        foreach (var (eq, num) in new[] { ("eqL", "numL"), ("eqR1", "numR1"), ("eqR2", "numR2"), ("eqR3", "numR3") })
+            Assert.True(order.IndexOf(num) == order.IndexOf(eq) + 1, $"{num} does not follow {eq}: {string.Join(",", order)}");
+    }
 }

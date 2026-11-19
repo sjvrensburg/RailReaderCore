@@ -196,6 +196,12 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     /// </summary>
     public const float SpannerOverlapTolerancePoints = 2f;
 
+    /// <summary>
+    /// A re-inserted block's neighbour above "spans other columns" when it is wider than this
+    /// multiple of both the block and its neighbour below (#225).
+    /// </summary>
+    public const float SpanningNeighbourWidthRatio = 1.5f;
+
     private readonly ReadingDirection _direction;
     private readonly bool _mergeAdjacent;
 
@@ -738,6 +744,11 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
             if (ordered.Count == 0) { ordered.Add(m); continue; }
             int anchor = NearestBlockIndex(ordered, m);
             int insertAt = LeadsInReadingOrder(m.Role) ? anchor : anchor + 1;
+            // An equation number belongs right after the equation it numbers, not
+            // next to whatever is nearest by centroid (the page number above it,
+            // the next paragraph, the equation in the other column).
+            if (m.Role == BlockRole.Decoration && NumberedBlockIndex(ordered, m) is int numbered)
+                insertAt = numbered + 1;
             ordered.Insert(ClampToColumnOrder(ordered, m, insertAt), m);
         }
     }
@@ -780,14 +791,39 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         }
 
         int lo = 0, hi = ordered.Count;
+        int aboveIdx = -1, belowIdx = -1;
         for (int i = 0; i < ordered.Count; i++)
         {
             var b = ordered[i].BBox;
             if (!BlockGeom.XOverlap(b, m.BBox)) continue;
-            if (b.Y + b.H <= mTop) lo = Math.Max(lo, i + 1);
-            else if (b.Y >= mBottom) hi = Math.Min(hi, i);
+            if (b.Y + b.H <= mTop)
+            {
+                lo = Math.Max(lo, i + 1);
+                if (aboveIdx < 0 || b.Y + b.H > ordered[aboveIdx].BBox.Y + ordered[aboveIdx].BBox.H) aboveIdx = i;
+            }
+            else if (b.Y >= mBottom)
+            {
+                hi = Math.Min(hi, i);
+                if (belowIdx < 0 || b.Y < ordered[belowIdx].BBox.Y) belowIdx = i;
+            }
         }
-        return lo <= hi ? Math.Clamp(insertAt, lo, hi) : insertAt;
+        if (lo > hi) return insertAt;
+        // Between the block's column neighbours sits content from another column,
+        // beside the block. When the neighbour above spans those columns (a
+        // full-width caption over a figure grid) it says nothing about which
+        // column the block reads in; the neighbour below, in the block's own
+        // column, does — so read the block just before it (#225).
+        if (aboveIdx >= 0 && belowIdx > aboveIdx + 1)
+        {
+            var above = ordered[aboveIdx].BBox;
+            var below = ordered[belowIdx].BBox;
+            if (above.W > SpanningNeighbourWidthRatio * Math.Max(m.BBox.W, below.W))
+            {
+                for (int i = aboveIdx + 1; i < belowIdx; i++)
+                    if (BlockGeom.IsSideBySide(ordered[i].BBox, m.BBox)) { insertAt = belowIdx; break; }
+            }
+        }
+        return Math.Clamp(insertAt, lo, hi);
     }
 
     /// <summary>Side by side with top and bottom edges within half the shorter height.</summary>
@@ -797,6 +833,25 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         return BlockGeom.IsSideBySide(a, b)
             && Math.Abs(a.Y - b.Y) <= tol
             && Math.Abs(a.Y + a.H - (b.Y + b.H)) <= tol;
+    }
+
+    /// <summary>
+    /// The block an equation number (<paramref name="m"/>) numbers: the nearest block that
+    /// overlaps it vertically and starts to its left (an equation's box may reach under its
+    /// number, which counts as no gap). Null when there is none.
+    /// </summary>
+    private static int? NumberedBlockIndex(List<LayoutBlock> ordered, LayoutBlock m)
+    {
+        int? best = null;
+        float bestGap = float.MaxValue;
+        for (int i = 0; i < ordered.Count; i++)
+        {
+            var c = ordered[i].BBox;
+            if (c.X >= m.BBox.X || !BlockGeom.YOverlap(c, m.BBox)) continue;
+            float gap = Math.Max(0f, m.BBox.X - (c.X + c.W));
+            if (gap < bestGap) { bestGap = gap; best = i; }
+        }
+        return best;
     }
 
     private static bool IsFurniture(BlockRole role) =>
