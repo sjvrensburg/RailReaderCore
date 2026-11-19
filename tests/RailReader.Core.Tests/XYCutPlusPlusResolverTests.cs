@@ -775,4 +775,32 @@ public class XYCutPlusPlusResolverTests
         new XYCutPlusPlusResolver().AssignOrder(blocks, 545, 720);
         Assert.Equal(new[] { "hdrL", "hdrR", "p1", "p2" }, OrderedTags(blocks, names));
     }
+
+    [Fact]
+    public void Issue223_RunningHeaderPair_NearestEachOther_KeepsLeftToRightOrder()
+    {
+        // Centred header pair far above the body: the right header's nearest
+        // anchor is the left header itself, which must not put it first.
+        var (blocks, names) = Page(
+            ("hdrL", BlockRole.Header, 200f, 33f, 90f, 8f),
+            ("hdrR", BlockRole.Header, 310f, 33f, 90f, 8f),
+            ("p1", BlockRole.Text, 37f, 400f, 470f, 100f),
+            ("p2", BlockRole.Text, 37f, 510f, 470f, 100f));
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 545, 720);
+        Assert.Equal(new[] { "hdrL", "hdrR", "p1", "p2" }, OrderedTags(blocks, names));
+    }
+
+    [Fact]
+    public void Issue223_FooterPair_KeepsLeftToRightOrder()
+    {
+        // The right footer sits a point higher, so it re-inserts first; the
+        // left one must still read before it.
+        var (blocks, names) = Page(
+            ("p1", BlockRole.Text, 37f, 60f, 470f, 100f),
+            ("p2", BlockRole.Text, 37f, 170f, 470f, 100f),
+            ("ftrL", BlockRole.Footer, 200f, 681f, 90f, 8f),
+            ("ftrR", BlockRole.PageNumber, 310f, 680f, 90f, 8f));
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 545, 720);
+        Assert.Equal(new[] { "p1", "p2", "ftrL", "ftrR" }, OrderedTags(blocks, names));
+    }
 }

@@ -490,9 +490,8 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
             // the figure above. Peel it into the stream by its Y position first,
             // then column-split the rest. Scoped to the column-split branch so
             // single-column and figure-grid pages (which never reach here) are
-            // untouched. Only the top is peeled: a bottom divider (footnote band)
-            // already reads last via the large horizontal gap above it, and
-            // peeling it can remove that gap and destabilise the sub-region.
+            // untouched. Only the top extreme is peeled here; a divider lower down
+            // that crosses the split is handled by the crosser cut below.
             float regWidth = blocks.Max(b => b.BBox.X + b.BBox.W) - blocks.Min(b => b.BBox.X);
             var topMost = blocks[0];
             foreach (var b in blocks)
@@ -636,7 +635,8 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
 
     /// <summary>
     /// A block crossing a column split that should divide the region rather than
-    /// join a column: it y-overlaps nothing, and either spans
+    /// join a column: it y-overlaps nothing (beyond <see cref="SpannerOverlapTolerancePoints"/>
+    /// when narrower than a full-width divider, since detector boxes touch), and either spans
     /// <see cref="DividerWidthFraction"/> of the region or sits below or above
     /// every other block (a caption shared by side-by-side tables). A narrower
     /// crosser with column content on both sides — a figure poking across the
@@ -649,7 +649,7 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         foreach (var c in blocks)
         {
             if (ReferenceEquals(c, b)) continue;
-            if (BlockGeom.YOverlap(b.BBox, c.BBox)) return false;
+            if (OverlapDepth(b.BBox.Y, b.BBox.H, c.BBox.Y, c.BBox.H) > SpannerOverlapTolerancePoints) return false;
             if (c.BBox.Y < b.BBox.Y) above = true; else below = true;
         }
         return !(above && below);
@@ -709,19 +709,30 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     private static int ClampToColumnOrder(List<LayoutBlock> ordered, LayoutBlock m, int insertAt)
     {
         float mTop = m.BBox.Y, mBottom = m.BBox.Y + m.BBox.H;
-        if (ordered.All(b => b.BBox.Y >= mBottom))
+        // "Above / below everything" ignores a block in m's own row (side by side,
+        // top and bottom edges aligned): the other half of a running-header or
+        // footer pair must not disqualify it. A tall sliver beside body paragraphs
+        // is not in their row and gets no such exemption.
+        if (ordered.All(b => b.BBox.Y >= mBottom || SameRow(b.BBox, m.BBox)))
         {
             // Above everything: first, but after any block already placed there
-            // that precedes it (above it, or beside it to its left) — e.g. the
-            // left running header of a pair.
+            // beside it to its left — e.g. the left running header of a pair.
             int i = 0;
             while (i < ordered.Count
-                   && (ordered[i].BBox.Y + ordered[i].BBox.H <= mTop
-                       || (BlockGeom.IsSideBySide(ordered[i].BBox, m.BBox) && ordered[i].BBox.X < m.BBox.X)))
+                   && SameRow(ordered[i].BBox, m.BBox) && ordered[i].BBox.X < m.BBox.X)
                 i++;
             return i;
         }
-        if (ordered.All(b => b.BBox.Y + b.BBox.H <= mTop)) return ordered.Count;
+        if (ordered.All(b => b.BBox.Y + b.BBox.H <= mTop || SameRow(b.BBox, m.BBox)))
+        {
+            // Below everything: last, but before any block already placed there
+            // beside it to its right — e.g. the right footer of a pair.
+            int i = ordered.Count;
+            while (i > 0
+                   && SameRow(ordered[i - 1].BBox, m.BBox) && ordered[i - 1].BBox.X > m.BBox.X)
+                i--;
+            return i;
+        }
 
         int lo = 0, hi = ordered.Count;
         for (int i = 0; i < ordered.Count; i++)
@@ -732,6 +743,15 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
             else if (b.Y >= mBottom) hi = Math.Min(hi, i);
         }
         return lo <= hi ? Math.Clamp(insertAt, lo, hi) : insertAt;
+    }
+
+    /// <summary>Side by side with top and bottom edges within half the shorter height.</summary>
+    private static bool SameRow(BBox a, BBox b)
+    {
+        float tol = Math.Min(a.H, b.H) * 0.5f;
+        return BlockGeom.IsSideBySide(a, b)
+            && Math.Abs(a.Y - b.Y) <= tol
+            && Math.Abs(a.Y + a.H - (b.Y + b.H)) <= tol;
     }
 
     private static bool IsFurniture(BlockRole role) =>

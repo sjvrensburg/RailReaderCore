@@ -19,9 +19,9 @@
     is now cut at horizontally instead of being assigned to one column by its centre.
 
   On a 487-page corpus (PP-DocLayoutV3 boxes from `tools/order-eval`, re-ordered without the text
-  layer, V3's own order as reference) mean body Kendall-τ falls 0.043 → 0.025 and exact-match
-  pages rise 273 → 325; blocks ordered after the block below them fall 8 → 5 of 808 headings and
-  229 → 30 of 4,701 other blocks. Five pages move away from V3's order, all figure grids or
+  layer, V3's own order as reference) mean body Kendall-τ falls 0.043 → 0.024 and exact-match
+  pages rise 273 → 329; blocks ordered after the block below them fall 8 → 5 of 808 headings and
+  229 → 29 of 4,701 other blocks. Seven pages move away from V3's order, all figure grids, mastheads or
   furniture; the largest (a page of small multiples) is a pre-existing limit of centroid-anchored
   re-insertion.
 
