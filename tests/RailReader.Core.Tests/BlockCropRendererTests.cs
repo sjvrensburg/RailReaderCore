@@ -130,6 +130,90 @@ public class BlockCropRendererTests : IDisposable
     }
 
 
+    [Fact]
+    public void Backend_without_region_rendering_renders_the_page_once()
+    {
+        // Small blocks would take the region path, but this backend can only render whole pages:
+        // one page render for the lot, not one per block.
+        var plain = new CountingPdfService(_pdf);
+        var blocks = new List<BBox> { new(50, 50, 60, 60), new(70, 140, 100, 30), new(80, 300, 120, 20) };
+        var pngs = BlockCropRenderer.RenderBlocksAsPng(plain, 0, blocks, PageW, PageH, 144);
+
+        Assert.All(pngs, Assert.NotNull);
+        Assert.Equal(1, plain.PageRenders);
+        using var marker = SKBitmap.Decode(pngs[0]);
+        Assert.True(RedFraction(marker) > 0.75);
+    }
+
+    [Fact]
+    public void Paths_agree_when_the_callers_page_size_is_wrong()
+    {
+        // Unrotated size passed for a quarter-turned view: boxes are measured against the backend's
+        // page, so the region path and the whole-page path both find the marker.
+        var marker = new BBox(682, 50, 60, 60);
+        var regionPath = BlockCropRenderer.RenderBlocksAsPng(_pdf, 0, [marker], PageW, PageH, 144, viewRotation: 1);
+        var pagePath = BlockCropRenderer.RenderBlocksAsPng(new CountingPdfService(_pdf), 0, [marker],
+            PageW, PageH, 144, viewRotation: 1);
+
+        using var a = SKBitmap.Decode(regionPath[0]);
+        using var b = SKBitmap.Decode(pagePath[0]);
+        Assert.True(RedFraction(a) > 0.75);
+        Assert.True(RedFraction(b) > 0.75);
+        AssertSamePixels(a, b);
+    }
+
+    [Fact]
+    public void A_block_that_fails_to_render_is_null_and_the_rest_survive()
+    {
+        var failing = new FailingRegionPdfService(_pdf, failOnCall: 2);
+        var blocks = new List<BBox> { new(50, 50, 60, 60), new(70, 140, 100, 30), new(80, 300, 120, 20) };
+        var pngs = BlockCropRenderer.RenderBlocksAsPng(failing, 0, blocks, PageW, PageH, 144);
+
+        Assert.NotNull(pngs[0]);
+        Assert.Null(pngs[1]);
+        Assert.NotNull(pngs[2]);
+        Assert.Null(BlockCropRenderer.RenderBlockAsPng(new FailingRegionPdfService(_pdf, failOnCall: 1),
+            0, blocks[0], PageW, PageH, 144));
+    }
+
+    /// <summary>The plain <see cref="IPdfService"/> surface only (no region rendering), counting page renders.</summary>
+    private class CountingPdfService(IPdfService inner) : IPdfService
+    {
+        public int PageRenders { get; private set; }
+        public byte[] PdfBytes => inner.PdfBytes;
+        public string? Password => inner.Password;
+        public int PageCount => inner.PageCount;
+        public List<OutlineEntry> Outline => inner.Outline;
+        public (double Width, double Height) GetPageSize(int pageIndex) => inner.GetPageSize(pageIndex);
+        public (double Width, double Height) GetPageSize(int pageIndex, int viewRotation) => inner.GetPageSize(pageIndex, viewRotation);
+        public IRenderedPage RenderPage(int pageIndex, int dpi = 200) => inner.RenderPage(pageIndex, dpi);
+        public IRenderedPage RenderThumbnail(int pageIndex) => inner.RenderThumbnail(pageIndex);
+        public (byte[] RgbBytes, int Width, int Height) RenderPagePixmap(int pageIndex, int targetSize)
+        {
+            PageRenders++;
+            return inner.RenderPagePixmap(pageIndex, targetSize);
+        }
+        public (byte[] RgbBytes, int Width, int Height) RenderPagePixmap(int pageIndex, int targetSize, int viewRotation)
+        {
+            PageRenders++;
+            return inner.RenderPagePixmap(pageIndex, targetSize, viewRotation);
+        }
+    }
+
+    /// <summary>Region rendering whose <paramref name="failOnCall"/>-th call throws, as PDFium does on a failed allocation.</summary>
+    private sealed class FailingRegionPdfService(SkiaPdfService inner, int failOnCall)
+        : CountingPdfService(inner), IPdfRegionRenderService
+    {
+        private int _calls;
+        public (byte[] RgbBytes, int Width, int Height) RenderRegionPixmap(int pageIndex, BBox regionInPagePoints,
+            double scale, int viewRotation = 0, CancellationToken ct = default)
+        {
+            if (++_calls == failOnCall)
+                throw new InvalidOperationException("Failed to allocate a region bitmap.");
+            return inner.RenderRegionPixmap(pageIndex, regionInPagePoints, scale, viewRotation, ct);
+        }
+    }
+
     private static double RedFraction(SKBitmap bmp)
     {
         int red = 0;

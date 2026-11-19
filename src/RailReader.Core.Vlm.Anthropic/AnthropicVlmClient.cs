@@ -55,6 +55,8 @@ public sealed class AnthropicVlmClient : IVlmService
     {
         if (string.IsNullOrWhiteSpace(endpoint.Model))
             return new VlmService.VlmResult(null, "VLM model not configured — check Settings");
+        // One trimmed id for every path: a stray space in the setting must not make one path 404.
+        string model = endpoint.Model.Trim();
 
         try
         {
@@ -68,7 +70,7 @@ public sealed class AnthropicVlmClient : IVlmService
                 // marker block, which ExtractText skips). Categories with no fallback still come
                 // back as a refusal.
                 var response = await client.Beta.Messages.Create(
-                    BuildFallbackDescribeParams(pngBytes, action, endpoint.Model!, style, structuredOutput), ct);
+                    BuildFallbackDescribeParams(pngBytes, action, model, style, structuredOutput), ct);
                 refused = response.StopReason == "refusal";
                 cutOff = response.StopReason == "max_tokens";
                 text = ExtractText(response);
@@ -76,7 +78,7 @@ public sealed class AnthropicVlmClient : IVlmService
             else
             {
                 var response = await client.Messages.Create(
-                    BuildDescribeParams(pngBytes, action, endpoint.Model!, style, structuredOutput), ct);
+                    BuildDescribeParams(pngBytes, action, model, style, structuredOutput), ct);
                 refused = response.StopReason == "refusal";
                 cutOff = response.StopReason == "max_tokens";
                 text = ExtractText(response);
@@ -125,7 +127,7 @@ public sealed class AnthropicVlmClient : IVlmService
             // DescribeBlockAsync uses, which a Messages-only gateway may be all that exists.
             await client.Messages.Create(new MessageCreateParams
             {
-                Model = endpoint.Model!,
+                Model = endpoint.Model!.Trim(),
                 MaxTokens = 64,
                 Messages = [new UserMessageParam { Content = "Reply with OK" }],
             }, ct);
@@ -201,7 +203,7 @@ public sealed class AnthropicVlmClient : IVlmService
     {
         var parameters = new Beta.MessageCreateParams
         {
-            Model = model.Trim(),
+            Model = model,
             MaxTokens = MaxOutputTokens,
             Betas = [ServerFallbackBeta],
             Fallbacks = new Beta.Default(),
@@ -287,6 +289,15 @@ public sealed class AnthropicVlmClient : IVlmService
         _ => (forTest ? "Error: " : "VLM error: ") + ex.Message,
     };
 
+    /// <summary>
+    /// One HTTP client for every <see cref="AnthropicClient"/> this class builds. The SDK otherwise
+    /// gives each client instance its own <see cref="HttpClient"/> (and connection pool), and a
+    /// client is built per call — an export makes one call per block. Infinite timeout because the
+    /// SDK enforces its own (10 min, with retries); HttpClient's 100 s default would cut a long
+    /// thinking-model request short.
+    /// </summary>
+    private static readonly HttpClient SharedHttp = new() { Timeout = Timeout.InfiniteTimeSpan };
+
     private static AnthropicClient CreateClient(VlmEndpointConfig endpoint)
     {
         // Only override what the config supplies: leaving ApiKey / BaseUrl unset keeps the
@@ -295,10 +306,10 @@ public sealed class AnthropicVlmClient : IVlmService
         bool hasUrl = !string.IsNullOrWhiteSpace(endpoint.Endpoint);
         return (hasKey, hasUrl) switch
         {
-            (true, true) => new AnthropicClient { ApiKey = endpoint.ApiKey!, BaseUrl = endpoint.Endpoint! },
-            (true, false) => new AnthropicClient { ApiKey = endpoint.ApiKey! },
-            (false, true) => new AnthropicClient { BaseUrl = endpoint.Endpoint! },
-            _ => new AnthropicClient(),
+            (true, true) => new AnthropicClient { HttpClient = SharedHttp, ApiKey = endpoint.ApiKey!, BaseUrl = endpoint.Endpoint! },
+            (true, false) => new AnthropicClient { HttpClient = SharedHttp, ApiKey = endpoint.ApiKey! },
+            (false, true) => new AnthropicClient { HttpClient = SharedHttp, BaseUrl = endpoint.Endpoint! },
+            _ => new AnthropicClient { HttpClient = SharedHttp },
         };
     }
 }

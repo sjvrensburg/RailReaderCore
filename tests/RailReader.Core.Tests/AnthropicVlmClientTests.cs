@@ -142,6 +142,30 @@ public class AnthropicVlmClientTests
         Assert.Equal(VlmProvider.OpenAICompatible, legacy.VlmProvider);
     }
 
+    [Theory]
+    [InlineData("\"gemini\"")]
+    [InlineData("\"\"")]
+    [InlineData("42")]
+    [InlineData("null")]
+    [InlineData("{\"nested\": true}")]
+    public void Unknown_provider_reads_as_openai_compatible_without_losing_the_config(string value)
+    {
+        var json = $$"""{"vlm_provider": {{value}}, "vlm_model": "kept", "rail_zoom_threshold": 4.5}""";
+        var config = JsonSerializer.Deserialize(json, RailReaderJsonContext.Default.AppConfig)!;
+        Assert.Equal(VlmProvider.OpenAICompatible, config.VlmProvider);
+        Assert.Equal("kept", config.VlmModel);
+        Assert.Equal(4.5, config.RailZoomThreshold);
+    }
+
+    [Theory]
+    [InlineData("\"Anthropic\"")]
+    [InlineData("1")]
+    public void Provider_reads_case_insensitively_and_by_number(string value)
+    {
+        var config = JsonSerializer.Deserialize($$"""{"vlm_provider": {{value}}}""", RailReaderJsonContext.Default.AppConfig)!;
+        Assert.Equal(VlmProvider.Anthropic, config.VlmProvider);
+    }
+
     [Fact]
     public void Export_picks_the_client_for_the_provider()
     {
