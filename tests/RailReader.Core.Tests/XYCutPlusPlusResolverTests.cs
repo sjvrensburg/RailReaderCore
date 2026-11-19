@@ -803,4 +803,32 @@ public class XYCutPlusPlusResolverTests
         new XYCutPlusPlusResolver().AssignOrder(blocks, 545, 720);
         Assert.Equal(new[] { "p1", "p2", "ftrL", "ftrR" }, OrderedTags(blocks, names));
     }
+
+    [Fact]
+    public void Issue223_NarrowCrosserAboveColumns_ColumnsStillReadTopDown()
+    {
+        // "A Survey on Time-Series Pre-Trained Models" p.1 (V3 boxes). A small
+        // centred line under the authors crosses the gutter. Cutting at it left a
+        // band whose right column is one merged super-block, which fails the
+        // projection split's two-blocks-a-side rule; the band collapsed into one
+        // X-sorted row and read the left column bottom-up, footnotes first.
+        var (blocks, names) = Page(
+            ("title", BlockRole.Title, 76.5f, 59.2f, 443.5f, 23.3f),
+            ("authors", BlockRole.Text, 66.5f, 91.2f, 464.3f, 27.1f),
+            ("centred", BlockRole.Text, 266.8f, 129.8f, 64.2f, 12.1f),
+            ("L1", BlockRole.Text, 39.7f, 172.0f, 256.0f, 200.0f),
+            ("L2", BlockRole.Text, 39.2f, 378.0f, 255.3f, 21.6f),
+            ("Lh", BlockRole.Heading, 129.6f, 415.2f, 76.0f, 10.4f),
+            ("L3", BlockRole.Text, 39.1f, 431.1f, 255.4f, 49.4f),
+            ("fn1", BlockRole.Footnote, 38.8f, 493.4f, 256.7f, 90.9f),
+            ("fn2", BlockRole.Footnote, 38.6f, 583.6f, 256.9f, 53.7f),
+            ("R1", BlockRole.Text, 300.9f, 171.3f, 257.2f, 83.5f),
+            ("R2", BlockRole.Text, 301.2f, 255.1f, 257.4f, 107.8f),
+            ("R3", BlockRole.Text, 301.1f, 363.5f, 257.6f, 178.8f),
+            ("R4", BlockRole.Text, 301.3f, 542.7f, 256.9f, 106.4f));
+        new XYCutPlusPlusResolver().AssignOrder(blocks, 612, 792);
+        Assert.Equal(
+            new[] { "title", "authors", "centred", "L1", "L2", "Lh", "L3", "fn1", "fn2", "R1", "R2", "R3", "R4" },
+            OrderedTags(blocks, names));
+    }
 }

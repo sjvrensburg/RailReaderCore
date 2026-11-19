@@ -17,13 +17,24 @@
   - A divider crossing a column split — a full-width title under a logo, spanning a side column
     and the main column, or a caption shared by side-by-side tables at a region's top or bottom —
     is now cut at horizontally instead of being assigned to one column by its centre.
+    The bands above and below such a divider look for their own columns first and fall back to
+    the enclosing region's split only when they find none — so a column merged into one
+    super-block can't collapse its band into a single left-to-right row.
 
-  On a 487-page corpus (PP-DocLayoutV3 boxes from `tools/order-eval`, re-ordered without the text
-  layer, V3's own order as reference) mean body Kendall-τ falls 0.043 → 0.024 and exact-match
-  pages rise 273 → 329; blocks ordered after the block below them fall 8 → 5 of 808 headings and
-  229 → 29 of 4,701 other blocks. Seven pages move away from V3's order, all figure grids, mastheads or
-  furniture; the largest (a page of small multiples) is a pre-existing limit of centroid-anchored
-  re-insertion.
+  Measured two ways against 0.92.0:
+  - **Heron INT8 on CPU, with the text layer, through `AssignOrder` + `PostProcess`** (the
+    reporter's pipeline) over 18 econometrics/forecasting papers, 359 pages: blocks ordered after
+    the block below them fall 7 → 1 of 494 headings and 50 → 2 of 3,816 other blocks.
+  - **PP-DocLayoutV3 boxes re-ordered without the text layer** (`tools/order-eval` reorder mode)
+    over 487 pages, V3's own order as reference: mean body Kendall-τ 0.043 → 0.023, body
+    exact-match pages 273 → 329, after-below 8 → 5 of 808 headings and 229 → 26 of 4,701 others.
+    Six pages move away from V3's order — figure grids, a masthead now read row by row, furniture;
+    the largest (+0.075, a grid of small charts) is the centroid-anchored re-insertion tracked in
+    #225.
+- **`tools/order-eval` reorder mode.** `reorder <dump.json> <out.json>` re-runs the resolver on a
+  detect run's dumped boxes (seconds, no model or PDFs), and `compare.py` A/Bs two dumps by body-τ,
+  exact matches and the reference-free after-below count, listing regressed pages first. Detect
+  dumps now record page size. See `tools/order-eval/README.md`.
 
 ## 0.92.0 — Colour-category names in Markdown export; safer annotation text (2026-11-18)
 

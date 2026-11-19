@@ -5,8 +5,17 @@ using RailReader.Core.Models;
 using RailReader.Core.Services;
 using RailReader.Renderer.Skia;
 
-// args[0] = V3 model path, args[1] = output json prefix, args[2..] = corpus dirs
-// env: ORDEREVAL_MAXPAGES (default 12), MERGE_GAP (default 30)
+// Detect:  args[0] = V3 model path, args[1] = output json prefix, args[2..] = corpus dirs
+//          env: ORDEREVAL_MAXPAGES (default 12)
+// Reorder: reorder <in_raw.json> <out.json>
+//          re-runs the production XYCutPlusPlusResolver on the boxes a detect run dumped —
+//          no model, no PDFs, seconds instead of a detector pass. See README.
+
+if (args.Length == 3 && args[0] == "reorder")
+{
+    Reorder(args[1], args[2]);
+    return;
+}
 
 var v3Path = args[0];
 var outPrefix = args[1];
@@ -122,7 +131,7 @@ foreach (var pdfPath in pdfs)
 
             pageRecords.Add(new PageRec(
                 Path.GetFileName(Path.GetDirectoryName(pdfPath) ?? ""), Path.GetFileName(pdfPath), p,
-                blocks.Count, distinctRaw, KendallTauDistance(v3Seq, oursSeq),
+                pw, ph, blocks.Count, distinctRaw, KendallTauDistance(v3Seq, oursSeq),
                 v3Seq, oursSeq, mergeSeqs, meta));
         }
         catch (Exception ex) { Console.Error.WriteLine($"    page {p} ERR: {ex.Message}"); }
@@ -161,7 +170,7 @@ void Dump(string path, Func<PageRec, List<int>> seq) =>
     {
         pageRecords = pageRecords.Select(r => new
         {
-            r.Dir, r.Pdf, r.Page, r.NBlocks, r.DistinctRawOrder, r.Tau,
+            r.Dir, r.Pdf, r.Page, r.PageW, r.PageH, r.NBlocks, r.DistinctRawOrder, r.Tau,
             r.V3Seq, OursSeq = seq(r), r.Meta
         })
     }));
@@ -227,6 +236,36 @@ static double KendallTauDistance(List<int> a, List<int> b)
     return total == 0 ? 0 : (double)discord / total;
 }
 
+// Reorder mode: the dumped boxes, re-ordered by the resolver this tool was built against.
+// The text layer is not dumped, so the leaf tie-break falls back to geometry — compare two
+// reorders with each other, never a reorder with a detect run.
+static void Reorder(string inPath, string outPath)
+{
+    var doc = JsonSerializer.Deserialize<DumpFile>(File.ReadAllText(inPath))
+        ?? throw new InvalidDataException($"{inPath}: not an order-eval dump");
+    var resolver = new XYCutPlusPlusResolver();
+    var pages = new List<DumpPage>(doc.pageRecords.Count);
+    foreach (var r in doc.pageRecords)
+    {
+        var blocks = r.Meta.Select(m => new LayoutBlock
+        {
+            BBox = new BBox(m.X, m.Y, m.W, m.H), Role = Enum.Parse<BlockRole>(m.Role), ClassId = m.Id, Confidence = 1f,
+        }).ToList();
+        // Dumps written before PageW/PageH were recorded: estimate from the block extent.
+        double pw = r.PageW ?? blocks.Max(b => b.BBox.X + b.BBox.W) + blocks.Min(b => b.BBox.X);
+        double ph = r.PageH ?? blocks.Max(b => b.BBox.Y + b.BBox.H) + blocks.Min(b => b.BBox.Y);
+        resolver.AssignOrder(blocks, pw, ph);
+        pages.Add(r with { OursSeq = blocks.Select(b => b.ClassId).ToList() });
+    }
+    File.WriteAllText(outPath, JsonSerializer.Serialize(new DumpFile(pages)));
+    Console.Error.WriteLine($"Reordered {pages.Count} pages -> {outPath}");
+}
+
 record BlockMeta(int Id, string Role, float X, float Y, float W, float H, string Text);
-record PageRec(string Dir, string Pdf, int Page, int NBlocks, int DistinctRawOrder, double Tau,
+#pragma warning disable IDE1006 // property name matches the dump's JSON key
+record DumpFile(List<DumpPage> pageRecords);
+#pragma warning restore IDE1006
+record DumpPage(string Dir, string Pdf, int Page, double? PageW, double? PageH, int NBlocks,
+    int DistinctRawOrder, double Tau, List<int> V3Seq, List<int> OursSeq, List<BlockMeta> Meta);
+record PageRec(string Dir, string Pdf, int Page, double PageW, double PageH, int NBlocks, int DistinctRawOrder, double Tau,
     List<int> V3Seq, List<int> OursSeq, List<List<int>> MergeSeqs, List<BlockMeta> Meta);

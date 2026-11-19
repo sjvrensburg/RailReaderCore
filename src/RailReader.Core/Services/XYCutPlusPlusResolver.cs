@@ -483,73 +483,7 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         var splitX = FindColumnSplit(blocks);
         if (splitX is float sx)
         {
-            // A full-width horizontal divider at the TOP extreme (title / figure /
-            // caption) straddles the gutter, so the centre-partition below would
-            // assign it to whichever column its centre falls in — stranding e.g. a
-            // figure caption between the two columns instead of keeping it with
-            // the figure above. Peel it into the stream by its Y position first,
-            // then column-split the rest. Scoped to the column-split branch so
-            // single-column and figure-grid pages (which never reach here) are
-            // untouched. Only the top extreme is peeled here; a divider lower down
-            // that crosses the split is handled by the crosser cut below.
-            float regWidth = blocks.Max(b => b.BBox.X + b.BBox.W) - blocks.Min(b => b.BBox.X);
-            var topMost = blocks[0];
-            foreach (var b in blocks)
-                if (b.BBox.Y < topMost.BBox.Y) topMost = b;
-            if (IsFullWidthDivider(topMost, blocks, regWidth))
-            {
-                output.Add(topMost);
-                Cut(Except(blocks, topMost), output, charBoxes);
-                return;
-            }
-
-            // A divider that crosses the split — a title under a logo spanning a
-            // side column and the main column, a caption shared by two
-            // side-by-side tables — would be assigned to one column by its centre
-            // and read after that whole column. Since it y-overlaps nothing, every
-            // other block lies wholly above or below it: cut horizontally there
-            // instead and let each side find its own columns (issue #223, case 6).
-            LayoutBlock? crosser = null;
-            foreach (var b in blocks)
-            {
-                if (b.BBox.X >= sx || b.BBox.X + b.BBox.W <= sx) continue;
-                if (crosser is not null && b.BBox.Y >= crosser.BBox.Y) continue;
-                if (IsSplitCrossingDivider(b, blocks, regWidth)) crosser = b;
-            }
-            if (crosser is not null)
-            {
-                var above = new List<LayoutBlock>();
-                var below = new List<LayoutBlock>();
-                foreach (var b in blocks)
-                {
-                    if (ReferenceEquals(b, crosser)) continue;
-                    (b.BBox.Y < crosser.BBox.Y ? above : below).Add(b);
-                }
-                Cut(above, output, charBoxes);
-                output.Add(crosser);
-                Cut(below, output, charBoxes);
-                return;
-            }
-
-            // Partition by block centre: for a clean (straddler-validated) split
-            // no block crosses sx so this matches edge-based partition exactly;
-            // for a projection split a crosser is assigned to its majority side.
-            var left = new List<LayoutBlock>(blocks.Count);
-            var right = new List<LayoutBlock>(blocks.Count);
-            foreach (var b in blocks)
-            {
-                if (b.BBox.X + b.BBox.W * 0.5f < sx) left.Add(b);
-                else right.Add(b);
-            }
-            // Safety: if centre-partition somehow leaves one side empty (e.g. all
-            // centres on one side of a projection split), don't recurse infinitely.
-            if (left.Count == 0 || right.Count == 0)
-            {
-                foreach (var b in OrderLeaf(blocks, charBoxes)) output.Add(b);
-                return;
-            }
-            Cut(left, output, charBoxes);
-            Cut(right, output, charBoxes);
+            CutColumns(blocks, sx, output, charBoxes, isWholeRegion: true);
             return;
         }
 
@@ -577,6 +511,117 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         // else top-down then left-to-right.
         foreach (var b in OrderLeaf(blocks, charBoxes))
             output.Add(b);
+    }
+
+    /// <summary>
+    /// The column-split step of <see cref="Cut"/>: given split <paramref name="sx"/>,
+    /// peel a top divider, cut at a divider crossing the split, or partition into
+    /// columns. <paramref name="isWholeRegion"/> is false when <paramref name="sx"/>
+    /// was inherited from an enclosing region (see <see cref="CutBand"/>).
+    /// </summary>
+    private static void CutColumns(List<LayoutBlock> blocks, float sx, List<LayoutBlock> output,
+        IReadOnlyList<CharBox>? charBoxes, bool isWholeRegion)
+    {
+        // A full-width horizontal divider at the TOP extreme (title / figure /
+        // caption) straddles the gutter, so the centre-partition below would
+        // assign it to whichever column its centre falls in — stranding e.g. a
+        // figure caption between the two columns instead of keeping it with
+        // the figure above. Peel it into the stream by its Y position first,
+        // then column-split the rest. Scoped to the column-split branch so
+        // single-column and figure-grid pages (which never reach here) are
+        // untouched. Only the top extreme is peeled here; a divider lower down
+        // that crosses the split is handled by the crosser cut below.
+        float regWidth = blocks.Max(b => b.BBox.X + b.BBox.W) - blocks.Min(b => b.BBox.X);
+        var topMost = blocks[0];
+        foreach (var b in blocks)
+            if (b.BBox.Y < topMost.BBox.Y) topMost = b;
+        if (IsFullWidthDivider(topMost, blocks, regWidth))
+        {
+            output.Add(topMost);
+            Cut(Except(blocks, topMost), output, charBoxes);
+            return;
+        }
+
+        // A divider that crosses the split — a title under a logo spanning a
+        // side column and the main column, a caption shared by two
+        // side-by-side tables — would be assigned to one column by its centre
+        // and read after that whole column. Since it y-overlaps nothing, every
+        // other block lies wholly above or below it: cut horizontally there
+        // instead and let each side find its own columns (issue #223, case 6).
+        LayoutBlock? crosser = null;
+        foreach (var b in blocks)
+        {
+            if (b.BBox.X >= sx || b.BBox.X + b.BBox.W <= sx) continue;
+            if (crosser is not null && b.BBox.Y >= crosser.BBox.Y) continue;
+            if (IsSplitCrossingDivider(b, blocks, regWidth)) crosser = b;
+        }
+        if (crosser is not null)
+        {
+            var above = new List<LayoutBlock>();
+            var below = new List<LayoutBlock>();
+            foreach (var b in blocks)
+            {
+                if (ReferenceEquals(b, crosser)) continue;
+                (b.BBox.Y < crosser.BBox.Y ? above : below).Add(b);
+            }
+            CutBand(above, sx, output, charBoxes);
+            output.Add(crosser);
+            CutBand(below, sx, output, charBoxes);
+            return;
+        }
+
+        CutAtColumnSplit(blocks, sx, output, charBoxes, isWholeRegion);
+    }
+
+    /// <summary>
+    /// Cuts a band left above or below a crossing divider. The band searches for its
+    /// own columns first (a side column under a title has its own gutter). Only when
+    /// it finds none does it fall back to the split <paramref name="sx"/> found for
+    /// the whole region: without the crosser a band may no longer validate that split
+    /// (a column merged into one super-block fails the projection split's
+    /// two-blocks-a-side rule) and would otherwise collapse into a single
+    /// X-sorted leaf row.
+    /// </summary>
+    private static void CutBand(List<LayoutBlock> band, float sx, List<LayoutBlock> output,
+        IReadOnlyList<CharBox>? charBoxes)
+    {
+        if (band.Count > 1 && FindColumnSplit(band) is null)
+            CutColumns(band, sx, output, charBoxes, isWholeRegion: false);
+        else
+            Cut(band, output, charBoxes);
+    }
+
+    /// <summary>
+    /// Partitions <paramref name="blocks"/> at column split <paramref name="sx"/> by
+    /// block centre and cuts each side, left first. For a clean (straddler-validated)
+    /// split no block crosses <paramref name="sx"/>, so this matches an edge-based
+    /// partition exactly; for a projection split a crosser goes to its majority side.
+    /// </summary>
+    private static void CutAtColumnSplit(List<LayoutBlock> blocks, float sx, List<LayoutBlock> output,
+        IReadOnlyList<CharBox>? charBoxes, bool isWholeRegion)
+    {
+        if (blocks.Count == 0) return;
+        var left = new List<LayoutBlock>(blocks.Count);
+        var right = new List<LayoutBlock>(blocks.Count);
+        foreach (var b in blocks)
+        {
+            if (b.BBox.X + b.BBox.W * 0.5f < sx) left.Add(b);
+            else right.Add(b);
+        }
+        if (left.Count == 0 || right.Count == 0)
+        {
+            // A band above or below a crosser that sits wholly on one side is
+            // just that side. The whole region must not recurse unchanged: if its
+            // centre-partition left a side empty (all centres on one side of a
+            // projection split), Cut would find the same split again forever.
+            if (isWholeRegion)
+                foreach (var b in OrderLeaf(blocks, charBoxes)) output.Add(b);
+            else
+                Cut(blocks, output, charBoxes);
+            return;
+        }
+        Cut(left, output, charBoxes);
+        Cut(right, output, charBoxes);
     }
 
     /// <summary>
