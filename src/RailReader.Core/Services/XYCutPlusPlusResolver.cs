@@ -187,6 +187,15 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
     /// </summary>
     public const float DividerWidthFraction = 0.55f;
 
+    /// <summary>
+    /// Overlap depth (page points, on each axis) below which two blocks count as
+    /// merely touching rather than overlapping, for clipping-spanner masking.
+    /// Detector boxes of adjacent paragraphs/equations routinely share an edge
+    /// or overlap by a point; treating that as a clipping overlap lifted whole
+    /// paragraphs out of the cut and re-inserted them out of order (issue #223).
+    /// </summary>
+    public const float SpannerOverlapTolerancePoints = 2f;
+
     private readonly ReadingDirection _direction;
     private readonly bool _mergeAdjacent;
 
@@ -439,11 +448,16 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         foreach (var c in all)
         {
             if (ReferenceEquals(b, c)) continue;
-            if (BlockGeom.XOverlap(b.BBox, c.BBox) && BlockGeom.YOverlap(b.BBox, c.BBox))
+            if (OverlapDepth(b.BBox.X, b.BBox.W, c.BBox.X, c.BBox.W) > SpannerOverlapTolerancePoints
+                && OverlapDepth(b.BBox.Y, b.BBox.H, c.BBox.Y, c.BBox.H) > SpannerOverlapTolerancePoints)
                 return true;
         }
         return false;
     }
+
+    /// <summary>Length of the overlap of two 1-D intervals (≤ 0 when disjoint).</summary>
+    private static float OverlapDepth(float aStart, float aLen, float bStart, float bLen) =>
+        Math.Min(aStart + aLen, bStart + bLen) - Math.Max(aStart, bStart);
 
     // ---------------------------------------------------------------------
     // Phase 2: density-aware recursive cut
@@ -476,9 +490,8 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
             // the figure above. Peel it into the stream by its Y position first,
             // then column-split the rest. Scoped to the column-split branch so
             // single-column and figure-grid pages (which never reach here) are
-            // untouched. Only the top is peeled: a bottom divider (footnote band)
-            // already reads last via the large horizontal gap above it, and
-            // peeling it can remove that gap and destabilise the sub-region.
+            // untouched. Only the top extreme is peeled here; a divider lower down
+            // that crosses the split is handled by the crosser cut below.
             float regWidth = blocks.Max(b => b.BBox.X + b.BBox.W) - blocks.Min(b => b.BBox.X);
             var topMost = blocks[0];
             foreach (var b in blocks)
@@ -487,6 +500,34 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
             {
                 output.Add(topMost);
                 Cut(Except(blocks, topMost), output, charBoxes);
+                return;
+            }
+
+            // A divider that crosses the split — a title under a logo spanning a
+            // side column and the main column, a caption shared by two
+            // side-by-side tables — would be assigned to one column by its centre
+            // and read after that whole column. Since it y-overlaps nothing, every
+            // other block lies wholly above or below it: cut horizontally there
+            // instead and let each side find its own columns (issue #223, case 6).
+            LayoutBlock? crosser = null;
+            foreach (var b in blocks)
+            {
+                if (b.BBox.X >= sx || b.BBox.X + b.BBox.W <= sx) continue;
+                if (crosser is not null && b.BBox.Y >= crosser.BBox.Y) continue;
+                if (IsSplitCrossingDivider(b, blocks, regWidth)) crosser = b;
+            }
+            if (crosser is not null)
+            {
+                var above = new List<LayoutBlock>();
+                var below = new List<LayoutBlock>();
+                foreach (var b in blocks)
+                {
+                    if (ReferenceEquals(b, crosser)) continue;
+                    (b.BBox.Y < crosser.BBox.Y ? above : below).Add(b);
+                }
+                Cut(above, output, charBoxes);
+                output.Add(crosser);
+                Cut(below, output, charBoxes);
                 return;
             }
 
@@ -592,6 +633,28 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
         return true;
     }
 
+    /// <summary>
+    /// A block crossing a column split that should divide the region rather than
+    /// join a column: it y-overlaps nothing (beyond <see cref="SpannerOverlapTolerancePoints"/>
+    /// when narrower than a full-width divider, since detector boxes touch), and either spans
+    /// <see cref="DividerWidthFraction"/> of the region or sits below or above
+    /// every other block (a caption shared by side-by-side tables). A narrower
+    /// crosser with column content on both sides — a figure poking across the
+    /// gutter mid-page — is left to the column split.
+    /// </summary>
+    private static bool IsSplitCrossingDivider(LayoutBlock b, List<LayoutBlock> blocks, float regWidth)
+    {
+        if (IsFullWidthDivider(b, blocks, regWidth)) return true;
+        bool above = false, below = false;
+        foreach (var c in blocks)
+        {
+            if (ReferenceEquals(c, b)) continue;
+            if (OverlapDepth(b.BBox.Y, b.BBox.H, c.BBox.Y, c.BBox.H) > SpannerOverlapTolerancePoints) return false;
+            if (c.BBox.Y < b.BBox.Y) above = true; else below = true;
+        }
+        return !(above && below);
+    }
+
     /// <summary>All blocks except <paramref name="exclude"/> (reference equality), order preserved.</summary>
     private static List<LayoutBlock> Except(List<LayoutBlock> blocks, LayoutBlock exclude)
     {
@@ -630,8 +693,65 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
             if (ordered.Count == 0) { ordered.Add(m); continue; }
             int anchor = NearestBlockIndex(ordered, m);
             int insertAt = LeadsInReadingOrder(m.Role) ? anchor : anchor + 1;
-            ordered.Insert(insertAt, m);
+            ordered.Insert(ClampToColumnOrder(ordered, m, insertAt), m);
         }
+    }
+
+    /// <summary>
+    /// Keeps a re-inserted block's position consistent with the page's vertical
+    /// order. The centroid anchor alone can drop a block above a heading that
+    /// sits over it, or after the equation below it (issue #223). The block must
+    /// follow every block above it in its column (x-overlapping) and precede
+    /// every block below it; a block above or below <i>everything</i> reads
+    /// first or last. When those constraints conflict (an ordering the cut
+    /// already made inconsistent) the anchor position is kept.
+    /// </summary>
+    private static int ClampToColumnOrder(List<LayoutBlock> ordered, LayoutBlock m, int insertAt)
+    {
+        float mTop = m.BBox.Y, mBottom = m.BBox.Y + m.BBox.H;
+        // "Above / below everything" ignores a block in m's own row (side by side,
+        // top and bottom edges aligned): the other half of a running-header or
+        // footer pair must not disqualify it. A tall sliver beside body paragraphs
+        // is not in their row and gets no such exemption.
+        if (ordered.All(b => b.BBox.Y >= mBottom || SameRow(b.BBox, m.BBox)))
+        {
+            // Above everything: first, but after any block already placed there
+            // beside it to its left — e.g. the left running header of a pair.
+            int i = 0;
+            while (i < ordered.Count
+                   && SameRow(ordered[i].BBox, m.BBox) && ordered[i].BBox.X < m.BBox.X)
+                i++;
+            return i;
+        }
+        if (ordered.All(b => b.BBox.Y + b.BBox.H <= mTop || SameRow(b.BBox, m.BBox)))
+        {
+            // Below everything: last, but before any block already placed there
+            // beside it to its right — e.g. the right footer of a pair.
+            int i = ordered.Count;
+            while (i > 0
+                   && SameRow(ordered[i - 1].BBox, m.BBox) && ordered[i - 1].BBox.X > m.BBox.X)
+                i--;
+            return i;
+        }
+
+        int lo = 0, hi = ordered.Count;
+        for (int i = 0; i < ordered.Count; i++)
+        {
+            var b = ordered[i].BBox;
+            if (!BlockGeom.XOverlap(b, m.BBox)) continue;
+            if (b.Y + b.H <= mTop) lo = Math.Max(lo, i + 1);
+            else if (b.Y >= mBottom) hi = Math.Min(hi, i);
+        }
+        return lo <= hi ? Math.Clamp(insertAt, lo, hi) : insertAt;
+    }
+
+    /// <summary>Side by side with top and bottom edges within half the shorter height.</summary>
+    private static bool SameRow(BBox a, BBox b)
+    {
+        float tol = Math.Min(a.H, b.H) * 0.5f;
+        return BlockGeom.IsSideBySide(a, b)
+            && Math.Abs(a.Y - b.Y) <= tol
+            && Math.Abs(a.Y + a.H - (b.Y + b.H)) <= tol;
     }
 
     private static bool IsFurniture(BlockRole role) =>
@@ -684,11 +804,35 @@ public sealed class XYCutPlusPlusResolver : IReadingOrderResolver
             // block, or content the cut placed in another region) must not be
             // pulled across many intervening blocks and reorder them.
             if (Math.Abs(bodyIdx - hIdx) > HeadingAttachMaxShift) continue;
+            // Never carry the heading across a block in its own column that lies
+            // on the other side of it on the page: moving down past a block below
+            // it (a subsection heading, a wider centred line, a duplicate box), or
+            // up past a block above it, trades one misorder for another (issue #223).
+            if (CrossesColumnNeighbour(ordered, h, hIdx, bodyIdx)) continue;
 
             ordered.RemoveAt(hIdx);
             bodyIdx = ordered.IndexOf(body); // recompute after removal
             ordered.Insert(bodyIdx, h);
         }
+    }
+
+    /// <summary>
+    /// True when relocating heading <paramref name="h"/> from <paramref name="hIdx"/>
+    /// to just before <paramref name="bodyIdx"/> would move it past an x-overlapping
+    /// block that lies below it (moving down) or above it (moving up).
+    /// </summary>
+    private static bool CrossesColumnNeighbour(List<LayoutBlock> ordered, LayoutBlock h, int hIdx, int bodyIdx)
+    {
+        float hTop = h.BBox.Y, hBottom = h.BBox.Y + h.BBox.H, tol = h.BBox.H * 0.5f;
+        bool down = bodyIdx > hIdx;
+        int from = down ? hIdx + 1 : bodyIdx, to = down ? bodyIdx : hIdx; // [from, to)
+        for (int i = from; i < to; i++)
+        {
+            var b = ordered[i].BBox;
+            if (!BlockGeom.XOverlap(b, h.BBox)) continue;
+            if (down ? b.Y >= hBottom - tol : b.Y + b.H <= hTop + tol) return true;
+        }
+        return false;
     }
 
     /// <summary>
