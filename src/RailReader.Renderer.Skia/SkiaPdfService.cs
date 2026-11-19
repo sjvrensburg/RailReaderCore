@@ -11,7 +11,7 @@ namespace RailReader.Renderer.Skia;
 /// <summary>
 /// PDFium/SkiaSharp implementation of IPdfService.
 /// </summary>
-public sealed class SkiaPdfService : IPdfService, IPdfTiledRenderService
+public sealed class SkiaPdfService : IPdfService, IPdfTiledRenderService, IPdfRegionRenderService
 {
 
     public byte[] PdfBytes { get; }
@@ -282,23 +282,88 @@ public sealed class SkiaPdfService : IPdfService, IPdfTiledRenderService
         // other tabs' render/text-extract calls aren't blocked by this loop.
         try
         {
-            var pixels = bitmap.GetPixelSpan();
-            int pixelCount = bitmap.Width * bitmap.Height;
-            var rgb = new byte[pixelCount * 3];
-            for (int i = 0; i < pixelCount; i++)
-            {
-                int src = i * 4;
-                int dst = i * 3;
-                rgb[dst] = pixels[src + 2];
-                rgb[dst + 1] = pixels[src + 1];
-                rgb[dst + 2] = pixels[src];
-            }
-            return (rgb, bitmap.Width, bitmap.Height);
+            return (ToPackedRgb(bitmap), bitmap.Width, bitmap.Height);
         }
         finally
         {
             bitmap.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Renders only the requested rectangle (issue #222): one PDFium render into a bitmap the size of
+    /// the region, with the whole page's transform at <paramref name="scale"/> shifted by the region's
+    /// pixel offset — the technique <see cref="RenderPageTiled"/> uses per band, so the pixels match a
+    /// crop of a whole-page render at the same scale. Page size, rotation and flags mirror that path
+    /// (no annotations, white background).
+    /// </summary>
+    public (byte[] RgbBytes, int Width, int Height) RenderRegionPixmap(int pageIndex, BBox regionInPagePoints,
+        double scale, int viewRotation = 0, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var (pw, ph) = GetPageSize(pageIndex, viewRotation);
+        var (x0, y0, x1, y1) = PdfRegionRendering.PixelBounds(regionInPagePoints, pw, ph, scale);
+        int width = x1 - x0, height = y1 - y0;
+        if ((long)width * height * 4 > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(scale), scale,
+                $"A {width} x {height} px region is too large to render in one piece.");
+        int sizeX = (int)Math.Ceiling(pw * scale), sizeY = (int)Math.Ceiling(ph * scale);
+        int rotate = (int)ToPdfRotation(viewRotation);
+
+        using var bitmap = new SKBitmap(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
+        bitmap.Erase(SKColors.White);
+        var pinned = GCHandle.Alloc(PdfBytes, GCHandleType.Pinned);
+        try
+        {
+            lock (PdfiumGate.Lock)
+            {
+                PdfiumResolver.EnsureLibraryInitialized();
+                IntPtr doc = LoadDocumentChecked(pinned.AddrOfPinnedObject(), PdfBytes.Length, Password, _filePath);
+                if (doc == IntPtr.Zero)
+                    throw new InvalidOperationException($"Failed to open PDF '{_filePath}' for rendering.");
+                IntPtr page = IntPtr.Zero;
+                try
+                {
+                    page = FPDF_LoadPage(doc, pageIndex);
+                    if (page == IntPtr.Zero)
+                        throw new InvalidOperationException($"Failed to load page {pageIndex + 1} for rendering.");
+                    IntPtr target = FPDFBitmap_CreateEx(width, height, FPDFBitmap_BGRA, bitmap.GetPixels(), bitmap.RowBytes);
+                    if (target == IntPtr.Zero)
+                        throw new InvalidOperationException($"Failed to allocate a {width} x {height} px region bitmap.");
+                    try { FPDF_RenderPageBitmap(target, page, -x0, -y0, sizeX, sizeY, rotate, 0); }
+                    finally { FPDFBitmap_Destroy(target); }
+                }
+                finally
+                {
+                    if (page != IntPtr.Zero) FPDF_ClosePage(page);
+                    FPDF_CloseDocument(doc);
+                }
+            }
+        }
+        finally
+        {
+            pinned.Free();
+        }
+        return (ToPackedRgb(bitmap), width, height);
+    }
+
+    /// <summary>A BGRA bitmap as packed RGB, 3 bytes per pixel, rows without padding.</summary>
+    private static byte[] ToPackedRgb(SKBitmap bitmap)
+    {
+        var pixels = bitmap.GetPixelSpan();
+        int width = bitmap.Width, height = bitmap.Height, rowBytes = bitmap.RowBytes;
+        var rgb = new byte[width * height * 3];
+        for (int y = 0; y < height; y++)
+        {
+            int src = y * rowBytes, dst = y * width * 3;
+            for (int x = 0; x < width; x++, src += 4, dst += 3)
+            {
+                rgb[dst] = pixels[src + 2];
+                rgb[dst + 1] = pixels[src + 1];
+                rgb[dst + 2] = pixels[src];
+            }
+        }
+        return rgb;
     }
 
     private (int Width, int Height) FitPageToTarget(int pageIndex, int targetSize)
