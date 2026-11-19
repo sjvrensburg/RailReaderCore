@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.94.0 — Claude as a VLM provider; region-rendered block crops (2026-11-19)
+
+- **New package `RailReader.Core.Vlm.Anthropic`**: `AnthropicVlmClient` implements `IVlmService`
+  for Claude over the official Anthropic .NET SDK (Messages API; structured output via
+  `output_config.format`). Choose it with the new **`VlmProvider`** enum (`OpenAICompatible`, the
+  default, | `Anthropic`), carried by `VlmEndpointConfig.Provider` (init property; the positional
+  constructor is unchanged), `CoreSettings.VlmProvider` and `AppConfig.VlmProvider`
+  (`"vlm_provider": "anthropic"`). Existing configs keep the OpenAI-compatible client, and an
+  unknown `vlm_provider` value reads as `OpenAICompatible` instead of failing the config load. For
+  Anthropic the endpoint is an optional base URL (blank = `https://api.anthropic.com`) and a blank
+  key leaves credential lookup to the SDK (`ANTHROPIC_API_KEY`, …). New
+  `VlmEndpointConfig.IsConfigured` (a model, plus an endpoint unless the provider has a default)
+  replaces `MarkdownExportService`'s endpoint-non-empty check, and Export picks the client by
+  provider. For models that support it (Opus 5.5/5, Sonnet 5.5, Fable/Mythos 5.x), and only against
+  Anthropic's own API, a declined block is re-served server-side by a fallback model
+  (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`).
+- **VLM block crops are rendered as page regions** (#228). `BlockCropRenderer.RenderBlockAsPng` /
+  `RenderBlocksAsPng` render each crop with `RenderRegionPixmap` instead of rasterising the whole
+  page at 300 DPI (~2550 × 3300 px) to cut out a few hundred pixels. `RenderBlocksAsPng` renders the
+  page once instead when the padded crops cover more than half of it, or when the backend has no
+  `IPdfRegionRenderService`. A block that fails to render is `null` without costing the page's other
+  crops. New **`RenderBlockAsBitmap`** returns the crop undecoded for hosts that only display it.
+  Crop edges can move by a pixel (the region snaps outward), and at DPIs where PDFtoImage truncates
+  the page size (300 DPI on Letter: 3299 px, not 3300) the old crop sat a fraction of a pixel off;
+  the region is the one at the exact scale.
+- **Breaking (binary):** `RenderBlockAsPng` and `RenderBlocksAsPng` take a new optional trailing
+  `viewRotation`. Callers compile unchanged but must be rebuilt. A rotated view's block boxes are in
+  the rotated frame, so crops of a rotated document were of the wrong region; pass the view's
+  rotation. Boxes are now measured against the backend's `GetPageSize(page, viewRotation)`, so the
+  `pageWidth`/`pageHeight` parameters are unused (kept for compatibility).
+- `PdfRegionRendering`'s render-and-crop fallback is split into internal `RenderPageForCropping` /
+  `CropPagePixmap`, shared with the multi-block path.
+
 ## 0.93.0 — XYCut++ reading-order fixes; page-region rendering (2026-11-19)
 
 - **Render a page region at a chosen scale** (#222). New optional capability
