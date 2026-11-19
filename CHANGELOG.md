@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.93.0 — XYCut++ reading-order fixes; page-region rendering (2026-11-19)
 
 - **Render a page region at a chosen scale** (#222). New optional capability
   `IPdfRegionRenderService.RenderRegionPixmap(page, regionInPagePoints, scale, viewRotation, ct)`
